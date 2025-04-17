@@ -48,6 +48,10 @@ jobs:
 
       # The baseline tests should not include the faster default params, because we want to also test that
       # it works without params passed
+      - name: Testing ls
+        run: |
+          ls
+
       - name: Testing baseline av1an
         run: |
           target/ci/av1an --version
