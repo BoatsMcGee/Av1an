@@ -404,7 +404,7 @@ fn lagrange_interpolate(p: &[(u32, f64)], x: u32) -> f64 {
     .sum()
 }
 
-#[allow(unused)]
+#[allow(unused, clippy::manual_div_ceil)]
 fn lagrange_bisect(p: &[(u32, f64)], y: f64) -> (u32, f64) {
   assert!(p.len() >= 2);
 
@@ -423,7 +423,7 @@ fn lagrange_bisect(p: &[(u32, f64)], y: f64) -> (u32, f64) {
   let (mut xa, mut ya) = sorted.iter().find(|&&v| v.1 * yb < 0.).unwrap_or(&(xb, yb));
 
   loop {
-    let x0 = (xa + xb + 1).div_ceil(2);
+    let x0 = (xa + xb + 1) / 2;
     if x0 == xb || x0 == xa {
       break;
     }
