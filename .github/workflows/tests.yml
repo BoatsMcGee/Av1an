@@ -1,7 +1,10 @@
 name: tests
 on:
-  - push
-  - pull_request
+  push:
+    branches:
+      - "master"
+      - "fix-ci"
+  pull_request:
 
 env:
   DEBIAN_FRONTEND: noninteractive
