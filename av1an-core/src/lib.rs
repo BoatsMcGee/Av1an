@@ -315,7 +315,9 @@ pub enum ScenecutMethod {
   Standard,
 }
 
-#[derive(PartialEq, Eq, Copy, Clone, Serialize, Deserialize, Debug, EnumString, IntoStaticStr)]
+#[derive(
+  PartialEq, Eq, Copy, Clone, Serialize, Deserialize, Debug, Display, EnumString, IntoStaticStr,
+)]
 pub enum ChunkMethod {
   #[strum(serialize = "select")]
   Select,

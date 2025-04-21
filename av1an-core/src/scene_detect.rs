@@ -13,12 +13,17 @@ use itertools::Itertools;
 use smallvec::{smallvec, SmallVec};
 
 use crate::scenes::Scene;
-use crate::{into_smallvec, progress_bar, Encoder, Input, ScenecutMethod, Verbosity};
+use crate::util::to_absolute_path;
+use crate::vapoursynth::{cache_file_path, dgdecnv_index_file_path, LoadscriptEnvironmentVariable};
+use crate::{into_smallvec, progress_bar, ChunkMethod, Encoder, Input, ScenecutMethod, Verbosity};
 
 #[tracing::instrument]
 #[allow(clippy::too_many_arguments)]
 pub fn av_scenechange_detect(
   input: &Input,
+  generated_input: Option<Input>,
+  temp_path: String,
+  chunk_method: ChunkMethod,
   encoder: Encoder,
   total_frames: usize,
   min_scene_len: usize,
@@ -38,7 +43,7 @@ pub fn av_scenechange_detect(
     progress_bar::init_progress_bar(total_frames as u64, 0);
   }
 
-  let input2 = input.clone();
+  let input2 = generated_input.as_ref().unwrap_or(input).clone();
   let frame_thread = thread::spawn(move || {
     let frames = input2.frames(None).unwrap();
     if verbosity != Verbosity::Quiet {
@@ -51,6 +56,9 @@ pub fn av_scenechange_detect(
   let frames = frame_thread.join().unwrap();
   let scenes = scene_detect(
     input,
+    generated_input,
+    temp_path,
+    chunk_method,
     encoder,
     total_frames,
     if verbosity == Verbosity::Quiet {
@@ -77,6 +85,9 @@ pub fn av_scenechange_detect(
 #[allow(clippy::too_many_arguments)]
 pub fn scene_detect(
   input: &Input,
+  generated_input: Option<Input>,
+  temp_path: String,
+  chunk_method: ChunkMethod,
   encoder: Encoder,
   total_frames: usize,
   callback: Option<&dyn Fn(usize)>,
@@ -89,6 +100,9 @@ pub fn scene_detect(
 ) -> anyhow::Result<Vec<Scene>> {
   let (mut decoder, bit_depth) = build_decoder(
     input,
+    generated_input,
+    temp_path,
+    chunk_method,
     encoder,
     sc_scaler,
     sc_pix_format,
@@ -205,8 +219,12 @@ pub fn scene_detect(
 }
 
 #[tracing::instrument]
+#[allow(clippy::too_many_arguments)]
 fn build_decoder(
   input: &Input,
+  generated_input: Option<Input>,
+  temp_path: String,
+  chunk_method: ChunkMethod,
   encoder: Encoder,
   sc_scaler: &str,
   sc_pix_format: Option<Pixel>,
@@ -230,25 +248,42 @@ fn build_decoder(
     (None, None) => smallvec![],
   };
 
-  let decoder = match input {
+  let decoder = match generated_input.as_ref().unwrap_or(input) {
     Input::VapourSynth { path, .. } => {
       bit_depth = crate::vapoursynth::bit_depth(path.as_ref(), input.as_vspipe_args_map()?)?;
       let vspipe_args = input.as_vspipe_args_vec()?;
 
-      if !filters.is_empty() || !vspipe_args.is_empty() {
+      if !filters.is_empty() || !vspipe_args.is_empty() || generated_input.is_some() {
         let mut command = Command::new("vspipe");
         command
           .arg("-c")
           .arg("y4m")
           .arg(path)
           .arg("-")
-          .env("AV1AN_PERFORM_SCENE_DETECTION", "true")
           .stdin(Stdio::null())
           .stdout(Stdio::piped())
           .stderr(Stdio::null());
         // Append vspipe python arguments to the environment if there are any
         for arg in vspipe_args {
           command.args(["-a", &arg]);
+        }
+        // Add environment variables if input is video (using generated loadscript.vpy)
+        if generated_input.is_some() {
+          command.env(
+            format!("{:?}", LoadscriptEnvironmentVariable::Source),
+            match chunk_method {
+              ChunkMethod::DGDECNV => dgdecnv_index_file_path(&temp_path, path.as_ref()).unwrap(),
+              _ => to_absolute_path(path.as_ref())?,
+            },
+          );
+          command.env(
+            format!("{:?}", LoadscriptEnvironmentVariable::ChunkMethod),
+            format!("{:?}", chunk_method),
+          );
+          command.env(
+            format!("{:?}", LoadscriptEnvironmentVariable::CacheFile),
+            cache_file_path(&temp_path, chunk_method)?,
+          );
         }
 
         Decoder::Y4m(y4m::Decoder::new(command.spawn()?.stdout.unwrap())?)
