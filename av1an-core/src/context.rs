@@ -36,11 +36,7 @@ use crate::scene_detect::av_scenechange_detect;
 use crate::scenes::{Scene, ZoneOptions};
 use crate::settings::{EncodeArgs, InputPixelFormat};
 use crate::split::{extra_splits, segment, write_scenes_to_file};
-use crate::util::to_absolute_path;
-use crate::vapoursynth::{
-  cache_file_path, copy_vs_file, create_vs_file, dgdecnv_index_file_path,
-  LoadscriptEnvironmentVariable,
-};
+use crate::vapoursynth::{copy_vs_file, create_vs_file};
 use crate::{
   create_dir, determine_workers, get_done, init_done, into_vec, read_chunk_queue, save_chunk_queue,
   vmaf, ChunkMethod, ChunkOrdering, DashMap, DoneJson, Input, SplitMethod, Verbosity,
@@ -173,11 +169,6 @@ impl Av1anContext {
 
           let vs_script = self.vs_script.clone().unwrap();
           let vspipe_args = self.args.input.as_vspipe_args_vec()?;
-          let input_is_video = self.args.input.is_video();
-          let input_path = to_absolute_path(self.args.input.clone().as_path())?;
-          let temp_path = self.args.temp.clone();
-          let chunk_method = self.args.chunk_method;
-          let cache_file_path = cache_file_path(&self.args.temp, self.args.chunk_method)?;
           Some({
             thread::spawn(move || {
               let mut command = Command::new("vspipe");
@@ -190,17 +181,8 @@ impl Av1anContext {
               for arg in vspipe_args {
                 command.args(["-a", &arg]);
               }
-              // Add environment variables if input is video (using generated loadscript.vpy)
-              if input_is_video {
-                command.env(format!("{:?}", LoadscriptEnvironmentVariable::Source), match chunk_method {
-                  ChunkMethod::DGDECNV => dgdecnv_index_file_path(&temp_path, &input_path).unwrap(),
-                  _ => input_path
-                });
-                command.env(format!("{:?}", LoadscriptEnvironmentVariable::ChunkMethod), format!("{:?}", chunk_method));
-                command.env(format!("{:?}", LoadscriptEnvironmentVariable::CacheFile), cache_file_path);
-              }
-
-              command.status().unwrap()
+              command.status()
+                .unwrap()
             })
           })
         } else {
@@ -756,20 +738,17 @@ impl Av1anContext {
     let zones = self.parse_zones()?;
 
     // Create a new input with the generated VapourSynth script for Scene Detection
-    let generated_input = self
-      .vs_scd_script
-      .as_ref()
-      .map(|vs_scd_script| Input::VapourSynth {
-        path: vs_scd_script.clone(),
+    let input = self.vs_scd_script.as_ref().map_or_else(
+      || self.args.input.clone(),
+      |vs_script| Input::VapourSynth {
+        path: vs_script.clone(),
         vspipe_args: Vec::new(),
-      });
+      },
+    );
 
     Ok(match self.args.split_method {
       SplitMethod::AvScenechange => av_scenechange_detect(
-        &self.args.input,
-        generated_input,
-        self.args.temp.clone(),
-        self.args.chunk_method,
+        &input,
         self.args.encoder,
         self.frames,
         self.args.min_scene_len,
