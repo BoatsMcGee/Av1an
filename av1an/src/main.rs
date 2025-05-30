@@ -26,6 +26,8 @@ use av1an_core::{
     Input,
     InputPixelFormat,
     PixelFormat,
+    ProbeStat,
+    ProbingSpeed,
     ScenecutMethod,
     SplitMethod,
     TargetMetric,
@@ -660,13 +662,27 @@ pub struct CliOpts {
     #[clap(long, default_value_t = 1, help_heading = "Target Quality")]
     pub probing_rate: u32,
 
+    /// Speed for probes, defaults to veryfast
+    ///
+    /// Does not override Probe Slow if not specified
+    ///
+    /// Lower speed for higher quality and accuracy probes
+    #[clap(long, help_heading = "Target Quality")]
+    pub probing_speed: Option<ProbingSpeed>,
+
     /// Use encoding settings for probes specified by --video-params rather than
     /// faster, less accurate settings
+    ///
+    /// If it is specified, Probing Speed will override the respective
+    /// speed parameter (eg. "--cpu-used=", "--preset", etc.)
     ///
     /// Note that this always performs encoding in one-pass mode, regardless of
     /// --passes.
     #[clap(long, help_heading = "Target Quality")]
     pub probe_slow: bool,
+
+    #[clap(long, default_value_t = ProbeStat::P1, help_heading = "Target Quality")]
+    pub probe_stat: ProbeStat,
 
     /// Lower bound for target quality Q-search early exit
     ///
@@ -725,6 +741,8 @@ impl CliOpts {
                 video_params: video_params.clone(),
                 vspipe_args: self.vspipe_args.clone(),
                 probe_slow: self.probe_slow,
+                probe_stat: self.probe_stat.clone(),
+                probing_speed: self.probing_speed.clone().map(|s| s as u8),
                 probing_rate: adapt_probing_rate(self.probing_rate as usize),
             }
         })

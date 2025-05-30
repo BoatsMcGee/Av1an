@@ -17,13 +17,14 @@ use crate::{
     broker::EncoderCrash,
     chunk::Chunk,
     metrics::{
-        ssimulacra2::get_common_statistics,
+        ssimulacra2::Statistics,
         vmaf::{self, read_weighted_vmaf},
         xpsnr::{self, read_weighted_xpsnr},
     },
     progress_bar::update_mp_msg,
     vapoursynth::{measure_butteraugli, measure_ssimulacra2, measure_xpsnr},
     Encoder,
+    ProbeStat,
     TargetMetric,
 };
 
@@ -31,25 +32,27 @@ const METRIC_PERCENTILE: f64 = 0.01;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetQuality {
-    pub vmaf_res:     String,
-    pub vmaf_scaler:  String,
-    pub vmaf_filter:  Option<String>,
-    pub vmaf_threads: usize,
-    pub model:        Option<PathBuf>,
-    pub xpsnr_res:    String,
-    pub probing_rate: usize,
-    pub probes:       u32,
-    pub target:       f64,
-    pub metric:       TargetMetric,
-    pub min_q:        u32,
-    pub max_q:        u32,
-    pub encoder:      Encoder,
-    pub pix_format:   Pixel,
-    pub temp:         String,
-    pub workers:      usize,
-    pub video_params: Vec<String>,
-    pub vspipe_args:  Vec<String>,
-    pub probe_slow:   bool,
+    pub vmaf_res:      String,
+    pub vmaf_scaler:   String,
+    pub vmaf_filter:   Option<String>,
+    pub vmaf_threads:  usize,
+    pub model:         Option<PathBuf>,
+    pub xpsnr_res:     String,
+    pub probing_rate:  usize,
+    pub probing_speed: Option<u8>,
+    pub probes:        u32,
+    pub target:        f64,
+    pub metric:        TargetMetric,
+    pub min_q:         u32,
+    pub max_q:         u32,
+    pub encoder:       Encoder,
+    pub pix_format:    Pixel,
+    pub temp:          String,
+    pub workers:       usize,
+    pub video_params:  Vec<String>,
+    pub vspipe_args:   Vec<String>,
+    pub probe_slow:    bool,
+    pub probe_stat:    ProbeStat,
 }
 
 impl TargetQuality {
@@ -92,23 +95,137 @@ impl TargetQuality {
                 },
                 TargetMetric::SSIMULACRA2 => {
                     let scores = tq.ssimulacra2_probe(chunk, target).unwrap();
-                    let common_statistics = get_common_statistics(scores);
-                    common_statistics.average
+                    let mut stats = Statistics::new(scores);
+                    debug!(
+                        "Statistics[Target|Tested|Speed|Stat]:\n[{}|{}|{:?}|{}]\naverage: \
+                         {}\nmedian: {}\nminimum: {}\nmaximum: {}\nvariance: {}\nstandard \
+                         deviation: {}\n-1sd: {}\n-2sd: {}\npercentile 1: {}\npercentile 5: \
+                         {}\npercentile 10: {}\npercentile 25: {}\npercentile 75: {}",
+                        tq.target,
+                        target,
+                        tq.probing_speed,
+                        tq.probe_stat,
+                        stats.average(),
+                        stats.median(),
+                        stats.minimum(),
+                        stats.maximum(),
+                        stats.variance(),
+                        stats.standard_deviation(),
+                        (stats.average() - stats.standard_deviation()),
+                        (stats.average() - (stats.standard_deviation() * 2.0)),
+                        stats.percentile(1),
+                        stats.percentile(5),
+                        stats.percentile(10),
+                        stats.percentile(25),
+                        stats.percentile(75)
+                    );
+
+                    match tq.probe_stat {
+                        ProbeStat::Average => stats.average(),
+                        ProbeStat::Median => stats.median(),
+                        ProbeStat::StandardDeviation1 => {
+                            stats.average() - stats.standard_deviation()
+                        },
+                        ProbeStat::StandardDeviation2 => {
+                            stats.average() - (stats.standard_deviation() * 2.0)
+                        },
+                        ProbeStat::P1 => stats.percentile(1),
+                        ProbeStat::P5 => stats.percentile(5),
+                        ProbeStat::P10 => stats.percentile(10),
+                        ProbeStat::P25 => stats.percentile(25),
+                        ProbeStat::P75 => stats.percentile(75),
+                    }
                 },
                 TargetMetric::BUTTERAUGLI => {
                     let scores = tq.butteraugli_probe(chunk, target).unwrap();
-                    let common_statistics = get_common_statistics(scores);
-                    common_statistics.average
+                    let mut stats = Statistics::new(scores);
+                    debug!(
+                        "Statistics[Target|Tested|Speed|Stat]:\n[{}|{}|{:?}|{}]\naverage: \
+                         {}\nmedian: {}\nminimum: {}\nmaximum: {}\nvariance: {}\nstandard \
+                         deviation: {}\n-1sd: {}\n-2sd: {}\npercentile 1: {}\npercentile 5: \
+                         {}\npercentile 10: {}\npercentile 25: {}\npercentile 75: {}",
+                        tq.target,
+                        target,
+                        tq.probing_speed,
+                        tq.probe_stat,
+                        stats.average(),
+                        stats.median(),
+                        stats.minimum(),
+                        stats.maximum(),
+                        stats.variance(),
+                        stats.standard_deviation(),
+                        (stats.average() + stats.standard_deviation()),
+                        (stats.average() + (stats.standard_deviation() * 2.0)),
+                        stats.percentile(99),
+                        stats.percentile(95),
+                        stats.percentile(90),
+                        stats.percentile(75),
+                        stats.percentile(25),
+                    );
+
+                    match tq.probe_stat {
+                        ProbeStat::Average => stats.average(),
+                        ProbeStat::Median => stats.median(),
+                        ProbeStat::StandardDeviation1 => {
+                            stats.average() + stats.standard_deviation()
+                        },
+                        ProbeStat::StandardDeviation2 => {
+                            stats.average() + (stats.standard_deviation() * 2.0)
+                        },
+                        ProbeStat::P1 => stats.percentile(99),
+                        ProbeStat::P5 => stats.percentile(95),
+                        ProbeStat::P10 => stats.percentile(90),
+                        ProbeStat::P25 => stats.percentile(75),
+                        ProbeStat::P75 => stats.percentile(25),
+                    }
                 },
                 TargetMetric::XPSNR => {
+                    // FFmpeg XPSNR does not support setpts filter, use VapourSynth instead
                     if tq.probing_rate > 1 {
                         let scores = tq.xpsnr_vs_probe(chunk, target).unwrap();
-                        let scores_frame_order = scores.clone();
-                        let common_statistics = get_common_statistics(scores);
-                        common_statistics.percentile_1
+                        let mut stats = Statistics::new(scores);
+                        debug!(
+                            "Statistics[Target|Tested|Speed|Stat]:\n[{}|{}|{:?}|{}]\naverage: \
+                             {}\nmedian: {}\nminimum: {}\nmaximum: {}\nvariance: {}\nstandard \
+                             deviation: {}\n-1sd: {}\n-2sd: {}\npercentile 1: {}\npercentile 5: \
+                             {}\npercentile 10: {}\npercentile 25: {}\npercentile 75: {}",
+                            tq.target,
+                            target,
+                            tq.probing_speed,
+                            tq.probe_stat,
+                            stats.average(),
+                            stats.median(),
+                            stats.minimum(),
+                            stats.maximum(),
+                            stats.variance(),
+                            stats.standard_deviation(),
+                            (stats.average() - stats.standard_deviation()),
+                            (stats.average() - (stats.standard_deviation() * 2.0)),
+                            stats.percentile(1),
+                            stats.percentile(5),
+                            stats.percentile(10),
+                            stats.percentile(25),
+                            stats.percentile(75)
+                        );
+
+                        match tq.probe_stat {
+                            ProbeStat::Average => stats.average(),
+                            ProbeStat::Median => stats.median(),
+                            ProbeStat::StandardDeviation1 => {
+                                stats.average() - stats.standard_deviation()
+                            },
+                            ProbeStat::StandardDeviation2 => {
+                                stats.average() - (stats.standard_deviation() * 2.0)
+                            },
+                            ProbeStat::P1 => stats.percentile(1),
+                            ProbeStat::P5 => stats.percentile(5),
+                            ProbeStat::P10 => stats.percentile(10),
+                            ProbeStat::P25 => stats.percentile(25),
+                            ProbeStat::P75 => stats.percentile(75),
+                        }
                     } else {
-                    let fl_path = tq.xpsnr_probe(chunk, target).unwrap();
-                    read_weighted_xpsnr(fl_path, METRIC_PERCENTILE).unwrap()
+                        let fl_path = tq.xpsnr_probe(chunk, target).unwrap();
+                        read_weighted_xpsnr(fl_path, METRIC_PERCENTILE).unwrap()
                     }
                 },
             }
@@ -254,6 +371,7 @@ impl TargetQuality {
             q,
             self.pix_format,
             self.probing_rate,
+            self.probing_speed,
             vmaf_threads,
             self.video_params.clone(),
             self.probe_slow,
