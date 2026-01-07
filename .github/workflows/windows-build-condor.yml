@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - 'condor'
+  workflow_dispatch:
 
 permissions:
   contents: write
