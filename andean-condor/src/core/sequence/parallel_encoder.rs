@@ -119,7 +119,7 @@ where
         }
 
         let scenes_directory = &condor.sequence_config.parallel_encoder()?.scenes_directory;
-        if scenes_directory.exists() {
+        if !scenes_directory.exists() {
             std::fs::create_dir_all(scenes_directory)?;
         }
 
