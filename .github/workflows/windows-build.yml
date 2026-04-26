@@ -13,8 +13,6 @@ jobs:
 
     env:
       CARGO_INCREMENTAL: 0
-      vsynth_ver: "R73"
-      vsynth_path: "C:/Program Files/Vapoursynth"
       FFMS_LIB_DIR: ${{github.workspace}}\ffms2-5.0-msvc\x64
       FFMS_INCLUDE_DIR: ${{github.workspace}}\ffms2-5.0-msvc\include
 
@@ -25,14 +23,19 @@ jobs:
           # version: 2.16.03
           from-source: false
 
-      - name: VapourSynth installation
-        run: |
-          $tempFile = New-TemporaryFile
-          $uri = 'https://github.com/vapoursynth/vapoursynth/releases/download/VER/VapourSynth64-Portable-VER.zip'.Replace('VER', "$env:vsynth_ver")
-          Invoke-WebRequest "$uri" -OutFile "$tempFile" -TimeoutSec 10
-          Expand-Archive "$tempFile" "$env:vsynth_path"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: 3.14
+          activate-environment: true
 
-      - name: Download and extract deps
+      - name: VapourSynth Python package installation
+        run: |
+          uv pip install vapoursynth==74
+          vapoursynth config
+          "VSSCRIPT_PATH=$(vapoursynth get-vsscript)" >> "$env:GITHUB_ENV"
+
+      - name: FFMS2 installation
         run: |
           curl -L -o ffms2.7z "https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z"
           7z x ffms2.7z

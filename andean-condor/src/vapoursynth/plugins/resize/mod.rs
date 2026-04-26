@@ -3,7 +3,7 @@ use strum::{Display, EnumString, IntoStaticStr};
 
 pub mod bicubic;
 pub mod bilinear;
-// pub mod bob;
+pub mod bob;
 pub mod lanczos;
 pub mod point;
 pub mod spline16;

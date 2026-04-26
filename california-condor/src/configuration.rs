@@ -17,6 +17,15 @@ use andean_condor::{
         output::Output as OutputModel,
         sequence::{
             benchmarker::{BenchmarkerConfig, BenchmarkerConfigHandler},
+            bitrate_optimizer::{BitrateOptimizerConfig, BitrateOptimizerConfigHandler},
+            convex_hull::{ConvexHullConfig, ConvexHullConfigHandler},
+            noise_detector::{NoiseDetectorConfig, NoiseDetectorData, NoiseDetectorDataHandler},
+            noise_scaler::{
+                NoiseScalerConfig,
+                NoiseScalerConfigHandler,
+                NoiseScalerData,
+                NoiseScalerDataHandler,
+            },
             parallel_encoder::{
                 ParallelEncoderConfig,
                 ParallelEncoderConfigHandler,
@@ -31,6 +40,12 @@ use andean_condor::{
                 SceneDetectorDataHandler,
                 ScenecutMethod,
                 DEFAULT_MAX_SCENE_LENGTH_SECONDS,
+            },
+            target_quality::{
+                TargetQualityConfig,
+                TargetQualityConfigHandler,
+                TargetQualityData,
+                TargetQualityDataHandler,
             },
             SequenceConfigHandler,
             SequenceDataHandler,
@@ -54,7 +69,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::info;
 
-use crate::commands::DecoderMethod;
+use crate::{commands::DecoderMethod, utils::hash_path::hash_path};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Configuration {
@@ -64,7 +79,7 @@ pub struct Configuration {
     pub temp:              PathBuf,
     pub input_filters:     Vec<VapourSynthFilter>,
     pub scd_input_filters: Vec<VapourSynthFilter>,
-    // pub tq_input_filters:  Vec<VapourSynthFilter>,
+    pub tq_input_filters:  Vec<VapourSynthFilter>,
 }
 
 impl Configuration {
@@ -72,9 +87,11 @@ impl Configuration {
     pub fn new(
         input: &Path,
         output: &Path,
-        temp: &Path,
+        temp: Option<&Path>,
         vs_args: Option<&[String]>,
     ) -> Result<Self> {
+        let cwd = std::env::current_dir()?;
+        let temp = temp.map_or_else(|| cwd.join(hash_path(input)), PathBuf::from);
         let input_data = Self::new_input_model(input, Some(&DecoderMethod::BestSource), vs_args)?;
         info!("Indexing input...");
         let mut input_instance = Input::from_data(&input_data)?;
@@ -84,7 +101,7 @@ impl Configuration {
         let scenes_directory = temp.join("scenes");
 
         let mut configuration = Self {
-            condor:            CondorModel {
+            condor: CondorModel {
                 input:           input_data,
                 output:          OutputModel {
                     path:       output.to_path_buf(),
@@ -94,7 +111,7 @@ impl Configuration {
                 encoder:         Encoder::default(),
                 scenes:          Vec::new(),
                 sequence_config: CliSequenceConfig {
-                    scene_detection:     SceneDetectorConfig {
+                    scene_detector:     SceneDetectorConfig {
                         input:  None,
                         method: SceneDetectionMethod::AVSceneChange {
                             minimum_length: fps.round() as usize,
@@ -103,20 +120,26 @@ impl Configuration {
                             method:         ScenecutMethod::Standard,
                         },
                     },
-                    benchmarker:         BenchmarkerConfig::default(),
-                    parallel_encoder:    ParallelEncoderConfig::new(&scenes_directory),
-                    scene_concatenation: SceneConcatenatorConfig::new(&scenes_directory),
+                    noise_detector:     None,
+                    noise_scaler:       None,
+                    benchmarker:        BenchmarkerConfig::default(),
+                    parallel_encoder:   ParallelEncoderConfig::new(&scenes_directory),
+                    scene_concatenator: SceneConcatenatorConfig::new(&scenes_directory),
+                    target_quality:     None,
+                    bitrate_optimizer:  BitrateOptimizerConfig::default(),
+                    convex_hull:        ConvexHullConfig::default(),
                 },
             },
-            input:             input.to_path_buf(),
-            temp:              temp.to_path_buf(),
-            input_filters:     Vec::from(&[VapourSynthFilter::Resize {
+            input: input.to_path_buf(),
+            temp,
+            input_filters: Vec::from(&[VapourSynthFilter::Resize {
                 scaler: Some(Scaler::Bicubic),
                 width:  None,
                 height: None,
                 format: Some(FFPixelFormat::YUV420P10LE),
             }]),
             scd_input_filters: Vec::new(),
+            tq_input_filters: Vec::new(),
         };
 
         *configuration.condor.encoder.parameters_mut() = EncoderBase::SVTAV1.default_parameters();
@@ -213,7 +236,8 @@ impl Configuration {
                 InputModel::VapourSynth {
                     path,
                     import_method,
-                    cache_path,
+                    // cache_path, // Cache Path not yet supported
+                    ..
                 } => {
                     const SCRIPT_OUTPUT_INDEX: u8 = 0;
                     const SCRIPT_NODE_NAME: &str = "clip";
@@ -263,9 +287,7 @@ impl Configuration {
                     Input::from_vapoursynth(&script_input_data, None)?
                 },
                 InputModel::VapourSynthScript {
-                    source,
-                    variables,
-                    index,
+                    ..
                 } => Input::from_data(input_data)?,
             }
         };
@@ -282,7 +304,9 @@ impl Configuration {
         let input_model = match decoder {
             Some(DecoderMethod::FFMS2) => InputModel::Video {
                 path:          input.to_path_buf(),
-                import_method: andean_condor::models::input::ImportMethod::FFMS2 {},
+                import_method: andean_condor::models::input::ImportMethod::FFMS2 {
+                    index: None
+                },
             },
             Some(method) => match method {
                 DecoderMethod::FFMS2 => unreachable!(),
@@ -374,25 +398,37 @@ pub struct CliSequenceConfig
 where
     Self: SequenceConfigHandler
         + BenchmarkerConfigHandler
+        + NoiseScalerConfigHandler
+        + TargetQualityConfigHandler
+        + BitrateOptimizerConfigHandler
+        + ConvexHullConfigHandler
         + ParallelEncoderConfigHandler
         + SceneConcatenatorConfigHandler,
 {
-    pub scene_detection:     SceneDetectorConfig,
-    pub benchmarker:         BenchmarkerConfig,
-    pub parallel_encoder:    ParallelEncoderConfig,
-    pub scene_concatenation: SceneConcatenatorConfig,
-    // pub target_quality:  Option<TargetQualityConfig>,
+    pub scene_detector:     SceneDetectorConfig,
+    pub noise_detector:     Option<NoiseDetectorConfig>,
+    pub noise_scaler:       Option<NoiseScalerConfig>,
+    pub benchmarker:        BenchmarkerConfig,
+    pub parallel_encoder:   ParallelEncoderConfig,
+    pub scene_concatenator: SceneConcatenatorConfig,
+    pub target_quality:     Option<TargetQualityConfig>,
+    pub bitrate_optimizer:  BitrateOptimizerConfig,
+    pub convex_hull:        ConvexHullConfig,
 }
 
 impl Default for CliSequenceConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            scene_detection:     SceneDetectorConfig::default(),
-            benchmarker:         BenchmarkerConfig::default(),
-            parallel_encoder:    ParallelEncoderConfig::default(),
-            scene_concatenation: SceneConcatenatorConfig::default(),
-            // target_quality:  None,
+            scene_detector:     SceneDetectorConfig::default(),
+            noise_detector:     None,
+            noise_scaler:       None,
+            benchmarker:        BenchmarkerConfig::default(),
+            parallel_encoder:   ParallelEncoderConfig::default(),
+            scene_concatenator: SceneConcatenatorConfig::default(),
+            target_quality:     None,
+            bitrate_optimizer:  BitrateOptimizerConfig::default(),
+            convex_hull:        ConvexHullConfig::default(),
         }
     }
 }
@@ -410,6 +446,46 @@ impl BenchmarkerConfigHandler for CliSequenceConfig {
     }
 }
 
+impl NoiseScalerConfigHandler for CliSequenceConfig {
+    fn noise_scaler(&self) -> Result<&Option<NoiseScalerConfig>> {
+        Ok(&self.noise_scaler)
+    }
+
+    fn noise_scaler_mut(&mut self) -> Result<&mut Option<NoiseScalerConfig>> {
+        Ok(&mut self.noise_scaler)
+    }
+}
+
+impl TargetQualityConfigHandler for CliSequenceConfig {
+    fn target_quality(&self) -> Result<&Option<TargetQualityConfig>> {
+        Ok(&self.target_quality)
+    }
+
+    fn target_quality_mut(&mut self) -> Result<&mut Option<TargetQualityConfig>> {
+        Ok(&mut self.target_quality)
+    }
+}
+
+impl BitrateOptimizerConfigHandler for CliSequenceConfig {
+    fn bitrate_optimizer(&self) -> Result<&BitrateOptimizerConfig> {
+        Ok(&self.bitrate_optimizer)
+    }
+
+    fn bitrate_optimizer_mut(&mut self) -> Result<&mut BitrateOptimizerConfig> {
+        Ok(&mut self.bitrate_optimizer)
+    }
+}
+
+impl ConvexHullConfigHandler for CliSequenceConfig {
+    fn convex_hull(&self) -> Result<&ConvexHullConfig> {
+        Ok(&self.convex_hull)
+    }
+
+    fn convex_hull_mut(&mut self) -> Result<&mut ConvexHullConfig> {
+        Ok(&mut self.convex_hull)
+    }
+}
+
 impl ParallelEncoderConfigHandler for CliSequenceConfig {
     fn parallel_encoder(&self) -> Result<&ParallelEncoderConfig> {
         Ok(&self.parallel_encoder)
@@ -422,24 +498,30 @@ impl ParallelEncoderConfigHandler for CliSequenceConfig {
 
 impl SceneConcatenatorConfigHandler for CliSequenceConfig {
     fn scene_concatenator(&self) -> Result<&SceneConcatenatorConfig> {
-        Ok(&self.scene_concatenation)
+        Ok(&self.scene_concatenator)
     }
 
     fn scene_concatenator_mut(&mut self) -> Result<&mut SceneConcatenatorConfig> {
-        Ok(&mut self.scene_concatenation)
+        Ok(&mut self.scene_concatenator)
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliSequenceData
 where
-    Self: SequenceDataHandler + SceneDetectorDataHandler + ParallelEncoderDataHandler, /* 
-                                                                                        * + TargetQualityDataHandler
-                                                                                        * + QualityCheckDataHandler, */
+    Self: SequenceDataHandler
+        + SceneDetectorDataHandler
+        + NoiseDetectorDataHandler
+        + NoiseScalerDataHandler
+        + ParallelEncoderDataHandler
+        + TargetQualityDataHandler, // + QualityCheckDataHandler,
 {
     pub scene_detection:  SceneDetectorData,
-    pub parallel_encoder: ParallelEncoderData, /* pub target_quality:  TargetQualityData,
-                                                * pub quality_check:   QualityCheckData, */
+    pub noise_detection:  Option<NoiseDetectorData>,
+    pub noise_scaling:    Option<NoiseScalerData>,
+    pub parallel_encoder: ParallelEncoderData,
+    pub target_quality:   TargetQualityData,
+    // pub quality_check:   QualityCheckData,
 }
 
 impl SequenceDataHandler for CliSequenceData {
@@ -450,22 +532,42 @@ impl Default for CliSequenceData {
     fn default() -> Self {
         Self {
             scene_detection:  SceneDetectorData::default(),
+            noise_detection:  None,
+            noise_scaling:    None,
             parallel_encoder: ParallelEncoderData::default(),
-            // target_quality:  TargetQualityData::default(),
+            target_quality:   TargetQualityData::default(),
             // quality_check:   QualityCheckData::default(),
         }
     }
 }
 
 impl SceneDetectorDataHandler for CliSequenceData {
-    #[inline]
     fn get_scene_detection(&self) -> Result<&SceneDetectorData> {
         Ok(&self.scene_detection)
     }
 
-    #[inline]
     fn get_scene_detection_mut(&mut self) -> Result<&mut SceneDetectorData> {
         Ok(&mut self.scene_detection)
+    }
+}
+
+impl NoiseDetectorDataHandler for CliSequenceData {
+    fn get_noise_detection(&self) -> Result<&Option<NoiseDetectorData>> {
+        Ok(&self.noise_detection)
+    }
+
+    fn get_noise_detection_mut(&mut self) -> Result<&mut Option<NoiseDetectorData>> {
+        Ok(&mut self.noise_detection)
+    }
+}
+
+impl NoiseScalerDataHandler for CliSequenceData {
+    fn get_noise_scaling(&self) -> Result<&Option<NoiseScalerData>> {
+        Ok(&self.noise_scaling)
+    }
+
+    fn get_noise_scaling_mut(&mut self) -> Result<&mut Option<NoiseScalerData>> {
+        Ok(&mut self.noise_scaling)
     }
 }
 
@@ -479,17 +581,15 @@ impl ParallelEncoderDataHandler for CliSequenceData {
     }
 }
 
-// impl TargetQualityDataHandler for DefaultProcessData {
-//     #[inline]
-//     fn get_passes(&self) -> Result<&Vec<QualityPass>> {
-//         Ok(&self.target_quality.passes)
-//     }
+impl TargetQualityDataHandler for CliSequenceData {
+    fn get_target_quality(&self) -> Result<&TargetQualityData> {
+        Ok(&self.target_quality)
+    }
 
-//     #[inline]
-//     fn get_passes_mut(&mut self) -> Result<&mut Vec<QualityPass>> {
-//         Ok(&mut self.target_quality.passes)
-//     }
-// }
+    fn get_target_quality_mut(&mut self) -> Result<&mut TargetQualityData> {
+        Ok(&mut self.target_quality)
+    }
+}
 
 // impl QualityCheckDataHandler for DefaultProcessData {
 //     #[inline]

@@ -1,5 +1,4 @@
 use std::{
-    error::Error,
     path::Path,
     sync::{atomic::AtomicBool, Arc},
 };
@@ -123,7 +122,7 @@ where
 {
     fn condor(&self) -> &Condor<Data, Config>;
     fn condor_mut(&mut self) -> &mut Condor<Data, Config>;
-    fn validate(&mut self) -> Result<((), Vec<Box<dyn Error>>)>;
+    fn validate(&mut self) -> Result<((), SequenceWarnings)>;
     fn load(save_file_path: &Path) -> Result<Option<CondorModel<Data, Config>>>;
     fn process_one(
         &mut self,
@@ -261,7 +260,7 @@ impl AndeanCondor<DefaultSequenceData, DefaultSequenceConfig>
     }
 
     #[inline]
-    fn validate(&mut self) -> Result<((), Vec<Box<dyn Error>>)> {
+    fn validate(&mut self) -> Result<((), SequenceWarnings)> {
         let mut warnings = vec![];
         // Validate inputs, outputs, encoders, scenes, and processors
 
@@ -284,7 +283,7 @@ impl AndeanCondor<DefaultSequenceData, DefaultSequenceConfig>
     }
 }
 
-pub type SequenceWarnings = Vec<Box<dyn Error>>;
+pub type SequenceWarnings = Vec<anyhow::Error>;
 pub type SequenceWarningsTuple = (SequenceWarnings, SequenceWarnings, SequenceWarnings);
 
 pub struct SequenceProgressEvent {
@@ -315,9 +314,9 @@ mod tests {
             input::Input,
             output::Output,
             sequence::{
+                bitrate_optimizer::BitrateOptimizer,
+                noise_detector::NoiseDetector,
                 parallel_encoder::ParallelEncoder,
-                quality_check::QualityCheck,
-                scene_concatenator::SceneConcatenator,
                 scene_detector::SceneDetector,
                 target_quality::TargetQuality,
                 Sequence,
@@ -342,19 +341,18 @@ mod tests {
             output::Output as OutputModel,
             scene::Scene,
             sequence::{
+                bitrate_optimizer::BitrateOptimizerConfig,
+                noise_detector::NoiseDetectorConfig,
                 parallel_encoder::ParallelEncoderConfig,
                 scene_concatenator::{ConcatMethod, SceneConcatenatorConfig},
                 scene_detector::SceneDetectorConfig,
+                target_quality::{types::InterpolationMethod, TargetQualityConfig},
                 DefaultSequenceConfig,
                 DefaultSequenceData,
             },
         },
         vapoursynth::{
-            plugins::{
-                dgdecodenv::DGSource,
-                rescale::{ArtCNNModel, BorderHandling, Doubler, RescaleBuilder, VSJETKernel},
-                resize::bilinear::Bilinear,
-            },
+            plugins::{dgdecodenv::DGSource, resize::bilinear::Bilinear},
             script_builder::{script::VapourSynthScript, VapourSynthPluginScript},
         },
     };
@@ -370,7 +368,7 @@ mod tests {
         };
         let mut scd_script = VapourSynthScript::default();
         let scd_script = {
-            let (_import_lines, dg_lines) = DGSource::new(&PathBuf::from("C:/Condor/OP.dgi"))
+            let (_import_lines, dg_lines) = DGSource::new(&PathBuf::from("C:/Condor/sample.dgi"))
                 .generate_script("clip".to_owned())
                 .expect("generated script");
             let (_import_lines, bilinear_lines) = Bilinear {
@@ -449,34 +447,52 @@ mod tests {
 
         let scd = SceneDetector::with_input(scd_input, None).expect("Scene Detector is correct");
         let scd_method = scd.method;
+        let nd_input = InputModel::VapourSynthScript {
+            source:    VapourSynthScriptSource::Path(PathBuf::from(
+                "C:/Users/ichig/Documents/Projects/vsc/src/local/Tools/Ssimulacra/noise_detector.\
+                 vpy",
+            )),
+            variables: {
+                let mut hm = HashMap::new();
+                hm.insert("AV1AN_SOURCE".to_owned(), "C:/Condor/sample.mkv".to_owned());
+                hm.insert("AV1AN_CHUNK_METHOD".to_owned(), "dgdecnv".to_owned());
+                hm
+            },
+            index:     0,
+        };
         let sequences: Vec<Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>> = vec![
             Box::new(scd) as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
-            Box::new(TargetQuality::default())
-                as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
-            Box::new(ParallelEncoder::default())
-                as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
-            Box::new(SceneConcatenator::default())
-                as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
-            Box::new(QualityCheck::default())
-                as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
+            Box::new(NoiseDetector {
+                input: Some(Input::from_vapoursynth(&nd_input, None).expect("Input exists")),
+            }) as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
+            // Box::new(TargetQuality::default())
+            //     as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
+            // Box::new(BitrateOptimizer {})
+            //     as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
+            // Box::new(ParallelEncoder::default())
+            //     as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
+            // Box::new(SceneConcatenator::default())
+            //     as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
+            // Box::new(QualityCheck::default())
+            //     as Box<dyn Sequence<DefaultSequenceData, DefaultSequenceConfig>>,
         ];
 
         let scenes = {
             let ranges = [
-                (0, 270),
-                (270, 578),
-                (578, 767),
-                (767, 952),
-                (952, 1306),
-                (1306, 1366),
-                (1366, 1579),
-                (1579, 1802),
-                (1802, 1826),
-                (1826, 1899),
-                (1899, 1927),
-                (1927, 2011),
-                (2011, 2072),
-                (2072, 2162),
+                // (0, 270),
+                // (270, 578),
+                // (578, 767),
+                // (767, 952),
+                // (952, 1306),
+                // (1306, 1366),
+                // (1366, 1579),
+                // (1579, 1802),
+                // (1802, 1826),
+                // (1826, 1899),
+                // (1899, 1927),
+                // (1927, 2011),
+                // (2011, 2072),
+                // (2072, 2162),
             ];
             let mut scenes: Vec<Scene<DefaultSequenceData>> = vec![];
             for (index, (start, end)) in ranges.iter().enumerate() {
@@ -515,11 +531,15 @@ mod tests {
                 Ok(())
             }),
             sequence_config: DefaultSequenceConfig {
-                scene_detector: SceneDetectorConfig {
+                scene_detector:     SceneDetectorConfig {
                     input:  Some(scd_input_data),
                     method: scd_method,
                 },
-                parallel_encoder: ParallelEncoderConfig {
+                noise_detector: Some(NoiseDetectorConfig {
+                    input: None,
+                }),
+                noise_scaler: None,
+                parallel_encoder:   ParallelEncoderConfig {
                     workers: Some(2),
                     scenes_directory: scenes_directory.clone(),
                     ..Default::default()
@@ -529,7 +549,32 @@ mod tests {
                     scenes_directory,
                     output: None,
                 },
-                ..Default::default()
+                target_quality:     Some(TargetQualityConfig {
+                    input:           None,
+                    metric_input:    None,
+                    metric:
+                        crate::models::sequence::target_quality::types::QualityMetric::BUTTERAUGLI {
+                            target_range: (0.8, 1.0),
+                            resolution:   None,
+                            threads:      None,
+                            norm:                 None,
+                            intensity_multiplier: None,
+                        },
+                    maximum_probes:  6,
+                    quantizer_range: (8, 60),
+                    interpolators:   (InterpolationMethod::Pchip, InterpolationMethod::Natural),
+                    probing:
+                        crate::models::sequence::target_quality::types::TargetQualityProbing {
+                            statistic:
+                                crate::models::sequence::target_quality::types::ProbeStatistic::Mean,
+                            encoder_options: None,
+                            strategy:
+                                crate::models::sequence::target_quality::types::ProbeStategy::Subset { position: crate::models::sequence::target_quality::types::SubsetProbePosition::Middle, length: crate::models::sequence::target_quality::types::SubsetProbeLength::Frames(11) },
+                        },
+                }),
+                bitrate_optimizer: BitrateOptimizerConfig {
+                    bitrate_sigma_threshold: Some(3),
+                },
             },
         };
 
@@ -644,7 +689,7 @@ mod tests {
         });
 
         let cancelled = Arc::new(AtomicBool::new(false));
-        let cancelled_clone = Arc::clone(&cancelled);
+        // let cancelled_clone = Arc::clone(&cancelled);
         let ct_thread = std::thread::spawn(move || -> anyhow::Result<()> {
             std::thread::sleep(std::time::Duration::from_secs(13));
             // cancelled_clone.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -679,5 +724,4 @@ mod tests {
             }
         }
     }
-
 }

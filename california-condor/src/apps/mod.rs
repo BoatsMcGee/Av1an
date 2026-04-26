@@ -19,6 +19,8 @@ use ratatui::{
 pub mod benchmarker;
 pub mod parallel_encoder;
 pub mod scene_detection;
+pub mod noise_detection;
+pub mod target_quality;
 
 pub type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
 pub type StdOutOrErrTerminal = Terminal<CrosstermBackend<BufWriter<Box<dyn Write + Send>>>>;

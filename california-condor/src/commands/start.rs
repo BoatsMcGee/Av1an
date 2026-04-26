@@ -9,7 +9,19 @@ use andean_condor::{
             VapourSynthImportMethod,
             VapourSynthScriptSource,
         },
-        sequence::scene_concatenator::ConcatMethod,
+        sequence::{
+            scene_concatenator::ConcatMethod,
+            target_quality::{
+                types::{
+                    ProbeStategy,
+                    ProbeStatistic,
+                    QualityMetric,
+                    SubsetProbeLength,
+                    SubsetProbePosition,
+                },
+                TargetQualityConfig,
+            },
+        },
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
@@ -17,12 +29,11 @@ use anyhow::{bail, Result};
 use tracing::{debug, error, trace};
 
 use crate::{
-    commands::DecoderMethod,
+    commands::{DecoderMethod, TargetQualityMetric, TargetQualityProfile},
     configuration::{ConfigError, Configuration},
     utils::parameter_parser::EncoderParamsParser,
     CondorCliError,
     DEFAULT_CONFIG_PATH,
-    DEFAULT_TEMP_PATH,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -31,18 +42,28 @@ pub fn start_handler(
     temp_path: Option<&Path>,
     input_path: Option<&Path>,
     scd_input_path: Option<&Path>,
+    tq_input_path: Option<&Path>,
     output_path: Option<&Path>,
     decoder: Option<&DecoderMethod>,
     filters: Option<&[VapourSynthFilter]>,
     scd_filters: Option<&[VapourSynthFilter]>,
+    tq_filters: Option<&[VapourSynthFilter]>,
     vs_args: Option<&[String]>,
     scd_vs_args: Option<&[String]>,
+    tq_vs_args: Option<&[String]>,
     concat: Option<&ConcatMethod>,
     workers: Option<u8>,
     encoder: Option<&EncoderBase>,
     passes: Option<u8>,
     params: Option<String>,
+    tq_params: Option<String>,
     photon_noise: Option<u32>,
+    chroma_noise: Option<u32>,
+    target_metric: Option<TargetQualityMetric>,
+    target: Option<f64>,
+    minimum_quantizer: Option<u8>,
+    maximum_quantizer: Option<u8>,
+    target_profile: Option<TargetQualityProfile>,
 ) -> Result<(Configuration, PathBuf)> {
     if config_path.is_some_and(|p| !p.exists()) && input_path.is_none() && output_path.is_none() {
         let err = CondorCliError::NoConfigOrInputOrOutput;
@@ -81,18 +102,13 @@ pub fn start_handler(
             debug!("Creating new configuration");
             let input = path_abs::PathAbs::new(input_path)?.as_path().to_path_buf();
             let output = path_abs::PathAbs::new(output_path)?.as_path().to_path_buf();
-            let cwd = std::env::current_dir()?;
-            let temp_path = temp_path.map(|p| p.to_path_buf());
-            let temp =
-                path_abs::PathAbs::new(temp_path.unwrap_or_else(|| cwd.join(DEFAULT_TEMP_PATH)))?
-                    .as_path()
-                    .to_path_buf();
-            Configuration::new(&input, &output, &temp, vs_args)?
+            debug!("TEMP: {temp:?}", temp = temp_path);
+            Configuration::new(&input, &output, temp_path, vs_args)?
         }
     };
 
     if let Some(temp) = temp_path {
-        configuration.temp = path_abs::PathAbs::new(temp)?.as_path().to_path_buf();
+        configuration.temp = temp.to_path_buf();
     }
     if let Some(decoder) = &decoder {
         let existing_input_path = match configuration.condor.input {
@@ -120,7 +136,9 @@ pub fn start_handler(
             DecoderMethod::FFMS2 => {
                 configuration.condor.input = InputModel::Video {
                     path:          existing_input_path,
-                    import_method: ImportMethod::FFMS2 {},
+                    import_method: ImportMethod::FFMS2 {
+                        index: None
+                    },
                 };
             },
             vs_decoders => {
@@ -154,7 +172,7 @@ pub fn start_handler(
         )?;
     }
     if let Some(input) = scd_input_path {
-        configuration.condor.sequence_config.scene_detection.input =
+        configuration.condor.sequence_config.scene_detector.input =
             Some(Configuration::new_input_model(
                 path_abs::PathAbs::new(input)?.as_path(),
                 decoder,
@@ -167,12 +185,15 @@ pub fn start_handler(
     if let Some(filters) = scd_filters {
         configuration.scd_input_filters = filters.to_vec();
     }
+    if let Some(filters) = tq_filters {
+        configuration.tq_input_filters = filters.to_vec();
+    }
     if let Some(output) = output_path {
         let output = path_abs::PathAbs::new(output)?.as_path().to_path_buf();
         configuration.condor.output.path = output;
     }
     if let Some(concat) = concat {
-        configuration.condor.sequence_config.scene_concatenation.method = *concat;
+        configuration.condor.sequence_config.scene_concatenator.method = *concat;
     }
     if let Some(workers) = workers {
         configuration.condor.sequence_config.parallel_encoder.workers = Some(workers);
@@ -180,9 +201,10 @@ pub fn start_handler(
     if let Some(encoder) = encoder {
         let options = encoder.default_parameters();
         let pass = encoder.default_passes();
+        // TODO: Support chroma noise only
         let photon_noise = photon_noise.map(|iso| PhotonNoise {
             iso,
-            chroma_iso: None,
+            chroma_iso: chroma_noise,
             width: None,
             height: None,
             c_y: None,
@@ -242,6 +264,169 @@ pub fn start_handler(
     if let Some(params) = params {
         let parameters = EncoderParamsParser::parse_string(&params);
         configuration.condor.encoder.parameters_mut().extend(parameters);
+    }
+    if let Some(target) = target {
+        if let Some(target_quality) = &mut configuration.condor.sequence_config.target_quality {
+            let target_range = match target_quality.metric {
+                QualityMetric::BUTTERAUGLI {
+                    ..
+                }
+                | QualityMetric::CVVDP {
+                    ..
+                } => (target - 0.1, target + 0.1),
+                _ => (target - 1.0, target + 1.0),
+            };
+
+            target_quality.metric.target_range_mut().0 = target_range.0;
+            target_quality.metric.target_range_mut().1 = target_range.1;
+        } else {
+            // Create a new target quality configuration
+            configuration.condor.sequence_config.target_quality = Some(TargetQualityConfig {
+                metric: match target_metric.as_ref().unwrap_or(&TargetQualityMetric::SSIMULACRA2) {
+                    TargetQualityMetric::VMAF => QualityMetric::VMAF {
+                        target_range: (target - 1.0, target + 1.0),
+                        resolution:   None,
+                        scaler:       String::new(),
+                        filter:       None,
+                        threads:      1,
+                        model:        None,
+                        features:     vec![],
+                    },
+                    TargetQualityMetric::SSIMULACRA2 => QualityMetric::SSIMULACRA2 {
+                        target_range: (target - 1.0, target + 1.0),
+                        resolution:   None,
+                        threads:      None,
+                    },
+                    TargetQualityMetric::BUTTERAUGLI => QualityMetric::BUTTERAUGLI {
+                        target_range:         (target - 0.1, target + 0.1),
+                        resolution:           None,
+                        threads:              None,
+                        intensity_multiplier: None,
+                        norm:                 None,
+                    },
+                    TargetQualityMetric::BUTTERAUGLI3Norm => QualityMetric::BUTTERAUGLI {
+                        target_range:         (target - 0.1, target + 0.1),
+                        resolution:           None,
+                        threads:              None,
+                        intensity_multiplier: None,
+                        norm:                 Some(3),
+                    },
+                    TargetQualityMetric::XPSNR => QualityMetric::XPSNR {
+                        target_range: (target - 1.0, target + 1.0),
+                        resolution:   None,
+                    },
+                    TargetQualityMetric::CVVDP => QualityMetric::CVVDP {
+                        target_range:      (target - 0.1, target + 0.1),
+                        resolution:        None,
+                        display_model:     None,
+                        resize_to_display: None,
+                        disable_temporal:  None,
+                    },
+                },
+                ..Default::default()
+            });
+        }
+    }
+    if let (Some(input), Some(target_quality)) = (
+        tq_input_path,
+        &mut configuration.condor.sequence_config.target_quality,
+    ) {
+        target_quality.input = Some(Configuration::new_input_model(
+            path_abs::PathAbs::new(input)?.as_path(),
+            decoder,
+            tq_vs_args,
+        )?);
+    }
+    if let (Some(metric), Some(target_quality)) = (
+        target_metric,
+        &mut configuration.condor.sequence_config.target_quality,
+    ) {
+        let previous_target = target_quality.metric.target_range();
+        target_quality.metric = match metric {
+            TargetQualityMetric::VMAF => QualityMetric::VMAF {
+                target_range: previous_target,
+                resolution:   None,
+                scaler:       String::new(),
+                filter:       None,
+                threads:      1,
+                model:        None,
+                features:     vec![],
+            },
+            TargetQualityMetric::SSIMULACRA2 => QualityMetric::SSIMULACRA2 {
+                target_range: previous_target,
+                resolution:   None,
+                threads:      None,
+            },
+            TargetQualityMetric::BUTTERAUGLI => QualityMetric::BUTTERAUGLI {
+                target_range:         previous_target,
+                resolution:           None,
+                threads:              None,
+                intensity_multiplier: None,
+                norm:                 None,
+            },
+            TargetQualityMetric::BUTTERAUGLI3Norm => QualityMetric::BUTTERAUGLI {
+                target_range:         previous_target,
+                resolution:           None,
+                threads:              None,
+                intensity_multiplier: None,
+                norm:                 Some(3),
+            },
+            TargetQualityMetric::XPSNR => QualityMetric::XPSNR {
+                target_range: previous_target,
+                resolution:   None,
+            },
+            TargetQualityMetric::CVVDP => QualityMetric::CVVDP {
+                target_range:      previous_target,
+                resolution:        None,
+                display_model:     None,
+                resize_to_display: None,
+                disable_temporal:  None,
+            },
+        };
+    }
+    if let (Some(minimum_quantizer), Some(target_quality)) = (
+        minimum_quantizer,
+        &mut configuration.condor.sequence_config.target_quality,
+    ) {
+        target_quality.quantizer_range.0 = minimum_quantizer as u32;
+    }
+    if let (Some(maximum_quantizer), Some(target_quality)) = (
+        maximum_quantizer,
+        &mut configuration.condor.sequence_config.target_quality,
+    ) {
+        target_quality.quantizer_range.1 = maximum_quantizer as u32;
+    }
+    if let (Some(params), Some(target_quality)) = (
+        tq_params,
+        &mut configuration.condor.sequence_config.target_quality,
+    ) {
+        let parameters = EncoderParamsParser::parse_string(&params);
+        target_quality.probing.encoder_options = Some(parameters);
+    }
+    if let (Some(profile), Some(target_quality)) = (
+        target_profile,
+        &mut configuration.condor.sequence_config.target_quality,
+    ) {
+        match profile {
+            TargetQualityProfile::Fast => {
+                target_quality.probing.strategy = ProbeStategy::Subset {
+                    position: SubsetProbePosition::Middle,
+                    length:   SubsetProbeLength::Frames(11),
+                };
+                target_quality.probing.statistic = ProbeStatistic::Mean;
+            },
+            TargetQualityProfile::Standard => {
+                target_quality.probing.strategy = ProbeStategy::Subset {
+                    position: SubsetProbePosition::Middle,
+                    length:   SubsetProbeLength::Percentage(25.0),
+                };
+                target_quality.probing.statistic = ProbeStatistic::RootMeanSquare;
+            },
+            TargetQualityProfile::Slow => {
+                target_quality.probing.strategy = ProbeStategy::Whole;
+                target_quality.probing.statistic = ProbeStatistic::Percentile(10.0);
+            },
+        }
     }
 
     if !config_already_existed {

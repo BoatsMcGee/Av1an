@@ -29,10 +29,15 @@ pub struct Spline36 {
     pub height:      Option<u32>,
     pub format:      Option<vapoursynth::format::PresetFormat>,
     pub matrix:      Option<MatrixCoefficients>,
+    pub matrix_in:   Option<MatrixCoefficients>,
     pub transfer:    Option<TransferCharacteristics>,
+    pub transfer_in: Option<TransferCharacteristics>,
     pub primaries:   Option<ColorPrimaries>,
+    pub primaries_in: Option<ColorPrimaries>,
     pub range:       Option<Range>,
+    pub range_in:    Option<Range>,
     pub chromaloc:   Option<ChromaLocation>,
+    pub chromaloc_in: Option<ChromaLocation>,
     pub dither_type: Option<DitherType>,
 }
 
@@ -47,10 +52,15 @@ impl PluginFunction for Spline36 {
         ("height", &ValueType::Int),
         ("format", &ValueType::Int),
         ("matrix", &ValueType::Int),
+        ("matrix_in", &ValueType::Int),
         ("transfer", &ValueType::Int),
+        ("transfer_in", &ValueType::Int),
         ("primaries", &ValueType::Int),
+        ("primaries_in", &ValueType::Int),
         ("range", &ValueType::Int),
+        ("range_in", &ValueType::Int),
         ("chromaloc", &ValueType::Int),
+        ("chromaloc_in", &ValueType::Int),
         ("dither", &ValueType::Data),
     ];
 }
@@ -75,10 +85,15 @@ impl Spline36 {
             ("height", self.height.map(|i| i as i64)),
             ("format", self.format.map(|e| e as i64)),
             ("matrix", self.matrix.map(|e| e as i64)),
+            ("matrix_in", self.matrix_in.map(|e| e as i64)),
             ("transfer", self.transfer.map(|e| e as i64)),
+            ("transfer_in", self.transfer_in.map(|e| e as i64)),
             ("primaries", self.primaries.map(|e| e as i64)),
+            ("primaries_in", self.primaries_in.map(|e| e as i64)),
             ("range", self.range.map(|e| e as i64)),
+            ("range_in", self.range_in.map(|e| e as i64)),
             ("chromaloc", self.chromaloc.map(|e| e as i64)),
+            ("chromaloc_in", self.chromaloc_in.map(|e| e as i64)),
         ])?;
         Self::arguments_set(&mut arguments, vec![(
             "dither_type",
@@ -110,20 +125,35 @@ impl VapourSynthPluginScript for Spline36 {
             if let Some(matrix) = self.matrix {
                 write!(&mut line, ", matrix = {}", matrix as i64)?;
             }
+            if let Some(matrix_in) = self.matrix_in {
+                write!(&mut line, ", matrix_in = {}", matrix_in as i64)?;
+            }
             if let Some(transfer) = self.transfer {
                 write!(&mut line, ", transfer = {}", transfer as i64)?;
+            }
+            if let Some(transfer_in) = self.transfer_in {
+                write!(&mut line, ", transfer_in = {}", transfer_in as i64)?;
             }
             if let Some(primaries) = self.primaries {
                 write!(&mut line, ", primaries = {}", primaries as i64)?;
             }
+            if let Some(primaries_in) = self.primaries_in {
+                write!(&mut line, ", primaries_in = {}", primaries_in as i64)?;
+            }
             if let Some(range) = self.range {
                 write!(&mut line, ", range = {}", range as i64)?;
+            }
+            if let Some(range_in) = self.range_in {
+                write!(&mut line, ", range_in = {}", range_in as i64)?;
             }
             if let Some(chromaloc) = self.chromaloc {
                 write!(&mut line, ", chromaloc = {}", chromaloc as i64)?;
             }
+            if let Some(chromaloc_in) = self.chromaloc_in {
+                write!(&mut line, ", chromaloc_in = {}", chromaloc_in as i64)?;
+            }
             if let Some(dither_type) = self.dither_type {
-                write!(&mut line, ", dither_type = {}", dither_type as i64)?;
+                write!(&mut line, ", dither_type = {}", dither_type)?;
             }
             write!(&mut line, ")")?;
             line

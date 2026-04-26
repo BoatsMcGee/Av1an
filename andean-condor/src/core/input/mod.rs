@@ -159,8 +159,10 @@ impl Input {
                     // ImportMethod::FFmpeg {} => {
                     //     unimplemented!();
                     // },
-                    ImportMethod::FFMS2 {} => {
-                        let ffms2_decoder = Ffms2Decoder::new(path)?;
+                    ImportMethod::FFMS2 {
+                        index,
+                    } => {
+                        let ffms2_decoder = Ffms2Decoder::new(path, *index)?;
                         let decoder = Decoder::from_decoder_impl(av_decoders::DecoderImpl::Ffms2(
                             ffms2_decoder,
                         ))?;
@@ -347,10 +349,10 @@ impl Input {
             } => {
                 let mut vs_decoder = match source {
                     VapourSynthScriptSource::Path(path) => {
-                        VapoursynthDecoder::from_file(path, variables.clone())?
+                        VapoursynthDecoder::from_file(path, variables.clone(), Some(*index))?
                     },
                     VapourSynthScriptSource::Text(script) => {
-                        VapoursynthDecoder::from_script(script, variables.clone())?
+                        VapoursynthDecoder::from_script(script, variables.clone(), Some(*index))?
                     },
                 };
                 if let Some(node_modifier) = modify_node {
@@ -618,6 +620,7 @@ impl Input {
                     cursor.write_all(&framedata)?;
                     frame_sender.send(cursor)?;
                 }
+                drop(frame_sender);
             },
             Input::VapourSynth {
                 decoder, ..
@@ -682,6 +685,7 @@ impl Input {
 
                     frame_sender.send(Cursor::new(framedata))?;
                 }
+                drop(frame_sender);
             },
         }
 

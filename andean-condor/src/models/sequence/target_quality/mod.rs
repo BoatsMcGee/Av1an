@@ -27,6 +27,7 @@ where
     pub quantizer_range: (u32, u32),
     pub interpolators:   (InterpolationMethod, InterpolationMethod),
     pub input:           Option<InputModel>,
+    pub metric_input:    Option<InputModel>,
     pub probing:         TargetQualityProbing,
     // Completion is determined by target and max probes, date from final quality pass
 }
@@ -40,6 +41,7 @@ impl Default for TargetQualityConfig {
             quantizer_range: (0, 51),
             interpolators:   (InterpolationMethod::Natural, InterpolationMethod::Pchip),
             input:           None,
+            metric_input:    None,
             probing:         TargetQualityProbing::default(),
         }
     }

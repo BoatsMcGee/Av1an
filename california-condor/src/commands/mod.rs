@@ -15,7 +15,7 @@ use andean_condor::{
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
-use clap::{Parser as ClapParser, Subcommand};
+use clap::{value_parser, Parser as ClapParser, Subcommand};
 use serde::{Deserialize, Serialize};
 use strum::{Display as DisplayMacro, EnumString, IntoStaticStr};
 
@@ -26,6 +26,7 @@ pub mod config;
 pub mod detect_scenes;
 pub mod init;
 pub mod start;
+pub mod target_quality;
 
 #[derive(ClapParser)]
 #[command(
@@ -41,18 +42,33 @@ pub struct CondorCli {
     pub config_file: Option<PathBuf>,
     #[arg(long)]
     pub logs:        Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub verbose:     bool,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum Commands {
     /// Initialize a new configuration.
     Init {
-        input:   PathBuf,
-        output:  PathBuf,
+        input:        PathBuf,
+        output:       PathBuf,
         #[arg(long)]
-        temp:    Option<PathBuf>,
+        temp:         Option<PathBuf>,
         #[arg(long)]
-        vs_args: Option<Vec<String>>,
+        decoder:      Option<DecoderMethod>,
+        #[arg(long)]
+        vs_args:      Option<Vec<String>>,
+        #[arg(long, short('e'))]
+        encoder:      Option<EncoderBase>,
+        #[arg(long)]
+        passes:       Option<u8>,
+        #[arg(long, allow_hyphen_values = true)]
+        params:       Option<String>,
+        #[arg(long)]
+        photon_noise: Option<u32>,
+        #[arg(long)]
+        chroma_noise: Option<u32>,
     },
     /// Configuration management
     Config {
@@ -61,6 +77,8 @@ pub enum Commands {
     },
     /// Detect scenes (Triggers TUI)
     DetectScenes {
+        #[arg(long)]
+        temp:              Option<PathBuf>,
         #[arg(long, short('i'))]
         input:             Option<PathBuf>,
         #[arg(long)]
@@ -95,45 +113,94 @@ pub enum Commands {
         params:     Option<String>,
         /// The minimum speed increase (in percent) required to add an
         /// additional worker. Defaults to 5%.
-        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+        #[arg(long, value_parser = value_parser!(u8).range(0..=100))]
         threshold:  Option<u8>,
         /// The maximum amount of RAM (in megabytes) allowed across all workers
         #[arg(long)]
         max_memory: Option<u32>,
     },
+    /// Calculate the optimum quantizer per scene for a given metric target
+    /// (Triggers TUI)
+    TargetQuality {
+        #[arg(long)]
+        temp:              Option<PathBuf>,
+        #[arg(long, short('i'))]
+        input:             Option<PathBuf>,
+        #[arg(long)]
+        decoder:           Option<DecoderMethod>,
+        #[arg(long)]
+        filters:           Option<Vec<VapourSynthFilter>>,
+        #[arg(long)]
+        vs_args:           Option<Vec<String>>,
+        #[arg(long, allow_hyphen_values = true)]
+        params:            Option<String>,
+        #[arg(long)]
+        metric:            Option<TargetQualityMetric>,
+        #[arg(long)]
+        target:            Option<f64>,
+        #[arg(long("min-q"))]
+        minimum_quantizer: Option<u8>,
+        #[arg(long("max-q"))]
+        maximum_quantizer: Option<u8>,
+        #[arg(long)]
+        profile:           Option<TargetQualityProfile>,
+    },
     /// Start encoding (Triggers TUI)
     Start {
         #[arg(long)]
-        temp:         Option<PathBuf>,
+        temp:              Option<PathBuf>,
         #[arg(long, short('i'))]
-        input:        Option<PathBuf>,
+        input:             Option<PathBuf>,
         #[arg(long)]
-        scd_input:    Option<PathBuf>,
+        scd_input:         Option<PathBuf>,
         #[arg(long)]
-        decoder:      Option<DecoderMethod>,
+        tq_input:          Option<PathBuf>,
         #[arg(long)]
-        filters:      Option<Vec<VapourSynthFilter>>,
+        decoder:           Option<DecoderMethod>,
         #[arg(long)]
-        scd_filters:  Option<Vec<VapourSynthFilter>>,
+        filters:           Option<Vec<VapourSynthFilter>>,
         #[arg(long)]
-        vs_args:      Option<Vec<String>>,
+        scd_filters:       Option<Vec<VapourSynthFilter>>,
         #[arg(long)]
-        scd_vs_args:  Option<Vec<String>>,
+        tq_filters:        Option<Vec<VapourSynthFilter>>,
+        #[arg(long)]
+        vs_args:           Option<Vec<String>>,
+        #[arg(long)]
+        scd_vs_args:       Option<Vec<String>>,
+        #[arg(long)]
+        tq_vs_args:        Option<Vec<String>>,
         #[arg(long, short('o'))]
-        output:       Option<PathBuf>,
+        output:            Option<PathBuf>,
         #[arg(long)]
-        concat:       Option<ConcatMethod>,
+        concat:            Option<ConcatMethod>,
         /// The amount of encoder processes to use at once
         #[arg(long, short('w'))]
-        workers:      Option<u8>,
+        workers:           Option<u8>,
         #[arg(long, short('e'))]
-        encoder:      Option<EncoderBase>,
+        encoder:           Option<EncoderBase>,
         #[arg(long)]
-        passes:       Option<u8>,
+        passes:            Option<u8>,
         #[arg(long, allow_hyphen_values = true)]
-        params:       Option<String>,
+        params:            Option<String>,
+        #[arg(long, allow_hyphen_values = true)]
+        tq_params:         Option<String>,
         #[arg(long)]
-        photon_noise: Option<u32>,
+        photon_noise:      Option<u32>,
+        #[arg(long)]
+        chroma_noise:      Option<u32>,
+        #[arg(long)]
+        target_metric:     Option<TargetQualityMetric>,
+        #[arg(long)]
+        target:            Option<f64>,
+        #[arg(long("min-q"))]
+        minimum_quantizer: Option<u8>,
+        #[arg(long("max-q"))]
+        maximum_quantizer: Option<u8>,
+        #[arg(long)]
+        target_profile:    Option<TargetQualityProfile>,
+        /// Skip Scene Detection. Useful when encoding a subset of scenes.
+        #[arg(long, default_value_t = false)]
+        skip_scd:          bool,
     },
     /// Clean temporary files
     Clean {
@@ -190,4 +257,31 @@ pub enum DecoderMethod {
     DGDecodeNV,
     #[strum(serialize = "ffms2")]
     FFMS2,
+}
+
+#[allow(clippy::upper_case_acronyms)]
+#[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, DisplayMacro)]
+pub enum TargetQualityMetric {
+    #[strum(serialize = "vmaf")]
+    VMAF,
+    #[strum(serialize = "ssimulacra2")]
+    SSIMULACRA2,
+    #[strum(serialize = "butteraugli")]
+    BUTTERAUGLI,
+    #[strum(serialize = "butteraugli-3")]
+    BUTTERAUGLI3Norm,
+    #[strum(serialize = "xpsnr")]
+    XPSNR,
+    #[strum(serialize = "cvvdp")]
+    CVVDP,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, DisplayMacro)]
+pub enum TargetQualityProfile {
+    #[strum(serialize = "fast")]
+    Fast,
+    #[strum(serialize = "standard")]
+    Standard,
+    #[strum(serialize = "slow")]
+    Slow,
 }

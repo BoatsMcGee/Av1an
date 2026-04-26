@@ -6,7 +6,7 @@ use strum::{Display, EnumString, IntoStaticStr};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    plugins::{MetricPluginFunction, PluginFunction},
     script_builder::{
         script::{Imports, Line},
         NodeVariableName,
@@ -25,6 +25,7 @@ pub struct CVVDP {
     pub model_name:          Option<DisplayModel>,
     pub model_config_json:   Option<String>,
     pub resize_to_display:   Option<bool>,
+    pub disable_temporal:    Option<bool>,
     pub distmap:             Option<bool>,
 }
 
@@ -40,6 +41,7 @@ impl PluginFunction for CVVDP {
         ("model_name", &ValueType::Data),
         ("model_config_json", &ValueType::Data),
         ("resizeToDisplay", &ValueType::Int),
+        ("disableTemporal", &ValueType::Int),
     ];
 }
 
@@ -72,6 +74,10 @@ impl CVVDP {
                 "resizeToDisplay",
                 self.resize_to_display.map(|b| if b { 1 } else { 0 }),
             ),
+            (
+                "disableTemporal",
+                self.disable_temporal.map(|b| if b { 1 } else { 0 }),
+            ),
             ("distmap", self.distmap.map(|b| if b { 1 } else { 0 })),
         ])?;
         Self::arguments_set(&mut arguments, vec![
@@ -93,6 +99,10 @@ impl CVVDP {
 
         Ok(node)
     }
+}
+
+impl MetricPluginFunction for CVVDP {
+    const PROPERTY_NAMES: &'static [&'static str] = &["CVVDP", "_CVVDP"];
 }
 
 impl VapourSynthPluginScript for CVVDP {
@@ -122,6 +132,9 @@ impl VapourSynthPluginScript for CVVDP {
                     ", resizeToDisplay = {}",
                     resize_to_display as i64
                 )?;
+            }
+            if let Some(disable_temporal) = self.disable_temporal {
+                write!(&mut line, ", disableTemporal = {}", disable_temporal as i64)?;
             }
             if let Some(distmap) = self.distmap {
                 write!(&mut line, ", distmap = {}", distmap as i64)?;

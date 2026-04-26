@@ -117,7 +117,7 @@ impl EncoderBase {
                 parameters.extend(CLIParameter::new_strings("--", " ", &[("preset", "slow")]));
                 parameters
             },
-            EncoderBase::VVenC => todo!(),
+            EncoderBase::VVenC => HashMap::new(),
             EncoderBase::FFmpeg => HashMap::new(),
         }
     }
@@ -338,7 +338,39 @@ impl EncoderBase {
                     },
                 }
             },
-            EncoderBase::VVenC => todo!(),
+            EncoderBase::VVenC => {
+                let mut parameters = HashMap::new();
+
+                match pass {
+                    (1, 1) => parameters,
+                    (1, passes) => {
+                        parameters.extend(CLIParameter::new_numbers("--", " ", &[(
+                            "passes",
+                            passes as f64,
+                        )]));
+                        parameters.extend(CLIParameter::new_numbers("--", " ", &[("pass", 1.0)]));
+                        parameters.extend(CLIParameter::new_strings("--", " ", &[(
+                            "rcstatsfile",
+                            &format!("{}.json", first_pass_file_name),
+                        )]));
+
+                        parameters
+                    },
+                    (_, passes) => {
+                        parameters.extend(CLIParameter::new_numbers("--", " ", &[(
+                            "passes",
+                            passes as f64,
+                        )]));
+                        parameters.extend(CLIParameter::new_numbers("--", " ", &[("pass", 2.0)]));
+                        parameters.extend(CLIParameter::new_strings("--", " ", &[(
+                            "rcstatsfile",
+                            &format!("{}.json", first_pass_file_name),
+                        )]));
+
+                        parameters
+                    },
+                }
+            },
             EncoderBase::FFmpeg => HashMap::new(),
         }
     }
@@ -349,7 +381,7 @@ impl EncoderBase {
             EncoderBase::AOM | EncoderBase::RAV1E | EncoderBase::VPX | EncoderBase::SVTAV1 => "ivf",
             EncoderBase::X264 => "264",
             EncoderBase::X265 => "hevc",
-            EncoderBase::VVenC => todo!(),
+            EncoderBase::VVenC => "266",
             EncoderBase::FFmpeg => ".mkv",
         }
     }

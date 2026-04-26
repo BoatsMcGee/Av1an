@@ -10,9 +10,14 @@ use andean_condor::{
     core::{
         sequence::{
             benchmarker::Benchmarker,
+            bitrate_optimizer::BitrateOptimizer,
+            convex_hull::ConvexHull,
+            noise_detector::NoiseDetector,
+            noise_scaler::NoiseScaler,
             parallel_encoder::ParallelEncoder,
             scene_concatenator::SceneConcatenator,
             scene_detector::SceneDetector,
+            target_quality::TargetQuality,
             Sequence,
         },
         Condor,
@@ -26,8 +31,10 @@ use tracing::{debug, error, info, warn};
 use crate::{
     apps::{
         benchmarker::BenchmarkerApp,
+        noise_detection::NoiseDetectionApp,
         parallel_encoder::ParallelEncoderApp,
         scene_detection::SceneDetectionApp,
+        target_quality::TargetQualityApp,
         TuiApp,
     },
     configuration::{CliSequenceConfig, CliSequenceData, Configuration},
@@ -43,9 +50,14 @@ pub fn run_scene_detector_tui(
     let initial_frames = condor.scenes.iter().fold(0, |acc, scene| {
         acc + (scene.end_frame - scene.start_frame) as u64
     });
+    let initial_scenes = condor
+        .scenes
+        .iter()
+        .map(|scene| (scene.start_frame as u64, scene.end_frame as u64))
+        .collect::<Vec<_>>();
 
     debug!("Instantiating Scene Detector Input");
-    let (input, clip_info) = if let Some(input) = &condor.sequence_config.scene_detection.input {
+    let (input, clip_info) = if let Some(input) = &condor.sequence_config.scene_detector.input {
         let mut scd_input =
             Configuration::instantiate_input_with_filters(input, scd_input_filters)?;
         let clip_info = scd_input.clip_info()?;
@@ -138,7 +150,7 @@ pub fn run_scene_detector_tui(
 
     let mut scene_detector = SceneDetector {
         input,
-        method: condor.sequence_config.scene_detection.method,
+        method: condor.sequence_config.scene_detector.method,
     };
 
     debug!("Validating Scene Detector"); // Input should alrady be validated but just in case
@@ -161,16 +173,109 @@ pub fn run_scene_detector_tui(
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     thread::spawn(move || -> Result<()> {
         let mut scd_app = SceneDetectionApp::new(
-            // initial_frames, // SCD always starts from the beginning
-            0,
+            initial_frames,
             clip_info.num_frames as u64,
-            Vec::new(),
+            initial_scenes,
             clip_info,
         );
         scd_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
     let (_, processing_warnings) = scene_detector.execute(condor, progress_tx, cancelled)?;
+
+    for warning in processing_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_noise_detector_tui(
+    condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<()> {
+    debug!("Instantiating Noise Detector Input");
+    let Some(noise_detector_config) = &condor.sequence_config.noise_detector else {
+        return Ok(());
+    };
+
+    let (input, clip_info) = if let Some(input) = &noise_detector_config.input {
+        let mut nd_input = Configuration::instantiate_input_with_filters(input, &[])?;
+        let clip_info = nd_input.clip_info()?;
+        (Some(nd_input), clip_info)
+    } else {
+        // let mut pe_input =
+        //     Configuration::instantiate_input_with_filters(&condor.input.as_data(),
+        // input_filters)?; let clip_info = pe_input.clip_info()?;
+        (None, condor.input.clip_info()?)
+    };
+
+    let total_scenes = condor.scenes.len();
+    if condor.scenes.iter().all(|scene| scene.sequence_data.noise_detection.is_some()) {
+        return Ok(());
+    }
+
+    let mut noise_detector = NoiseDetector {
+        input,
+    };
+
+    debug!("Validating Noise Detector"); // Input should alrady be validated but just in case
+    let (_, validation_warnings) = noise_detector.validate(condor)?;
+
+    for warning in validation_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Initializing Noise Detector"); // Input should already be indexed but just in case
+    let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
+    let (_, initialization_warnings) = noise_detector.initialize(condor, init_progress_tx)?;
+
+    for warning in initialization_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Running Noise Detector");
+    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    thread::spawn(move || -> Result<()> {
+        let mut nd_app = NoiseDetectionApp::new(total_scenes as u64, clip_info);
+        nd_app.run(progress_rx, ctrlc_cancelled)?;
+        Ok(())
+    });
+    let (_, processing_warnings) = noise_detector.execute(condor, progress_tx, cancelled)?;
+
+    for warning in processing_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_noise_scaler_tui(
+    condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<()> {
+    let mut noise_scaler = NoiseScaler::default();
+    debug!("Validating Noise Scaler");
+    let (_, validation_warnings) = noise_scaler.validate(condor)?;
+
+    for warning in validation_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Initializing Noise Scaler");
+    let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
+    let (_, initialization_warnings) = noise_scaler.initialize(condor, init_progress_tx)?;
+
+    for warning in initialization_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Running Noise Scaler");
+    let (progress_tx, _progress_rx) = std::sync::mpsc::channel();
+    let (_, processing_warnings) = noise_scaler.execute(condor, progress_tx, cancelled)?;
 
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
@@ -222,24 +327,165 @@ pub fn run_benchmarker_tui(
 }
 
 #[tracing::instrument(skip_all)]
+pub fn run_tq_tui(
+    condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
+    input_filters: &[VapourSynthFilter],
+    cancelled: Arc<AtomicBool>,
+) -> Result<()> {
+    debug!("Instantiating Parallel Encoder Input");
+    let (target_quality_input, clip_info) = if let Some(Some(input)) =
+        &condor.sequence_config.target_quality.as_ref().map(|tq| tq.input.clone())
+    {
+        let mut tq_input = Configuration::instantiate_input_with_filters(input, input_filters)?;
+        let clip_info = tq_input.clip_info()?;
+        (Some(tq_input), clip_info)
+    } else {
+        (None, condor.input.clip_info()?)
+    };
+    let target_quality_metric_input = condor
+        .sequence_config
+        .target_quality
+        .as_ref()
+        .map(|tq| tq.metric_input.clone())
+        .and_then(|input| {
+            input.map(|input| {
+                Configuration::instantiate_input_with_filters(&input, input_filters).ok()
+            })
+        })
+        .flatten();
+
+    let mut target_quality = TargetQuality::new(target_quality_input, target_quality_metric_input);
+
+    debug!("Validating Target Quality"); // Input should alrady be validated but just in case
+    let (_, validation_warnings) = target_quality.validate(condor)?;
+
+    for warning in validation_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Initializing Target Quality"); // Input should already be indexed but just in case
+    let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
+    let (_, initialization_warnings) = target_quality.initialize(condor, init_progress_tx)?;
+
+    for warning in initialization_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Running Target Quality");
+    let mut encoder = condor.encoder.clone();
+    if let Some(target_quality_encoder_options) = condor
+        .sequence_config
+        .target_quality
+        .as_ref()
+        .map(|tq| tq.probing.clone())
+        .and_then(|p| p.encoder_options)
+    {
+        encoder.parameters_mut().clear();
+        encoder.parameters_mut().extend(target_quality_encoder_options);
+    }
+    let initial_scenes = condor.scenes.clone();
+    let probe_statistic = condor
+        .sequence_config
+        .target_quality
+        .as_ref()
+        .expect("target_quality is required")
+        .probing
+        .statistic;
+    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    thread::spawn(move || -> Result<()> {
+        let mut tq_app = TargetQualityApp::new(clip_info, initial_scenes, encoder, probe_statistic);
+        tq_app.run(progress_rx, ctrlc_cancelled)?;
+        Ok(())
+    });
+    let (_, processing_warnings) = target_quality.execute(condor, progress_tx, cancelled)?;
+
+    for warning in processing_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_bitrate_optimizer_tui(
+    condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<()> {
+    let mut bitrate_optimizer = BitrateOptimizer::default();
+    debug!("Validating Bitrate Optimizer");
+    let (_, validation_warnings) = bitrate_optimizer.validate(condor)?;
+
+    for warning in validation_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Initializing Bitrate Optimizer");
+    let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
+    let (_, initialization_warnings) = bitrate_optimizer.initialize(condor, init_progress_tx)?;
+
+    for warning in initialization_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Running Bitrate Optimizer");
+    let (progress_tx, _progress_rx) = std::sync::mpsc::channel();
+    let (_, processing_warnings) = bitrate_optimizer.execute(condor, progress_tx, cancelled)?;
+
+    for warning in processing_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_convex_hull_tui(
+    condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
+    cancelled: Arc<AtomicBool>,
+) -> Result<()> {
+    let mut convex_hull = ConvexHull::default();
+    debug!("Validating Convex Hull");
+    let (_, validation_warnings) = convex_hull.validate(condor)?;
+
+    for warning in validation_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Initializing Convex Hull");
+    let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
+    let (_, initialization_warnings) = convex_hull.initialize(condor, init_progress_tx)?;
+
+    for warning in initialization_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Running Convex Hull");
+    let (progress_tx, _progress_rx) = std::sync::mpsc::channel();
+    let (_, processing_warnings) = convex_hull.execute(condor, progress_tx, cancelled)?;
+
+    for warning in processing_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
 pub fn run_parallel_encoder_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
     input_filters: &[VapourSynthFilter],
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
     debug!("Instantiating Parallel Encoder Input");
-    let (parallel_encoder_input, clip_info) = if let Some(input) =
-        &condor.sequence_config.parallel_encoder.input
-    {
-        let mut pe_input = Configuration::instantiate_input_with_filters(input, input_filters)?;
-        let clip_info = pe_input.clip_info()?;
-        (Some(pe_input), clip_info)
-    } else {
-        let mut pe_input =
-            Configuration::instantiate_input_with_filters(&condor.input.as_data(), input_filters)?;
-        let clip_info = pe_input.clip_info()?;
-        (Some(pe_input), clip_info)
-    };
+    let (parallel_encoder_input, clip_info) =
+        if let Some(input) = &condor.sequence_config.parallel_encoder.input {
+            let mut pe_input = Configuration::instantiate_input_with_filters(input, input_filters)?;
+            let clip_info = pe_input.clip_info()?;
+            (Some(pe_input), clip_info)
+        } else {
+            (None, condor.input.clip_info()?)
+        };
 
     let workers = condor.sequence_config.parallel_encoder.workers.unwrap_or(1);
     let mut parallel_encoder = ParallelEncoder::new(parallel_encoder_input);

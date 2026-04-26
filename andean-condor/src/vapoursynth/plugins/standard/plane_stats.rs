@@ -4,7 +4,7 @@ use anyhow::Result;
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    plugins::{MetricPluginFunction, PluginFunction},
     script_builder::{
         script::{Imports, Line},
         NodeVariableName,
@@ -80,6 +80,10 @@ impl PlaneStats {
 
         Ok(node)
     }
+}
+
+impl MetricPluginFunction for PlaneStats {
+    const PROPERTY_NAMES: &'static [&'static str] = &["PlaneStatsDiff", "PlaneStatsAverage"];
 }
 
 impl VapourSynthPluginScript for PlaneStats {

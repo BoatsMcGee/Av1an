@@ -1,6 +1,12 @@
 use anyhow::{bail, Context, Result};
 use av_format::rational::Rational64;
-use vapoursynth::{api::API, node::Node, prelude::Property, video_info::VideoInfo};
+use vapoursynth::{
+    api::API,
+    core::CoreRef,
+    node::Node,
+    prelude::{Environment, Property},
+    video_info::VideoInfo,
+};
 
 use crate::core::input::{clip_info::ClipInfo, pixel_format::PixelFormat};
 
@@ -37,6 +43,26 @@ pub fn get_api() -> anyhow::Result<API, VapourSynthError> {
     API::get().ok_or_else(|| VapourSynthError::Internal {
         message: "Failed to get VapourSynth API".to_owned(),
     })
+}
+
+#[inline]
+pub fn get_environment() -> anyhow::Result<Environment, VapourSynthError> {
+    let env = Environment::new().map_err(|e| VapourSynthError::Internal {
+        message: format!("Failed to get VapourSynth Environment {e}"),
+    })?;
+
+    Ok(env)
+}
+
+#[inline]
+pub fn get_core<'core>(
+    environment: &'core Environment,
+) -> anyhow::Result<CoreRef<'core>, VapourSynthError> {
+    let core = environment.get_core().map_err(|e| VapourSynthError::Internal {
+        message: format!("Failed to get VapourSynth Core {e}"),
+    })?;
+
+    Ok(core)
 }
 
 /// Get the transfer characteristics for a VideoNode

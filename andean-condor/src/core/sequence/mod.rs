@@ -1,7 +1,4 @@
-use std::{
-    error::Error,
-    sync::{atomic::AtomicBool, Arc},
-};
+use std::sync::{atomic::AtomicBool, Arc};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -12,6 +9,10 @@ use crate::{
 };
 
 pub mod benchmarker;
+pub mod bitrate_optimizer;
+pub mod convex_hull;
+pub mod noise_detector;
+pub mod noise_scaler;
 pub mod parallel_encoder;
 pub mod quality_check;
 pub mod scene_concatenator;
@@ -28,20 +29,21 @@ where
     fn validate(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-    ) -> Result<((), Vec<Box<dyn Error>>)>;
+    ) -> Result<((), Vec<anyhow::Error>)>;
     fn initialize(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
-    ) -> Result<((), Vec<Box<dyn Error>>)>;
+    ) -> Result<((), Vec<anyhow::Error>)>;
     fn execute(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
-    ) -> Result<((), Vec<Box<dyn Error>>)>;
+    ) -> Result<((), Vec<anyhow::Error>)>;
 }
 
+#[allow(type_alias_bounds)]
 pub type Sequences<DataHandler, ConfigHandler>
 where
     DataHandler: SequenceDataHandler,
@@ -94,6 +96,12 @@ pub enum SequenceCompletion {
     Frames {
         completed: u64,
         total:     u64,
+    },
+    SceneQuality {
+        index:     u64,
+        quantizer: f64,
+        score:     f64,
+        bitrate:   f64,
     },
     Custom {
         name:      String,

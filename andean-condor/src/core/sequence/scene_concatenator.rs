@@ -1,9 +1,7 @@
-use std::path::Path;
 use std::{
-    error::Error,
     fs::File,
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{self, atomic::AtomicBool, Arc},
 };
@@ -56,7 +54,7 @@ where
     fn validate(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
+    ) -> Result<((), Vec<anyhow::Error>)> {
         let method = condor.sequence_config.scene_concatenator()?.method;
         match method {
             ConcatMethod::MKVMerge => {
@@ -69,7 +67,7 @@ where
                     bail!(SceneConcatenatorError::FFmpegNotInstalled);
                 }
             },
-            ConcatMethod::Ivf => todo!(),
+            ConcatMethod::Ivf => (),
         }
 
         Ok(((), vec![]))
@@ -79,9 +77,9 @@ where
     fn initialize(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-        progress_tx: sync::mpsc::Sender<SequenceStatus>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let mut warnings: Vec<Box<dyn Error>> = vec![];
+        _progress_tx: sync::mpsc::Sender<SequenceStatus>,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let mut warnings = vec![];
 
         let scenes_directory = &condor.sequence_config.scene_concatenator()?.scenes_directory;
         if !scenes_directory.exists() {
@@ -117,9 +115,11 @@ where
             .collect::<Vec<_>>();
 
         if !scene_files.is_empty() {
-            warnings.push(Box::new(SceneConcatenatorError::SceneFilesMissing {
-                scenes: scene_files.iter().map(|(index, _, _)| *index).collect(),
-            }));
+            warnings.push(anyhow::Error::new(
+                SceneConcatenatorError::SceneFilesMissing {
+                    scenes: scene_files.iter().map(|(index, _, _)| *index).collect(),
+                },
+            ));
         }
 
         Ok(((), warnings))
@@ -129,10 +129,10 @@ where
     fn execute(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-        progress_tx: sync::mpsc::Sender<SequenceStatus>,
-        cancelled: Arc<AtomicBool>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let warnings: Vec<Box<dyn Error>> = vec![];
+        _progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        _cancelled: Arc<AtomicBool>,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let warnings = vec![];
 
         let framerate = condor.input.clip_info()?.frame_rate;
         let input_path = {
@@ -199,7 +199,11 @@ impl SceneConcatenator {
         input: Option<&Path>,
         duration: Ratio<i64>,
     ) -> Result<()> {
-        const MAXIMUM_CHUNKS_PER_MERGE: usize = 100;
+        #[cfg(windows)]
+        const MAXIMUM_CHUNKS_PER_MERGE: usize = usize::MAX;
+        #[cfg(not(windows))]
+        const MAXIMUM_CHUNKS_PER_MERGE: usize = 512;
+
         // mkvmerge does not accept UNC paths on Windows
         #[cfg(windows)]
         fn fix_path<P: AsRef<Path>>(p: P) -> String {
@@ -221,6 +225,10 @@ impl SceneConcatenator {
         }
 
         let scratch_directory = Self::scratch_directory(scenes_directory);
+        if !scratch_directory.exists() {
+            std::fs::create_dir_all(&scratch_directory)?;
+        }
+        let options_path = scratch_directory.join("options.json");
         let fixed_output = fix_path(output);
         let fixed_input = input.map(fix_path);
 
@@ -229,50 +237,59 @@ impl SceneConcatenator {
             .map(|chunk| chunk.to_vec())
             .collect();
 
-        for (group_index, chunk_group) in chunk_groups.iter().enumerate() {
-            let group_options_path = scratch_directory.join(format!("{group_index:05}.json"));
-            let group_output_path = scratch_directory.join(format!("{group_index:05}.mkv"));
-            let group_output_path = fix_path(&group_output_path);
-
-            let group_options = MKVMergeOptions::new(
-                &group_output_path,
-                &chunk_group.iter().map(fix_path).collect::<Vec<_>>(),
-                None,
-                None,
+        if chunk_groups.len() == 1 {
+            // Intermediate groups are unnecessary
+            let options = MKVMergeOptions::new(
+                &fixed_output,
+                &scene_paths.iter().map(fix_path).collect::<Vec<_>>(),
+                fixed_input.as_deref(),
+                Some(duration),
             );
-            group_options.write_to_disk(&group_options_path)?;
+            options.write_to_disk(&options_path)?;
+        } else {
+            for (group_index, chunk_group) in chunk_groups.iter().enumerate() {
+                let group_options_path = scratch_directory.join(format!("{group_index:05}.json"));
+                let group_output_path =
+                    fix_path(scratch_directory.join(format!("{group_index:05}.mkv")));
 
-            let mut group_cmd = Command::new("mkvmerge");
-            group_cmd.current_dir(scenes_directory);
-            group_cmd.arg(format!("@./Scene Concatenator/{group_index:05}.json"));
+                let group_options = MKVMergeOptions::new(
+                    &group_output_path,
+                    &chunk_group.iter().map(fix_path).collect::<Vec<_>>(),
+                    None,
+                    None,
+                );
+                group_options.write_to_disk(&group_options_path)?;
 
-            let group_out =
-                group_cmd.output().with_context(|| "Failed to concatenate with mkvmerge")?;
+                let mut group_cmd = Command::new("mkvmerge");
+                group_cmd.current_dir(scenes_directory);
+                group_cmd.arg(format!("@./Scene Concatenator/{group_index:05}.json"));
 
-            if !group_out.status.success() {
-                bail!(SceneConcatenatorError::MkvmergeFailed {
-                    status: group_out.status,
-                });
+                let group_out =
+                    group_cmd.output().with_context(|| "Failed to concatenate with mkvmerge")?;
+
+                if !group_out.status.success() {
+                    bail!(SceneConcatenatorError::MkvmergeFailed {
+                        status: group_out.status,
+                    });
+                }
             }
+
+            let chunk_group_options_names = chunk_groups
+                .iter()
+                .enumerate()
+                .map(|(index, _)| format!("{index:05}.mkv"))
+                .collect::<Vec<_>>();
+            let options = MKVMergeOptions::new(
+                &fixed_output,
+                &chunk_group_options_names,
+                fixed_input.as_deref(),
+                Some(duration),
+            );
+            options.write_to_disk(&options_path)?;
         }
 
-        let options_path = scratch_directory.join("options.json");
-        let chunk_group_options_names = chunk_groups
-            .iter()
-            .enumerate()
-            .map(|(index, _)| format!("{index:05}.mkv"))
-            .collect::<Vec<_>>();
-        let options = MKVMergeOptions::new(
-            &fixed_output,
-            &chunk_group_options_names,
-            fixed_input.as_deref(),
-            Some(duration),
-        );
-        options.write_to_disk(&options_path)?;
-
         let mut cmd = Command::new("mkvmerge");
-        cmd.current_dir(&scratch_directory);
-        cmd.arg("@./options.json");
+        cmd.arg(format!("@{}", fix_path(options_path)));
         let out = cmd.output().with_context(|| "Failed to concatenate with mkvmerge")?;
 
         if !out.status.success() {

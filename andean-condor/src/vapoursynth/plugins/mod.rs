@@ -1,3 +1,5 @@
+use std::sync::{mpsc::Sender, Arc, Condvar, Mutex};
+
 use anyhow::Result;
 use itertools::Itertools;
 use vapoursynth::{
@@ -7,12 +9,17 @@ use vapoursynth::{
     plugin::Plugin,
 };
 
-use crate::vapoursynth::{get_api, VapourSynthError};
+use crate::{
+    core::sequence::{SequenceStatus, Status},
+    utils::semaphore::Semaphore,
+    vapoursynth::{get_api, VapourSynthError},
+};
 
 pub mod bestsource;
 pub mod dgdecodenv;
 pub mod ffms2;
 // pub mod julek;
+pub mod bm3d;
 pub mod lsmash;
 pub mod rescale;
 pub mod resize;
@@ -48,6 +55,11 @@ pub trait PluginFunction {
                 message: "Failed to load plugin".to_string(),
             })?;
         Ok(plugin)
+    }
+
+    #[inline]
+    fn plugin_is_installed<'core>(core: CoreRef<'core>) -> bool {
+        Self::plugin(core).is_ok()
     }
 
     #[inline]
@@ -315,5 +327,105 @@ pub trait PluginFunction {
             })?;
 
         Ok(node)
+    }
+}
+
+pub trait MetricPluginFunction: PluginFunction {
+    const PROPERTY_NAMES: &'static [&'static str];
+
+    #[inline]
+    fn get_scores<'core>(
+        node: &Node<'core>,
+        property_names: Option<&[&str]>,
+        progress_tx: Sender<SequenceStatus>,
+    ) -> Result<Vec<f64>, VapourSynthError> {
+        let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
+            id:         Self::FUNCTION_NAME.to_owned(),
+            completion: crate::core::sequence::SequenceCompletion::Frames {
+                completed: 0,
+                total:     node.info().num_frames as u64,
+            },
+        }));
+
+        let total_frames = node.info().num_frames;
+        let scores = Arc::new((Mutex::new(vec![0.0; total_frames]), Condvar::new()));
+        let frame_semaphore = Arc::new(Semaphore::new(12));
+        let state = Arc::new((Mutex::new(0usize), Condvar::new()));
+
+        // Send progress in the same order as original frames
+        let frame_waiter = {
+            let state = Arc::clone(&state);
+
+            std::thread::spawn(move || {
+                for index in 0..total_frames {
+                    let (lock, condvar) = &*state;
+                    let mut completed = lock.lock().expect("mutex should acquire lock");
+                    while *completed <= index {
+                        completed = condvar
+                            .wait_while(completed, |c| *c <= index)
+                            .expect("Condvar should be notified");
+                    }
+                    drop(completed);
+
+                    let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                        id:         Self::FUNCTION_NAME.to_owned(),
+                        completion: crate::core::sequence::SequenceCompletion::Frames {
+                            completed: (index + 1) as u64,
+                            total:     total_frames as u64,
+                        },
+                    }));
+                }
+
+                let _ = progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                    id: Self::FUNCTION_NAME.to_owned(),
+                }));
+            })
+        };
+
+        // Request all frames asynchronously (up to 12 concurrent)
+        for index in 0..total_frames {
+            frame_semaphore.acquire();
+            let scores_clone = Arc::clone(&scores);
+            let state_clone = Arc::clone(&state);
+            let frame_semaphore_clone = Arc::clone(&frame_semaphore);
+
+            node.get_frame_async(index, move |frame, _idx, _node| {
+                let frame = frame.expect("Failed to get frame");
+                let mut score = None;
+                for &property_name in property_names.unwrap_or(Self::PROPERTY_NAMES) {
+                    if let Ok(s) = frame.props().get_float(property_name) {
+                        score = Some(s);
+                        break;
+                    }
+                }
+                let score = score.unwrap_or_else(|| {
+                    panic!(
+                        "Score not found on any of the following properties: {:?}",
+                        Self::PROPERTY_NAMES.iter().join(", ")
+                    )
+                });
+
+                let (scores_lock, _condvar) = &*scores_clone;
+                let mut scores_vec = scores_lock.lock().expect("scores mutex should acquire lock");
+                scores_vec[index] = score;
+                drop(scores_vec);
+
+                let (lock, condvar) = &*state_clone;
+                let mut completed = lock.lock().expect("mutex should acquire lock");
+                *completed += 1;
+                drop(completed);
+                condvar.notify_one();
+                frame_semaphore_clone.release();
+            });
+        }
+
+        frame_waiter.join().map_err(|_| VapourSynthError::PluginFunctionError {
+            plugin:   Self::PLUGIN_ID.to_owned(),
+            function: Self::FUNCTION_NAME.to_owned(),
+            message:  "Failed to get scores".to_owned(),
+        })?;
+        let (lock, _) = &*scores;
+        let scores_vec = lock.lock().expect("scores mutex should acquire lock");
+        Ok(scores_vec.clone())
     }
 }

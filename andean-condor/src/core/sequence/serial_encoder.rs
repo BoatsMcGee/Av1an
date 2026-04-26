@@ -1,5 +1,4 @@
 use std::{
-    error::Error,
     io::Cursor,
     path::{Path, PathBuf},
     sync::{self, atomic::AtomicBool, Arc, Mutex},
@@ -53,8 +52,8 @@ where
     fn validate(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let warnings: Vec<Box<dyn Error>> = vec![];
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let warnings = vec![];
 
         let encoder = self.encoder.as_ref().map_or(&condor.encoder, |e| e);
         if let Some(input) = &self.input {
@@ -77,13 +76,13 @@ where
     fn initialize(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-        progress_tx: sync::mpsc::Sender<SequenceStatus>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let mut warnings: Vec<Box<dyn Error>> = vec![];
+        _progress_tx: sync::mpsc::Sender<SequenceStatus>,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let mut warnings = vec![];
 
         // Ensure scenes is not empty
         if condor.scenes.is_empty() {
-            warnings.push(Box::new(SerialEncoderError::NoScenes));
+            warnings.push(anyhow::Error::new(SerialEncoderError::NoScenes));
         }
         // let encoder = self.encoder.as_ref().map_or(&condor.encoder, |e| e);
         if let Some(input) = &mut self.input {
@@ -104,12 +103,12 @@ where
     fn execute(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-        progress_tx: sync::mpsc::Sender<SequenceStatus>,
-        cancelled: Arc<AtomicBool>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let mut warnings: Vec<Box<dyn Error>> = vec![];
+        _progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        _cancelled: Arc<AtomicBool>,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let mut warnings = vec![];
         if condor.scenes.is_empty() {
-            warnings.push(Box::new(SerialEncoderError::NoScenes));
+            warnings.push(anyhow::Error::new(SerialEncoderError::NoScenes));
             return Ok(((), warnings));
         }
         let encoder = self.encoder.as_ref().map_or(&condor.encoder, |e| e);

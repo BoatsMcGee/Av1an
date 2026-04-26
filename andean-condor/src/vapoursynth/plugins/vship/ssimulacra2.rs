@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    plugins::{MetricPluginFunction, PluginFunction},
     script_builder::{
         script::{Imports, Line},
         NodeVariableName,
@@ -65,6 +65,10 @@ impl SSIMULACRA2 {
 
         Ok(node)
     }
+}
+
+impl MetricPluginFunction for SSIMULACRA2 {
+    const PROPERTY_NAMES: &'static [&'static str] = &["SSIMULACRA2", "_SSIMULACRA2"];
 }
 
 impl VapourSynthPluginScript for SSIMULACRA2 {

@@ -265,6 +265,30 @@ pub fn parse_x26x_frames(s: &str) -> Option<u64> {
         .and_then(|s| s.parse().ok())
 }
 
+#[inline]
+pub fn parse_vvc_frames(s: &str) -> Option<u64> {
+    // vvenc [info]: stats:  frame=   60 fps=   2.9 avg_fps=   2.9 bitrate= 29173.77
+    // kbps avg_bitrate= 29173.77 kbps elapsed= 0
+    const VVENC_PREFIX: &str = "vvenc [info]: stats:  frame=";
+    if !s.starts_with(VVENC_PREFIX) {
+        return None;
+    }
+
+    s.split_ascii_whitespace().nth(5).and_then(|s| s.parse().ok())
+}
+
+#[inline]
+pub fn parse_ffmpeg_frames(s: &str) -> Option<u64> {
+    // frame=  332 fps= 58 q=18.1 size=     512KiB time=00:00:13.76 bitrate=
+    // 304.7kbits/s speed=2.42x elapsed=0:00:05.69
+    const FFMPEG_PREFIX: &str = "frame=";
+    if !s.starts_with(FFMPEG_PREFIX) {
+        return None;
+    }
+
+    s.split_ascii_whitespace().nth(1).and_then(|s| s.parse().ok())
+}
+
 fn strip_ansi_escape_sequences(input: &str) -> Cow<'_, str> {
     const ESC: char = '\x1b';
 

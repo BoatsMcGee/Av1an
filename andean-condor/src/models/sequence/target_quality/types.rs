@@ -1,12 +1,19 @@
-use std::{collections::HashMap, path::PathBuf, thread::available_parallelism};
+use std::{collections::HashMap, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
-use crate::models::encoder::cli_parameter::CLIParameter;
+use crate::{
+    models::encoder::cli_parameter::CLIParameter,
+    vapoursynth::plugins::vship::cvvdp::DisplayModel,
+};
 
 pub static DEFAULT_MAXIMUM_PROBES: u8 = 4;
 pub static DEFAULT_VMAF_TARGET_RANGE: (f64, f64) = (94.0, 96.0);
+pub static DEFAULT_SSIMULACRA2_TARGET_RANGE: (f64, f64) = (74.0, 76.0);
+pub static DEFAULT_BUTTERAUGLI_TARGET_RANGE: (f64, f64) = (0.8, 1.2);
+pub static DEFAULT_XPSNR_TARGET_RANGE: (f64, f64) = (44.0, 46.0);
+pub static DEFAULT_CVVDP_TARGET_RANGE: (f64, f64) = (9.4, 9.6);
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, IntoStaticStr,
@@ -63,27 +70,28 @@ pub enum QualityMetric {
         resolution:           Option<(u32, u32)>,
         threads:              Option<u8>,
         intensity_multiplier: Option<f64>,
+        norm:                 Option<u8>,
     },
     XPSNR {
         target_range: (f64, f64),
         resolution:   Option<(u32, u32)>,
-        threads:      Option<u8>,
+    },
+    CVVDP {
+        target_range:      (f64, f64),
+        resolution:        Option<(u32, u32)>,
+        display_model:     Option<DisplayModel>,
+        resize_to_display: Option<bool>,
+        disable_temporal:  Option<bool>,
     },
 }
 
 impl Default for QualityMetric {
     #[inline]
     fn default() -> Self {
-        QualityMetric::VMAF {
-            target_range: DEFAULT_VMAF_TARGET_RANGE,
+        Self::SSIMULACRA2 {
+            target_range: DEFAULT_SSIMULACRA2_TARGET_RANGE,
             resolution:   None,
-            scaler:       String::from("bicubic"),
-            filter:       None,
-            threads:      available_parallelism()
-                .expect("Unrecoverable. Failed to get thread count")
-                .get(),
-            model:        None,
-            features:     vec![VmafFeature::Default],
+            threads:      None,
         }
     }
 }
@@ -104,6 +112,51 @@ impl QualityMetric {
             QualityMetric::XPSNR {
                 target_range, ..
             } => score >= target_range.0 && score <= target_range.1,
+            QualityMetric::CVVDP {
+                target_range, ..
+            } => score >= target_range.0 && score <= target_range.1,
+        }
+    }
+
+    #[inline]
+    pub fn target_range(&self) -> (f64, f64) {
+        match self {
+            QualityMetric::VMAF {
+                target_range, ..
+            } => *target_range,
+            QualityMetric::SSIMULACRA2 {
+                target_range, ..
+            } => *target_range,
+            QualityMetric::BUTTERAUGLI {
+                target_range, ..
+            } => *target_range,
+            QualityMetric::XPSNR {
+                target_range, ..
+            } => *target_range,
+            QualityMetric::CVVDP {
+                target_range, ..
+            } => *target_range,
+        }
+    }
+
+    #[inline]
+    pub fn target_range_mut(&mut self) -> &mut (f64, f64) {
+        match self {
+            QualityMetric::VMAF {
+                target_range, ..
+            } => target_range,
+            QualityMetric::SSIMULACRA2 {
+                target_range, ..
+            } => target_range,
+            QualityMetric::BUTTERAUGLI {
+                target_range, ..
+            } => target_range,
+            QualityMetric::XPSNR {
+                target_range, ..
+            } => target_range,
+            QualityMetric::CVVDP {
+                target_range, ..
+            } => target_range,
         }
     }
 }
@@ -136,13 +189,15 @@ impl ProbeStategy {
             ProbeStategy::Skip {
                 skip,
             } => (start..end)
-                .filter(|index| (index - start) == 0 || (index - start) % (*skip as usize) == 0)
+                .filter(|index| {
+                    (index - start) == 0 || (index - start).is_multiple_of(*skip as usize)
+                })
                 .collect::<Vec<_>>(),
             ProbeStategy::Subset {
                 position,
                 length,
             } => {
-                let max_length = start - end;
+                let max_length = end - start;
                 let length = match length {
                     SubsetProbeLength::Percentage(percentage) => {
                         (percentage * max_length as f64).round() as usize
@@ -196,7 +251,9 @@ pub enum ProbeStatistic {
     Median,
     Harmonic,
     Percentile(f64),
-    StandardDeviationDistance { sigma: f64 },
+    StandardDeviationDistance {
+        sigma: f64,
+    },
     Mode,
     Minimum,
     Maximum,
@@ -214,21 +271,60 @@ impl ProbeStatistic {
             },
             ProbeStatistic::Median => {
                 let mid = scores.len() / 2;
-                if scores.len() % 2 == 0 {
+                if scores.len().is_multiple_of(2) {
                     f64::midpoint(scores[mid - 1], scores[mid])
                 } else {
                     scores[mid]
                 }
             },
-            ProbeStatistic::Harmonic => todo!(),
-            ProbeStatistic::Percentile(_) => todo!(),
+            ProbeStatistic::Harmonic => {
+                let sum_reciprocals: f64 = scores.iter().map(|&x| 1.0 / x).sum();
+                scores.len() as f64 / sum_reciprocals
+            },
+            ProbeStatistic::Percentile(index) => *scores
+                .get((*index / 100.0 * scores.len() as f64) as usize)
+                .unwrap_or(&scores[0]),
             ProbeStatistic::StandardDeviationDistance {
                 sigma,
-            } => todo!(),
-            ProbeStatistic::Mode => todo!(),
-            ProbeStatistic::Minimum => todo!(),
-            ProbeStatistic::Maximum => todo!(),
-            ProbeStatistic::RootMeanSquare => todo!(),
+            } => {
+                let average = ProbeStatistic::Mean.calculate(&scores);
+                let minimum = ProbeStatistic::Minimum.calculate(&scores);
+                let maximum = ProbeStatistic::Maximum.calculate(&scores);
+                let variance = scores
+                    .iter()
+                    .map(|x| {
+                        let diff = x - average;
+                        diff * diff
+                    })
+                    .sum::<f64>()
+                    / scores.len() as f64;
+                (average + (sigma * variance.sqrt())).clamp(minimum, maximum)
+            },
+            ProbeStatistic::Mode => {
+                let mut counts = HashMap::new();
+                for score in &scores {
+                    // Round to nearest integer for fewer unique buckets
+                    let rounded_score = score.round() as i32;
+                    *counts.entry(rounded_score).or_insert(0) += 1;
+                }
+                let max_count = counts.values().copied().max().unwrap_or(0);
+                *scores
+                    .iter()
+                    .find(|score| counts[&(score.round() as i32)] == max_count)
+                    .unwrap_or(&0.0)
+            },
+            ProbeStatistic::Minimum => *scores
+                .iter()
+                .min_by(|a, b| a.partial_cmp(b).expect("should not have NaN in scores set"))
+                .unwrap_or(&0.0),
+            ProbeStatistic::Maximum => *scores
+                .iter()
+                .max_by(|a, b| a.partial_cmp(b).expect("should not have NaN in scores set"))
+                .unwrap_or(&0.0),
+            ProbeStatistic::RootMeanSquare => {
+                let sum_of_squares: f64 = scores.iter().map(|&x| x * x).sum();
+                (sum_of_squares / scores.len() as f64).sqrt()
+            },
         }
     }
 }

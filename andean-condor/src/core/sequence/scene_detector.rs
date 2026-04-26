@@ -1,11 +1,8 @@
-use std::{
-    error::Error,
-    sync::{
-        self,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc,
-        Mutex,
-    },
+use std::sync::{
+    self,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc,
+    Mutex,
 };
 
 use anyhow::{Ok, Result};
@@ -60,7 +57,7 @@ where
     fn validate(
         &mut self,
         _condor: &mut Condor<DataHandler, ConfigHandler>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
+    ) -> Result<((), Vec<anyhow::Error>)> {
         if let Some(input) = &self.input {
             Input::validate(&input.as_data())?;
         }
@@ -73,8 +70,8 @@ where
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let mut warnings: Vec<Box<dyn Error>> = vec![];
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let mut warnings = vec![];
 
         // Getting clip_info may be a long running process, so do it after data/config
         // validation but before execution
@@ -93,7 +90,7 @@ where
             }))?;
             let condor_input_frames = condor.input.clip_info()?.num_frames;
             if input_frames != condor_input_frames {
-                warnings.push(Box::new(SceneDetectorError::InputFrameMismatch(
+                warnings.push(anyhow::Error::new(SceneDetectorError::InputFrameMismatch(
                     condor_input_frames,
                     input_frames,
                 )));
@@ -109,8 +106,8 @@ where
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let warnings: Vec<Box<dyn Error>> = vec![];
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let warnings = vec![];
         let condor_data = condor.as_data();
         let input = self.input.as_mut().unwrap_or(&mut condor.input);
         let frames = input.clip_info()?.num_frames;
@@ -126,33 +123,63 @@ where
             }
 
             if matches!(self.method, SceneDetectionMethod::AVSceneChange { .. }) {
-                trace!(
-                    "Skipping {} frames by decoding with av_decoders",
-                    last_scene.end_frame
-                );
-                let bit_depth = input.clip_info()?.format_info.as_bit_depth()?;
-                let start_time = std::time::Instant::now();
-                for index in 0..last_scene.end_frame {
-                    if !cancelled.load(Ordering::Relaxed) {
-                        if bit_depth > 8 {
-                            input.decoder().read_video_frame::<u16>()?;
-                        } else {
-                            input.decoder().read_video_frame::<u8>()?;
-                        }
+                match &input {
+                    // Input::Video {
+                    //     ..
+                    // } => {
+                    //     trace!(
+                    //         "Skipping {} frames by decoding with av_decoders",
+                    //         last_scene.end_frame
+                    //     );
+                    //     let bit_depth = input.clip_info()?.format_info.as_bit_depth()?;
+                    //     let start_time = std::time::Instant::now();
+                    //     for index in 0..last_scene.end_frame {
+                    //         if !cancelled.load(Ordering::Relaxed) {
+                    //             if bit_depth > 8 {
+                    //                 input.decoder().read_video_frame::<u16>()?;
+                    //             } else {
+                    //                 input.decoder().read_video_frame::<u8>()?;
+                    //             }
+                    //             progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                    //                 id:         DETAILS.name.to_owned(),
+                    //                 completion: SequenceCompletion::Frames {
+                    //                     completed: index as u64,
+                    //                     total:     frames as u64,
+                    //                 },
+                    //             }))?;
+                    //         }
+                    //     }
+                    //     trace!(
+                    //         "Skipping {} frames took {} ms",
+                    //         last_scene.end_frame,
+                    //         start_time.elapsed().as_millis()
+                    //     );
+                    // },
+                    Input::Video {
+                        ..
+                    }
+                    | Input::VapourSynth {
+                        ..
+                    }
+                    | Input::VapourSynthScript {
+                        ..
+                    } => {
+                        trace!("Skipping {} frames by seeking", last_scene.end_frame);
+                        input.decoder().seek_to_frame(last_scene.end_frame).map_err(|_| {
+                            SceneDetectorError::SceneDetectionFailed(
+                                "Failed to seek to frame".to_owned(),
+                            )
+                        })?;
                         progress_tx.send(SequenceStatus::Whole(Status::Processing {
                             id:         DETAILS.name.to_owned(),
                             completion: SequenceCompletion::Frames {
-                                completed: index as u64,
+                                completed: last_scene.end_frame as u64,
                                 total:     frames as u64,
                             },
                         }))?;
-                    }
+                        trace!("Skipping {} frames took {} ms", last_scene.end_frame, 0);
+                    },
                 }
-                trace!(
-                    "Skipping {} frames took {} ms",
-                    last_scene.end_frame,
-                    start_time.elapsed().as_millis()
-                );
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(((), warnings));
                 }
@@ -199,17 +226,18 @@ where
                         return;
                     }
                     keyframes_count.fetch_add(1, Ordering::Relaxed);
-                    let mut scenes_lock = scenes.lock().expect("mutex should acquire lock");
+                    let mut scenes_lock: sync::MutexGuard<'_, Vec<Scene<DataHandler>>> =
+                        scenes.lock().expect("mutex should acquire lock");
                     let start = previous_end.load(Ordering::Relaxed);
                     let end = last_frame + (frames_analyzed - 1);
                     previous_end.store(end, Ordering::Relaxed);
                     trace!("New Scene detected: {} - {}", start, end);
                     scenes_lock.push(Scene {
-                        start_frame: start,
-                        end_frame:   end,
-                        sub_scenes:  None,
-                        encoder:     condor.encoder.clone(),
-                        sequence_data:  DataHandler::default(),
+                        start_frame:   start,
+                        end_frame:     end,
+                        sub_scenes:    None,
+                        encoder:       condor.encoder.clone(),
+                        sequence_data: DataHandler::default(),
                     });
                     progress_tx
                         .send(SequenceStatus::Whole(Status::Processing {
@@ -269,11 +297,11 @@ where
                 {
                     // Insert final scene
                     let scene = Scene {
-                        encoder:     condor.encoder.clone(),
-                        start_frame: last_scene.end_frame,
-                        end_frame:   frames,
-                        sub_scenes:  None,
-                        sequence_data:  DataHandler::default(),
+                        encoder:       condor.encoder.clone(),
+                        start_frame:   last_scene.end_frame,
+                        end_frame:     frames,
+                        sub_scenes:    None,
+                        sequence_data: DataHandler::default(),
                     };
                     condor.scenes.push(scene.clone());
                     progress_tx.send(SequenceStatus::Whole(Status::Processing {
@@ -307,11 +335,11 @@ where
                 while prev_end < frames {
                     let end = (prev_end + maximum_length).min(frames);
                     let scene = Scene {
-                        start_frame: prev_end,
-                        end_frame:   end,
-                        sub_scenes:  None,
-                        encoder:     condor.encoder.clone(),
-                        sequence_data:  DataHandler::default(),
+                        start_frame:   prev_end,
+                        end_frame:     end,
+                        sub_scenes:    None,
+                        encoder:       condor.encoder.clone(),
+                        sequence_data: DataHandler::default(),
                     };
                     scenes_vec.push(scene);
                     prev_end = end;

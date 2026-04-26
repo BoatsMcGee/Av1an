@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    plugins::{MetricPluginFunction, PluginFunction},
     script_builder::{
         script::{Imports, Line},
         NodeVariableName,
@@ -43,6 +43,9 @@ impl PluginFunction for BUTTERAUGLI {
 }
 
 impl BUTTERAUGLI {
+    pub const QNORM_PROPERTY_NAMES: &'static [&'static str] =
+        &["BUTTERAUGLI_QNorm", "_BUTTERAUGLI_QNorm"];
+
     #[inline]
     pub fn invoke<'core>(
         self,
@@ -79,6 +82,15 @@ impl BUTTERAUGLI {
 
         Ok(node)
     }
+}
+
+impl MetricPluginFunction for BUTTERAUGLI {
+    const PROPERTY_NAMES: &'static [&'static str] = &[
+        // "BUTTERAUGLI_QNorm",
+        // "_BUTTERAUGLI_QNorm",
+        "BUTTERAUGLI_INFNorm",
+        "_BUTTERAUGLI_INFNorm",
+    ];
 }
 
 impl VapourSynthPluginScript for BUTTERAUGLI {

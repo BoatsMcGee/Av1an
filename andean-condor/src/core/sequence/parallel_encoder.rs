@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    error::Error,
     fs,
     io::Cursor,
     path::PathBuf,
@@ -10,7 +9,7 @@ use std::{
         Arc,
         Mutex,
     },
-    thread::{self, available_parallelism},
+    thread::{self},
 };
 
 use anyhow::{bail, Result};
@@ -29,6 +28,7 @@ use crate::{
         encoder::Encoder,
         scene::SubScene,
         sequence::{
+            noise_detector::NoiseDetectorDataHandler,
             parallel_encoder::{
                 BufferStrategy,
                 ParallelEncoderConfigHandler,
@@ -54,7 +54,10 @@ pub struct ParallelEncoder {
 
 impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for ParallelEncoder
 where
-    DataHandler: SequenceDataHandler + SceneDetectorDataHandler + ParallelEncoderDataHandler,
+    DataHandler: SequenceDataHandler
+        + SceneDetectorDataHandler
+        + NoiseDetectorDataHandler
+        + ParallelEncoderDataHandler,
     ConfigHandler: SequenceConfigHandler + ParallelEncoderConfigHandler,
 {
     #[inline]
@@ -66,8 +69,8 @@ where
     fn validate(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let warnings: Vec<Box<dyn Error>> = vec![];
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let warnings = vec![];
 
         if condor.sequence_config.parallel_encoder()?.workers.is_some_and(|w| w == 0) {
             bail!(ParallelEncoderError::NoWorkers);
@@ -92,12 +95,12 @@ where
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let mut warnings: Vec<Box<dyn Error>> = vec![];
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let mut warnings = vec![];
 
         // Ensure scenes is not empty
         if condor.scenes.is_empty() {
-            warnings.push(Box::new(ParallelEncoderError::ScenesEmpty));
+            warnings.push(anyhow::Error::new(ParallelEncoderError::ScenesEmpty));
         }
         // let encoder = self.encoder.as_ref().map_or(&condor.encoder, |e| e);
         if let Some(input) = &mut self.input {
@@ -161,11 +164,11 @@ where
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
+    ) -> Result<((), Vec<anyhow::Error>)> {
         // TODO:
         // handle subscenes
 
-        let mut warnings: Vec<Box<dyn Error>> = vec![];
+        let mut warnings = vec![];
         let input = if let Some(input) = &mut self.input {
             input
         } else {
@@ -175,7 +178,7 @@ where
         let workers = config.workers.unwrap_or(1);
         let scenes_directory = &config.scenes_directory;
         if condor.scenes.is_empty() {
-            warnings.push(Box::new(ParallelEncoderError::ScenesEmpty));
+            warnings.push(anyhow::Error::new(ParallelEncoderError::ScenesEmpty));
             return Ok(((), warnings));
         }
 
@@ -298,6 +301,7 @@ impl ParallelEncoder {
         }
         drop(task_tx);
         let encoder_errored = Arc::new(AtomicBool::new(false));
+        let clip_info = input.clip_info()?;
 
         thread::scope(|s| -> Result<_> {
             let total_final_pass_frames_encoded = Arc::new(AtomicUsize::new(0));
@@ -449,7 +453,11 @@ impl ParallelEncoder {
                         encode_progress_tx,
                     )?;
                     let ended = std::time::SystemTime::now();
+                    let framerate =
+                        *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
+                    let scene_seconds = task.frame_indices.len() as f64 * framerate;
                     let bytes = temp_output.metadata().ok().map_or(0, |meta| meta.len());
+                    let bitrate = (bytes * 8) as f64 / scene_seconds;
                     if result.status.success() {
                         size_tx.send(SequenceStatus::Whole(Status::Processing {
                             id:         task.original_index.to_string(),
@@ -477,6 +485,7 @@ impl ParallelEncoder {
                         started,
                         ended,
                         bytes,
+                        bitrate,
                         result,
                     };
                     Ok(Some(result))
@@ -546,6 +555,8 @@ pub struct ParallelEncoderResult {
     pub started: std::time::SystemTime,
     pub ended:   std::time::SystemTime,
     pub bytes:   u64,
+    pub bitrate: f64,
+    // pub bits_per_pixel: f64,
     pub result:  EncoderResult,
 }
 

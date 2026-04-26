@@ -191,21 +191,20 @@ Besides being library and a TUI, Condor offers several features not found in Av1
 * Thread affinity
 * Multithreaded decoding
 * Scene sorting
-* Target Quality - *Planned.*
+* VMAF in Target Quality
 * VMAF graphing - *Planned.*
-* Specifying cache path - *Planned.*
 * Force keyframes
 * Max tries
 * Zones - *Planned (California Condor).*
 * docker - *Planned (California Condor).*
 * loglevel - *Planned (California Condor).*
 * no defaults - *Planned (California Condor).*
-* VapourSynth arguments - *Planned (California Condor).*
 
 Some of the unplanned features may no longer be necessary or desired in Condor, such as max tries and multithreaded decoding. Condor has been made more robust and may not need a retry mechanism for encoding. Condor decodes frames in a single thread and delivers it to encoders in multiple threads so while multithreaded decoding is theoretically faster, it is not necessary and uses more of system resources like RAM or VRAM for no realizable benefit.
 
 Below are all the features Condor currently has over Av1an:
 
+* Specify Input track index or VapourSynth VideoNode index.
 * VapourSynth Plugins - Several core plugins and features of VapourSynth are available in Andean Condor.
 * Modify VapourSynth Inputs with VapourSynth Plugins like Trim, Crop, Bicubic, etc.
 * VapourSynth Script Builder - Programmatically build a VapourSynth script text. Also adds support for Plugins and libraries written exclusively for Python such as RescaleBuilder and vs-jetpack.
@@ -217,7 +216,13 @@ Below are all the features Condor currently has over Av1an:
 * Photon Noise: Besides ISO, chroma, width, and height, users can also specify a chroma ISO, and AR coefficients for luma, Cb, and Cr. This allows users to apply a custom noise table.
 * Sequence, a core component of Andean Condor that provides an extensible module for working with Condor.
 * No requirement to use any of the built-in Sequences. Make and use custom Sequences for unique workflows.
+* Resumable Scene Detector Sequence. Progress is saved as each scene is detected.
+* Noise Detector Sequence to determine noise level per scene.
+* Noise Scaler Sequence to scale Photon Noise per scene.
 * Benchmarker Sequence to determine the optimal amount of workers for the Parallel Encoder Sequence.
+* Target Quality Sequence with more options and optimizations.
+* Bitrate Optimizer Sequence to improve scene bitrate efficiency after Target Quality.
+* Convex Hull Sequence to scale encoding speed/preset/cpu-used based on the scene quantizer.
 * Better process cancellation for graceful shutdown.
 * Progress feedback delivered via multi-producer-single-consumer channels.
 * TUI - California Condor provides a TUI during scene detection and encoding.

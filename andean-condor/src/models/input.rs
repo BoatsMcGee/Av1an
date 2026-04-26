@@ -48,7 +48,7 @@ pub enum VapourSynthImportMethod {
 #[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display)]
 pub enum ImportMethod {
     // FFmpeg {}, // Unsupported
-    FFMS2 {},
+    FFMS2 { index: Option<u8> },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display)]

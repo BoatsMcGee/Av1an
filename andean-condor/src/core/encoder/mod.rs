@@ -65,7 +65,7 @@ impl Encoder {
             } => ("x265", executable),
             Encoder::VVenC {
                 executable, ..
-            } => ("vvenc", executable),
+            } => ("vvencapp", executable),
             Encoder::FFmpeg {
                 executable, ..
             } => ("ffmpeg", executable),
@@ -271,8 +271,34 @@ impl Encoder {
                 parameters
             },
             Encoder::VVenC {
-                ..
-            } => todo!(),
+                options, ..
+            } => {
+                let mut parameters = ["-i".to_owned(), "-".to_owned()].to_vec();
+                let mut params = options.clone();
+                params.extend(pass_parameters);
+                params.extend(CLIParameter::new_strings("-", " ", &[(
+                    "o",
+                    if pass.0 == pass.1 {
+                        output_path
+                    } else {
+                        NULL_OUTPUT
+                    },
+                )]));
+                for (key, value) in params {
+                    match value.to_string_pair(&key) {
+                        (Some(prefixed_key), Some(separate_value)) => {
+                            parameters.push(prefixed_key);
+                            parameters.push(separate_value);
+                        },
+                        (Some(prefixed_and_delimited), None) => {
+                            parameters.push(prefixed_and_delimited);
+                        },
+                        _ => (), // Boolean/Flag set to false, nothing to push
+                    }
+                }
+
+                parameters
+            },
             Encoder::FFmpeg {
                 options, ..
             } => {
@@ -720,9 +746,6 @@ impl Encoder {
             stdout:     StringOrBytes::from(encoder_output.stdout),
             stderr:     stderr_output.lock().expect("mutex should acquire lock").clone().into(),
         };
-        // if !encoder_output.status.success() {
-        //     bail!(EncoderError::EncoderFailed(encoder_result.to_string()));
-        // }
 
         Ok(encoder_result)
     }
@@ -758,6 +781,7 @@ impl Encoder {
             transfer_function,
             chroma_grain: photon_noise.chroma_iso.is_some_and(|c_iso| c_iso == photon_noise.iso),
             random_seed: None,
+            full_range: false,
         });
 
         if let Some(chroma_iso) = photon_noise.chroma_iso
@@ -770,6 +794,7 @@ impl Encoder {
                 transfer_function,
                 chroma_grain: true,
                 random_seed: None,
+                full_range: false,
             });
             params.scaling_points_cr = chroma_params.scaling_points_cr;
             params.scaling_points_cb = chroma_params.scaling_points_cb;
@@ -830,6 +855,212 @@ impl Encoder {
     }
 
     #[inline]
+    pub fn quantizer(&self) -> Option<f64> {
+        match self {
+            Encoder::AOM {
+                options, ..
+            } => options.get("cq-level").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(*value),
+                _ => None,
+            }),
+            Encoder::RAV1E {
+                options, ..
+            } => options.get("quantizer").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(*value),
+                _ => None,
+            }),
+            Encoder::SVTAV1 {
+                options, ..
+            } => options.get("crf").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(*value),
+                _ => None,
+            }),
+            Encoder::VPX {
+                options, ..
+            } => options.get("cq-level").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(*value),
+                _ => None,
+            }),
+            Encoder::X264 {
+                options, ..
+            } => options.get("crf").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(*value),
+                _ => None,
+            }),
+            Encoder::X265 {
+                options, ..
+            } => options.get("crf").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(*value),
+                _ => None,
+            }),
+            Encoder::VVenC {
+                options, ..
+            } => options.get("qp").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(*value),
+                _ => None,
+            }),
+            Encoder::FFmpeg {
+                options, ..
+            } => options.get("crf").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(*value),
+                _ => None,
+            }),
+        }
+    }
+
+    #[inline]
+    pub fn set_quantizer(&mut self, quantizer: f64) {
+        match self {
+            Encoder::AOM {
+                options, ..
+            } => options.insert(
+                "cq-level".to_owned(),
+                CLIParameter::new_number("--", "=", quantizer),
+            ),
+            Encoder::RAV1E {
+                options, ..
+            } => options.insert(
+                "quantizer".to_owned(),
+                CLIParameter::new_number("--", " ", quantizer),
+            ),
+            Encoder::SVTAV1 {
+                options, ..
+            } => options.insert(
+                "crf".to_owned(),
+                CLIParameter::new_number("--", " ", quantizer),
+            ),
+            Encoder::VPX {
+                options, ..
+            } => options.insert(
+                "cq-level".to_owned(),
+                CLIParameter::new_number("--", "=", quantizer),
+            ),
+            Encoder::X264 {
+                options, ..
+            } => options.insert(
+                "crf".to_owned(),
+                CLIParameter::new_number("--", " ", quantizer),
+            ),
+            Encoder::X265 {
+                options, ..
+            } => options.insert(
+                "crf".to_owned(),
+                CLIParameter::new_number("--", " ", quantizer),
+            ),
+            Encoder::VVenC {
+                options, ..
+            } => options.insert(
+                "qp".to_owned(),
+                CLIParameter::new_number("--", " ", quantizer),
+            ),
+            Encoder::FFmpeg {
+                options, ..
+            } => options.insert(
+                "crf".to_owned(),
+                CLIParameter::new_number("-", " ", quantizer),
+            ),
+        };
+    }
+
+    #[inline]
+    pub fn set_speed(&mut self, speed: i8) {
+        match self {
+            Encoder::AOM {
+                options, ..
+            } => options.insert(
+                "cpu-used".to_owned(),
+                CLIParameter::new_number("--", "=", speed as f64),
+            ),
+            Encoder::RAV1E {
+                options, ..
+            } => options.insert(
+                "speed".to_owned(),
+                CLIParameter::new_number("--", " ", speed as f64),
+            ),
+            Encoder::SVTAV1 {
+                options, ..
+            } => options.insert(
+                "preset".to_owned(),
+                CLIParameter::new_number("--", " ", speed as f64),
+            ),
+            Encoder::VPX {
+                options, ..
+            } => options.insert(
+                "cpu-used".to_owned(),
+                CLIParameter::new_number("--", "=", speed as f64),
+            ),
+            Encoder::X264 {
+                options, ..
+            } => options.insert(
+                "preset".to_owned(),
+                CLIParameter::new_string("--", " ", match speed {
+                    i8::MIN..=0 => "placebo",
+                    1 => "veryslow",
+                    2 => "slower",
+                    3 => "slow",
+                    4 => "medium",
+                    5 => "fast",
+                    6 => "faster",
+                    7 => "veryfast",
+                    8 => "superfast",
+                    9..=i8::MAX => "ultrafast",
+                }),
+            ),
+            Encoder::X265 {
+                options, ..
+            } => options.insert(
+                "preset".to_owned(),
+                CLIParameter::new_string("--", " ", match speed {
+                    i8::MIN..=0 => "placebo",
+                    1 => "veryslow",
+                    2 => "slower",
+                    3 => "slow",
+                    4 => "medium",
+                    5 => "fast",
+                    6 => "faster",
+                    7 => "veryfast",
+                    8 => "superfast",
+                    9..=i8::MAX => "ultrafast",
+                }),
+            ),
+            Encoder::VVenC {
+                options, ..
+            } => options.insert(
+                "preset".to_owned(),
+                CLIParameter::new_string("--", " ", match speed {
+                    i8::MIN..=0 => "slower",
+                    1 => "slow",
+                    2 => "medium",
+                    3 => "fast",
+                    4..=i8::MAX => "faster",
+                }),
+            ),
+            Encoder::FFmpeg {
+                options, ..
+            } => options.insert(
+                "preset".to_owned(),
+                CLIParameter::new_number("-", " ", speed as f64),
+            ),
+        };
+    }
+
+    #[inline]
     pub fn parse_encoded_frames_base(encoder: &EncoderBase, line: &str) -> Option<u64> {
         match encoder {
             EncoderBase::AOM | EncoderBase::VPX => {
@@ -847,8 +1078,8 @@ impl Encoder {
             EncoderBase::RAV1E => parse_rav1e_frames(line),
             EncoderBase::SVTAV1 => parse_svt_av1_frames(line),
             EncoderBase::X264 | EncoderBase::X265 => parse_x26x_frames(line),
-            EncoderBase::VVenC => todo!(),
-            EncoderBase::FFmpeg => todo!(),
+            EncoderBase::VVenC => parse_vvc_frames(line),
+            EncoderBase::FFmpeg => parse_ffmpeg_frames(line),
         }
     }
 

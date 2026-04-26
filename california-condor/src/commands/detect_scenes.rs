@@ -18,11 +18,11 @@ use crate::{
     configuration::{ConfigError, Configuration},
     CondorCliError,
     DEFAULT_CONFIG_PATH,
-    DEFAULT_TEMP_PATH,
 };
 
 #[allow(clippy::too_many_arguments)]
 pub fn detect_scenes_handler(
+    temp_path: Option<&Path>,
     config_path: Option<&Path>,
     input_path: Option<&Path>,
     decoder: Option<&DecoderMethod>,
@@ -70,10 +70,7 @@ pub fn detect_scenes_handler(
                 input.file_stem().expect("input is a file").display()
             ));
             let output = path_abs::PathAbs::new(output)?.as_path().to_path_buf();
-            let cwd = std::env::current_dir()?;
-            let temp_path = cwd.join(DEFAULT_TEMP_PATH);
-            let temp = path_abs::PathAbs::new(temp_path)?.as_path().to_path_buf();
-            Configuration::new(&input, &output, &temp, vs_args)?
+            Configuration::new(&input, &output, temp_path, vs_args)?
         }
     };
 
@@ -103,7 +100,9 @@ pub fn detect_scenes_handler(
             DecoderMethod::FFMS2 => {
                 configuration.condor.input = InputModel::Video {
                     path:          existing_input_path,
-                    import_method: ImportMethod::FFMS2 {},
+                    import_method: ImportMethod::FFMS2 {
+                        index: None
+                    },
                 };
             },
             vs_decoders => {
@@ -137,14 +136,14 @@ pub fn detect_scenes_handler(
         )?;
     }
     if let Some(filters) = filters {
-        configuration.input_filters = filters.to_vec();
+        configuration.scd_input_filters = filters.to_vec();
     }
 
     let mut input = Input::from_data(&configuration.condor.input)?;
     let clip_info = input.clip_info()?;
     let fps = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
 
-    let previous_method = configuration.condor.sequence_config.scene_detection.method;
+    let previous_method = configuration.condor.sequence_config.scene_detector.method;
     let min_scene_frames = min_scene_seconds.map_or_else(
         || previous_method.minimum_length(),
         |seconds| (fps * seconds as f64).round() as usize,
@@ -156,18 +155,18 @@ pub fn detect_scenes_handler(
     let new_method =
         method.map(|method| method.as_core_method(Some(min_scene_frames), Some(max_scene_frames)));
     if let Some(new_method) = new_method {
-        configuration.condor.sequence_config.scene_detection.method = new_method;
+        configuration.condor.sequence_config.scene_detector.method = new_method;
     }
     configuration
         .condor
         .sequence_config
-        .scene_detection
+        .scene_detector
         .method
         .set_minimum_length(min_scene_frames)?;
     configuration
         .condor
         .sequence_config
-        .scene_detection
+        .scene_detector
         .method
         .set_maximum_length(max_scene_frames)?;
 

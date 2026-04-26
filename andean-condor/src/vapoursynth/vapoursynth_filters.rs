@@ -12,6 +12,7 @@ use crate::{
             resize::{
                 bicubic::Bicubic,
                 bilinear::Bilinear,
+                bob::Bob,
                 lanczos::Lanczos,
                 point::Point,
                 spline16::Spline16,
@@ -250,7 +251,13 @@ impl VapourSynthFilter {
                         ..Default::default()
                     }
                     .invoke(core, node)?,
-                    Scaler::Bob => todo!(),
+                    Scaler::Bob => Bob {
+                        width,
+                        height,
+                        format,
+                        ..Default::default()
+                    }
+                    .invoke(core, node)?,
                     Scaler::Lanczos => Lanczos {
                         width,
                         height,
@@ -359,7 +366,13 @@ impl VapourSynthFilter {
                         ..Default::default()
                     }
                     .generate_script(node_name)?,
-                    Scaler::Bob => todo!(),
+                    Scaler::Bob => Bob {
+                        width,
+                        height,
+                        format,
+                        ..Default::default()
+                    }
+                    .generate_script(node_name)?,
                     Scaler::Lanczos => Lanczos {
                         width,
                         height,

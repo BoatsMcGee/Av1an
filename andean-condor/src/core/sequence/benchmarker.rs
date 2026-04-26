@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    error::Error,
     sync::{
         self,
         atomic::{AtomicBool, Ordering},
@@ -62,8 +61,8 @@ where
     fn validate(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let warnings: Vec<Box<dyn Error>> = vec![];
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let warnings = vec![];
 
         // Ensure all the scene encoders are validated
         for scene in &condor.scenes {
@@ -78,14 +77,14 @@ where
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
-        let mut warnings: Vec<Box<dyn Error>> = vec![];
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let mut warnings = vec![];
 
         let parallel_encoder_config = condor.sequence_config.parallel_encoder()?;
 
         // Ensure scenes is not empty
         if condor.scenes.is_empty() {
-            warnings.push(Box::new(BenchmarkerError::ScenesEmpty));
+            warnings.push(anyhow::Error::new(BenchmarkerError::ScenesEmpty));
             return Ok(((), warnings));
         }
         let input = if let Some(input) = self.input.as_mut() {
@@ -126,9 +125,9 @@ where
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
-    ) -> Result<((), Vec<Box<dyn Error>>)> {
+    ) -> Result<((), Vec<anyhow::Error>)> {
         const MINIMUM_SCENE_FRAMES: usize = 24;
-        let mut warnings: Vec<Box<dyn Error>> = vec![];
+        let mut warnings = vec![];
         let parallel_encoder_config = condor.sequence_config.parallel_encoder()?;
         let config = condor.sequence_config.benchmarker()?;
         let input = if let Some(input) = self.input.as_mut() {
@@ -142,12 +141,14 @@ where
         let buffer_strategy = &parallel_encoder_config.buffer_strategy;
 
         if condor.scenes.is_empty() {
-            warnings.push(Box::new(BenchmarkerError::ScenesEmpty));
+            warnings.push(anyhow::Error::new(BenchmarkerError::ScenesEmpty));
             return Ok(((), warnings));
         }
 
         if parallel_encoder_config.workers.is_some_and(|w| w > 0) {
-            warnings.push(Box::new(BenchmarkerError::WorkersAlreadyConfigured));
+            warnings.push(anyhow::Error::new(
+                BenchmarkerError::WorkersAlreadyConfigured,
+            ));
             return Ok(((), warnings));
         }
 

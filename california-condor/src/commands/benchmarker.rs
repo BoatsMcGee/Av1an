@@ -21,7 +21,6 @@ use crate::{
     utils::parameter_parser::EncoderParamsParser,
     CondorCliError,
     DEFAULT_CONFIG_PATH,
-    DEFAULT_TEMP_PATH,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -78,18 +77,12 @@ pub fn benchmarker_handler(
                 "{}.mkv",
                 input.file_stem().expect("input is a file").display()
             ));
-            let cwd = std::env::current_dir()?;
-            let temp_path = temp_path.map(|p| p.to_path_buf());
-            let temp =
-                path_abs::PathAbs::new(temp_path.unwrap_or_else(|| cwd.join(DEFAULT_TEMP_PATH)))?
-                    .as_path()
-                    .to_path_buf();
-            Configuration::new(&input, &output, &temp, vs_args)?
+            Configuration::new(&input, &output, temp_path, vs_args)?
         }
     };
 
     if let Some(temp) = temp_path {
-        configuration.temp = path_abs::PathAbs::new(temp)?.as_path().to_path_buf();
+        configuration.temp = temp.to_path_buf();
     }
     if let Some(decoder) = &decoder {
         let existing_input_path = match configuration.condor.input {
@@ -117,7 +110,9 @@ pub fn benchmarker_handler(
             DecoderMethod::FFMS2 => {
                 configuration.condor.input = InputModel::Video {
                     path:          existing_input_path,
-                    import_method: ImportMethod::FFMS2 {},
+                    import_method: ImportMethod::FFMS2 {
+                        index: None
+                    },
                 };
             },
             vs_decoders => {

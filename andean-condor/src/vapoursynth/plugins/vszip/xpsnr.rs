@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    plugins::{MetricPluginFunction, PluginFunction},
     script_builder::{
         script::{Imports, Line},
         NodeVariableName,
@@ -65,6 +65,10 @@ impl XPSNR {
 
         Ok(node)
     }
+}
+
+impl MetricPluginFunction for XPSNR {
+    const PROPERTY_NAMES: &'static [&'static str] = &["XPSNR", "_XPSNR"];
 }
 
 impl VapourSynthPluginScript for XPSNR {

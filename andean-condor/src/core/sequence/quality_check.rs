@@ -39,8 +39,8 @@ where
     #[inline]
     fn validate(
         &mut self,
-        condor: &mut Condor<Data, Config>,
-    ) -> anyhow::Result<((), Vec<Box<dyn std::error::Error>>)> {
+        _condor: &mut Condor<Data, Config>,
+    ) -> anyhow::Result<((), Vec<anyhow::Error>)> {
         let warnings = vec![];
 
         Ok(((), warnings))
@@ -49,9 +49,9 @@ where
     #[inline]
     fn initialize(
         &mut self,
-        condor: &mut Condor<Data, Config>,
-        progress_tx: sync::mpsc::Sender<SequenceStatus>,
-    ) -> anyhow::Result<((), Vec<Box<dyn std::error::Error>>)> {
+        _condor: &mut Condor<Data, Config>,
+        _progress_tx: sync::mpsc::Sender<SequenceStatus>,
+    ) -> anyhow::Result<((), Vec<anyhow::Error>)> {
         let warnings = vec![];
 
         Ok(((), warnings))
@@ -60,10 +60,10 @@ where
     #[inline]
     fn execute(
         &mut self,
-        condor: &mut Condor<Data, Config>,
-        progress_tx: sync::mpsc::Sender<SequenceStatus>,
-        cancelled: Arc<AtomicBool>,
-    ) -> anyhow::Result<((), Vec<Box<dyn std::error::Error>>)> {
+        _condor: &mut Condor<Data, Config>,
+        _progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        _cancelled: Arc<AtomicBool>,
+    ) -> anyhow::Result<((), Vec<anyhow::Error>)> {
         let warnings = vec![];
 
         Ok(((), warnings))
