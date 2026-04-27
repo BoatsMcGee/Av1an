@@ -5,7 +5,7 @@ use av_format::rational::Rational64;
 use serde::{Deserialize, Serialize};
 use vapoursynth::format::PresetFormat;
 
-use crate::core::input::{clip_info::ClipInfo, pixel_format::PixelFormat};
+use crate::core::input::{clip_info::ClipInfo, color_range::ColorRange, pixel_format::PixelFormat};
 
 #[derive(Debug, Clone, Deserialize)]
 struct FfProbeInfo {
@@ -17,6 +17,7 @@ struct FfProbeStreamInfo {
     pub width:          u32,
     pub height:         u32,
     pub pix_fmt:        String,
+    pub color_range:    Option<String>,
     pub color_transfer: Option<String>,
     pub avg_frame_rate: String,
     pub nb_frames:      Option<String>,
@@ -32,7 +33,7 @@ pub fn get_clip_info(source: &Path) -> Result<ClipInfo> {
         .arg("-print_format")
         .arg("json")
         .arg("-show_entries")
-        .arg("stream=width,height,pix_fmt,avg_frame_rate,nb_frames,color_transfer")
+        .arg("stream=width,height,pix_fmt,avg_frame_rate,nb_frames,color_range,color_transfer")
         .arg(source)
         .output()?
         .stdout;
@@ -41,18 +42,24 @@ pub fn get_clip_info(source: &Path) -> Result<ClipInfo> {
         .streams
         .first()
         .ok_or_else(|| anyhow::anyhow!("no video streams found in source file"))?;
+    let format = FFPixelFormat::from_str(&stream_info.pix_fmt)?;
+    let color_range = stream_info.color_range.as_deref().map_or_else(
+        || infer_color_range_from_pix_fmt(format),
+        parse_ffprobe_color_range,
+    );
 
     Ok(ClipInfo {
-        format_info:              PixelFormat::FFmpeg {
-            format: FFPixelFormat::from_str(&stream_info.pix_fmt)?,
+        format_info: PixelFormat::FFmpeg {
+            format,
         },
-        frame_rate:               parse_frame_rate(&stream_info.avg_frame_rate)?,
-        resolution:               (stream_info.width, stream_info.height),
+        frame_rate: parse_frame_rate(&stream_info.avg_frame_rate)?,
+        color_range,
+        resolution: (stream_info.width, stream_info.height),
         transfer_characteristics: match stream_info.color_transfer.as_deref() {
             Some("smpte2084") => av1_grain::TransferFunction::SMPTE2084,
             _ => av1_grain::TransferFunction::BT1886,
         },
-        num_frames:               match stream_info.nb_frames.as_deref().map(str::parse) {
+        num_frames: match stream_info.nb_frames.as_deref().map(str::parse) {
             Some(Ok(nb_frames)) => nb_frames,
             _ => get_num_frames(source)?,
         },
@@ -111,6 +118,25 @@ fn parse_frame_rate(rate: &str) -> anyhow::Result<Rational64> {
         numer.parse::<i64>()?,
         denom.parse::<i64>()?,
     ))
+}
+
+#[inline]
+const fn infer_color_range_from_pix_fmt(pix_fmt: FFPixelFormat) -> Option<ColorRange> {
+    match pix_fmt {
+        FFPixelFormat::YUVJ420P | FFPixelFormat::YUVJ422P | FFPixelFormat::YUVJ444P => {
+            Some(ColorRange::Full)
+        },
+        _ => None,
+    }
+}
+
+#[inline]
+fn parse_ffprobe_color_range(color_range: &str) -> Option<ColorRange> {
+    match color_range {
+        "pc" | "jpeg" | "full" => Some(ColorRange::Full),
+        "tv" | "mpeg" | "limited" => Some(ColorRange::Limited),
+        _ => None,
+    }
 }
 
 /// Pixel formats supported by ffmpeg

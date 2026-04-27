@@ -33,6 +33,7 @@ use crate::{
 };
 
 pub mod clip_info;
+pub mod color_range;
 pub mod pixel_format;
 
 pub enum Input {

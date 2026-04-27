@@ -129,6 +129,7 @@ pub fn init_logging(
     let console_layer = fmt::layer()
     .compact()
     .with_ansi(std::io::stderr().is_terminal())
+    .with_ansi_sanitization(false)
     .with_target(false)
     .with_file(false)
     .with_thread_ids(false)

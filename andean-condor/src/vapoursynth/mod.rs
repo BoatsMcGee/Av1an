@@ -8,7 +8,7 @@ use vapoursynth::{
     video_info::VideoInfo,
 };
 
-use crate::core::input::{clip_info::ClipInfo, pixel_format::PixelFormat};
+use crate::core::input::{clip_info::ClipInfo, color_range::ColorRange, pixel_format::PixelFormat};
 
 pub mod plugins;
 pub mod script_builder;
@@ -85,6 +85,7 @@ pub fn get_clip_info(node: &Node) -> Result<ClipInfo> {
         },
         frame_rate:               get_frame_rate(&info)?,
         resolution:               get_resolution(&info)?,
+        color_range:              get_color_range(node)?,
         transfer_characteristics: match get_transfer(node)? {
             16 => av1_grain::TransferFunction::SMPTE2084,
             _ => av1_grain::TransferFunction::BT1886,
@@ -142,4 +143,27 @@ fn get_resolution(info: &VideoInfo) -> anyhow::Result<(u32, u32)> {
     };
 
     Ok((resolution.width as u32, resolution.height as u32))
+}
+
+/// Get the color range for a VideoNode.
+fn get_color_range(node: &Node) -> anyhow::Result<Option<ColorRange>> {
+    let frame = node.get_frame(0).context("get_color_range")?;
+    let color_range = frame
+        .props()
+        .get::<i64>("_ColorRange")
+        .ok()
+        .and_then(map_vapoursynth_color_range);
+
+    Ok(color_range)
+}
+
+#[inline]
+const fn map_vapoursynth_color_range(color_range: i64) -> Option<ColorRange> {
+    match color_range {
+        // RATIONALE: VapourSynth frame props use the legacy convention where
+        // 0 means full-range and 1 means limited-range.
+        0 => Some(ColorRange::Full),
+        1 => Some(ColorRange::Limited),
+        _ => None,
+    }
 }

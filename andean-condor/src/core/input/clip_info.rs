@@ -1,7 +1,7 @@
 pub use av1_grain::TransferFunction;
 use av_format::rational::Rational64;
 
-use crate::core::input::pixel_format::PixelFormat;
+use crate::core::input::{color_range::ColorRange, pixel_format::PixelFormat};
 
 type Width = u32;
 type Height = u32;
@@ -12,6 +12,7 @@ pub struct ClipInfo {
     pub format_info:              PixelFormat,
     pub frame_rate:               Rational64,
     pub resolution:               (Width, Height),
+    pub color_range:              Option<ColorRange>,
     /// This is overly simplified because we currently only use it for photon
     /// noise gen, which only supports two transfer functions
     pub transfer_characteristics: TransferFunction,
