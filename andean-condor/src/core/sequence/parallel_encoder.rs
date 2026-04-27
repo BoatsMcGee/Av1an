@@ -138,6 +138,7 @@ where
                 clip_info.resolution.0,
                 clip_info.resolution.1,
                 transfer_function,
+                clip_info.color_range,
             )?;
 
             if let Some((hashed_name, params)) = params {

@@ -23,7 +23,7 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::{
-    core::input::Input,
+    core::input::{color_range::ColorRange, Input},
     models::encoder::{cli_parameter::CLIParameter, Encoder, EncoderBase, EncoderPasses},
 };
 
@@ -756,6 +756,7 @@ impl Encoder {
         width: u32,
         height: u32,
         transfer_function: TransferFunction,
+        color_range: Option<ColorRange>,
     ) -> Result<Option<(String, GrainTableSegment)>> {
         let photon_noise = match self {
             Encoder::AOM {
@@ -781,7 +782,7 @@ impl Encoder {
             transfer_function,
             chroma_grain: photon_noise.chroma_iso.is_some_and(|c_iso| c_iso == photon_noise.iso),
             random_seed: None,
-            full_range: false,
+            full_range: matches!(color_range, Some(ColorRange::Full)),
         });
 
         if let Some(chroma_iso) = photon_noise.chroma_iso
@@ -794,7 +795,7 @@ impl Encoder {
                 transfer_function,
                 chroma_grain: true,
                 random_seed: None,
-                full_range: false,
+                full_range: matches!(color_range, Some(ColorRange::Full)),
             });
             params.scaling_points_cr = chroma_params.scaling_points_cr;
             params.scaling_points_cb = chroma_params.scaling_points_cb;
