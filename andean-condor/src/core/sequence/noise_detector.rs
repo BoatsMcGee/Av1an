@@ -167,7 +167,6 @@ where
         .call(core, &reference_node, Some(&denoised_node))?;
 
         let plane_stats = PlaneStats::get_scores(&plane_stats_node, None, compare_progress_tx)?;
-        println!("Plane Stats: {plane_stats:?}");
 
         for (plane_stat, scene) in plane_stats.iter().zip(condor.scenes.iter_mut()) {
             let noise_detection = scene.sequence_data.get_noise_detection_mut()?;
