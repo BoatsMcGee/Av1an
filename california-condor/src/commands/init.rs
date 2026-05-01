@@ -92,28 +92,18 @@ pub fn init_handler(
     if let Some(encoder) = encoder {
         let options = encoder.default_parameters();
         let pass = encoder.default_passes();
-        // TODO: Support chroma noise only
-        let photon_noise = photon_noise.map(|iso| PhotonNoise {
-            iso,
-            chroma_iso: chroma_noise,
-            width: None,
-            height: None,
-            c_y: None,
-            ccb: None,
-            ccr: None,
-        });
         configuration.condor.encoder = match encoder {
             EncoderBase::AOM => Encoder::AOM {
                 executable: None,
                 pass,
                 options,
-                photon_noise,
+                photon_noise: None,
             },
             EncoderBase::RAV1E => Encoder::RAV1E {
                 executable: None,
                 pass,
                 options,
-                photon_noise,
+                photon_noise: None,
             },
             EncoderBase::VPX => Encoder::VPX {
                 executable: None,
@@ -124,7 +114,7 @@ pub fn init_handler(
                 executable: None,
                 pass,
                 options,
-                photon_noise,
+                photon_noise: None,
             },
             EncoderBase::X264 => Encoder::X264 {
                 executable: None,
@@ -155,6 +145,18 @@ pub fn init_handler(
     if let Some(params) = params {
         let parameters = EncoderParamsParser::parse_string(&params);
         configuration.condor.encoder.parameters_mut().extend(parameters);
+    }
+    if let Some(iso) = photon_noise {
+        // TODO: Support chroma noise only
+        configuration.condor.encoder.set_photon_noise(Some(PhotonNoise {
+            iso,
+            chroma_iso: chroma_noise,
+            width: None,
+            height: None,
+            c_y: None,
+            ccb: None,
+            ccr: None,
+        }));
     }
 
     configuration.save(&config_path)?;

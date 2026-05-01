@@ -24,7 +24,13 @@ use tracing::info;
 
 use crate::{
     core::input::{color_range::ColorRange, Input},
-    models::encoder::{cli_parameter::CLIParameter, Encoder, EncoderBase, EncoderPasses},
+    models::encoder::{
+        cli_parameter::CLIParameter,
+        photon_noise::PhotonNoise,
+        Encoder,
+        EncoderBase,
+        EncoderPasses,
+    },
 };
 
 pub mod parse;
@@ -748,6 +754,22 @@ impl Encoder {
         };
 
         Ok(encoder_result)
+    }
+
+    #[inline]
+    pub fn set_photon_noise(&mut self, photon_noise: Option<PhotonNoise>) {
+        match self {
+            Encoder::AOM {
+                photon_noise: pn, ..
+            } => *pn = photon_noise,
+            Encoder::RAV1E {
+                photon_noise: pn, ..
+            } => *pn = photon_noise,
+            Encoder::SVTAV1 {
+                photon_noise: pn, ..
+            } => *pn = photon_noise,
+            _ => {},
+        }
     }
 
     #[inline]
