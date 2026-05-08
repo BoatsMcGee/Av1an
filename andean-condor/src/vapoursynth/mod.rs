@@ -69,7 +69,7 @@ pub fn get_core<'core>(
 #[inline]
 pub fn get_transfer(node: &Node) -> Result<u8> {
     let first_frame = node.get_frame(0).context("get_transfer")?;
-    let transfer = first_frame.props().get::<i64>("_Transfer").map(|val| val as u8).unwrap_or(2);
+    let transfer = first_frame.props().get::<i64>("_Transfer").map_or(2, |val| val as u8);
 
     Ok(transfer)
 }
