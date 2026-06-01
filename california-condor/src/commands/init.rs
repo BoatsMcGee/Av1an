@@ -45,7 +45,7 @@ pub fn init_handler(
         bail!(err);
     }
 
-    let mut configuration = Configuration::new(&input, &output, temp_path, vs_args)?;
+    let mut configuration = Configuration::new(&input, &output, temp_path, vs_args, decoder)?;
 
     if let Some(decoder) = &decoder {
         match decoder {
@@ -79,16 +79,9 @@ pub fn init_handler(
                 };
             },
         };
-    } else {
-        configuration.condor.input = InputModel::VapourSynth {
-            path:          input,
-            import_method: VapourSynthImportMethod::BestSource {
-                index: None
-            },
-            cache_path:    None,
-        };
     }
-    configuration.condor.sequence_config.scene_concatenator.method = ConcatMethod::MKVMerge;
+    // configuration.condor.sequence_config.scene_concatenator.method =
+    // ConcatMethod::MKVMerge;
     if let Some(encoder) = encoder {
         let options = encoder.default_parameters();
         let pass = encoder.default_passes();

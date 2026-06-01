@@ -77,7 +77,7 @@ pub fn benchmarker_handler(
                 "{}.mkv",
                 input.file_stem().expect("input is a file").display()
             ));
-            Configuration::new(&input, &output, temp_path, vs_args)?
+            Configuration::new(&input, &output, temp_path, vs_args, decoder)?
         }
     };
 
