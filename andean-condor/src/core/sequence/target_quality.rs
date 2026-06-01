@@ -259,7 +259,6 @@ where
                         })
                 })
                 .map(|mut task| {
-                    // Modify encoder to use predicted quantizer
                     let quantizer_score_history = task
                         .passes
                         .iter()
@@ -317,6 +316,16 @@ where
                             _ => 1.0,
                         },
                     )?;
+
+                    // Skip already processed quantizer
+                    if quantizer_score_history
+                        .iter()
+                        .any(|(quantizer, _)| *quantizer == predicted_quantizer)
+                    {
+                        return Ok(None);
+                    }
+
+                    // Modify encoder to use predicted quantizer
                     task.encoder.set_quantizer(predicted_quantizer);
 
                     Ok(Some(task))
