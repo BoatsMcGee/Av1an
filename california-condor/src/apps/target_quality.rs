@@ -342,6 +342,10 @@ impl TuiApp for TargetQualityApp {
                 .data(&scores),
         ];
         let max_scenes_label = format!("{}", self.quality_passes.len() - 1);
+        let max_quantizer = quantizers.iter().map(|(_, q)| *q).fold(0.0_f64, f64::max);
+        let max_score = scores.iter().map(|(_, s)| *s).fold(0.0_f64, f64::max);
+        let max_quantizer_score = (f64::max(max_quantizer, max_score) / 10.0).ceil() * 10.0; // Round up to nearest 10
+        let max_quantizer_score_label = format!("{}", max_quantizer_score);
         let chart = Chart::new(datasets)
             .block(
                 Block::bordered()
@@ -357,8 +361,8 @@ impl TuiApp for TargetQualityApp {
             .y_axis(
                 Axis::default()
                     .title("Quantizer/Score")
-                    .bounds([0.0, 100.0])
-                    .labels(["0", "100"]),
+                    .bounds([0.0, max_quantizer_score])
+                    .labels(["0", &max_quantizer_score_label]),
             );
         frame.render_widget(chart, layout[1]);
 
