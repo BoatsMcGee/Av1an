@@ -23,8 +23,12 @@ use crate::commands::config::ConfigSubcommand;
 
 pub mod benchmarker;
 pub mod config;
+pub mod convex_hull;
+pub mod detect_noise;
 pub mod detect_scenes;
 pub mod init;
+pub mod optimize_bitrate;
+pub mod scale_noise;
 pub mod start;
 pub mod target_quality;
 
@@ -201,6 +205,51 @@ pub enum Commands {
         /// Skip Scene Detection. Useful when encoding a subset of scenes.
         #[arg(long, default_value_t = false)]
         skip_scd:          bool,
+    },
+    /// Detect noise per scene (Triggers TUI)
+    DetectNoise {
+        /// Override the input VapourSynth script for noise detection
+        #[arg(long, value_name = "VPY_SCRIPT")]
+        input:   Option<PathBuf>,
+        /// Pass python argument(s) to the VapourSynth script environment
+        #[arg(long)]
+        vs_args: Option<Vec<String>>,
+    },
+    /// Scale photon noise per scene based on noise detection results
+    ScaleNoise {
+        /// Override the noise threshold
+        #[arg(long)]
+        threshold:      Option<f64>,
+        /// Override the minimum scaler
+        #[arg(long)]
+        minimum_scaler: Option<f64>,
+        /// Override the maximum scaler
+        #[arg(long)]
+        maximum_scaler: Option<f64>,
+        /// Also scale chroma noise
+        #[arg(long)]
+        scale_chroma:   bool,
+    },
+    /// Optimize bitrate for scenes that exceed normal bitrate after target
+    /// quality
+    OptimizeBitrate {
+        /// Override the bitrate sigma threshold
+        #[arg(long, value_parser = value_parser!(u8).range(1..=10))]
+        sigma_threshold: Option<u8>,
+    },
+    /// Apply speed based on quantizer per scene using convex hull
+    /// interpolation
+    ConvexHull {
+        /// Quantizer values for speed-quantizer pairs (must match number of
+        /// speeds)
+        #[arg(long, value_name = "Q", num_args = 1.., required = true,
+             requires = "speeds")]
+        quantizers: Vec<i8>,
+        /// Speed values for speed-quantizer pairs (must match number of
+        /// quantizers)
+        #[arg(long, value_name = "S", num_args = 1.., required = true,
+             requires = "quantizers")]
+        speeds:     Vec<i8>,
     },
     /// Clean temporary files
     Clean {
