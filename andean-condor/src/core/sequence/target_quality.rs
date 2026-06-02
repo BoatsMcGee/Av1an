@@ -588,6 +588,7 @@ impl TargetQuality {
             EncoderBase::AOM | EncoderBase::VPX => (5, 55),
             EncoderBase::RAV1E => (50, 140),
             EncoderBase::SVTAV1 => (5, 55),
+            EncoderBase::AVM => (5, 250),
             EncoderBase::X264 | EncoderBase::X265 => (5, 35),
             EncoderBase::VVenC => (5, 35),
             EncoderBase::FFmpeg => (15, 50),
@@ -687,6 +688,33 @@ impl TargetQuality {
                 }
 
                 Encoder::SVTAV1 {
+                    executable:   executable.clone(),
+                    pass:         *pass,
+                    options:      sanitized_options,
+                    photon_noise: photon_noise.clone(),
+                }
+            },
+            Encoder::AVM {
+                executable,
+                pass,
+                options,
+                photon_noise,
+            } => {
+                let psychovisual_parameters: HashMap<String, CLIParameter> =
+                    std::iter::once(("film-grain-table", CLIParameter::new_string("--", "=", "")))
+                        .map(|(key, value)| (key.to_owned(), value))
+                        .collect();
+
+                let mut sanitized_options = options.clone();
+                for (key, value) in psychovisual_parameters {
+                    if let Some((_key, unsanitized_value)) = sanitized_options.get_key_value(&key)
+                        && unsanitized_value.matches(&value)
+                    {
+                        sanitized_options.remove(&key);
+                    }
+                }
+
+                Encoder::AVM {
                     executable:   executable.clone(),
                     pass:         *pass,
                     options:      sanitized_options,

@@ -225,6 +225,12 @@ pub fn start_handler(
                 options,
                 photon_noise: None,
             },
+            EncoderBase::AVM => Encoder::AVM {
+                executable: None,
+                pass,
+                options,
+                photon_noise: None,
+            },
             EncoderBase::X264 => Encoder::X264 {
                 executable: None,
                 pass,
