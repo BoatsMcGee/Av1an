@@ -63,6 +63,9 @@ impl Encoder {
             Encoder::SVTAV1 {
                 executable, ..
             } => ("SvtAv1EncApp", executable),
+            Encoder::AVM {
+                executable, ..
+            } => ("avmenc", executable),
             Encoder::X264 {
                 executable, ..
             } => ("x264", executable),
@@ -203,6 +206,35 @@ impl Encoder {
                         },
                     ),
                 ]));
+                for (key, value) in params {
+                    match value.to_string_pair(&key) {
+                        (Some(prefixed_key), Some(separate_value)) => {
+                            parameters.push(prefixed_key);
+                            parameters.push(separate_value);
+                        },
+                        (Some(prefixed_and_delimited), None) => {
+                            parameters.push(prefixed_and_delimited);
+                        },
+                        _ => (), // Boolean/Flag set to false, nothing to push
+                    }
+                }
+
+                parameters
+            },
+            Encoder::AVM {
+                options, ..
+            } => {
+                let mut parameters = ["-".to_owned()].to_vec();
+                let mut params = options.clone();
+                params.extend(pass_parameters);
+                params.extend(CLIParameter::new_strings("-", " ", &[(
+                    "o",
+                    if pass.0 == pass.1 {
+                        output_path
+                    } else {
+                        NULL_OUTPUT
+                    },
+                )]));
                 for (key, value) in params {
                     match value.to_string_pair(&key) {
                         (Some(prefixed_key), Some(separate_value)) => {
@@ -633,6 +665,7 @@ impl Encoder {
 
         static BUFFER_CAPACITY: usize = 128;
         let base_encoder = self.base();
+        let base_encoder_clone = base_encoder;
 
         // println!("Encoding with params: {:?}", self.parameters(pass, output));
         // let mut system = sysinfo::System::new();
@@ -647,11 +680,73 @@ impl Encoder {
         // Data produced and consumed throughout
         let frames_encoded = Arc::new(AtomicU64::new(0));
         let frames_encoded_clone = Arc::clone(&frames_encoded);
+        let stdout_frames_encoded_clone = Arc::clone(&frames_encoded);
+        let stdout_output = Arc::new(Mutex::new(String::with_capacity(BUFFER_CAPACITY)));
+        let stdout_output_clone = Arc::clone(&stdout_output);
         let stderr_output = Arc::new(Mutex::new(String::with_capacity(BUFFER_CAPACITY)));
         let stderr_output_clone = Arc::clone(&stderr_output);
 
         let mut stdin = encoder.stdin.take().expect("Encoder should have STDIN");
+        let stdout = encoder.stdout.take().expect("Encoder should have STDOUT"); // For AVM progress only
         let stderr = encoder.stderr.take().expect("Encoder should have STDERR");
+
+        let progress_tx_clone = progress_tx.clone();
+        let encoder_stdout_thread = thread::spawn(move || -> Result<_> {
+            if !matches!(base_encoder_clone, EncoderBase::AVM) {
+                return Ok(());
+            }
+
+            let mut reader = BufReader::new(stdout);
+            let mut buf = Vec::with_capacity(BUFFER_CAPACITY);
+            let mut count = 0;
+
+            loop {
+                match reader.read_until(b'\r', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let line = buf.clone();
+                        let usage = EncodeResourceUsage {
+                            cpu:    0.0,
+                            memory: 0,
+                        };
+
+                        if let Ok(line) = simdutf8::basic::from_utf8(&line) {
+                            // This needs to be done before parse_encoded_frames, as it potentially
+                            // mutates the string - Not sure if this applies anymore -Boats
+                            let mut stdout_output_lock =
+                                stdout_output_clone.lock().expect("mutex should acquire lock");
+                            // println!("STDOUT: {}", line);
+                            stdout_output_lock.push_str(line);
+                            stdout_output_lock.push('\n');
+
+                            // if let Some(latest_frame) =
+                            //     Encoder::parse_encoded_frames_base(&base_encoder_clone, line)
+                            //     && latest_frame
+                            //         > stdout_frames_encoded_clone.load(Ordering::Relaxed)
+                            // {
+                            if line.contains("POC:") {
+                                count += 1;
+                                let latest_frame = count;
+                                stdout_frames_encoded_clone.store(latest_frame, Ordering::Relaxed);
+
+                                progress_tx_clone
+                                    .send(EncodeProgress {
+                                        pass,
+                                        frame: latest_frame as usize,
+                                        usage,
+                                    })
+                                    .map_err(|_| anyhow::Error::msg("Failed to send progress"))?;
+                            }
+                        }
+
+                        buf.clear();
+                    },
+                    Err(e) => return Err(e.into()),
+                }
+            }
+
+            Ok(())
+        });
 
         let encoder_stderr_thread = thread::spawn(move || -> Result<_> {
             let mut reader = BufReader::new(stderr);
@@ -729,7 +824,7 @@ impl Encoder {
             Ok(())
         });
 
-        let encoder_stdout_thread = thread::spawn(move || -> Result<_> {
+        let encoder_output_thread = thread::spawn(move || -> Result<_> {
             let encoder_output = encoder.wait_with_output().expect("Encoder should finish");
             Ok(encoder_output)
         });
@@ -737,11 +832,15 @@ impl Encoder {
             .join()
             .map_err(|_| anyhow::Error::msg("Failed to join STDIN thread"))?
             .ok();
+        encoder_stdout_thread
+            .join()
+            .map_err(|_| anyhow::Error::msg("Failed to join STDOUT thread"))?
+            .ok();
         encoder_stderr_thread
             .join()
             .map_err(|_| anyhow::Error::msg("Failed to join STDERR thread"))?
             .ok();
-        let encoder_output = encoder_stdout_thread
+        let encoder_output = encoder_output_thread
             .join()
             .map_err(|_| anyhow::Error::msg("Failed to join STDOUT thread"))??;
 
@@ -904,6 +1003,14 @@ impl Encoder {
                 } => Some(*value),
                 _ => None,
             }),
+            Encoder::AVM {
+                options, ..
+            } => options.get("qp").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(*value),
+                _ => None,
+            }),
             Encoder::VPX {
                 options, ..
             } => options.get("cq-level").and_then(|p| match p {
@@ -968,6 +1075,12 @@ impl Encoder {
                 "crf".to_owned(),
                 CLIParameter::new_number("--", " ", quantizer),
             ),
+            Encoder::AVM {
+                options, ..
+            } => options.insert(
+                "qp".to_owned(),
+                CLIParameter::new_number("--", "=", quantizer),
+            ),
             Encoder::VPX {
                 options, ..
             } => options.insert(
@@ -1021,6 +1134,12 @@ impl Encoder {
             } => options.insert(
                 "preset".to_owned(),
                 CLIParameter::new_number("--", " ", speed as f64),
+            ),
+            Encoder::AVM {
+                options, ..
+            } => options.insert(
+                "cpu-used".to_owned(),
+                CLIParameter::new_number("--", "=", speed as f64),
             ),
             Encoder::VPX {
                 options, ..
@@ -1086,7 +1205,7 @@ impl Encoder {
     #[inline]
     pub fn parse_encoded_frames_base(encoder: &EncoderBase, line: &str) -> Option<u64> {
         match encoder {
-            EncoderBase::AOM | EncoderBase::VPX => {
+            EncoderBase::AOM | EncoderBase::VPX | EncoderBase::AVM => {
                 cfg_if! {
                     if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
                         if is_x86_feature_detected!("sse4.1") && is_x86_feature_detected!("ssse3") {

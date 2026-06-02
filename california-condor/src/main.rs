@@ -14,8 +14,12 @@ use crate::{
     commands::{
         benchmarker::benchmarker_handler,
         config::config_sub_handler,
+        convex_hull::convex_hull_handler,
+        detect_noise::detect_noise_handler,
         detect_scenes::detect_scenes_handler,
         init::init_handler,
+        optimize_bitrate::optimize_bitrate_handler,
+        scale_noise::scale_noise_handler,
         start::start_handler,
         target_quality::target_quality_handler,
         Commands,
@@ -246,6 +250,48 @@ fn run() -> anyhow::Result<()> {
             // let config_copy = configuration.clone();
             run_condor_tui(&configuration, &save_file, skip_scd)?;
         },
+        Commands::DetectNoise {
+            input,
+            vs_args,
+        } => {
+            let (configuration, save_file) =
+                detect_noise_handler(config_path.as_deref(), input.as_ref(), vs_args.as_deref())?;
+
+            run_noise_detection_tui(&configuration, &save_file)?;
+        },
+        Commands::ScaleNoise {
+            threshold,
+            minimum_scaler,
+            maximum_scaler,
+            scale_chroma,
+        } => {
+            let (configuration, save_file) = scale_noise_handler(
+                config_path.as_deref(),
+                threshold,
+                minimum_scaler,
+                maximum_scaler,
+                scale_chroma,
+            )?;
+
+            run_noise_scaler_standalone_tui(&configuration, &save_file)?;
+        },
+        Commands::OptimizeBitrate {
+            sigma_threshold,
+        } => {
+            let (configuration, save_file) =
+                optimize_bitrate_handler(config_path.as_deref(), sigma_threshold)?;
+
+            run_bitrate_optimizer_standalone_tui(&configuration, &save_file)?;
+        },
+        Commands::ConvexHull {
+            quantizers,
+            speeds,
+        } => {
+            let (configuration, save_file) =
+                convex_hull_handler(config_path.as_deref(), quantizers, speeds)?;
+
+            run_convex_hull_standalone_tui(&configuration, &save_file)?;
+        },
         Commands::Clean {
             all,
         } => {
@@ -472,6 +518,115 @@ pub fn run_target_quality_tui(configuration: &Configuration, save_file: &Path) -
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
+pub fn run_noise_detection_tui(configuration: &Configuration, save_file: &Path) -> Result<()> {
+    let config_copy = configuration.clone();
+    let save_file_copy = save_file.to_path_buf();
+    debug!("Instantiating Condor with {:?}", {
+        let mut config = configuration.clone();
+        config.condor.scenes = Vec::new();
+        config
+    });
+    let mut condor: Condor<configuration::CliSequenceData, configuration::CliSequenceConfig> =
+        configuration.instantiate_condor(Box::new(move |data| {
+            let mut config = config_copy.clone();
+            config.condor = data;
+            Configuration::save(&config, &save_file_copy)?;
+            Ok(())
+        }))?;
+
+    run_noise_detector_tui(
+        &mut condor,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_noise_scaler_standalone_tui(
+    configuration: &Configuration,
+    save_file: &Path,
+) -> Result<()> {
+    let config_copy = configuration.clone();
+    let save_file_copy = save_file.to_path_buf();
+    debug!("Instantiating Condor with {:?}", {
+        let mut config = configuration.clone();
+        config.condor.scenes = Vec::new();
+        config
+    });
+    let mut condor: Condor<configuration::CliSequenceData, configuration::CliSequenceConfig> =
+        configuration.instantiate_condor(Box::new(move |data| {
+            let mut config = config_copy.clone();
+            config.condor = data;
+            Configuration::save(&config, &save_file_copy)?;
+            Ok(())
+        }))?;
+
+    run_noise_scaler_tui(
+        &mut condor,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_bitrate_optimizer_standalone_tui(
+    configuration: &Configuration,
+    save_file: &Path,
+) -> Result<()> {
+    let config_copy = configuration.clone();
+    let save_file_copy = save_file.to_path_buf();
+    debug!("Instantiating Condor with {:?}", {
+        let mut config = configuration.clone();
+        config.condor.scenes = Vec::new();
+        config
+    });
+    let mut condor: Condor<configuration::CliSequenceData, configuration::CliSequenceConfig> =
+        configuration.instantiate_condor(Box::new(move |data| {
+            let mut config = config_copy.clone();
+            config.condor = data;
+            Configuration::save(&config, &save_file_copy)?;
+            Ok(())
+        }))?;
+
+    run_bitrate_optimizer_tui(
+        &mut condor,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_convex_hull_standalone_tui(
+    configuration: &Configuration,
+    save_file: &Path,
+) -> Result<()> {
+    let config_copy = configuration.clone();
+    let save_file_copy = save_file.to_path_buf();
+    debug!("Instantiating Condor with {:?}", {
+        let mut config = configuration.clone();
+        config.condor.scenes = Vec::new();
+        config
+    });
+    let mut condor: Condor<configuration::CliSequenceData, configuration::CliSequenceConfig> =
+        configuration.instantiate_condor(Box::new(move |data| {
+            let mut config = config_copy.clone();
+            config.condor = data;
+            Configuration::save(&config, &save_file_copy)?;
+            Ok(())
+        }))?;
+
+    run_convex_hull_tui(
+        &mut condor,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )?;
+
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum CondorCliError {
     #[error("Cannot initialize over an existing config file: {0}")]
@@ -486,4 +641,10 @@ pub enum CondorCliError {
     NoConfigOrInputOrOutput,
     #[error("Cannot set Decoder without a valid Input path")]
     DecoderWithoutInput,
+    #[error("No config file found. Run 'condor init' to create a configuration.")]
+    NoConfig,
+    #[error("No scenes found in the config. Run 'condor detect-scenes' to populate scenes")]
+    NoScenes,
+    #[error("Input {0} must be a VapourSynth script (.vpy or .py)")]
+    InvalidVapourSynthScript(PathBuf),
 }

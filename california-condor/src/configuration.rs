@@ -89,10 +89,11 @@ impl Configuration {
         output: &Path,
         temp: Option<&Path>,
         vs_args: Option<&[String]>,
+        decoder: Option<&DecoderMethod>,
     ) -> Result<Self> {
         let cwd = std::env::current_dir()?;
         let temp = temp.map_or_else(|| cwd.join(hash_path(input)), PathBuf::from);
-        let input_data = Self::new_input_model(input, Some(&DecoderMethod::BestSource), vs_args)?;
+        let input_data = Self::new_input_model(input, decoder, vs_args)?;
         info!("Indexing input...");
         let mut input_instance = Input::from_data(&input_data)?;
         let clip_info = input_instance.clip_info()?;
@@ -339,13 +340,7 @@ impl Configuration {
                     vs_args,
                 )?,
             },
-            None => Self::new_vs_input_model(
-                input,
-                Some(VapourSynthImportMethod::BestSource {
-                    index: None
-                }),
-                vs_args,
-            )?,
+            None => Self::new_vs_input_model(input, None, vs_args)?,
         };
 
         Ok(input_model)

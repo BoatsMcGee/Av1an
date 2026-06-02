@@ -103,7 +103,7 @@ pub fn start_handler(
             let input = path_abs::PathAbs::new(input_path)?.as_path().to_path_buf();
             let output = path_abs::PathAbs::new(output_path)?.as_path().to_path_buf();
             debug!("TEMP: {temp:?}", temp = temp_path);
-            Configuration::new(&input, &output, temp_path, vs_args)?
+            Configuration::new(&input, &output, temp_path, vs_args, decoder)?
         }
     };
 
@@ -220,6 +220,12 @@ pub fn start_handler(
                 options,
             },
             EncoderBase::SVTAV1 => Encoder::SVTAV1 {
+                executable: None,
+                pass,
+                options,
+                photon_noise: None,
+            },
+            EncoderBase::AVM => Encoder::AVM {
                 executable: None,
                 pass,
                 options,

@@ -20,6 +20,8 @@ pub enum EncoderBase {
     VPX,
     #[strum(serialize = "svt-av1")]
     SVTAV1,
+    #[strum(serialize = "avm")]
+    AVM,
     #[strum(serialize = "x264")]
     X264,
     #[strum(serialize = "x265")]
@@ -93,6 +95,19 @@ impl EncoderBase {
                 ("crf", 25.0),
                 ("progress", 2.0),
             ]),
+            EncoderBase::AVM => {
+                let mut parameters = CLIParameter::new_numbers("--", "=", &[
+                    ("threads", 8.0),
+                    ("cpu-used", 6.0),
+                    ("qp", 30.0),
+                    ("kf-max-dist", 9999.0),
+                ]);
+                parameters.insert(
+                    "end-usage".to_owned(),
+                    CLIParameter::new_string("--", "=", "q"),
+                );
+                parameters
+            },
             EncoderBase::X264 => {
                 let mut parameters =
                     CLIParameter::new_numbers("--", " ", &[("crf", 25.0), ("scenecut", 0.0)]);
@@ -276,6 +291,44 @@ impl EncoderBase {
                     },
                 }
             },
+            EncoderBase::AVM => {
+                let mut parameters = HashMap::new();
+                match pass {
+                    (1, 1) => parameters,
+                    (1, _) => {
+                        parameters.extend(CLIParameter::new_numbers("--", "=", &[
+                            ("passes", 2.0),
+                            ("pass", 1.0),
+                        ]));
+                        parameters.insert(
+                            "fpf".to_owned(),
+                            CLIParameter::new_string(
+                                "--",
+                                "=",
+                                &format!("{}.log", first_pass_file_name),
+                            ),
+                        );
+
+                        parameters
+                    },
+                    (_, _) => {
+                        parameters.extend(CLIParameter::new_numbers("--", "=", &[
+                            ("passes", 2.0),
+                            ("pass", 2.0),
+                        ]));
+                        parameters.insert(
+                            "fpf".to_owned(),
+                            CLIParameter::new_string(
+                                "--",
+                                "=",
+                                &format!("{}.log", first_pass_file_name),
+                            ),
+                        );
+
+                        parameters
+                    },
+                }
+            },
             EncoderBase::X264 => {
                 let mut parameters = HashMap::new();
 
@@ -378,7 +431,11 @@ impl EncoderBase {
     #[inline]
     pub fn output_extension(&self) -> &'static str {
         match self {
-            EncoderBase::AOM | EncoderBase::RAV1E | EncoderBase::VPX | EncoderBase::SVTAV1 => "ivf",
+            EncoderBase::AOM
+            | EncoderBase::RAV1E
+            | EncoderBase::VPX
+            | EncoderBase::SVTAV1
+            | EncoderBase::AVM => "ivf",
             EncoderBase::X264 => "264",
             EncoderBase::X265 => "hevc",
             EncoderBase::VVenC => "266",
@@ -393,6 +450,7 @@ impl EncoderBase {
             EncoderBase::RAV1E => "rav1e",
             EncoderBase::VPX => "WebM VP8/VP9",
             EncoderBase::SVTAV1 => "Scalable Video Technology for AV1",
+            EncoderBase::AVM => "Alliance for Open Media Video Model",
             EncoderBase::X264 => "x264",
             EncoderBase::X265 => "x265",
             EncoderBase::VVenC => "Fraunhofer Versatile Video Encoder",
@@ -421,6 +479,12 @@ pub enum Encoder {
         options:    HashMap<String, CLIParameter>,
     },
     SVTAV1 {
+        executable:   Option<PathBuf>,
+        pass:         EncoderPasses,
+        options:      HashMap<String, CLIParameter>,
+        photon_noise: Option<PhotonNoise>,
+    },
+    AVM {
         executable:   Option<PathBuf>,
         pass:         EncoderPasses,
         options:      HashMap<String, CLIParameter>,
@@ -463,6 +527,9 @@ impl Encoder {
             Encoder::SVTAV1 {
                 ..
             } => EncoderBase::SVTAV1,
+            Encoder::AVM {
+                ..
+            } => EncoderBase::AVM,
             Encoder::X264 {
                 ..
             } => EncoderBase::X264,
@@ -510,6 +577,12 @@ impl Encoder {
                 options,
                 photon_noise: None,
             },
+            EncoderBase::AVM => Encoder::AVM {
+                executable: None,
+                pass,
+                options,
+                photon_noise: None,
+            },
             EncoderBase::X264 => Encoder::X264 {
                 executable: None,
                 pass,
@@ -547,6 +620,9 @@ impl Encoder {
             Encoder::SVTAV1 {
                 pass, ..
             } => *pass,
+            Encoder::AVM {
+                pass, ..
+            } => *pass,
             Encoder::X264 {
                 pass, ..
             } => *pass,
@@ -575,6 +651,9 @@ impl Encoder {
                 pass, ..
             } => Some(pass),
             Encoder::SVTAV1 {
+                pass, ..
+            } => Some(pass),
+            Encoder::AVM {
                 pass, ..
             } => Some(pass),
             Encoder::X264 {
@@ -615,6 +694,9 @@ impl Encoder {
             Encoder::SVTAV1 {
                 options, ..
             } => options,
+            Encoder::AVM {
+                options, ..
+            } => options,
             Encoder::X264 {
                 options, ..
             } => options,
@@ -643,6 +725,9 @@ impl Encoder {
                 options, ..
             } => options,
             Encoder::SVTAV1 {
+                options, ..
+            } => options,
+            Encoder::AVM {
                 options, ..
             } => options,
             Encoder::X264 {

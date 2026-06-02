@@ -259,7 +259,6 @@ where
                         })
                 })
                 .map(|mut task| {
-                    // Modify encoder to use predicted quantizer
                     let quantizer_score_history = task
                         .passes
                         .iter()
@@ -317,6 +316,16 @@ where
                             _ => 1.0,
                         },
                     )?;
+
+                    // Skip already processed quantizer
+                    if quantizer_score_history
+                        .iter()
+                        .any(|(quantizer, _)| *quantizer == predicted_quantizer)
+                    {
+                        return Ok(None);
+                    }
+
+                    // Modify encoder to use predicted quantizer
                     task.encoder.set_quantizer(predicted_quantizer);
 
                     Ok(Some(task))
@@ -456,10 +465,70 @@ where
                     .sequence_data
                     .get_target_quality_mut()?
                     .passes = completed_task.passes.clone();
+
+                // Perform additional prediction
+                let quantizer_score_history = completed_task
+                    .passes
+                    .iter()
+                    .map(|quality_pass| {
+                        (
+                            quality_pass.quantizer,
+                            config.probing.statistic.calculate(&quality_pass.scores),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let sorted_quantizer_score_history = quantizer_score_history
+                    .iter()
+                    .sorted_by(|(_, score1), (_, score2)| {
+                        score1.partial_cmp(score2).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .collect::<Vec<_>>();
+                let inverse_metric = matches!(config.metric, QualityMetric::BUTTERAUGLI { .. });
+                let target_score =
+                    config.metric.target_range().0.midpoint(config.metric.target_range().1);
+                let lower_quantizer_bound = sorted_quantizer_score_history
+                    .iter()
+                    .find(|(_quantizer, score)| {
+                        if inverse_metric {
+                            *score < target_score
+                        } else {
+                            *score > target_score
+                        }
+                    })
+                    .map_or(config.quantizer_range.0 as f64, |(quantizer, _)| *quantizer);
+                let upper_quantizer_bound = sorted_quantizer_score_history
+                    .iter()
+                    .rfind(|(_quantizer, score)| {
+                        if inverse_metric {
+                            *score > target_score
+                        } else {
+                            *score < target_score
+                        }
+                    })
+                    .map_or(config.quantizer_range.1 as f64, |(quantizer, _)| *quantizer);
+                let predicted_quantizer = TargetQuality::predict_quantizer(
+                    (lower_quantizer_bound, upper_quantizer_bound),
+                    target_score,
+                    config.interpolators,
+                    &quantizer_score_history,
+                    match completed_task.encoder {
+                        Encoder::X264 {
+                            ..
+                        }
+                        | Encoder::X265 {
+                            ..
+                        } => 0.25,
+                        Encoder::SVTAV1 {
+                            ..
+                        } => 1.0, // TODO: Implement svt_av1_supports_quarter_steps()
+                        _ => 1.0,
+                    },
+                )?;
+
                 // Update Scene Encoder quantizer
                 condor.scenes[completed_task.original_index]
                     .encoder
-                    .set_quantizer(completed_task.encoder.quantizer().expect("quantizer exists"));
+                    .set_quantizer(predicted_quantizer);
 
                 let quality_pass = completed_task.passes.last().expect("passes is not empty");
 
@@ -519,6 +588,7 @@ impl TargetQuality {
             EncoderBase::AOM | EncoderBase::VPX => (5, 55),
             EncoderBase::RAV1E => (50, 140),
             EncoderBase::SVTAV1 => (5, 55),
+            EncoderBase::AVM => (5, 250),
             EncoderBase::X264 | EncoderBase::X265 => (5, 35),
             EncoderBase::VVenC => (5, 35),
             EncoderBase::FFmpeg => (15, 50),
@@ -618,6 +688,33 @@ impl TargetQuality {
                 }
 
                 Encoder::SVTAV1 {
+                    executable:   executable.clone(),
+                    pass:         *pass,
+                    options:      sanitized_options,
+                    photon_noise: photon_noise.clone(),
+                }
+            },
+            Encoder::AVM {
+                executable,
+                pass,
+                options,
+                photon_noise,
+            } => {
+                let psychovisual_parameters: HashMap<String, CLIParameter> =
+                    std::iter::once(("film-grain-table", CLIParameter::new_string("--", "=", "")))
+                        .map(|(key, value)| (key.to_owned(), value))
+                        .collect();
+
+                let mut sanitized_options = options.clone();
+                for (key, value) in psychovisual_parameters {
+                    if let Some((_key, unsanitized_value)) = sanitized_options.get_key_value(&key)
+                        && unsanitized_value.matches(&value)
+                    {
+                        sanitized_options.remove(&key);
+                    }
+                }
+
+                Encoder::AVM {
                     executable:   executable.clone(),
                     pass:         *pass,
                     options:      sanitized_options,

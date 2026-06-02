@@ -70,7 +70,7 @@ pub fn detect_scenes_handler(
                 input.file_stem().expect("input is a file").display()
             ));
             let output = path_abs::PathAbs::new(output)?.as_path().to_path_buf();
-            Configuration::new(&input, &output, temp_path, vs_args)?
+            Configuration::new(&input, &output, temp_path, vs_args, decoder)?
         }
     };
 
