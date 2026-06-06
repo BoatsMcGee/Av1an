@@ -3,13 +3,12 @@ use std::path::Path;
 use andean_condor::models::{
     encoder::{photon_noise::PhotonNoise, Encoder, EncoderBase, EncoderPasses},
     input::{ImportMethod, Input as InputModel, VapourSynthImportMethod},
-    sequence::scene_concatenator::ConcatMethod,
 };
 use anyhow::{bail, Result};
 use tracing::{error, info};
 
 use crate::{
-    commands::DecoderMethod,
+    commands::{DecoderMethod, EncoderMethod},
     configuration::Configuration,
     utils::parameter_parser::EncoderParamsParser,
     CondorCliError,
@@ -24,7 +23,7 @@ pub fn init_handler(
     temp_path: Option<&Path>,
     decoder: Option<&DecoderMethod>,
     vs_args: Option<&[String]>,
-    encoder: Option<&EncoderBase>,
+    encoder: Option<&EncoderMethod>,
     passes: Option<u8>,
     params: Option<String>,
     photon_noise: Option<u32>,
@@ -83,6 +82,7 @@ pub fn init_handler(
     // configuration.condor.sequence_config.scene_concatenator.method =
     // ConcatMethod::MKVMerge;
     if let Some(encoder) = encoder {
+        let encoder = encoder.as_encoder_base();
         let options = encoder.default_parameters();
         let pass = encoder.default_passes();
         configuration.condor.encoder = match encoder {

@@ -23,21 +23,25 @@ pub enum Input {
 
 #[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display)]
 pub enum VapourSynthImportMethod {
+    /// [L-SMASH-Works](https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works)
     LSMASHWorks {
         // plugin_path: Option<PathBuf>,
         index: Option<u8>,
         // cache_path: Option<PathBuf>,
     },
+    /// [DGDecodeNV](https://www.rationalqm.us/dgdecnv/dgdecnv.html)
     DGDecNV {
         // plugin_path:          Option<PathBuf>,
         // cache_path:           Option<PathBuf>,
         dgindexnv_executable: Option<PathBuf>,
     },
+    /// [FFmpegSource](https://github.com/ffms/ffms2)
     FFMS2 {
         // plugin_path: Option<PathBuf>,
         index: Option<u8>,
         // cache_path: Option<PathBuf>,
     },
+    /// [BestSource](https://github.com/vapoursynth/bestsource).
     BestSource {
         // plugin_path: Option<PathBuf>,
         index: Option<u8>,

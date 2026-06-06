@@ -16,7 +16,7 @@ use anyhow::{bail, Result};
 use tracing::{debug, error, trace};
 
 use crate::{
-    commands::DecoderMethod,
+    commands::{DecoderMethod, EncoderMethod},
     configuration::{ConfigError, Configuration},
     utils::parameter_parser::EncoderParamsParser,
     CondorCliError,
@@ -31,7 +31,7 @@ pub fn benchmarker_handler(
     decoder: Option<&DecoderMethod>,
     filters: Option<&[VapourSynthFilter]>,
     vs_args: Option<&[String]>,
-    encoder: Option<&EncoderBase>,
+    encoder: Option<&EncoderMethod>,
     passes: Option<u8>,
     params: Option<String>,
     threshold: Option<u8>,
@@ -149,6 +149,7 @@ pub fn benchmarker_handler(
         configuration.input_filters = filters.to_vec();
     }
     if let Some(encoder) = encoder {
+        let encoder = encoder.as_encoder_base();
         let options = encoder.default_parameters();
         let pass = encoder.default_passes();
         configuration.condor.encoder = match encoder {
