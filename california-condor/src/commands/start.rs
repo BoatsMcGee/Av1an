@@ -29,7 +29,13 @@ use anyhow::{bail, Result};
 use tracing::{debug, error, trace};
 
 use crate::{
-    commands::{DecoderMethod, TargetQualityMetric, TargetQualityProfile},
+    commands::{
+        ConcatenationMethod,
+        DecoderMethod,
+        EncoderMethod,
+        TargetQualityMetric,
+        TargetQualityProfile,
+    },
     configuration::{ConfigError, Configuration},
     utils::parameter_parser::EncoderParamsParser,
     CondorCliError,
@@ -51,9 +57,9 @@ pub fn start_handler(
     vs_args: Option<&[String]>,
     scd_vs_args: Option<&[String]>,
     tq_vs_args: Option<&[String]>,
-    concat: Option<&ConcatMethod>,
+    concat: Option<&ConcatenationMethod>,
     workers: Option<u8>,
-    encoder: Option<&EncoderBase>,
+    encoder: Option<&EncoderMethod>,
     passes: Option<u8>,
     params: Option<String>,
     tq_params: Option<String>,
@@ -193,12 +199,18 @@ pub fn start_handler(
         configuration.condor.output.path = output;
     }
     if let Some(concat) = concat {
-        configuration.condor.sequence_config.scene_concatenator.method = *concat;
+        let concat = match concat {
+            ConcatenationMethod::MkvMerge => ConcatMethod::MKVMerge,
+            ConcatenationMethod::FFmpeg => ConcatMethod::FFmpeg,
+            ConcatenationMethod::Ivf => ConcatMethod::Ivf,
+        };
+        configuration.condor.sequence_config.scene_concatenator.method = concat;
     }
     if let Some(workers) = workers {
         configuration.condor.sequence_config.parallel_encoder.workers = Some(workers);
     }
     if let Some(encoder) = encoder {
+        let encoder = encoder.as_encoder_base();
         let options = encoder.default_parameters();
         let pass = encoder.default_passes();
         configuration.condor.encoder = match encoder {

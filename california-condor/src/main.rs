@@ -6,7 +6,7 @@ use std::{
 
 use andean_condor::core::Condor;
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use thiserror::Error;
 use tracing::{debug, info, level_filters::LevelFilter};
 
@@ -17,6 +17,7 @@ use crate::{
         convex_hull::convex_hull_handler,
         detect_noise::detect_noise_handler,
         detect_scenes::detect_scenes_handler,
+        help_text::process_command_tree,
         init::init_handler,
         optimize_bitrate::optimize_bitrate_handler,
         scale_noise::scale_noise_handler,
@@ -62,24 +63,33 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run() -> anyhow::Result<()> {
-    let cli = CondorCli::parse();
+    let mut cmd = CondorCli::command();
+    cmd = process_command_tree(cmd);
+    let matches = cmd.get_matches();
+    let cli = CondorCli::from_arg_matches(&matches).map_err(|err| err.exit())?;
+
     let cwd = std::env::current_dir()?;
     let config_path = cli.config_file;
     let logs = cli.logs.unwrap_or_else(|| cwd.join(DEFAULT_LOG_PATH));
-    init_logging(
-        LevelFilter::INFO,
-        &logs,
-        if cli.verbose {
-            LevelFilter::TRACE
-        } else {
-            LevelFilter::DEBUG
-        },
-    )?;
+    let set_logs = |log_path: &Path| {
+        init_logging(
+            LevelFilter::INFO,
+            log_path,
+            if cli.verbose {
+                LevelFilter::TRACE
+            } else {
+                LevelFilter::DEBUG
+            },
+        )
+    };
+    set_logs(&logs)?;
 
     match cli.command {
         Commands::Init {
             input,
             output,
+            config_file,
+            logs,
             temp,
             decoder,
             vs_args,
@@ -89,8 +99,11 @@ fn run() -> anyhow::Result<()> {
             photon_noise,
             chroma_noise,
         } => {
+            if let Some(log_path) = logs {
+                set_logs(&log_path)?;
+            }
             init_handler(
-                config_path.as_deref(),
+                config_file.or(config_path).as_deref(),
                 input.as_path(),
                 output.as_path(),
                 temp.as_deref(),
