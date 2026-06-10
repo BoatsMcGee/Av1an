@@ -319,6 +319,31 @@ where
                             total:     frames as u64,
                         },
                     }))?;
+                } else {
+                    // No scene cuts detected and duration is shorter than maximum length
+                    let scene = Scene {
+                        encoder:       condor.encoder.clone(),
+                        start_frame:   0,
+                        end_frame:     frames,
+                        sub_scenes:    None,
+                        sequence_data: DataHandler::default(),
+                    };
+                    condor.scenes.push(scene.clone());
+                    progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                        id:         DETAILS.name.to_owned(),
+                        completion: SequenceCompletion::Custom {
+                            name:      "new-scene".to_owned(),
+                            completed: scene.start_frame as f64,
+                            total:     scene.end_frame as f64,
+                        },
+                    }))?;
+                    progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                        id:         DETAILS.name.to_owned(),
+                        completion: SequenceCompletion::Frames {
+                            completed: frames as u64,
+                            total:     frames as u64,
+                        },
+                    }))?;
                 }
 
                 condor.save()?;
