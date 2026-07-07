@@ -8,7 +8,7 @@ use crate::{
         Condor,
     },
     models::sequence::{
-        convex_hull::ConvexHullConfigHandler,
+        speed_scaler::SpeedScalerConfigHandler,
         SequenceConfigHandler,
         SequenceDataHandler,
     },
@@ -22,12 +22,12 @@ static DETAILS: SequenceDetails = SequenceDetails {
 };
 
 #[derive(Default)]
-pub struct ConvexHull {}
+pub struct SpeedScaler {}
 
-impl<Data, Config> Sequence<Data, Config> for ConvexHull
+impl<Data, Config> Sequence<Data, Config> for SpeedScaler
 where
     Data: SequenceDataHandler,
-    Config: SequenceConfigHandler + ConvexHullConfigHandler,
+    Config: SequenceConfigHandler + SpeedScalerConfigHandler,
 {
     #[inline]
     fn details(&self) -> SequenceDetails {
@@ -40,17 +40,17 @@ where
         condor: &mut Condor<Data, Config>,
     ) -> anyhow::Result<((), Vec<anyhow::Error>)> {
         let mut warnings = vec![];
-        let speed_quantizers = &condor.sequence_config.convex_hull()?.speed_quantizers;
+        let speed_quantizers = &condor.sequence_config.speed_scaler()?.speed_quantizers;
         // Ensure we have at least 2 pairs for interpolation
         if speed_quantizers.len() < 2 {
             warnings.push(anyhow::Error::new(
-                ConvexHullError::MinimumSpeedQuantizerPairsRequired,
+                SpeedScalerError::MinimumSpeedQuantizerPairsRequired,
             ));
         }
 
         // Ensure scenes is not empty
         if condor.scenes.is_empty() {
-            warnings.push(anyhow::Error::new(ConvexHullError::ScenesEmpty));
+            warnings.push(anyhow::Error::new(SpeedScalerError::ScenesEmpty));
         }
         Ok(((), warnings))
     }
@@ -73,7 +73,7 @@ where
         _progress_tx: sync::mpsc::Sender<SequenceStatus>,
         _cancelled: Arc<AtomicBool>,
     ) -> anyhow::Result<((), Vec<anyhow::Error>)> {
-        let speed_quantizers = &condor.sequence_config.convex_hull()?.speed_quantizers;
+        let speed_quantizers = &condor.sequence_config.speed_scaler()?.speed_quantizers;
         // Ensure we have at least 2 pairs for interpolation and scenes is not empty
         if speed_quantizers.len() < 2 || condor.scenes.is_empty() {
             return Ok(((), vec![]));
@@ -113,12 +113,12 @@ where
     }
 }
 
-impl ConvexHull {
+impl SpeedScaler {
     pub const DETAILS: SequenceDetails = DETAILS;
 }
 
 #[derive(Debug, Error)]
-pub enum ConvexHullError {
+pub enum SpeedScalerError {
     #[error("No Scenes found")]
     ScenesEmpty,
     #[error("At least 2 speed-quantizer pairs are required")]

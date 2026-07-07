@@ -36,14 +36,12 @@ const fn short_help(s: &str) -> &str {
 pub const HELP_CONFIG: &str = r#"Path to the configuration file.
 
 Defaults to `./condor.json` in the current directory.
-*NOTE: Overrides top-level **--config-file**.*
 "#;
 pub const HELP_CONFIG_SHORT: &str = short_help(HELP_CONFIG);
 
 pub const HELP_LOGS: &str = r#"Path to the log file.
 
 Defaults to `./logs/condor.log` in the current directory.
-*NOTE: Overrides top-level **--logs**.*
 "#;
 pub const HELP_LOGS_SHORT: &str = short_help(HELP_LOGS);
 
@@ -117,11 +115,11 @@ Defaults to **bestsource**.
 pub const HELP_DECODER: &str = decoder_template!("input");
 pub const HELP_DECODER_SHORT: &str = short_help(HELP_DECODER);
 
-// pub const HELP_SCD_DECODER: &str = decoder_template!("Scene Detector input");
-// pub const HELP_SCD_DECODER_SHORT: &str = short_help(HELP_SCD_DECODER);
+pub const HELP_SCD_DECODER: &str = decoder_template!("Scene Detector input");
+pub const HELP_SCD_DECODER_SHORT: &str = short_help(HELP_SCD_DECODER);
 
-// pub const HELP_TQ_DECODER: &str = decoder_template!("Target Quality input");
-// pub const HELP_TQ_DECODER_SHORT: &str = short_help(HELP_TQ_DECODER);
+pub const HELP_TQ_DECODER: &str = decoder_template!("Target Quality input");
+pub const HELP_TQ_DECODER_SHORT: &str = short_help(HELP_TQ_DECODER);
 
 /// VapourSynth arguments template
 macro_rules! vs_args_template {

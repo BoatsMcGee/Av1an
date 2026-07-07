@@ -29,13 +29,13 @@ use crate::models::sequence::{
 
 pub mod benchmarker;
 pub mod bitrate_optimizer;
-pub mod convex_hull;
 pub mod noise_detector;
 pub mod noise_scaler;
 pub mod parallel_encoder;
 pub mod quality_check;
 pub mod scene_concatenator;
 pub mod scene_detector;
+pub mod speed_scaler;
 pub mod target_quality;
 
 pub trait Sequence: Default {}

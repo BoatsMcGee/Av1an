@@ -10,7 +10,7 @@ use crate::{
 
 pub mod benchmarker;
 pub mod bitrate_optimizer;
-pub mod convex_hull;
+pub mod speed_scaler;
 pub mod noise_detector;
 pub mod noise_scaler;
 pub mod parallel_encoder;

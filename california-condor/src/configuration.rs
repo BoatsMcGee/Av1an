@@ -18,7 +18,6 @@ use andean_condor::{
         sequence::{
             benchmarker::{BenchmarkerConfig, BenchmarkerConfigHandler},
             bitrate_optimizer::{BitrateOptimizerConfig, BitrateOptimizerConfigHandler},
-            convex_hull::{ConvexHullConfig, ConvexHullConfigHandler},
             noise_detector::{NoiseDetectorConfig, NoiseDetectorData, NoiseDetectorDataHandler},
             noise_scaler::{
                 NoiseScalerConfig,
@@ -41,6 +40,7 @@ use andean_condor::{
                 ScenecutMethod,
                 DEFAULT_MAX_SCENE_LENGTH_SECONDS,
             },
+            speed_scaler::{SpeedScalerConfig, SpeedScalerConfigHandler},
             target_quality::{
                 TargetQualityConfig,
                 TargetQualityConfigHandler,
@@ -92,8 +92,11 @@ impl Configuration {
         decoder: Option<&DecoderMethod>,
     ) -> Result<Self> {
         let cwd = std::env::current_dir()?;
-        let temp = temp.map_or_else(|| cwd.join(hash_path(input)), PathBuf::from);
-        let input_data = Self::new_input_model(input, decoder, vs_args)?;
+        let temp =
+            path_abs::PathAbs::new(temp.map_or_else(|| cwd.join(hash_path(input)), PathBuf::from))?
+                .as_path()
+                .to_path_buf();
+        let input_data = Self::new_input_model(input, decoder, vs_args, None)?;
         info!("Indexing input...");
         let mut input_instance = Input::from_data(&input_data)?;
         let clip_info = input_instance.clip_info()?;
@@ -128,7 +131,7 @@ impl Configuration {
                     scene_concatenator: SceneConcatenatorConfig::new(&scenes_directory),
                     target_quality:     None,
                     bitrate_optimizer:  BitrateOptimizerConfig::default(),
-                    convex_hull:        ConvexHullConfig::default(),
+                    speed_scaler:       SpeedScalerConfig::default(),
                 },
             },
             input: input.to_path_buf(),
@@ -301,12 +304,14 @@ impl Configuration {
         input: &Path,
         decoder: Option<&DecoderMethod>,
         vs_args: Option<&[String]>,
+        index: Option<u8>,
+        // cache_path: Option<&Path>, // TODO: Support Cache Path
     ) -> Result<InputModel> {
         let input_model = match decoder {
             Some(DecoderMethod::FFMS2) => InputModel::Video {
                 path:          input.to_path_buf(),
                 import_method: andean_condor::models::input::ImportMethod::FFMS2 {
-                    index: None
+                    index,
                 },
             },
             Some(method) => match method {
@@ -314,9 +319,10 @@ impl Configuration {
                 DecoderMethod::BestSource => Self::new_vs_input_model(
                     input,
                     Some(VapourSynthImportMethod::BestSource {
-                        index: None
+                        index,
                     }),
                     vs_args,
+                    index,
                 )?,
                 DecoderMethod::DGDecodeNV => Self::new_vs_input_model(
                     input,
@@ -324,23 +330,26 @@ impl Configuration {
                         dgindexnv_executable: None,
                     }),
                     vs_args,
+                    index,
                 )?,
                 DecoderMethod::LSMASHWorks => Self::new_vs_input_model(
                     input,
                     Some(VapourSynthImportMethod::LSMASHWorks {
-                        index: None
+                        index,
                     }),
                     vs_args,
+                    index,
                 )?,
                 DecoderMethod::VSFFMS2 => Self::new_vs_input_model(
                     input,
                     Some(VapourSynthImportMethod::FFMS2 {
-                        index: None
+                        index,
                     }),
                     vs_args,
+                    index,
                 )?,
             },
-            None => Self::new_vs_input_model(input, None, vs_args)?,
+            None => Self::new_vs_input_model(input, None, vs_args, index)?,
         };
 
         Ok(input_model)
@@ -351,6 +360,7 @@ impl Configuration {
         input: &Path,
         decoder: Option<VapourSynthImportMethod>,
         vs_args: Option<&[String]>,
+        index: Option<u8>,
     ) -> Result<InputModel> {
         let input_is_script = input
             .extension()
@@ -369,14 +379,14 @@ impl Configuration {
             InputModel::VapourSynthScript {
                 source: VapourSynthScriptSource::Path(input.to_path_buf()),
                 variables,
-                index: 0,
+                index: index.unwrap_or_default(),
             }
         } else {
             InputModel::VapourSynth {
                 path:          input.to_path_buf(),
                 import_method: decoder.map_or(
                     VapourSynthImportMethod::BestSource {
-                        index: None
+                        index,
                     },
                     |decoder| decoder,
                 ),
@@ -396,7 +406,7 @@ where
         + NoiseScalerConfigHandler
         + TargetQualityConfigHandler
         + BitrateOptimizerConfigHandler
-        + ConvexHullConfigHandler
+        + SpeedScalerConfigHandler
         + ParallelEncoderConfigHandler
         + SceneConcatenatorConfigHandler,
 {
@@ -408,7 +418,7 @@ where
     pub scene_concatenator: SceneConcatenatorConfig,
     pub target_quality:     Option<TargetQualityConfig>,
     pub bitrate_optimizer:  BitrateOptimizerConfig,
-    pub convex_hull:        ConvexHullConfig,
+    pub speed_scaler:       SpeedScalerConfig,
 }
 
 impl Default for CliSequenceConfig {
@@ -423,7 +433,7 @@ impl Default for CliSequenceConfig {
             scene_concatenator: SceneConcatenatorConfig::default(),
             target_quality:     None,
             bitrate_optimizer:  BitrateOptimizerConfig::default(),
-            convex_hull:        ConvexHullConfig::default(),
+            speed_scaler:       SpeedScalerConfig::default(),
         }
     }
 }
@@ -471,13 +481,13 @@ impl BitrateOptimizerConfigHandler for CliSequenceConfig {
     }
 }
 
-impl ConvexHullConfigHandler for CliSequenceConfig {
-    fn convex_hull(&self) -> Result<&ConvexHullConfig> {
-        Ok(&self.convex_hull)
+impl SpeedScalerConfigHandler for CliSequenceConfig {
+    fn speed_scaler(&self) -> Result<&SpeedScalerConfig> {
+        Ok(&self.speed_scaler)
     }
 
-    fn convex_hull_mut(&mut self) -> Result<&mut ConvexHullConfig> {
-        Ok(&mut self.convex_hull)
+    fn speed_scaler_mut(&mut self) -> Result<&mut SpeedScalerConfig> {
+        Ok(&mut self.speed_scaler)
     }
 }
 

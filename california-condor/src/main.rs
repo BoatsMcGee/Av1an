@@ -12,17 +12,21 @@ use tracing::{debug, info, level_filters::LevelFilter};
 
 use crate::{
     commands::{
-        benchmarker::benchmarker_handler,
         config::config_sub_handler,
-        convex_hull::convex_hull_handler,
-        detect_noise::detect_noise_handler,
-        detect_scenes::detect_scenes_handler,
+        handlers::{
+            benchmarker::benchmarker_handler,
+            concatenate::concatenate_handler,
+            detect_noise::detect_noise_handler,
+            detect_scenes::detect_scenes_handler,
+            encode::encode_handler,
+            init::init_handler,
+            optimize_bitrate::optimize_bitrate_handler,
+            scale_noise::scale_noise_handler,
+            scale_speed::scale_speed_handler,
+            start::start_handler,
+            target_quality::target_quality_handler,
+        },
         help_text::process_command_tree,
-        init::init_handler,
-        optimize_bitrate::optimize_bitrate_handler,
-        scale_noise::scale_noise_handler,
-        start::start_handler,
-        target_quality::target_quality_handler,
         Commands,
         CondorCli,
     },
@@ -31,13 +35,13 @@ use crate::{
     tui::{
         run_benchmarker_tui,
         run_bitrate_optimizer_tui,
-        run_convex_hull_tui,
         run_noise_detector_tui,
         run_noise_scaler_tui,
         run_parallel_encoder_tui,
         run_scene_concatenator_tui,
         run_scene_detector_tui,
-        run_tq_tui,
+        run_speed_scaler_tui,
+        run_target_quality_tui,
     },
 };
 
@@ -83,46 +87,41 @@ fn run() -> anyhow::Result<()> {
         )
     };
     set_logs(&logs)?;
+    let temp = cli.temp;
 
     match cli.command {
-        Commands::Init {
+        Some(Commands::Init {
             input,
             output,
-            config_file,
-            logs,
-            temp,
             decoder,
+            filters,
             vs_args,
+            concat,
+            workers,
             encoder,
-            passes,
             params,
             photon_noise,
-            chroma_noise,
-        } => {
-            if let Some(log_path) = logs {
-                set_logs(&log_path)?;
-            }
+            target_metric,
+            target,
+        }) => {
             init_handler(
-                config_file.or(config_path).as_deref(),
+                config_path.as_deref(),
+                temp.as_deref(),
                 input.as_path(),
                 output.as_path(),
-                temp.as_deref(),
                 decoder.as_ref(),
+                filters.as_deref(),
                 vs_args.as_deref(),
+                concat.as_ref(),
+                workers,
                 encoder.as_ref(),
-                passes,
                 params,
                 photon_noise,
-                chroma_noise,
+                target_metric,
+                target,
             )?;
         },
-        Commands::Config {
-            subcommand,
-        } => {
-            config_sub_handler(config_path, subcommand)?;
-        },
-        Commands::DetectScenes {
-            temp,
+        Some(Commands::DetectScenes {
             input,
             decoder,
             filters,
@@ -130,10 +129,10 @@ fn run() -> anyhow::Result<()> {
             method,
             min_scene_seconds,
             max_scene_seconds,
-        } => {
+        }) => {
             let (configuration, save_file) = detect_scenes_handler(
-                temp.as_deref(),
                 config_path.as_deref(),
+                temp.as_deref(),
                 input.as_deref(),
                 decoder.as_ref(),
                 filters.as_deref(),
@@ -143,10 +142,9 @@ fn run() -> anyhow::Result<()> {
                 max_scene_seconds,
             )?;
 
-            run_scene_detection_tui(&configuration, &save_file)?;
+            run_scene_detector(&configuration, &save_file)?;
         },
-        Commands::Benchmark {
-            temp,
+        Some(Commands::Benchmark {
             input,
             decoder,
             filters,
@@ -156,7 +154,7 @@ fn run() -> anyhow::Result<()> {
             params,
             threshold,
             max_memory,
-        } => {
+        }) => {
             let (configuration, save_file) = benchmarker_handler(
                 config_path.as_deref(),
                 temp.as_deref(),
@@ -171,10 +169,34 @@ fn run() -> anyhow::Result<()> {
                 max_memory,
             )?;
 
-            run_benchmark_tui(&configuration, &save_file)?;
+            run_benchmarker(&configuration, &save_file)?;
         },
-        Commands::TargetQuality {
-            temp,
+        Some(Commands::DetectNoise {
+            input,
+            vs_args,
+        }) => {
+            let (configuration, save_file) =
+                detect_noise_handler(config_path.as_deref(), input.as_deref(), vs_args.as_deref())?;
+
+            run_noise_detector(&configuration, &save_file)?;
+        },
+        Some(Commands::ScaleNoise {
+            threshold,
+            minimum_scaler,
+            maximum_scaler,
+            scale_chroma,
+        }) => {
+            let (configuration, save_file) = scale_noise_handler(
+                config_path.as_deref(),
+                threshold,
+                minimum_scaler,
+                maximum_scaler,
+                scale_chroma,
+            )?;
+
+            run_noise_scaler(&configuration, &save_file)?;
+        },
+        Some(Commands::TargetQuality {
             input,
             decoder,
             filters,
@@ -185,10 +207,10 @@ fn run() -> anyhow::Result<()> {
             minimum_quantizer,
             maximum_quantizer,
             profile,
-        } => {
+        }) => {
             let (configuration, save_file) = target_quality_handler(
-                temp.as_deref(),
                 config_path.as_deref(),
+                temp.as_deref(),
                 input.as_deref(),
                 decoder.as_ref(),
                 filters.as_deref(),
@@ -201,114 +223,108 @@ fn run() -> anyhow::Result<()> {
                 profile,
             )?;
 
-            run_target_quality_tui(&configuration, &save_file)?;
+            run_target_quality(&configuration, &save_file)?;
         },
-        Commands::Start {
-            temp,
+        Some(Commands::OptimizeBitrate {
+            sigma_threshold,
+        }) => {
+            let (configuration, save_file) =
+                optimize_bitrate_handler(config_path.as_deref(), sigma_threshold)?;
+
+            run_bitrate_optimizer(&configuration, &save_file)?;
+        },
+        Some(Commands::ScaleSpeed {
+            quantizers,
+            speeds,
+        }) => {
+            let (configuration, save_file) = scale_speed_handler(
+                config_path.as_deref(),
+                quantizers.as_deref(),
+                speeds.as_deref(),
+            )?;
+
+            run_speed_scaler(&configuration, &save_file)?;
+        },
+        Some(Commands::Encode {
             input,
-            scd_input,
-            tq_input,
             decoder,
             filters,
-            scd_filters,
-            tq_filters,
             vs_args,
-            scd_vs_args,
-            tq_vs_args,
-            output,
-            concat,
             workers,
             encoder,
             passes,
             params,
-            tq_params,
             photon_noise,
             chroma_noise,
-            target_metric,
-            target,
-            minimum_quantizer,
-            maximum_quantizer,
-            target_profile,
-            skip_scd,
-        } => {
-            let (configuration, save_file) = start_handler(
+        }) => {
+            let (configuration, save_file) = encode_handler(
                 config_path.as_deref(),
                 temp.as_deref(),
                 input.as_deref(),
-                scd_input.as_deref(),
-                tq_input.as_deref(),
-                output.as_deref(),
                 decoder.as_ref(),
                 filters.as_deref(),
-                scd_filters.as_deref(),
-                tq_filters.as_deref(),
                 vs_args.as_deref(),
-                scd_vs_args.as_deref(),
-                tq_vs_args.as_deref(),
-                concat.as_ref(),
                 workers,
                 encoder.as_ref(),
                 passes,
                 params,
-                tq_params,
                 photon_noise,
                 chroma_noise,
-                target_metric,
-                target,
-                minimum_quantizer,
-                maximum_quantizer,
-                target_profile,
             )?;
 
-            // let config_copy = configuration.clone();
-            run_condor_tui(&configuration, &save_file, skip_scd)?;
+            run_encoder(&configuration, &save_file)?;
         },
-        Commands::DetectNoise {
-            input,
-            vs_args,
-        } => {
+        Some(Commands::Concatenate {
+            method,
+        }) => {
             let (configuration, save_file) =
-                detect_noise_handler(config_path.as_deref(), input.as_ref(), vs_args.as_deref())?;
+                concatenate_handler(config_path.as_deref(), temp.as_deref(), method.as_ref())?;
 
-            run_noise_detection_tui(&configuration, &save_file)?;
+            run_concatenator(&configuration, &save_file)?;
         },
-        Commands::ScaleNoise {
-            threshold,
-            minimum_scaler,
-            maximum_scaler,
-            scale_chroma,
-        } => {
-            let (configuration, save_file) = scale_noise_handler(
-                config_path.as_deref(),
-                threshold,
-                minimum_scaler,
-                maximum_scaler,
-                scale_chroma,
-            )?;
-
-            run_noise_scaler_standalone_tui(&configuration, &save_file)?;
+        Some(Commands::Config {
+            subcommand,
+        }) => {
+            config_sub_handler(config_path, subcommand)?;
         },
-        Commands::OptimizeBitrate {
-            sigma_threshold,
-        } => {
-            let (configuration, save_file) =
-                optimize_bitrate_handler(config_path.as_deref(), sigma_threshold)?;
-
-            run_bitrate_optimizer_standalone_tui(&configuration, &save_file)?;
-        },
-        Commands::ConvexHull {
-            quantizers,
-            speeds,
-        } => {
-            let (configuration, save_file) =
-                convex_hull_handler(config_path.as_deref(), quantizers, speeds)?;
-
-            run_convex_hull_standalone_tui(&configuration, &save_file)?;
-        },
-        Commands::Clean {
+        Some(Commands::Clean {
             all,
-        } => {
+        }) => {
             todo!();
+        },
+        None => {
+            let (configuration, save_file) = start_handler(
+                config_path.as_deref(),
+                temp.as_deref(),
+                cli.input.as_deref(),
+                cli.scd_input.as_deref(),
+                cli.tq_input.as_deref(),
+                cli.output.as_deref(),
+                cli.decoder.as_ref(),
+                cli.scd_decoder.as_ref(),
+                cli.tq_decoder.as_ref(),
+                cli.filters.as_deref(),
+                cli.scd_filters.as_deref(),
+                cli.tq_filters.as_deref(),
+                cli.vs_args.as_deref(),
+                cli.scd_vs_args.as_deref(),
+                cli.tq_vs_args.as_deref(),
+                cli.concat.as_ref(),
+                cli.workers,
+                cli.encoder.as_ref(),
+                cli.passes,
+                cli.params,
+                cli.tq_params,
+                cli.photon_noise,
+                cli.chroma_noise,
+                cli.target_metric,
+                cli.target,
+                cli.minimum_quantizer,
+                cli.maximum_quantizer,
+                cli.target_profile,
+            )?;
+
+            run_condor(&configuration, &save_file, cli.skip_scd)?;
         },
     }
 
@@ -316,11 +332,7 @@ fn run() -> anyhow::Result<()> {
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_condor_tui(
-    configuration: &Configuration,
-    save_file: &Path,
-    skip_scd: bool,
-) -> Result<()> {
+pub fn run_condor(configuration: &Configuration, save_file: &Path, skip_scd: bool) -> Result<()> {
     let config_copy = configuration.clone();
     let save_file_copy = save_file.to_path_buf();
     debug!("Instantiating Condor with {:?}", {
@@ -379,7 +391,7 @@ pub fn run_condor_tui(
     }
 
     if configuration.condor.sequence_config.target_quality.is_some() {
-        run_tq_tui(
+        run_target_quality_tui(
             &mut condor,
             &configuration.tq_input_filters,
             std::sync::Arc::clone(&cancellation_token),
@@ -402,8 +414,8 @@ pub fn run_condor_tui(
         }
     }
 
-    if configuration.condor.sequence_config.convex_hull.speed_quantizers.len() >= 2 {
-        run_convex_hull_tui(&mut condor, std::sync::Arc::clone(&cancellation_token))?;
+    if configuration.condor.sequence_config.speed_scaler.speed_quantizers.len() >= 2 {
+        run_speed_scaler_tui(&mut condor, std::sync::Arc::clone(&cancellation_token))?;
         if cancelled() {
             return Ok(());
         }
@@ -451,7 +463,7 @@ pub fn run_condor_tui(
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_scene_detection_tui(configuration: &Configuration, save_file: &Path) -> Result<()> {
+pub fn run_scene_detector(configuration: &Configuration, save_file: &Path) -> Result<()> {
     let config_copy = configuration.clone();
     let save_file_copy = save_file.to_path_buf();
     debug!("Instantiating Condor with {:?}", {
@@ -479,7 +491,7 @@ pub fn run_scene_detection_tui(configuration: &Configuration, save_file: &Path) 
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_benchmark_tui(configuration: &Configuration, save_file: &Path) -> Result<()> {
+pub fn run_benchmarker(configuration: &Configuration, save_file: &Path) -> Result<()> {
     let config_copy = configuration.clone();
     let save_file_copy = save_file.to_path_buf();
     debug!("Instantiating Condor with {:?}", {
@@ -505,34 +517,7 @@ pub fn run_benchmark_tui(configuration: &Configuration, save_file: &Path) -> Res
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_target_quality_tui(configuration: &Configuration, save_file: &Path) -> Result<()> {
-    let config_copy = configuration.clone();
-    let save_file_copy = save_file.to_path_buf();
-    debug!("Instantiating Condor with {:?}", {
-        // Remove scenes to reduce log spam
-        let mut config = configuration.clone();
-        config.condor.scenes = Vec::new();
-        config
-    });
-    let mut condor: Condor<configuration::CliSequenceData, configuration::CliSequenceConfig> =
-        configuration.instantiate_condor(Box::new(move |data| {
-            let mut config = config_copy.clone();
-            config.condor = data;
-            Configuration::save(&config, &save_file_copy)?;
-            Ok(())
-        }))?;
-
-    run_tq_tui(
-        &mut condor,
-        &configuration.tq_input_filters,
-        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    )?;
-
-    Ok(())
-}
-
-#[tracing::instrument(skip_all)]
-pub fn run_noise_detection_tui(configuration: &Configuration, save_file: &Path) -> Result<()> {
+pub fn run_noise_detector(configuration: &Configuration, save_file: &Path) -> Result<()> {
     let config_copy = configuration.clone();
     let save_file_copy = save_file.to_path_buf();
     debug!("Instantiating Condor with {:?}", {
@@ -557,10 +542,7 @@ pub fn run_noise_detection_tui(configuration: &Configuration, save_file: &Path) 
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_noise_scaler_standalone_tui(
-    configuration: &Configuration,
-    save_file: &Path,
-) -> Result<()> {
+pub fn run_noise_scaler(configuration: &Configuration, save_file: &Path) -> Result<()> {
     let config_copy = configuration.clone();
     let save_file_copy = save_file.to_path_buf();
     debug!("Instantiating Condor with {:?}", {
@@ -585,10 +567,34 @@ pub fn run_noise_scaler_standalone_tui(
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_bitrate_optimizer_standalone_tui(
-    configuration: &Configuration,
-    save_file: &Path,
-) -> Result<()> {
+pub fn run_target_quality(configuration: &Configuration, save_file: &Path) -> Result<()> {
+    let config_copy = configuration.clone();
+    let save_file_copy = save_file.to_path_buf();
+    debug!("Instantiating Condor with {:?}", {
+        // Remove scenes to reduce log spam
+        let mut config = configuration.clone();
+        config.condor.scenes = Vec::new();
+        config
+    });
+    let mut condor: Condor<configuration::CliSequenceData, configuration::CliSequenceConfig> =
+        configuration.instantiate_condor(Box::new(move |data| {
+            let mut config = config_copy.clone();
+            config.condor = data;
+            Configuration::save(&config, &save_file_copy)?;
+            Ok(())
+        }))?;
+
+    run_target_quality_tui(
+        &mut condor,
+        &configuration.tq_input_filters,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_bitrate_optimizer(configuration: &Configuration, save_file: &Path) -> Result<()> {
     let config_copy = configuration.clone();
     let save_file_copy = save_file.to_path_buf();
     debug!("Instantiating Condor with {:?}", {
@@ -613,10 +619,7 @@ pub fn run_bitrate_optimizer_standalone_tui(
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_convex_hull_standalone_tui(
-    configuration: &Configuration,
-    save_file: &Path,
-) -> Result<()> {
+pub fn run_speed_scaler(configuration: &Configuration, save_file: &Path) -> Result<()> {
     let config_copy = configuration.clone();
     let save_file_copy = save_file.to_path_buf();
     debug!("Instantiating Condor with {:?}", {
@@ -632,7 +635,60 @@ pub fn run_convex_hull_standalone_tui(
             Ok(())
         }))?;
 
-    run_convex_hull_tui(
+    run_speed_scaler_tui(
+        &mut condor,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_encoder(configuration: &Configuration, save_file: &Path) -> Result<()> {
+    let config_copy = configuration.clone();
+    let save_file_copy = save_file.to_path_buf();
+    debug!("Instantiating Condor with {:?}", {
+        let mut config = configuration.clone();
+        config.condor.scenes = Vec::new();
+        config
+    });
+
+    let mut condor: Condor<configuration::CliSequenceData, configuration::CliSequenceConfig> =
+        configuration.instantiate_condor(Box::new(move |data| {
+            let mut config = config_copy.clone();
+            config.condor = data;
+            Configuration::save(&config, &save_file_copy)?;
+            Ok(())
+        }))?;
+
+    run_parallel_encoder_tui(
+        &mut condor,
+        &configuration.input_filters,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_concatenator(configuration: &Configuration, save_file: &Path) -> Result<()> {
+    let config_copy = configuration.clone();
+    let save_file_copy = save_file.to_path_buf();
+    debug!("Instantiating Condor with {:?}", {
+        let mut config = configuration.clone();
+        config.condor.scenes = Vec::new();
+        config
+    });
+
+    let mut condor: Condor<configuration::CliSequenceData, configuration::CliSequenceConfig> =
+        configuration.instantiate_condor(Box::new(move |data| {
+            let mut config = config_copy.clone();
+            config.condor = data;
+            Configuration::save(&config, &save_file_copy)?;
+            Ok(())
+        }))?;
+
+    run_scene_concatenator_tui(
         &mut condor,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )?;

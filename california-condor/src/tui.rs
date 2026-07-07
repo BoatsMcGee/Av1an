@@ -11,12 +11,12 @@ use andean_condor::{
         sequence::{
             benchmarker::Benchmarker,
             bitrate_optimizer::BitrateOptimizer,
-            convex_hull::ConvexHull,
             noise_detector::NoiseDetector,
             noise_scaler::NoiseScaler,
             parallel_encoder::ParallelEncoder,
             scene_concatenator::SceneConcatenator,
             scene_detector::SceneDetector,
+            speed_scaler::SpeedScaler,
             target_quality::TargetQuality,
             Sequence,
         },
@@ -327,7 +327,7 @@ pub fn run_benchmarker_tui(
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_tq_tui(
+pub fn run_target_quality_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
     input_filters: &[VapourSynthFilter],
     cancelled: Arc<AtomicBool>,
@@ -440,11 +440,11 @@ pub fn run_bitrate_optimizer_tui(
 }
 
 #[tracing::instrument(skip_all)]
-pub fn run_convex_hull_tui(
+pub fn run_speed_scaler_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
-    let mut convex_hull = ConvexHull::default();
+    let mut convex_hull = SpeedScaler::default();
     debug!("Validating Convex Hull");
     let (_, validation_warnings) = convex_hull.validate(condor)?;
 
