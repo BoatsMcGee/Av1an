@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
+use thiserror::Error;
 
 use crate::{
     core::{
@@ -75,17 +76,25 @@ where
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         _cancelled: Arc<AtomicBool>,
     ) -> anyhow::Result<((), Vec<anyhow::Error>)> {
-        let warnings = vec![];
+        let mut warnings = vec![];
 
         let Some(input) = self.input.as_mut() else {
             return Ok(((), warnings));
         };
 
         let mut condor_data = condor.as_data();
-        let env = input.decoder().get_vapoursynth_env()?;
+        let Some(vapoursynth_decoder) = input.decoder().get_vapoursynth_impl() else {
+            warnings.push(anyhow::Error::new(NoiseDetectorError::InvalidInput));
+            return Ok(((), warnings));
+        };
+        let reference_node = vapoursynth_decoder.get_output(
+            vapoursynth_decoder.get_output_index(),
+            vapoursynth_decoder.get_node_modifier(),
+        )?;
+        let denoised_node =
+            vapoursynth_decoder.get_output(1, vapoursynth_decoder.get_node_modifier())?;
+        let env = &vapoursynth_decoder.env;
         let core = get_core(env)?;
-        let (reference_node, _) = env.get_output(0)?;
-        let (denoised_node, _) = env.get_output(1)?;
 
         // Sample 1 frame in the middle of each scene
         let reference_node = {
@@ -186,4 +195,10 @@ where
 
 impl NoiseDetector {
     pub const DETAILS: SequenceDetails = DETAILS;
+}
+
+#[derive(Debug, Error)]
+pub enum NoiseDetectorError {
+    #[error("Input must be VapourSynthScript")]
+    InvalidInput,
 }

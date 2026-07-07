@@ -434,7 +434,12 @@ impl Input {
             } => {
                 if clip_info.is_none() {
                     let info = {
-                        let node = decoder.get_vapoursynth_node()?;
+                        let vapoursynth_decoder =
+                            decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
+                        let node = vapoursynth_decoder.get_output(
+                            vapoursynth_decoder.get_output_index(),
+                            vapoursynth_decoder.get_node_modifier(),
+                        )?;
                         get_vs_clip_info(&node)?
                     };
                     *clip_info = Some(info);
@@ -544,7 +549,12 @@ impl Input {
             | Input::VapourSynthScript {
                 decoder, ..
             } => {
-                let node = decoder.get_vapoursynth_node()?;
+                let vapoursynth_decoder =
+                    decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
+                let node = vapoursynth_decoder.get_output(
+                    vapoursynth_decoder.get_output_index(),
+                    vapoursynth_decoder.get_node_modifier(),
+                )?;
                 let frame = node.get_frame(index)?;
                 let framedata = {
                     let mut data = Vec::new();
@@ -629,7 +639,12 @@ impl Input {
             | Input::VapourSynthScript {
                 decoder, ..
             } => {
-                let node = decoder.get_vapoursynth_node()?;
+                let vapoursynth_decoder =
+                    decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
+                let node = vapoursynth_decoder.get_output(
+                    vapoursynth_decoder.get_output_index(),
+                    vapoursynth_decoder.get_node_modifier(),
+                )?;
                 let frame_semaphore = Arc::new(Semaphore::new(24));
                 let pair = Arc::new((Mutex::new(BTreeMap::new()), Condvar::new()));
 

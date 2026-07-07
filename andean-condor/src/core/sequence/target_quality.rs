@@ -876,15 +876,20 @@ impl TargetQuality {
         let decoder = match metric_input {
             Input::VapourSynth {
                 decoder, ..
-            } => decoder,
-            Input::VapourSynthScript {
+            }
+            | Input::VapourSynthScript {
                 decoder, ..
             } => decoder,
             Input::Video {
                 ..
             } => v_input.expect("Video Input exists").decoder(),
         };
-        let (env, reference_node) = decoder.get_vapoursynth()?;
+        let vapoursynth_decoder = decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
+        let env = &vapoursynth_decoder.env;
+        let reference_node = vapoursynth_decoder.get_output(
+            vapoursynth_decoder.get_output_index(),
+            vapoursynth_decoder.get_node_modifier(),
+        )?;
         let core = get_core(env)?;
 
         let reference_node = {
