@@ -83,10 +83,7 @@ impl CVVDP {
         Self::arguments_set(&mut arguments, vec![
             (
                 "model_name",
-                self.model_name
-                    .clone()
-                    .map(|model_name| model_name.to_string().into_bytes())
-                    .as_deref(),
+                self.model_name.map(|model_name| model_name.to_string().into_bytes()).as_deref(),
             ),
             (
                 "model_config_json",
@@ -149,7 +146,9 @@ impl VapourSynthPluginScript for CVVDP {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Display, EnumString, IntoStaticStr)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, IntoStaticStr,
+)]
 pub enum DisplayModel {
     #[strum(serialize = "standard_4k")]
     Standard4K,

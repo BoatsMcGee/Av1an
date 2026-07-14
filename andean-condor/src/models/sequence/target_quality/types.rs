@@ -35,7 +35,9 @@ pub enum InterpolationMethod {
     CubicPolynomial,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, EnumString, IntoStaticStr, Display)]
+#[derive(
+    Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, EnumString, IntoStaticStr, Display,
+)]
 pub enum VmafFeature {
     #[strum(serialize = "default")]
     Default,
@@ -159,17 +161,22 @@ impl QualityMetric {
             } => target_range,
         }
     }
+
+    #[inline]
+    pub fn is_inverse_metric(&self) -> bool {
+        matches!(self, QualityMetric::BUTTERAUGLI { .. })
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TargetQualityProbing {
     pub encoder_options: Option<HashMap<String, CLIParameter>>,
-    pub strategy:        ProbeStategy,
+    pub strategy:        ProbeStrategy,
     pub statistic:       ProbeStatistic,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub enum ProbeStategy {
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ProbeStrategy {
     #[default]
     Whole,
     Skip {
@@ -181,19 +188,19 @@ pub enum ProbeStategy {
     },
 }
 
-impl ProbeStategy {
+impl ProbeStrategy {
     #[inline]
     pub fn frame_indices(&self, start: usize, end: usize) -> Vec<usize> {
         match self {
-            ProbeStategy::Whole => (start..end).collect::<Vec<_>>(),
-            ProbeStategy::Skip {
+            ProbeStrategy::Whole => (start..end).collect::<Vec<_>>(),
+            ProbeStrategy::Skip {
                 skip,
             } => (start..end)
                 .filter(|index| {
                     (index - start) == 0 || (index - start).is_multiple_of(*skip as usize)
                 })
                 .collect::<Vec<_>>(),
-            ProbeStategy::Subset {
+            ProbeStrategy::Subset {
                 position,
                 length,
             } => {
@@ -223,7 +230,7 @@ impl ProbeStategy {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SubsetProbePosition {
     Start,
     #[default]
@@ -231,7 +238,7 @@ pub enum SubsetProbePosition {
     End,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum SubsetProbeLength {
     Percentage(f64),
     Frames(u32),
@@ -244,7 +251,7 @@ impl Default for SubsetProbeLength {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ProbeStatistic {
     #[default]
     Mean,

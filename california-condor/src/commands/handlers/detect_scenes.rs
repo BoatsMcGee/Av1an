@@ -117,3 +117,176 @@ pub fn configure_scene_detector(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use andean_condor::{
+        models::{
+            input::{Input, VapourSynthImportMethod},
+            sequence::scene_detector::{
+                SceneDetectionMethod as SceneDetectionMethodModel,
+                ScenecutMethod,
+            },
+        },
+        vapoursynth::plugins::resize::Scaler,
+    };
+
+    use super::*;
+    use crate::{
+        commands::handlers::init::init_handler,
+        test_helpers::{check_basic_config, default_config, get_test_video},
+        utils::hash_path::hash_path,
+    };
+
+    #[test]
+    fn detect_scenes_default_config() {
+        let test_video = get_test_video();
+        let input_abs = path_abs::PathAbs::new(&test_video.path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let temp_abs = path_abs::PathAbs::new(temp.path().join(hash_path(&input_abs)))
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let output = temp.path().join("out.mkv");
+        let config_path = temp.path().join("condor.json");
+        let config_path_abs = path_abs::PathAbs::new(&config_path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+
+        let expected_config = default_config(&test_video, &output, &temp_abs);
+
+        init_handler(
+            Some(&config_path),
+            Some(&temp.path().join(hash_path(&input_abs))), /* Simulate default directory to
+                                                             * avoid changing CWD in other
+                                                             * parallel tests */
+            &test_video.path,
+            &output,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("init_handler should succeed");
+        let (config, found_config_path) = detect_scenes_handler(
+            Some(&config_path),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("detect_scenes_handler should succeed");
+
+        assert_eq!(
+            found_config_path,
+            config_path_abs,
+            "config path is {}",
+            config_path_abs.display()
+        );
+        check_basic_config(&config, &expected_config);
+        assert!(config.condor.scenes.is_empty(), "scenes is empty");
+    }
+
+    #[test]
+    fn detect_scenes_custom_config() {
+        let test_video = get_test_video();
+        let input_abs = path_abs::PathAbs::new(&test_video.path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let temp_abs = path_abs::PathAbs::new(temp.path().join(hash_path(&input_abs)))
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let output = temp.path().join("out.mkv");
+        let config_path = temp.path().join("condor.json");
+        let config_path_abs = path_abs::PathAbs::new(&config_path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let custom_filters = vec![VapourSynthFilter::Resize {
+            scaler: Some(Scaler::Point),
+            width:  Some(960),
+            height: Some(540),
+            format: None,
+        }];
+        let min_scene_seconds = 2usize;
+        let max_scene_seconds = 12usize;
+        let expected_min = (test_video.fps() * min_scene_seconds as f64).round() as usize;
+        let expected_max = (test_video.fps() * max_scene_seconds as f64).round() as usize;
+
+        let mut expected_config = default_config(&test_video, &output, &temp_abs);
+        expected_config.scd_input_filters = custom_filters.clone();
+        expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
+            path:          input_abs.clone(),
+            import_method: VapourSynthImportMethod::FFMS2 {
+                index: None
+            },
+            cache_path:    None,
+        });
+        expected_config.condor.sequence_config.scene_detector.method =
+            SceneDetectionMethodModel::AVSceneChange {
+                minimum_length: expected_min,
+                maximum_length: expected_max,
+                method:         ScenecutMethod::Fast,
+            };
+        // immutable shadow
+        let expected_config = expected_config;
+
+        init_handler(
+            Some(&config_path),
+            Some(&temp.path().join(hash_path(&input_abs))), /* Simulate default directory to
+                                                             * avoid changing CWD in other
+                                                             * parallel tests */
+            &test_video.path,
+            &output,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("init_handler should succeed");
+        let (config, found_config_path) = detect_scenes_handler(
+            Some(&config_path),
+            Some(&temp.path().join(hash_path(&input_abs))),
+            Some(&test_video.path),
+            Some(&DecoderMethod::VSFFMS2),
+            Some(&custom_filters),
+            Some(&["method=scd".to_owned()]),
+            Some(&SceneDetectionMethod::Fast),
+            Some(min_scene_seconds),
+            Some(max_scene_seconds),
+        )
+        .expect("detect_scenes_handler should succeed");
+
+        assert_eq!(
+            found_config_path,
+            config_path_abs,
+            "config path is {}",
+            config_path_abs.display()
+        );
+        check_basic_config(&config, &expected_config);
+        assert!(config.condor.scenes.is_empty(), "scenes is empty");
+    }
+}

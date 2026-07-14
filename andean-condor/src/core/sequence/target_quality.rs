@@ -1082,7 +1082,7 @@ impl TargetQuality {
                     (reference_node, distorted_node)
                 };
                 let plugin = CVVDP {
-                    model_name: display_model.clone(),
+                    model_name: *display_model,
                     resize_to_display: *resize_to_display,
                     disable_temporal: *disable_temporal,
                     ..Default::default()

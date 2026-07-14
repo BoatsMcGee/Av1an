@@ -15,13 +15,13 @@ use crate::{
             target_quality::configure_target_quality,
         },
         ConcatenationMethod,
+        CondorCliError,
         DecoderMethod,
         EncoderMethod,
         TargetQualityMetric,
         TargetQualityProfile,
     },
     configuration::{ConfigError, Configuration},
-    CondorCliError,
     DEFAULT_CONFIG_PATH,
 };
 
@@ -46,17 +46,17 @@ pub fn start_handler(
     workers: Option<u8>,
     encoder: Option<&EncoderMethod>,
     passes: Option<u8>,
-    params: Option<String>,
-    tq_params: Option<String>,
+    params: Option<&str>,
+    tq_params: Option<&str>,
     photon_noise: Option<u32>,
     chroma_noise: Option<u32>,
-    target_metric: Option<TargetQualityMetric>,
+    target_metric: Option<&TargetQualityMetric>,
     target: Option<f64>,
     minimum_quantizer: Option<u8>,
     maximum_quantizer: Option<u8>,
-    target_profile: Option<TargetQualityProfile>,
+    target_profile: Option<&TargetQualityProfile>,
 ) -> Result<(Configuration, PathBuf)> {
-    if config_path.is_some_and(|p| !p.exists()) && input_path.is_none() && output_path.is_none() {
+    if config_path.is_some_and(|p| !p.exists()) && (input_path.is_none() || output_path.is_none()) {
         let err = CondorCliError::NoConfigOrInputOrOutput;
         error!("{}", err);
         bail!(err);
@@ -126,6 +126,19 @@ pub fn start_handler(
         None,
         None,
     )?;
+    configure_parallel_encoder(
+        &mut configuration,
+        input_path.filter(|_| config_already_existed),
+        decoder.filter(|_| config_already_existed),
+        filters.filter(|_| config_already_existed),
+        vs_args.filter(|_| config_already_existed),
+        workers,
+        encoder,
+        passes,
+        params,
+        photon_noise,
+        chroma_noise,
+    )?;
     // configure_benchmarker(
     //     &mut configuration,
     //     input_path.filter(|_| config_already_existed),
@@ -157,19 +170,6 @@ pub fn start_handler(
     )?;
     // configure_optimize_bitrate_handler(&mut configuration, sigma_threshold)?;
     // configure_scale_speed(&mut configuration, quantizers, speeds)?;
-    configure_parallel_encoder(
-        &mut configuration,
-        input_path.filter(|_| config_already_existed),
-        decoder.filter(|_| config_already_existed),
-        filters.filter(|_| config_already_existed),
-        vs_args.filter(|_| config_already_existed),
-        workers,
-        encoder,
-        passes,
-        params,
-        photon_noise,
-        chroma_noise,
-    )?;
     configure_concatenate(&mut configuration, concatenator)?;
 
     if !config_already_existed {
@@ -178,4 +178,917 @@ pub fn start_handler(
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{assert_matches, collections::HashMap, fs};
+
+    use andean_condor::{
+        ffmpeg::FFPixelFormat,
+        models::{
+            encoder::{cli_parameter::CLIParameter, Encoder, EncoderBase, EncoderPasses},
+            input::{ImportMethod, Input, VapourSynthImportMethod, VapourSynthScriptSource},
+            sequence::{
+                scene_concatenator::ConcatMethod,
+                target_quality::{
+                    types::{
+                        ProbeStatistic,
+                        ProbeStrategy,
+                        QualityMetric,
+                        SubsetProbeLength,
+                        SubsetProbePosition,
+                        TargetQualityProbing,
+                    },
+                    TargetQualityConfig,
+                },
+            },
+        },
+        vapoursynth::plugins::resize::Scaler,
+    };
+    use serial_test::serial;
+
+    use super::*;
+    use crate::{
+        commands::{ConcatenationMethod, DecoderMethod, EncoderMethod, TargetQualityMetric},
+        test_helpers::{
+            check_benchmarker,
+            check_bitrate_optimizer,
+            check_encoder,
+            check_input,
+            check_noise_detector,
+            check_noise_scaler,
+            check_output,
+            check_parallel_encoder,
+            check_scene_concatenator,
+            check_scene_detector,
+            check_speed_scaler,
+            check_target_quality,
+            default_config,
+            get_test_video,
+            set_cwd,
+            vapoursynth_script,
+        },
+        utils::hash_path::hash_path,
+    };
+
+    #[serial(needs_cwd)]
+    #[test]
+    fn start_creates_default_config() {
+        let test_video = get_test_video();
+        let input_abs = path_abs::PathAbs::new(&test_video.path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let temp_abs = path_abs::PathAbs::new(temp.path().join(hash_path(&input_abs)))
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let output = temp.path().join("out.mkv");
+        let output_abs = path_abs::PathAbs::new(&output)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let config_path = temp.path().join("condor.json");
+        let config_path_abs = path_abs::PathAbs::new(&config_path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+
+        // Must run inside the temp directory so the default config path resolves there
+        set_cwd(temp.path());
+
+        let expected_config = default_config(&test_video, &output, &temp_abs);
+
+        let (config, found_config_path) = start_handler(
+            None, // defaults to ./condor.json
+            None, // defaults to directory 7-character hash of input file
+            Some(&test_video.path),
+            None,
+            None,
+            Some(&output),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("start_handler should succeed");
+
+        assert_eq!(
+            found_config_path,
+            config_path_abs,
+            "config path is {}",
+            config_path_abs.display()
+        );
+        assert_eq!(config.temp, temp_abs, "temp path is {}", temp_abs.display());
+        assert_eq!(
+            config.input,
+            input_abs,
+            "input path is {}",
+            input_abs.display()
+        );
+        assert_eq!(
+            config.condor.output.path,
+            expected_config.condor.output.path,
+            "output path is {}",
+            output_abs.display()
+        );
+        assert_eq!(
+            config.input_filters, expected_config.input_filters,
+            "input filters is {:?}",
+            expected_config.input_filters
+        );
+        assert_eq!(
+            config.scd_input_filters, expected_config.scd_input_filters,
+            "scd_input_filters is {:?}",
+            expected_config.scd_input_filters
+        );
+        assert_eq!(
+            config.tq_input_filters, expected_config.tq_input_filters,
+            "tq_input_filters is {:?}",
+            expected_config.tq_input_filters
+        );
+        check_input(
+            Some(&config.condor.input),
+            Some(&expected_config.condor.input),
+            "input",
+        );
+        check_output(&config.condor.output, &expected_config.condor.output);
+        assert!(config.condor.scenes.is_empty(), "scenes is empty");
+        check_scene_detector(
+            &config.condor.sequence_config.scene_detector,
+            &expected_config.condor.sequence_config.scene_detector,
+        );
+        check_encoder(
+            &config.condor.encoder,
+            &expected_config.condor.encoder,
+            "encoder",
+        );
+        check_benchmarker(
+            &config.condor.sequence_config.benchmarker,
+            &expected_config.condor.sequence_config.benchmarker,
+        );
+        check_noise_detector(
+            config.condor.sequence_config.noise_detector.as_ref(),
+            expected_config.condor.sequence_config.noise_detector.as_ref(),
+        );
+        check_noise_scaler(
+            config.condor.sequence_config.noise_scaler.as_ref(),
+            expected_config.condor.sequence_config.noise_scaler.as_ref(),
+        );
+        check_target_quality(
+            config.condor.sequence_config.target_quality.as_ref(),
+            expected_config.condor.sequence_config.target_quality.as_ref(),
+        );
+        check_bitrate_optimizer(
+            &config.condor.sequence_config.bitrate_optimizer,
+            &expected_config.condor.sequence_config.bitrate_optimizer,
+        );
+        check_speed_scaler(
+            &config.condor.sequence_config.speed_scaler,
+            &expected_config.condor.sequence_config.speed_scaler,
+        );
+        check_parallel_encoder(
+            &config.condor.sequence_config.parallel_encoder,
+            &expected_config.condor.sequence_config.parallel_encoder,
+        );
+        check_scene_concatenator(
+            &config.condor.sequence_config.scene_concatenator,
+            &expected_config.condor.sequence_config.scene_concatenator,
+        );
+    }
+
+    #[test]
+    fn start_creates_custom_config() {
+        let test_video = get_test_video();
+        let input_abs = path_abs::PathAbs::new(&test_video.path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let temp_abs = path_abs::PathAbs::new(temp.path().join("custom-temp"))
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let output = temp.path().join("out.mkv");
+        let output_abs = path_abs::PathAbs::new(&output)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let config_path = temp.path().join("custom-condor.json");
+        let config_path_abs = path_abs::PathAbs::new(&config_path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let custom_filters = vec![VapourSynthFilter::Crop {
+            top:    Some(42),
+            bottom: Some(42),
+            left:   None,
+            right:  None,
+        }];
+        let custom_scd_filters = vec![VapourSynthFilter::Crop {
+            top:    None,
+            bottom: None,
+            left:   Some(100),
+            right:  Some(100),
+        }];
+        let custom_tq_filters = vec![VapourSynthFilter::Resize {
+            scaler: Some(Scaler::Lanczos),
+            width:  Some(960),
+            height: Some(540),
+            format: Some(FFPixelFormat::YUV444P10LE),
+        }];
+        let custom_vs_args = vec!["key=value".to_string()];
+        let mut custom_encoder_parameters = EncoderBase::X265.default_parameters();
+        custom_encoder_parameters.insert(
+            "preset".to_owned(),
+            CLIParameter::new_string("--", " ", "slow"),
+        );
+        custom_encoder_parameters
+            .insert("crf".to_owned(), CLIParameter::new_number("--", " ", 18.0));
+
+        let mut expected_config = default_config(&test_video, &output, &temp_abs);
+        expected_config.input_filters = custom_filters.clone();
+        expected_config.scd_input_filters = custom_scd_filters.clone();
+        expected_config.tq_input_filters = custom_tq_filters.clone();
+        expected_config.condor.input = Input::Video {
+            path:          input_abs.clone(),
+            import_method: ImportMethod::FFMS2 {
+                index: None
+            },
+        };
+        expected_config.condor.encoder = Encoder::X265 {
+            executable: None,
+            pass:       EncoderPasses::All(3),
+            options:    custom_encoder_parameters,
+        };
+        expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
+            path:          input_abs.clone(),
+            import_method: VapourSynthImportMethod::BestSource {
+                index: None
+            },
+            cache_path:    None,
+        });
+        expected_config.condor.sequence_config.parallel_encoder.workers = Some(6);
+        let mut tq_encoder_parameters = EncoderBase::X265.default_parameters();
+        tq_encoder_parameters.insert(
+            "preset".to_owned(),
+            CLIParameter::new_string("--", " ", "ultrafast"),
+        );
+        expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
+            input: Some(Input::VapourSynth {
+                path:          input_abs.clone(),
+                import_method: VapourSynthImportMethod::FFMS2 {
+                    index: None
+                },
+                cache_path:    None,
+            }),
+            metric: QualityMetric::XPSNR {
+                target_range: (39.0, 41.0),
+                resolution:   None,
+            },
+            quantizer_range: (4, 35),
+            probing: TargetQualityProbing {
+                encoder_options: Some(tq_encoder_parameters),
+                statistic:       ProbeStatistic::Percentile(10.0),
+                strategy:        ProbeStrategy::Whole,
+            },
+            ..Default::default()
+        });
+        expected_config.condor.sequence_config.scene_concatenator.method = ConcatMethod::Ivf;
+        // immutable shadow
+        let expected_config = expected_config;
+
+        let (config, found_config_path) = start_handler(
+            Some(&config_path),
+            Some(&temp.path().join("custom-temp")),
+            Some(&test_video.path),
+            Some(&test_video.path),
+            Some(&test_video.path),
+            Some(&output),
+            Some(&DecoderMethod::FFMS2),
+            Some(&DecoderMethod::BestSource),
+            Some(&DecoderMethod::VSFFMS2),
+            Some(&custom_filters),
+            Some(&custom_scd_filters),
+            Some(&custom_tq_filters),
+            Some(&custom_vs_args.clone()),
+            Some(&custom_vs_args.clone()),
+            Some(&custom_vs_args),
+            Some(&ConcatenationMethod::Ivf),
+            Some(6),
+            Some(&EncoderMethod::X265),
+            Some(3),
+            Some("--preset slow --crf 18"),
+            Some("--preset ultrafast"),
+            Some(404),
+            Some(404),
+            Some(&TargetQualityMetric::XPSNR),
+            Some(40.0),
+            Some(4),
+            Some(35),
+            Some(&TargetQualityProfile::Slow),
+        )
+        .expect("start_handler should succeed");
+
+        assert_eq!(
+            found_config_path,
+            config_path_abs,
+            "config path is {}",
+            config_path_abs.display()
+        );
+        assert_eq!(config.temp, temp_abs, "temp path is {}", temp_abs.display());
+        assert_eq!(
+            config.input,
+            input_abs,
+            "input path is {}",
+            input_abs.display()
+        );
+        assert_eq!(
+            config.condor.output.path,
+            expected_config.condor.output.path,
+            "output path is {}",
+            output_abs.display()
+        );
+        assert_eq!(
+            config.input_filters, expected_config.input_filters,
+            "input filters is {:?}",
+            expected_config.input_filters
+        );
+        assert_eq!(
+            config.scd_input_filters, expected_config.scd_input_filters,
+            "scd_input_filters is {:?}",
+            expected_config.scd_input_filters
+        );
+        assert_eq!(
+            config.tq_input_filters, expected_config.tq_input_filters,
+            "tq_input_filters is {:?}",
+            expected_config.tq_input_filters
+        );
+        check_input(
+            Some(&config.condor.input),
+            Some(&expected_config.condor.input),
+            "input",
+        );
+        check_output(&config.condor.output, &expected_config.condor.output);
+        assert!(config.condor.scenes.is_empty(), "scenes is empty");
+        check_scene_detector(
+            &config.condor.sequence_config.scene_detector,
+            &expected_config.condor.sequence_config.scene_detector,
+        );
+        check_encoder(
+            &config.condor.encoder,
+            &expected_config.condor.encoder,
+            "encoder",
+        );
+        check_benchmarker(
+            &config.condor.sequence_config.benchmarker,
+            &expected_config.condor.sequence_config.benchmarker,
+        );
+        check_noise_detector(
+            config.condor.sequence_config.noise_detector.as_ref(),
+            expected_config.condor.sequence_config.noise_detector.as_ref(),
+        );
+        check_noise_scaler(
+            config.condor.sequence_config.noise_scaler.as_ref(),
+            expected_config.condor.sequence_config.noise_scaler.as_ref(),
+        );
+        check_target_quality(
+            config.condor.sequence_config.target_quality.as_ref(),
+            expected_config.condor.sequence_config.target_quality.as_ref(),
+        );
+        check_bitrate_optimizer(
+            &config.condor.sequence_config.bitrate_optimizer,
+            &expected_config.condor.sequence_config.bitrate_optimizer,
+        );
+        check_speed_scaler(
+            &config.condor.sequence_config.speed_scaler,
+            &expected_config.condor.sequence_config.speed_scaler,
+        );
+        check_parallel_encoder(
+            &config.condor.sequence_config.parallel_encoder,
+            &expected_config.condor.sequence_config.parallel_encoder,
+        );
+        check_scene_concatenator(
+            &config.condor.sequence_config.scene_concatenator,
+            &expected_config.condor.sequence_config.scene_concatenator,
+        );
+    }
+
+    #[test]
+    fn start_updates_custom_config() {
+        let test_video = get_test_video();
+        let input_abs = path_abs::PathAbs::new(&test_video.path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let temp_abs = path_abs::PathAbs::new(temp.path().join("custom-temp"))
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let output = temp.path().join("out.mkv");
+        let output_abs = path_abs::PathAbs::new(&output)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let config_path = temp.path().join("custom-condor.json");
+        let config_path_abs = path_abs::PathAbs::new(&config_path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let custom_filters = vec![VapourSynthFilter::Crop {
+            top:    Some(42),
+            bottom: Some(42),
+            left:   None,
+            right:  None,
+        }];
+        let custom_scd_filters = vec![VapourSynthFilter::Crop {
+            top:    None,
+            bottom: None,
+            left:   Some(100),
+            right:  Some(100),
+        }];
+        let custom_tq_filters = vec![VapourSynthFilter::Resize {
+            scaler: Some(Scaler::Lanczos),
+            width:  Some(960),
+            height: Some(540),
+            format: Some(FFPixelFormat::YUV444P10LE),
+        }];
+        let custom_vs_args = vec!["key=value".to_string()];
+        let mut custom_encoder_parameters = EncoderBase::X265.default_parameters();
+        custom_encoder_parameters.insert(
+            "preset".to_owned(),
+            CLIParameter::new_string("--", " ", "slow"),
+        );
+        custom_encoder_parameters
+            .insert("crf".to_owned(), CLIParameter::new_number("--", " ", 18.0));
+
+        let mut expected_config = default_config(&test_video, &output, &temp_abs);
+        expected_config.input_filters = custom_filters.clone();
+        expected_config.scd_input_filters = custom_scd_filters.clone();
+        expected_config.tq_input_filters = custom_tq_filters.clone();
+        expected_config.condor.input = Input::Video {
+            path:          input_abs.clone(),
+            import_method: ImportMethod::FFMS2 {
+                index: None
+            },
+        };
+        expected_config.condor.encoder = Encoder::X265 {
+            executable: None,
+            pass:       EncoderPasses::All(3),
+            options:    custom_encoder_parameters,
+        };
+        expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
+            path:          input_abs.clone(),
+            import_method: VapourSynthImportMethod::BestSource {
+                index: None
+            },
+            cache_path:    None,
+        });
+        expected_config.condor.sequence_config.parallel_encoder.workers = Some(6);
+        let mut tq_encoder_parameters = EncoderBase::X265.default_parameters();
+        tq_encoder_parameters.insert(
+            "preset".to_owned(),
+            CLIParameter::new_string("--", " ", "ultrafast"),
+        );
+        expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
+            input: Some(Input::VapourSynth {
+                path:          input_abs.clone(),
+                import_method: VapourSynthImportMethod::FFMS2 {
+                    index: None
+                },
+                cache_path:    None,
+            }),
+            metric: QualityMetric::XPSNR {
+                target_range: (39.0, 41.0),
+                resolution:   None,
+            },
+            quantizer_range: (4, 35),
+            probing: TargetQualityProbing {
+                encoder_options: Some(tq_encoder_parameters),
+                statistic:       ProbeStatistic::Percentile(10.0),
+                strategy:        ProbeStrategy::Whole,
+            },
+            ..Default::default()
+        });
+        expected_config.condor.sequence_config.scene_concatenator.method = ConcatMethod::Ivf;
+        // immutable shadow
+        let expected_config = expected_config;
+
+        let (config, found_config_path) = start_handler(
+            Some(&config_path),
+            Some(&temp.path().join("custom-temp")),
+            Some(&test_video.path),
+            Some(&test_video.path),
+            Some(&test_video.path),
+            Some(&output),
+            Some(&DecoderMethod::FFMS2),
+            Some(&DecoderMethod::BestSource),
+            Some(&DecoderMethod::VSFFMS2),
+            Some(&custom_filters),
+            Some(&custom_scd_filters),
+            Some(&custom_tq_filters),
+            Some(&custom_vs_args.clone()),
+            Some(&custom_vs_args.clone()),
+            Some(&custom_vs_args),
+            Some(&ConcatenationMethod::Ivf),
+            Some(6),
+            Some(&EncoderMethod::X265),
+            Some(3),
+            Some("--preset slow --crf 18"),
+            Some("--preset ultrafast"),
+            Some(404),
+            Some(404),
+            Some(&TargetQualityMetric::XPSNR),
+            Some(40.0),
+            Some(4),
+            Some(35),
+            Some(&TargetQualityProfile::Slow),
+        )
+        .expect("start_handler should succeed");
+
+        assert_eq!(
+            found_config_path,
+            config_path_abs,
+            "config path is {}",
+            config_path_abs.display()
+        );
+        assert_eq!(config.temp, temp_abs, "temp path is {}", temp_abs.display());
+        assert_eq!(
+            config.input,
+            input_abs,
+            "input path is {}",
+            input_abs.display()
+        );
+        assert_eq!(
+            config.condor.output.path,
+            expected_config.condor.output.path,
+            "output path is {}",
+            output_abs.display()
+        );
+        assert_eq!(
+            config.input_filters, expected_config.input_filters,
+            "input filters is {:?}",
+            expected_config.input_filters
+        );
+        assert_eq!(
+            config.scd_input_filters, expected_config.scd_input_filters,
+            "scd_input_filters is {:?}",
+            expected_config.scd_input_filters
+        );
+        assert_eq!(
+            config.tq_input_filters, expected_config.tq_input_filters,
+            "tq_input_filters is {:?}",
+            expected_config.tq_input_filters
+        );
+        check_input(
+            Some(&config.condor.input),
+            Some(&expected_config.condor.input),
+            "input",
+        );
+        check_output(&config.condor.output, &expected_config.condor.output);
+        assert!(config.condor.scenes.is_empty(), "scenes is empty");
+        check_scene_detector(
+            &config.condor.sequence_config.scene_detector,
+            &expected_config.condor.sequence_config.scene_detector,
+        );
+        check_encoder(
+            &config.condor.encoder,
+            &expected_config.condor.encoder,
+            "encoder",
+        );
+        check_benchmarker(
+            &config.condor.sequence_config.benchmarker,
+            &expected_config.condor.sequence_config.benchmarker,
+        );
+        check_noise_detector(
+            config.condor.sequence_config.noise_detector.as_ref(),
+            expected_config.condor.sequence_config.noise_detector.as_ref(),
+        );
+        check_noise_scaler(
+            config.condor.sequence_config.noise_scaler.as_ref(),
+            expected_config.condor.sequence_config.noise_scaler.as_ref(),
+        );
+        check_target_quality(
+            config.condor.sequence_config.target_quality.as_ref(),
+            expected_config.condor.sequence_config.target_quality.as_ref(),
+        );
+        check_bitrate_optimizer(
+            &config.condor.sequence_config.bitrate_optimizer,
+            &expected_config.condor.sequence_config.bitrate_optimizer,
+        );
+        check_speed_scaler(
+            &config.condor.sequence_config.speed_scaler,
+            &expected_config.condor.sequence_config.speed_scaler,
+        );
+        check_parallel_encoder(
+            &config.condor.sequence_config.parallel_encoder,
+            &expected_config.condor.sequence_config.parallel_encoder,
+        );
+        check_scene_concatenator(
+            &config.condor.sequence_config.scene_concatenator,
+            &expected_config.condor.sequence_config.scene_concatenator,
+        );
+        drop(config);
+        drop(found_config_path);
+
+        let script_input = temp.path().join("condor-test-script.vpy");
+        let script_input_abs = path_abs::PathAbs::new(&script_input)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let vpy_script = vapoursynth_script(&test_video, Some(&expected_config.input_filters));
+        // Save the VapourSynth script to the temp directory
+        fs::write(&script_input, vpy_script).expect("write should succeed");
+
+        // mutable shadow
+        let mut expected_config = expected_config;
+        let mut custom_variables = HashMap::new();
+        custom_variables.insert("key".to_owned(), "value".to_owned());
+        expected_config.condor.input = Input::VapourSynthScript {
+            source:    VapourSynthScriptSource::Path(script_input_abs),
+            variables: custom_variables,
+            index:     0,
+        };
+        let mut custom_encoder_parameters = EncoderBase::X264.default_parameters();
+        custom_encoder_parameters.insert(
+            "preset".to_owned(),
+            CLIParameter::new_string("--", " ", "medium"),
+        );
+        custom_encoder_parameters
+            .insert("crf".to_owned(), CLIParameter::new_number("--", " ", 12.0));
+        expected_config.condor.encoder = Encoder::X264 {
+            executable: None,
+            pass:       EncoderPasses::All(1),
+            options:    custom_encoder_parameters.clone(),
+        };
+        if let Some(ref mut tq) = expected_config.condor.sequence_config.target_quality {
+            tq.metric = QualityMetric::CVVDP {
+                target_range:      (9.4, 9.6),
+                resolution:        None,
+                display_model:     None,
+                resize_to_display: None,
+                disable_temporal:  None,
+            };
+            tq.probing.statistic = ProbeStatistic::RootMeanSquare;
+            tq.probing.strategy = ProbeStrategy::Subset {
+                position: SubsetProbePosition::Middle,
+                length:   SubsetProbeLength::Percentage(25.0),
+            };
+            tq.quantizer_range.1 = 25;
+        }
+        expected_config.condor.sequence_config.parallel_encoder.workers = Some(12);
+        expected_config.condor.sequence_config.scene_concatenator.method = ConcatMethod::MKVMerge;
+        // immutable shadow
+        let expected_config = expected_config;
+
+        let (config, found_config_path) = start_handler(
+            Some(&config_path),
+            Some(&temp.path().join("custom-temp")),
+            Some(&script_input),
+            Some(&test_video.path),
+            Some(&test_video.path),
+            Some(&output),
+            None,
+            None,
+            None,
+            Some(&custom_filters),
+            None,
+            None,
+            Some(&custom_vs_args),
+            None,
+            None,
+            Some(&ConcatenationMethod::MkvMerge),
+            Some(12),
+            Some(&EncoderMethod::X264),
+            Some(1),
+            Some("--preset medium --crf 12"),
+            None,
+            None,
+            None,
+            Some(&TargetQualityMetric::CVVDP),
+            Some(9.5),
+            Some(4),
+            Some(25),
+            Some(&TargetQualityProfile::Standard),
+        )
+        .expect("start_handler should succeed");
+
+        assert!(config_path.exists(), "config file exists");
+
+        assert_eq!(
+            found_config_path,
+            config_path_abs,
+            "config path is {}",
+            config_path_abs.display()
+        );
+        assert_eq!(config.temp, temp_abs, "temp path is {}", temp_abs.display());
+        assert_eq!(
+            config.input,
+            input_abs,
+            "input path is {}",
+            input_abs.display()
+        );
+        assert_eq!(
+            config.condor.output.path,
+            expected_config.condor.output.path,
+            "output path is {}",
+            output_abs.display()
+        );
+        assert_eq!(
+            config.input_filters, expected_config.input_filters,
+            "input filters is {:?}",
+            expected_config.input_filters
+        );
+        assert_eq!(
+            config.scd_input_filters, expected_config.scd_input_filters,
+            "scd_input_filters is {:?}",
+            expected_config.scd_input_filters
+        );
+        assert_eq!(
+            config.tq_input_filters, expected_config.tq_input_filters,
+            "tq_input_filters is {:?}",
+            expected_config.tq_input_filters
+        );
+        check_input(
+            Some(&config.condor.input),
+            Some(&expected_config.condor.input),
+            "input",
+        );
+        check_output(&config.condor.output, &expected_config.condor.output);
+        assert!(config.condor.scenes.is_empty(), "scenes is empty");
+        check_scene_detector(
+            &config.condor.sequence_config.scene_detector,
+            &expected_config.condor.sequence_config.scene_detector,
+        );
+        check_encoder(
+            &config.condor.encoder,
+            &expected_config.condor.encoder,
+            "encoder",
+        );
+        check_benchmarker(
+            &config.condor.sequence_config.benchmarker,
+            &expected_config.condor.sequence_config.benchmarker,
+        );
+        check_noise_detector(
+            config.condor.sequence_config.noise_detector.as_ref(),
+            expected_config.condor.sequence_config.noise_detector.as_ref(),
+        );
+        check_noise_scaler(
+            config.condor.sequence_config.noise_scaler.as_ref(),
+            expected_config.condor.sequence_config.noise_scaler.as_ref(),
+        );
+        check_target_quality(
+            config.condor.sequence_config.target_quality.as_ref(),
+            expected_config.condor.sequence_config.target_quality.as_ref(),
+        );
+        check_bitrate_optimizer(
+            &config.condor.sequence_config.bitrate_optimizer,
+            &expected_config.condor.sequence_config.bitrate_optimizer,
+        );
+        check_speed_scaler(
+            &config.condor.sequence_config.speed_scaler,
+            &expected_config.condor.sequence_config.speed_scaler,
+        );
+        check_parallel_encoder(
+            &config.condor.sequence_config.parallel_encoder,
+            &expected_config.condor.sequence_config.parallel_encoder,
+        );
+        check_scene_concatenator(
+            &config.condor.sequence_config.scene_concatenator,
+            &expected_config.condor.sequence_config.scene_concatenator,
+        );
+    }
+
+    #[test]
+    fn start_input_not_found() {
+        // let test_video = get_test_video();
+        let invalid_input = std::env::temp_dir().join("not_found.mkv");
+        let input_abs = path_abs::PathAbs::new(&invalid_input)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let output = temp.path().join("out.mkv");
+        let config_path = temp.path().join("condor.json");
+
+        let result = start_handler(
+            Some(&config_path),
+            Some(&temp.path().join(hash_path(&input_abs))),
+            Some(&invalid_input),
+            None,
+            None,
+            Some(&output),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_matches!(result, Err(_), "start_handler should fail");
+        assert!(!config_path.exists(), "config file does not exist");
+        // TODO: Validate inputs exist
+        // let result = start_handler(
+        //     Some(&config_path),
+        //     Some(&temp.path().join(hash_path(&input_abs))),
+        //     Some(&test_video.path),
+        //     Some(&invalid_input),
+        //     None,
+        //     Some(&output),
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        // );
+        // assert_matches!(result, Err(_), "start_handler should fail");
+        // assert!(!config_path.exists(), "config file does not exist");
+
+        // let result = start_handler(
+        //     Some(&config_path),
+        //     Some(&temp.path().join(hash_path(&input_abs))),
+        //     Some(&test_video.path),
+        //     None,
+        //     Some(&invalid_input),
+        //     Some(&output),
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        //     None,
+        // );
+        // assert_matches!(result, Err(_), "start_handler should fail");
+        // assert!(!config_path.exists(), "config file does not exist");
+    }
 }

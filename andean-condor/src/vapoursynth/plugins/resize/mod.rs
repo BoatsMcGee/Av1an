@@ -10,7 +10,9 @@ pub mod spline16;
 pub mod spline36;
 pub mod spline64;
 
-#[derive(Debug, Copy, Clone, Display, Serialize, Deserialize, EnumString, IntoStaticStr)]
+#[derive(
+    Debug, Copy, Clone, Display, Serialize, Deserialize, EnumString, IntoStaticStr, PartialEq, Eq,
+)]
 pub enum Scaler {
     #[strum(serialize = "bicubic")]
     Bicubic,

@@ -10,9 +10,8 @@ use anyhow::{bail, Result};
 use tracing::{debug, error};
 
 use crate::{
-    commands::DecoderMethod,
+    commands::{DecoderMethod, CondorCliError},
     configuration::{ConfigError, Configuration},
-    CondorCliError,
     DEFAULT_CONFIG_PATH,
 };
 

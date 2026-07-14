@@ -170,7 +170,9 @@ impl SceneDetectionMethod {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, EnumString, IntoStaticStr, Display)]
+#[derive(
+    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, Display,
+)]
 pub enum ScenecutMethod {
     #[strum(serialize = "fast")]
     Fast,

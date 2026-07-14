@@ -45,7 +45,7 @@ pub fn akima(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
     // Interior point slopes using Akima weights
     // For point 1: use differences m[0] and m[1]
     if (m[1] - m[0]).abs() < 1e-10 {
-        t[1] = 0.5 * (m[0] + m[1]);
+        t[1] = f64::midpoint(m[0], m[1]);
     } else {
         // For 4 points, we approximate the weights
         let w1 = (m[1] - m[0]).abs();
@@ -55,7 +55,7 @@ pub fn akima(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
 
     // For point 2: use differences m[1] and m[2]
     if (m[2] - m[1]).abs() < 1e-10 {
-        t[2] = 0.5 * (m[1] + m[2]);
+        t[2] = f64::midpoint(m[1], m[2]);
     } else {
         let w1 = (m[2] - m[1]).abs();
         let w2 = (m[2] - m[1]).abs(); // Same weight for symmetry

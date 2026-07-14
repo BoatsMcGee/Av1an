@@ -92,10 +92,12 @@ impl Configuration {
         decoder: Option<&DecoderMethod>,
     ) -> Result<Self> {
         let cwd = std::env::current_dir()?;
-        let temp =
-            path_abs::PathAbs::new(temp.map_or_else(|| cwd.join(hash_path(input)), PathBuf::from))?
-                .as_path()
-                .to_path_buf();
+        let input_abs = path_abs::PathAbs::new(input)?;
+        let temp = path_abs::PathAbs::new(
+            temp.map_or_else(|| cwd.join(hash_path(input_abs.as_path())), PathBuf::from),
+        )?
+        .as_path()
+        .to_path_buf();
         let input_data = Self::new_input_model(input, decoder, vs_args, None)?;
         info!("Indexing input...");
         let mut input_instance = Input::from_data(&input_data)?;
@@ -307,6 +309,10 @@ impl Configuration {
         index: Option<u8>,
         // cache_path: Option<&Path>, // TODO: Support Cache Path
     ) -> Result<InputModel> {
+        if Self::input_is_script(input) {
+            return Self::new_vs_input_model(input, None, vs_args, index);
+        }
+
         let input_model = match decoder {
             Some(DecoderMethod::FFMS2) => InputModel::Video {
                 path:          input.to_path_buf(),
@@ -314,41 +320,26 @@ impl Configuration {
                     index,
                 },
             },
-            Some(method) => match method {
-                DecoderMethod::FFMS2 => unreachable!(),
-                DecoderMethod::BestSource => Self::new_vs_input_model(
-                    input,
-                    Some(VapourSynthImportMethod::BestSource {
+            Some(decoder) => Self::new_vs_input_model(
+                input,
+                match decoder {
+                    DecoderMethod::VSFFMS2 => Some(VapourSynthImportMethod::FFMS2 {
                         index,
                     }),
-                    vs_args,
-                    index,
-                )?,
-                DecoderMethod::DGDecodeNV => Self::new_vs_input_model(
-                    input,
-                    Some(VapourSynthImportMethod::DGDecNV {
+                    DecoderMethod::BestSource => Some(VapourSynthImportMethod::BestSource {
+                        index,
+                    }),
+                    DecoderMethod::DGDecodeNV => Some(VapourSynthImportMethod::DGDecNV {
                         dgindexnv_executable: None,
                     }),
-                    vs_args,
-                    index,
-                )?,
-                DecoderMethod::LSMASHWorks => Self::new_vs_input_model(
-                    input,
-                    Some(VapourSynthImportMethod::LSMASHWorks {
+                    DecoderMethod::LSMASHWorks => Some(VapourSynthImportMethod::LSMASHWorks {
                         index,
                     }),
-                    vs_args,
-                    index,
-                )?,
-                DecoderMethod::VSFFMS2 => Self::new_vs_input_model(
-                    input,
-                    Some(VapourSynthImportMethod::FFMS2 {
-                        index,
-                    }),
-                    vs_args,
-                    index,
-                )?,
-            },
+                    _ => unreachable!(),
+                },
+                vs_args,
+                index,
+            )?,
             None => Self::new_vs_input_model(input, None, vs_args, index)?,
         };
 
@@ -362,11 +353,7 @@ impl Configuration {
         vs_args: Option<&[String]>,
         index: Option<u8>,
     ) -> Result<InputModel> {
-        let input_is_script = input
-            .extension()
-            .map(|s| s.to_str())
-            .is_some_and(|s| s.is_some_and(|extension| matches!(extension, "vpy" | "py")));
-        let input_data = if input_is_script {
+        let input_data = if Self::input_is_script(input) {
             let variables = vs_args.map_or_else(HashMap::new, |vs_args| {
                 vs_args
                     .iter()
@@ -384,17 +371,24 @@ impl Configuration {
         } else {
             InputModel::VapourSynth {
                 path:          input.to_path_buf(),
-                import_method: decoder.map_or(
-                    VapourSynthImportMethod::BestSource {
-                        index,
-                    },
-                    |decoder| decoder,
-                ),
+                import_method: decoder.unwrap_or(VapourSynthImportMethod::BestSource {
+                    index,
+                }),
                 cache_path:    None,
             }
         };
 
         Ok(input_data)
+    }
+
+    /// Returns `true` if the input path is a VapourSynth script, ending with
+    /// `.vpy` or `.py`.
+    #[inline]
+    pub fn input_is_script(input: &Path) -> bool {
+        input
+            .extension()
+            .map(|s| s.to_str())
+            .is_some_and(|s| s.is_some_and(|extension| matches!(extension, "vpy" | "py")))
     }
 }
 

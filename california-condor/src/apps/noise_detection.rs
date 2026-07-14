@@ -2,10 +2,11 @@ use std::{
     io::IsTerminal,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver},
+        mpsc::{self, Receiver, RecvTimeoutError},
         Arc,
     },
     thread,
+    time::Duration,
 };
 
 use andean_condor::core::{
@@ -25,17 +26,22 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    apps::TuiApp,
+    apps::{shared_progress::SharedProgress, TuiApp},
     components::{input_info::InputInfo, progress_bar::ProgressBar},
 };
+#[derive(Clone)]
+pub struct NoiseDetectionState {
+    pub frames_processed: u64,
+}
 
 pub struct NoiseDetectionApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub started:                    std::time::Instant,
-    pub frames_processed:           u64,
     pub total_frames:               u64,
     pub clip_info:                  ClipInfo,
     attempted_cancel:               bool,
+    shared_progress:                SharedProgress<NoiseDetectionState>,
+    cached_state:                   NoiseDetectionState,
 }
 
 impl TuiApp for NoiseDetectionApp {
@@ -62,8 +68,11 @@ impl TuiApp for NoiseDetectionApp {
             if tick_tx.send(NoiseDetectionAppEvent::Tick).is_err() {
                 break;
             }
-            thread::sleep(std::time::Duration::from_millis(16)); // ~60 FPS
+            thread::sleep(Duration::from_millis(33)); // ~30 FPS
         });
+
+        let shared_progress = self.shared_progress.clone();
+        let total_frames = self.total_frames;
         thread::spawn(move || {
             for progress in progress_rx {
                 if let SequenceStatus::Whole(Status::Processing {
@@ -73,7 +82,18 @@ impl TuiApp for NoiseDetectionApp {
                         completed, ..
                     } = completion
                 {
-                    let _ = event_tx.send(NoiseDetectionAppEvent::Progress(completed));
+                    shared_progress.apply(|state| {
+                        state.frames_processed = completed;
+                        true
+                    });
+                    if !std::io::stdout().is_terminal() {
+                        let event = NoiseDetectionConsoleEvent::ProcessedFrame {
+                            completed,
+                            total: total_frames,
+                        };
+                        let event = serde_json::to_string(&event).unwrap();
+                        println!("[Noise Detector][Progress]: {}", event);
+                    }
                 }
             }
             let _ = event_tx.send(NoiseDetectionAppEvent::Quit);
@@ -81,46 +101,46 @@ impl TuiApp for NoiseDetectionApp {
 
         let mut terminal = self.init()?;
         let stdout_is_terminal = std::io::stdout().is_terminal();
-        loop {
-            match event_rx.recv()? {
-                NoiseDetectionAppEvent::Tick => {
+        'event_loop: loop {
+            while let Ok(NoiseDetectionAppEvent::Input(key)) = event_rx.try_recv() {
+                if Self::handle_ctrl_c(
+                    key,
+                    &mut self.attempted_cancel,
+                    &cancelled,
+                    stdout_is_terminal,
+                ) {
+                    let _ = self.restore(terminal);
+                    break 'event_loop;
+                }
+            }
+
+            if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                self.cached_state = snapshot;
+            }
+
+            match event_rx.recv_timeout(Duration::from_millis(33)) {
+                Ok(NoiseDetectionAppEvent::Tick) => {
                     terminal.draw(|f| self.render(f))?;
                 },
-                NoiseDetectionAppEvent::Progress(completed) => {
-                    self.frames_processed = completed;
-                    if !stdout_is_terminal {
-                        let event = NoiseDetectionConsoleEvent::ProcessedFrame {
-                            completed,
-                            total: self.total_frames,
-                        };
-                        let event = serde_json::to_string(&event)?;
-                        println!("[Noise Detector][Progress]: {}", event);
+                Ok(NoiseDetectionAppEvent::Input(key)) => {
+                    if Self::handle_ctrl_c(
+                        key,
+                        &mut self.attempted_cancel,
+                        &cancelled,
+                        stdout_is_terminal,
+                    ) {
+                        let _ = self.restore(terminal);
+                        break 'event_loop;
                     }
                 },
-                NoiseDetectionAppEvent::Quit => {
+                Ok(NoiseDetectionAppEvent::Quit) => {
                     self.restore(terminal)?;
                     break;
                 },
-                NoiseDetectionAppEvent::Input(key) => {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                        // Prevents duplicate event from key release in Windows
-                        && key.is_press()
-                    {
-                        self.attempted_cancel = true;
-                        let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
-                        if already_cancelled {
-                            self.restore(terminal)?;
-                            debug!("Force quit Condor");
-                            std::process::exit(0);
-                        } else if !stdout_is_terminal {
-                            println!(
-                                "Noise Detection does not support cancelling. Press Ctrl+C again \
-                                 to exit."
-                            );
-                        }
-                    }
+                Err(RecvTimeoutError::Timeout) => {
+                    terminal.draw(|f| self.render(f))?;
                 },
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
         Ok(())
@@ -167,7 +187,7 @@ impl TuiApp for NoiseDetectionApp {
             unit_per_second:     "FPS".to_owned(),
             unit:                "Frame".to_owned(),
             initial_completed:   0,
-            completed:           self.frames_processed,
+            completed:           self.cached_state.frames_processed,
             total:               self.total_frames,
         };
         let progress_bar = progress_bar.generate(Some(self.started));
@@ -177,22 +197,54 @@ impl TuiApp for NoiseDetectionApp {
 
 impl NoiseDetectionApp {
     pub fn new(total_frames: u64, clip_info: ClipInfo) -> NoiseDetectionApp {
+        let state = NoiseDetectionState {
+            frames_processed: 0,
+        };
         NoiseDetectionApp {
             original_panic_hook: None,
             started: std::time::Instant::now(),
-            frames_processed: 0,
             total_frames,
             clip_info,
             attempted_cancel: false,
+            shared_progress: SharedProgress::new(state.clone()),
+            cached_state: state,
         }
+    }
+
+    fn handle_ctrl_c(
+        key: ratatui::crossterm::event::KeyEvent,
+        attempted_cancel: &mut bool,
+        cancelled: &Arc<AtomicBool>,
+        stdout_is_terminal: bool,
+    ) -> bool {
+        if key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.is_press()
+        {
+            *attempted_cancel = true;
+            let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
+            if already_cancelled {
+                let _ = ratatui::crossterm::terminal::disable_raw_mode();
+                let _ = ratatui::crossterm::execute!(
+                    std::io::stdout(),
+                    ratatui::crossterm::terminal::LeaveAlternateScreen
+                );
+                debug!("Force quit Condor");
+                std::process::exit(0);
+            } else if !stdout_is_terminal {
+                println!(
+                    "Noise Detection does not support cancelling. Press Ctrl+C again to exit."
+                );
+            }
+        }
+        false
     }
 }
 
 enum NoiseDetectionAppEvent {
     Quit,
-    Tick,                   // 60 FPS
+    Tick,                   // 30 FPS
     Input(event::KeyEvent), // Keyboard events
-    Progress(u64),          // New frames processed
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

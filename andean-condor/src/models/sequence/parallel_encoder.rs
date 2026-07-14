@@ -76,6 +76,13 @@ pub enum BufferStrategy {
     Maximum,
 }
 
+impl Default for BufferStrategy {
+    #[inline]
+    fn default() -> Self {
+        Self::Workers(1)
+    }
+}
+
 impl BufferStrategy {
     #[inline]
     pub fn workers(&self, workers: u8) -> u8 {
