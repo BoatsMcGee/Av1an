@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, fmt::Display, str::FromStr};
 
 use anyhow::{bail, Result};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, node::Node};
 
@@ -21,6 +22,7 @@ use crate::{
                 Scaler,
             },
             standard::{crop::Crop, trim::Trim},
+            vszip::{bilateral::Bilateral, wnnm::WNNM},
         },
         script_builder::{
             script::{Imports, Line},
@@ -53,6 +55,25 @@ pub enum VapourSynthFilter {
         width:   usize,
         height:  usize,
         doubler: Doubler,
+    },
+    WNNM {
+        sigma:                Option<Vec<f64>>,
+        block_size:           Option<usize>,
+        block_step:           Option<usize>,
+        group_size:           Option<usize>,
+        bm_range:             Option<usize>,
+        radius:               Option<usize>,
+        ps_num:               Option<usize>,
+        ps_range:             Option<usize>,
+        residual:             Option<bool>,
+        adaptive_aggregation: Option<bool>,
+    },
+    Bilateral {
+        sigma_s:   Option<Vec<f64>>,
+        sigma_r:   Option<Vec<f64>>,
+        planes:    Option<Vec<bool>>,
+        algorithm: Option<Vec<u32>>,
+        pbficnum:  Option<Vec<u32>>,
     },
 }
 
@@ -134,6 +155,65 @@ impl FromStr for VapourSynthFilter {
                     .map(|v| Doubler::from_str(v).expect("Failed to parse filter argument value"))
                     .expect("Failed to parse doubler"),
             }),
+            "wnnm" => Ok(VapourSynthFilter::WNNM {
+                sigma:                variant_args.get("sigma").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                block_size:           variant_args
+                    .get("block_size")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                block_step:           variant_args
+                    .get("block_step")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                group_size:           variant_args
+                    .get("group_size")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                bm_range:             variant_args
+                    .get("bm_range")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                radius:               variant_args
+                    .get("radius")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                ps_num:               variant_args
+                    .get("ps_num")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                ps_range:             variant_args
+                    .get("ps_range")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                residual:             variant_args
+                    .get("residual")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                adaptive_aggregation: variant_args
+                    .get("adaptive_aggregation")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+            }),
+            "bilateral" => Ok(VapourSynthFilter::Bilateral {
+                sigma_s:   variant_args.get("sigma_s").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                sigma_r:   variant_args.get("sigma_r").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                planes:    variant_args
+                    .get("planes")
+                    .map(|v| v.split(',').map(|s| matches!(s, "1" | "true")).collect()),
+                algorithm: variant_args.get("algorithm").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<u32>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                pbficnum:  variant_args.get("pbficnum").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<u32>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+            }),
             _ => Err(anyhow::anyhow!("Invalid variant name: {}", variant_name)),
         }
     }
@@ -183,6 +263,64 @@ impl Display for VapourSynthFilter {
             } => format!(
                 "rescale:kernel={};width={};height={};doubler={};",
                 kernel, width, height, doubler
+            ),
+            VapourSynthFilter::WNNM {
+                sigma,
+                block_size,
+                block_step,
+                group_size,
+                bm_range,
+                radius,
+                ps_num,
+                ps_range,
+                residual,
+                adaptive_aggregation,
+            } => format!(
+                "wnnm:{}{}{}{}{}{}{}{}{}{}",
+                sigma
+                    .as_ref()
+                    .map(|v| format!("sigma={};", v.iter().join(",")))
+                    .unwrap_or_default(),
+                block_size.map(|v| format!("block_size={};", v)).unwrap_or_default(),
+                block_step.map(|v| format!("block_step={};", v)).unwrap_or_default(),
+                group_size.map(|v| format!("group_size={};", v)).unwrap_or_default(),
+                bm_range.map(|v| format!("bm_range={};", v)).unwrap_or_default(),
+                radius.map(|v| format!("radius={};", v)).unwrap_or_default(),
+                ps_num.map(|v| format!("ps_num={};", v)).unwrap_or_default(),
+                ps_range.map(|v| format!("ps_range={};", v)).unwrap_or_default(),
+                residual.map(|v| format!("residual={};", v)).unwrap_or_default(),
+                adaptive_aggregation
+                    .map(|v| format!("adaptive_aggregation={};", v))
+                    .unwrap_or_default()
+            ),
+            VapourSynthFilter::Bilateral {
+                sigma_s,
+                sigma_r,
+                planes,
+                algorithm,
+                pbficnum,
+            } => format!(
+                "bilateral:{}{}{}{}{}",
+                sigma_s
+                    .as_ref()
+                    .map(|v| format!("sigma_s={};", v.iter().join(",")))
+                    .unwrap_or_default(),
+                sigma_r
+                    .as_ref()
+                    .map(|v| format!("sigma_r={};", v.iter().join(",")))
+                    .unwrap_or_default(),
+                planes
+                    .as_ref()
+                    .map(|v| format!("planes={};", v.iter().join(",")))
+                    .unwrap_or_default(),
+                algorithm
+                    .as_ref()
+                    .map(|v| format!("algorithm={};", v.iter().join(",")))
+                    .unwrap_or_default(),
+                pbficnum
+                    .as_ref()
+                    .map(|v| format!("pbficnum={};", v.iter().join(",")))
+                    .unwrap_or_default()
             ),
         };
         write!(f, "{s}")
@@ -312,6 +450,52 @@ impl VapourSynthFilter {
             VapourSynthFilter::Rescale {
                 ..
             } => unreachable!(),
+            VapourSynthFilter::WNNM {
+                sigma,
+                block_size,
+                block_step,
+                group_size,
+                bm_range,
+                radius,
+                ps_num,
+                ps_range,
+                residual,
+                adaptive_aggregation,
+            } => {
+                let plugin = WNNM {
+                    sigma:                sigma.clone(),
+                    block_size:           block_size.map(|v| v as u32),
+                    block_step:           block_step.map(|v| v as u32),
+                    group_size:           group_size.map(|v| v as u32),
+                    bm_range:             bm_range.map(|v| v as u32),
+                    radius:               radius.map(|v| v as u32),
+                    ps_num:               ps_num.map(|v| v as u32),
+                    ps_range:             ps_range.map(|v| v as u32),
+                    residual:             *residual,
+                    adaptive_aggregation: *adaptive_aggregation,
+                    rclip_name:           None,
+                };
+
+                Ok(plugin.invoke(core, node, None)?)
+            },
+            VapourSynthFilter::Bilateral {
+                sigma_s,
+                sigma_r,
+                planes,
+                algorithm,
+                pbficnum,
+            } => {
+                let plugin = Bilateral {
+                    sigma_s:   sigma_s.clone(),
+                    sigma_r:   sigma_r.clone(),
+                    planes:    planes.clone(),
+                    algorithm: algorithm.clone(),
+                    pbficnum:  pbficnum.clone(),
+                    ref_name:  None,
+                };
+
+                Ok(plugin.invoke(core, node, None)?)
+            },
         }
     }
 
@@ -435,6 +619,52 @@ impl VapourSynthFilter {
                 ..Default::default()
             }
             .generate_script(node_name)?,
+            VapourSynthFilter::WNNM {
+                sigma,
+                block_size,
+                block_step,
+                group_size,
+                bm_range,
+                radius,
+                ps_num,
+                ps_range,
+                residual,
+                adaptive_aggregation,
+            } => {
+                let plugin = WNNM {
+                    sigma:                sigma.clone(),
+                    block_size:           block_size.map(|v| v as u32),
+                    block_step:           block_step.map(|v| v as u32),
+                    group_size:           group_size.map(|v| v as u32),
+                    bm_range:             bm_range.map(|v| v as u32),
+                    radius:               radius.map(|v| v as u32),
+                    ps_num:               ps_num.map(|v| v as u32),
+                    ps_range:             ps_range.map(|v| v as u32),
+                    residual:             *residual,
+                    adaptive_aggregation: *adaptive_aggregation,
+                    rclip_name:           None,
+                };
+
+                plugin.generate_script(node_name)?
+            },
+            VapourSynthFilter::Bilateral {
+                sigma_s,
+                sigma_r,
+                planes,
+                algorithm,
+                pbficnum,
+            } => {
+                let plugin = Bilateral {
+                    sigma_s:   sigma_s.clone(),
+                    sigma_r:   sigma_r.clone(),
+                    planes:    planes.clone(),
+                    algorithm: algorithm.clone(),
+                    pbficnum:  pbficnum.clone(),
+                    ref_name:  None,
+                };
+
+                plugin.generate_script(node_name)?
+            },
         };
 
         Ok((import_lines, filter_lines))
