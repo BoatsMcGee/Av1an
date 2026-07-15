@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{self, atomic::AtomicBool, Arc},
     thread,
     time::SystemTime,
@@ -6,6 +7,7 @@ use std::{
 
 use anyhow::Result;
 use thiserror::Error;
+use vapoursynth::format::PresetFormat;
 
 use crate::{
     core::{
@@ -13,17 +15,27 @@ use crate::{
         sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
         Condor,
     },
-    models::sequence::{
-        noise_detector::{NoiseDetectorData, NoiseDetectorDataHandler},
-        SequenceConfigHandler,
-        SequenceDataHandler,
+    models::{
+        input::{Input as InputModel, VapourSynthScriptSource},
+        sequence::{
+            noise_detector::{
+                NoiseDetectorConfigHandler,
+                NoiseDetectorData,
+                NoiseDetectorDataHandler,
+            },
+            SequenceConfigHandler,
+            SequenceDataHandler,
+        },
     },
     vapoursynth::{
         get_core,
         plugins::{
+            ffms2::Source,
+            resize::bicubic::Bicubic,
             standard::{plane_stats::PlaneStats, splice::Splice, trim::Trim},
             MetricPluginFunction,
         },
+        script_builder::{script::VapourSynthScript, VapourSynthPluginScript},
     },
 };
 
@@ -41,7 +53,7 @@ pub struct NoiseDetector {
 impl<Data, Config> Sequence<Data, Config> for NoiseDetector
 where
     Data: SequenceDataHandler + NoiseDetectorDataHandler,
-    Config: SequenceConfigHandler,
+    Config: SequenceConfigHandler + NoiseDetectorConfigHandler,
 {
     #[inline]
     fn details(&self) -> SequenceDetails {
@@ -76,25 +88,72 @@ where
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         _cancelled: Arc<AtomicBool>,
     ) -> anyhow::Result<((), Vec<anyhow::Error>)> {
-        let mut warnings = vec![];
-
-        let Some(input) = self.input.as_mut() else {
-            return Ok(((), warnings));
-        };
-
+        let warnings = vec![];
         let mut condor_data = condor.as_data();
-        let Some(vapoursynth_decoder) = input.decoder().get_vapoursynth_impl() else {
-            warnings.push(anyhow::Error::new(NoiseDetectorError::InvalidInput));
-            return Ok(((), warnings));
+        let input = self.input.as_mut().unwrap_or(&mut condor.input);
+        let config = condor.sequence_config.noise_detector()?.clone().unwrap_or_default();
+
+        let v_input = match input.as_data() {
+            InputModel::Video {
+                path, ..
+            } => {
+                const SCRIPT_OUTPUT_INDEX: u8 = 0;
+                const SCRIPT_NODE_NAME: &str = "clip";
+                let mut script = VapourSynthScript::default();
+                let script = {
+                    let (dec_import_lines, dec_lines) =
+                        Source::new(&path).generate_script(SCRIPT_NODE_NAME.to_owned())?;
+                    if let Some(dec_import_lines) = dec_import_lines {
+                        script.add_imports(dec_import_lines);
+                    }
+                    script.add_lines(dec_lines);
+
+                    script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
+                    script
+                };
+                let script_input_data = InputModel::VapourSynthScript {
+                    source:    VapourSynthScriptSource::Text(script.to_string()),
+                    variables: HashMap::new(),
+                    index:     SCRIPT_OUTPUT_INDEX,
+                };
+
+                Some(&mut Input::from_vapoursynth(&script_input_data, None)?)
+            },
+            _ => None,
         };
+        let decoder = match input {
+            Input::VapourSynth {
+                decoder, ..
+            }
+            | Input::VapourSynthScript {
+                decoder, ..
+            } => decoder,
+            Input::Video {
+                ..
+            } => v_input.expect("Video Input exists").decoder(),
+        };
+        let vapoursynth_decoder = decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
+        let env = &vapoursynth_decoder.env;
         let reference_node = vapoursynth_decoder.get_output(
             vapoursynth_decoder.get_output_index(),
             vapoursynth_decoder.get_node_modifier(),
         )?;
-        let denoised_node =
-            vapoursynth_decoder.get_output(1, vapoursynth_decoder.get_node_modifier())?;
-        let env = &vapoursynth_decoder.env;
         let core = get_core(env)?;
+
+        // WNNM requires 32-bit format
+        let bicubic_32_plugin = Bicubic {
+            format: Some(PresetFormat::YUV420PS),
+            ..Default::default()
+        };
+        let mut reference_node = bicubic_32_plugin.invoke(core, &reference_node)?;
+        let mut denoised_node = bicubic_32_plugin.invoke(core, &reference_node)?;
+
+        for filter in &config.reference_filters {
+            reference_node = filter.invoke_plugin_function(core, &reference_node)?;
+        }
+        for filter in &config.denoised_filters {
+            denoised_node = filter.invoke_plugin_function(core, &denoised_node)?;
+        }
 
         // Sample 1 frame in the middle of each scene
         let reference_node = {

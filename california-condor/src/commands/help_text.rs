@@ -71,6 +71,9 @@ pub const HELP_INPUT_SHORT: &str = short_help(HELP_INPUT);
 pub const HELP_SCD_INPUT: &str = input_template!("to detect scenes");
 pub const HELP_SCD_INPUT_SHORT: &str = short_help(HELP_SCD_INPUT);
 
+pub const HELP_ND_INPUT: &str = input_template!("to detect noise");
+pub const HELP_ND_INPUT_SHORT: &str = short_help(HELP_ND_INPUT);
+
 pub const HELP_TQ_INPUT: &str = input_template!("to encode and measure quality in Target Quality");
 pub const HELP_TQ_INPUT_SHORT: &str = short_help(HELP_TQ_INPUT);
 
@@ -255,6 +258,8 @@ macro_rules! available_filters {
 - `crop:top?;bottom?;left?;right?;`: Crop input to the specified region in pixels.
 - `trim:start?;end?;`: Trim input to the specified start and end frames.
 - `rescale:kernel;width;height;doubler;`: Rescale input with the specified VSJET kernel, width, height, and doubler. Requires vs-jetpack and vodesfunc to be installed.
+- `wnnm:sigma?;block_size?;block_step?;group_size?;bm_range?;radius?;ps_num?;ps_range?;residual?;adaptive_aggregation?;`: Apply WNNM denoising to the input. Requires vszip to be installed.
+- `bilateral:sigma_s?;sigma_r?;planes?;algorithm?;pbficnum?;`: Apply bilateral filtering to the input. Requires vszip to be installed.
 "#
     };
 }
@@ -281,6 +286,32 @@ Available filters:"#,
     example_filters!(),
 );
 pub const HELP_SCD_FILTERS_SHORT: &str = short_help(HELP_SCD_FILTERS);
+
+pub const HELP_REFERENCE_FILTERS: &str = concat!(
+    r#"VapourSynth filters to apply to the Reference VideoNode.
+
+Defaults to `wnnm:sigma=3.0,0.0,0.0;`
+
+Available filters:"#,
+    available_filters!(),
+    r#"Example filters:
+"#,
+    example_filters!(),
+);
+pub const HELP_REFERENCE_FILTERS_SHORT: &str = short_help(HELP_REFERENCE_FILTERS);
+
+pub const HELP_DENOISED_FILTERS: &str = concat!(
+    r#"VapourSynth filters to apply to the Denoised VideoNode.
+
+Defaults to `wnnm:sigma=6.0,0.0,0.0;`
+
+Available filters:"#,
+    available_filters!(),
+    r#"Example filters:
+"#,
+    example_filters!(),
+);
+pub const HELP_DENOISED_FILTERS_SHORT: &str = short_help(HELP_DENOISED_FILTERS);
 
 pub const HELP_TQ_FILTERS: &str = concat!(
     r#"VapourSynth filters to apply to the Target Quality input.

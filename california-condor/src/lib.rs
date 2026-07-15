@@ -156,10 +156,19 @@ fn run() -> anyhow::Result<()> {
         },
         Some(Commands::DetectNoise {
             input,
+            decoder,
             vs_args,
+            reference_filters,
+            denoised_filters,
         }) => {
-            let (configuration, save_file) =
-                detect_noise_handler(config_path.as_deref(), input.as_deref(), vs_args.as_deref())?;
+            let (configuration, save_file) = detect_noise_handler(
+                config_path.as_deref(),
+                input.as_deref(),
+                decoder.as_ref(),
+                vs_args.as_deref(),
+                reference_filters.as_deref(),
+                denoised_filters.as_deref(),
+            )?;
 
             run_noise_detector(&configuration, &save_file)?;
         },

@@ -149,14 +149,16 @@ pub enum Commands {
     },
     /// Detect noise per scene (Triggers TUI).
     DetectNoise {
-        /// Path to the input VapourSynth script for noise detection.
-        ///
-        /// Must be a VapourSynth script (`.vpy`) that outputs 2 videos, the
-        /// original (or lightly denoised) video and a denoised (heavily) video.
-        #[arg(long, value_name = "VapourSynth Script Input")]
-        input:   Option<PathBuf>,
+        #[arg(long, value_name = "Noise Detector Input", help = HELP_ND_INPUT_SHORT, long_help = HELP_ND_INPUT)]
+        input:             Option<PathBuf>,
+        #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
+        decoder:           Option<DecoderMethod>,
         #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
-        vs_args: Option<Vec<String>>,
+        vs_args:           Option<Vec<String>>,
+        #[arg(long, value_name = "Reference VapourSynth Filters", help = HELP_REFERENCE_FILTERS_SHORT, long_help = HELP_REFERENCE_FILTERS)]
+        reference_filters: Option<Vec<VapourSynthFilter>>,
+        #[arg(long, value_name = "Denoised VapourSynth Filters", help = HELP_DENOISED_FILTERS_SHORT, long_help = HELP_DENOISED_FILTERS)]
+        denoised_filters:  Option<Vec<VapourSynthFilter>>,
     },
     /// Scale Photon Noise ISO per scene based on Noise Detector results.
     ///

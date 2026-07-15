@@ -1013,6 +1013,16 @@ pub fn check_noise_detector(
             expected_config.input.as_ref(),
             "Noise Detector input",
         );
+        assert_eq!(
+            config.reference_filters, expected_config.reference_filters,
+            "Noise Detector reference filters is {:?}",
+            expected_config.reference_filters
+        );
+        assert_eq!(
+            config.denoised_filters, expected_config.denoised_filters,
+            "Noise Detector denoised filters is {:?}",
+            expected_config.denoised_filters
+        );
     } else {
         assert!(noise_detector.is_none(), "Noise Detector is None");
     }

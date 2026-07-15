@@ -18,7 +18,12 @@ use andean_condor::{
         sequence::{
             benchmarker::{BenchmarkerConfig, BenchmarkerConfigHandler},
             bitrate_optimizer::{BitrateOptimizerConfig, BitrateOptimizerConfigHandler},
-            noise_detector::{NoiseDetectorConfig, NoiseDetectorData, NoiseDetectorDataHandler},
+            noise_detector::{
+                NoiseDetectorConfig,
+                NoiseDetectorConfigHandler,
+                NoiseDetectorData,
+                NoiseDetectorDataHandler,
+            },
             noise_scaler::{
                 NoiseScalerConfig,
                 NoiseScalerConfigHandler,
@@ -397,6 +402,7 @@ pub struct CliSequenceConfig
 where
     Self: SequenceConfigHandler
         + BenchmarkerConfigHandler
+        + NoiseDetectorConfigHandler
         + NoiseScalerConfigHandler
         + TargetQualityConfigHandler
         + BitrateOptimizerConfigHandler
@@ -442,6 +448,16 @@ impl BenchmarkerConfigHandler for CliSequenceConfig {
 
     fn benchmarker_mut(&mut self) -> Result<&mut BenchmarkerConfig> {
         Ok(&mut self.benchmarker)
+    }
+}
+
+impl NoiseDetectorConfigHandler for CliSequenceConfig {
+    fn noise_detector(&self) -> Result<&Option<NoiseDetectorConfig>> {
+        Ok(&self.noise_detector)
+    }
+
+    fn noise_detector_mut(&mut self) -> Result<&mut Option<NoiseDetectorConfig>> {
+        Ok(&mut self.noise_detector)
     }
 }
 
