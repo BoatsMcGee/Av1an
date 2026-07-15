@@ -237,6 +237,10 @@ impl TuiApp for BenchmarkerApp {
                     }
                 },
                 Ok(BenchmarkerAppEvent::Quit) => {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
+                    }
+                    let _ = terminal.draw(|f| self.render(f));
                     self.restore(terminal)?;
                     break;
                 },

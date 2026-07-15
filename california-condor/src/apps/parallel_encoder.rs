@@ -296,6 +296,11 @@ impl TuiApp for ParallelEncoderApp {
                     }
                 },
                 Ok(ParallelEncoderAppEvent::Quit) => {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
+                    }
+                    self.drain_scene_progress(&event_rx);
+                    let _ = terminal.draw(|f| self.render(f));
                     self.restore(terminal)?;
                     break;
                 },
