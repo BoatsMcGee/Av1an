@@ -9,7 +9,7 @@ use crate::{
         handlers::{
             concatenate::configure_concatenate,
             configure_temp,
-            encode::configure_parallel_encoder,
+            encode::{configure_encoder, configure_parallel_encoder},
             target_quality::configure_target_quality,
         },
         ConcatenationMethod,
@@ -60,20 +60,15 @@ pub fn init_handler(
     if let Some(filters) = filters {
         configuration.input_filters = filters.to_vec();
     }
-
-    configure_parallel_encoder(
+    configure_encoder(
         &mut configuration,
-        None,
-        None,
-        None,
-        None,
-        workers,
         encoder,
         None,
         params,
         photon_noise,
         None,
     )?;
+    configure_parallel_encoder(&mut configuration, None, None, None, None, workers)?;
     configure_target_quality(
         &mut configuration,
         None,

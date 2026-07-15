@@ -34,6 +34,14 @@ pub fn encode_handler(
     let (mut configuration, config_path) = load_configuration(config_path)?;
 
     configure_temp(&mut configuration, temp_path)?;
+    configure_encoder(
+        &mut configuration,
+        encoder,
+        passes,
+        params,
+        photon_noise,
+        chroma_noise,
+    )?;
     configure_parallel_encoder(
         &mut configuration,
         input_path,
@@ -41,11 +49,6 @@ pub fn encode_handler(
         filters,
         vs_args,
         workers,
-        encoder,
-        passes,
-        params,
-        photon_noise,
-        chroma_noise,
     )?;
 
     configuration.save(&config_path)?;
@@ -61,11 +64,6 @@ pub fn configure_parallel_encoder(
     filters: Option<&[VapourSynthFilter]>,
     vs_args: Option<&[String]>,
     workers: Option<u8>,
-    encoder: Option<&EncoderMethod>,
-    passes: Option<u8>,
-    params: Option<&str>,
-    photon_noise: Option<u32>,
-    chroma_noise: Option<u32>,
 ) -> Result<()> {
     if input_path.is_some() || decoder.is_some() || vs_args.is_some() {
         let existing_input = configuration
@@ -89,15 +87,6 @@ pub fn configure_parallel_encoder(
     if let Some(filters) = filters {
         configuration.input_filters = filters.to_vec();
     }
-
-    configure_encoder(
-        configuration,
-        encoder,
-        passes,
-        params,
-        photon_noise,
-        chroma_noise,
-    )?;
 
     if let Some(workers) = workers {
         configuration.condor.sequence_config.parallel_encoder.workers = Some(workers);
@@ -190,6 +179,18 @@ pub fn configure_encoder(
             ccr: None,
         }));
     }
+    // // Overwrite encoder for all scenes if any paramters are provided (Note: I do
+    // // not like this feature. It's inconsistent across various user intents.)
+    // if encoder.is_some()
+    //     || passes.is_some()
+    //     || params.is_some()
+    //     || photon_noise.is_some()
+    //     || chroma_noise.is_some()
+    // {
+    //     configuration.condor.scenes.iter_mut().for_each(|scene| {
+    //         scene.encoder = configuration.condor.encoder.clone();
+    //     });
+    // }
 
     Ok(())
 }

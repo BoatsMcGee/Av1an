@@ -11,7 +11,7 @@ use crate::{
             configure_input,
             configure_temp,
             detect_scenes::configure_scene_detector,
-            encode::configure_parallel_encoder,
+            encode::{configure_encoder, configure_parallel_encoder},
             target_quality::configure_target_quality,
         },
         ConcatenationMethod,
@@ -111,10 +111,18 @@ pub fn start_handler(
     configuration.condor.input = configure_input(
         &configuration,
         &existing_input,
-        input_path.filter(|_| config_already_existed),
-        decoder.filter(|_| config_already_existed),
-        vs_args.filter(|_| config_already_existed),
+        input_path,
+        decoder,
+        vs_args,
         None,
+    )?;
+    configure_encoder(
+        &mut configuration,
+        encoder,
+        passes,
+        params,
+        photon_noise,
+        chroma_noise,
     )?;
     configure_scene_detector(
         &mut configuration,
@@ -126,19 +134,7 @@ pub fn start_handler(
         None,
         None,
     )?;
-    configure_parallel_encoder(
-        &mut configuration,
-        input_path.filter(|_| config_already_existed),
-        decoder.filter(|_| config_already_existed),
-        filters.filter(|_| config_already_existed),
-        vs_args.filter(|_| config_already_existed),
-        workers,
-        encoder,
-        passes,
-        params,
-        photon_noise,
-        chroma_noise,
-    )?;
+    configure_parallel_encoder(&mut configuration, None, None, None, None, workers)?;
     // configure_benchmarker(
     //     &mut configuration,
     //     input_path.filter(|_| config_already_existed),

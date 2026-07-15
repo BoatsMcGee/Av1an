@@ -329,6 +329,7 @@ pub fn run_benchmarker_tui(
 #[tracing::instrument(skip_all)]
 pub fn run_target_quality_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
+    tq_input_filters: &[VapourSynthFilter],
     input_filters: &[VapourSynthFilter],
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -336,7 +337,12 @@ pub fn run_target_quality_tui(
     let (target_quality_input, clip_info) = if let Some(Some(input)) =
         &condor.sequence_config.target_quality.as_ref().map(|tq| tq.input.clone())
     {
-        let mut tq_input = Configuration::instantiate_input_with_filters(input, input_filters)?;
+        let mut tq_input = Configuration::instantiate_input_with_filters(input, tq_input_filters)?;
+        let clip_info = tq_input.clip_info()?;
+        (Some(tq_input), clip_info)
+    } else if let Some(pe_input) = &condor.sequence_config.parallel_encoder.input {
+        // fallback to Parallel Encoder input
+        let mut tq_input = Configuration::instantiate_input_with_filters(pe_input, input_filters)?;
         let clip_info = tq_input.clip_info()?;
         (Some(tq_input), clip_info)
     } else {
@@ -349,7 +355,7 @@ pub fn run_target_quality_tui(
         .map(|tq| tq.metric_input.clone())
         .and_then(|input| {
             input.map(|input| {
-                Configuration::instantiate_input_with_filters(&input, input_filters).ok()
+                Configuration::instantiate_input_with_filters(&input, tq_input_filters).ok()
             })
         })
         .flatten();

@@ -372,6 +372,7 @@ pub fn run_condor(configuration: &Configuration, save_file: &Path, skip_scd: boo
         run_target_quality_tui(
             &mut condor,
             &configuration.tq_input_filters,
+            &configuration.input_filters,
             std::sync::Arc::clone(&cancellation_token),
         )?;
         if cancelled() {
@@ -545,6 +546,7 @@ pub fn run_target_quality(configuration: &Configuration, save_file: &Path) -> Re
     run_target_quality_tui(
         &mut condor,
         &configuration.tq_input_filters,
+        &configuration.input_filters,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )?;
 
