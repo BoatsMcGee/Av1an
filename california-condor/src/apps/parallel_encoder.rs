@@ -243,7 +243,7 @@ impl TuiApp for ParallelEncoderApp {
                         active_scene.total_passes = total_passes;
                         active_scene.frames_processed = current_frame;
                         active_scene.total_frames = total_frames;
-                    } else {
+                    } else if current_frame < total_frames {
                         let scene_encoder = SceneEncoder {
                             scene: self.scenes.get(&scene).expect("Scene exists").1.clone(),
                             started: std::time::Instant::now(),
@@ -408,7 +408,7 @@ impl ParallelEncoderApp {
                 active_scene.total_passes = total_passes;
                 active_scene.frames_processed = current_frame;
                 active_scene.total_frames = total_frames;
-            } else {
+            } else if current_frame < total_frames {
                 let scene_encoder = SceneEncoder {
                     scene: self.scenes.get(&scene).expect("Scene exists").1.clone(),
                     started: std::time::Instant::now(),

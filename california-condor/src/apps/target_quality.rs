@@ -84,25 +84,53 @@ impl TuiApp for TargetQualityApp {
             for progress in progress_rx {
                 match progress {
                     SequenceStatus::Whole(status) => {
-                        if let Status::Processing {
-                            id: _id,
-                            completion,
-                        } = status
-                            && let SequenceCompletion::Passes {
-                                total, ..
-                            } = completion
-                        {
-                            shared_progress.apply(|state| {
-                                state.current_pass = total;
-                                true
-                            });
-                            if !std::io::stdout().is_terminal() {
-                                let event = TargetQualityConsoleEvent::Pass(total);
-                                println!(
-                                    "[Target Quality][Pass] {}",
-                                    serde_json::to_string(&event).unwrap()
-                                );
-                            }
+                        match status {
+                            Status::Processing {
+                                completion:
+                                    SequenceCompletion::Passes {
+                                        total, ..
+                                    },
+                                ..
+                            } => {
+                                shared_progress.apply(|state| {
+                                    state.current_pass = total;
+                                    true
+                                });
+                                if !std::io::stdout().is_terminal() {
+                                    let event = TargetQualityConsoleEvent::Pass(total);
+                                    println!(
+                                        "[Target Quality][Pass] {}",
+                                        serde_json::to_string(&event).unwrap()
+                                    );
+                                }
+                            },
+                            Status::Processing {
+                                id,
+                                completion:
+                                    SequenceCompletion::Frames {
+                                        completed,
+                                        total,
+                                    },
+                            } if id == "Encode" || id == "Compare" => {
+                                if id == "Encode" {
+                                    shared_progress.apply(|state| {
+                                        state.frames_compared = 0;
+                                        state.frames_encoded = completed;
+                                        state.total_frames = total;
+                                        true
+                                    });
+                                } else {
+                                    shared_progress.apply(|state| {
+                                        if completed == 0 {
+                                            state.frames_encoded = total;
+                                        }
+                                        state.frames_compared = completed;
+                                        state.total_frames = total;
+                                        true
+                                    });
+                                }
+                            },
+                            _ => {},
                         }
                     },
                     SequenceStatus::Subprocess {
