@@ -193,16 +193,15 @@ impl TuiApp for ParallelEncoderApp {
         let stdout_is_terminal = std::io::stdout().is_terminal();
         let mut terminal = self.init()?;
         'event_loop: loop {
-            while let Ok(ParallelEncoderAppEvent::Input(key)) = event_rx.try_recv() {
-                if Self::handle_ctrl_c(
-                    key,
-                    &mut self.attempted_cancel,
-                    &cancelled,
-                    &mut terminal,
-                    stdout_is_terminal,
-                )? {
-                    break 'event_loop;
-                }
+            if self.drain_scene_progress(
+                &event_rx,
+                &cancelled,
+                &mut terminal,
+                stdout_is_terminal,
+            )? {
+                let _ = terminal.draw(|f| self.render(f));
+                self.restore(terminal)?;
+                break 'event_loop;
             }
 
             if let Some(snapshot) = self.shared_progress.read_if_dirty() {
@@ -211,7 +210,6 @@ impl TuiApp for ParallelEncoderApp {
 
             match event_rx.recv_timeout(Duration::from_millis(33)) {
                 Ok(ParallelEncoderAppEvent::Tick) => {
-                    self.drain_scene_progress(&event_rx);
                     terminal.draw(|f| self.render(f))?;
                 },
                 Ok(ParallelEncoderAppEvent::Input(key)) => {
@@ -222,6 +220,8 @@ impl TuiApp for ParallelEncoderApp {
                         &mut terminal,
                         stdout_is_terminal,
                     )? {
+                        let _ = terminal.draw(|f| self.render(f));
+                        self.restore(terminal)?;
                         break 'event_loop;
                     }
                 },
@@ -296,22 +296,18 @@ impl TuiApp for ParallelEncoderApp {
                     }
                 },
                 Ok(ParallelEncoderAppEvent::Quit) => {
-                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                        self.cached_state = snapshot;
-                    }
-                    self.drain_scene_progress(&event_rx);
                     let _ = terminal.draw(|f| self.render(f));
                     self.restore(terminal)?;
                     break;
                 },
                 Err(RecvTimeoutError::Timeout) => {
-                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                        self.cached_state = snapshot;
-                    }
-                    self.drain_scene_progress(&event_rx);
                     terminal.draw(|f| self.render(f))?;
                 },
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    let _ = terminal.draw(|f| self.render(f));
+                    self.restore(terminal)?;
+                    break;
+                },
             }
         }
         Ok(())
@@ -388,38 +384,100 @@ impl TuiApp for ParallelEncoderApp {
 }
 
 impl ParallelEncoderApp {
-    fn drain_scene_progress(&mut self, event_rx: &mpsc::Receiver<ParallelEncoderAppEvent>) {
-        while let Ok(ParallelEncoderAppEvent::SceneProgress {
-            scene,
-            current_pass,
-            total_passes,
-            current_frame,
-            total_frames,
-        }) = event_rx.try_recv()
-        {
-            if current_pass == total_passes && self.active_scenes.contains_key(&scene) {
-                self.scenes.entry(scene).and_modify(|(completed, _)| {
-                    *completed = current_frame;
-                });
-            }
-
-            if let Some(active_scene) = self.active_scenes.get_mut(&scene) {
-                active_scene.current_pass = current_pass;
-                active_scene.total_passes = total_passes;
-                active_scene.frames_processed = current_frame;
-                active_scene.total_frames = total_frames;
-            } else if current_frame < total_frames {
-                let scene_encoder = SceneEncoder {
-                    scene: self.scenes.get(&scene).expect("Scene exists").1.clone(),
-                    started: std::time::Instant::now(),
+    fn drain_scene_progress(
+        &mut self,
+        event_rx: &mpsc::Receiver<ParallelEncoderAppEvent>,
+        cancelled: &Arc<AtomicBool>,
+        terminal: &mut super::StdOutOrErrTerminal,
+        stdout_is_terminal: bool,
+    ) -> Result<bool> {
+        loop {
+            match event_rx.try_recv() {
+                Ok(ParallelEncoderAppEvent::SceneProgress {
+                    scene,
                     current_pass,
                     total_passes,
-                    frames_processed: current_frame,
+                    current_frame,
                     total_frames,
-                };
-                self.active_scenes.insert(scene, scene_encoder);
+                }) => {
+                    if current_pass == total_passes && self.active_scenes.contains_key(&scene) {
+                        self.scenes.entry(scene).and_modify(|(completed, _)| {
+                            *completed = current_frame;
+                        });
+                    }
+
+                    if let Some(active_scene) = self.active_scenes.get_mut(&scene) {
+                        active_scene.current_pass = current_pass;
+                        active_scene.total_passes = total_passes;
+                        active_scene.frames_processed = current_frame;
+                        active_scene.total_frames = total_frames;
+                    } else if current_frame < total_frames {
+                        let scene_encoder = SceneEncoder {
+                            scene: self.scenes.get(&scene).expect("Scene exists").1.clone(),
+                            started: std::time::Instant::now(),
+                            current_pass,
+                            total_passes,
+                            frames_processed: current_frame,
+                            total_frames,
+                        };
+                        self.active_scenes.insert(scene, scene_encoder);
+                    }
+                },
+                Ok(ParallelEncoderAppEvent::SceneCompleted(scene)) => {
+                    self.scenes.entry(scene).and_modify(|(completed, scene)| {
+                        *completed = (scene.end_frame - scene.start_frame) as u64;
+                    });
+                    self.active_scenes.remove(&scene);
+                    self.cached_state.completed_scenes_count = self
+                        .scenes
+                        .iter()
+                        .filter(|(_, (_, s))| {
+                            s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0)
+                        })
+                        .count();
+                },
+                Ok(ParallelEncoderAppEvent::SceneBytes(scene, bytes)) => {
+                    self.scenes.entry(scene).and_modify(|(_, scene)| {
+                        scene.sequence_data.parallel_encoder.bytes = Some(bytes);
+                    });
+                    let completed_count = self
+                        .scenes
+                        .iter()
+                        .filter(|(_, (_, s))| {
+                            s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0)
+                        })
+                        .count();
+                    self.cached_state.completed_scenes_count = completed_count;
+                    let (bitrate, estimated_bytes) =
+                        Self::estimate_size(&self.scenes, &self.clip_info);
+                    self.cached_state.estimated_bitrate = bitrate;
+                    self.cached_state.estimated_bytes = estimated_bytes;
+                    if !stdout_is_terminal {
+                        let event = ParallelEncoderConsoleEvent::SceneSize {
+                            scene_index: scene,
+                            bytes,
+                        };
+                        println!(
+                            "[Parallel Encoder][Scene Size] {}",
+                            serde_json::to_string(&event)?
+                        );
+                    }
+                },
+                Ok(ParallelEncoderAppEvent::Input(key)) => {
+                    if Self::handle_ctrl_c(
+                        key,
+                        &mut self.attempted_cancel,
+                        cancelled,
+                        terminal,
+                        stdout_is_terminal,
+                    )? {
+                        return Ok(true);
+                    }
+                },
+                _ => break,
             }
         }
+        Ok(false)
     }
 
     pub fn new(
@@ -505,17 +563,8 @@ impl ParallelEncoderApp {
             *attempted_cancel = true;
             let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
             if already_cancelled {
-                let restore = || -> Result<()> {
-                    let _ = ratatui::crossterm::terminal::disable_raw_mode();
-                    let _ = ratatui::crossterm::execute!(
-                        std::io::stdout(),
-                        ratatui::crossterm::terminal::LeaveAlternateScreen
-                    );
-                    Ok(())
-                };
-                restore()?;
                 debug!("Force quit Condor");
-                std::process::exit(0);
+                return Ok(true);
             } else if !stdout_is_terminal {
                 println!("Waiting for Encoders to finish. Press Ctrl+C again to exit immediately.");
             }

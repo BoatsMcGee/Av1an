@@ -271,6 +271,11 @@ impl TuiApp for TargetQualityApp {
                     &mut terminal,
                     stdout_is_terminal,
                 )? {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
+                    }
+                    let _ = terminal.draw(|f| self.render(f));
+                    self.restore(terminal)?;
                     break 'event_loop;
                 }
             }
@@ -299,6 +304,11 @@ impl TuiApp for TargetQualityApp {
                         &mut terminal,
                         stdout_is_terminal,
                     )? {
+                        if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                            self.cached_state = snapshot;
+                        }
+                        let _ = terminal.draw(|f| self.render(f));
+                        self.restore(terminal)?;
                         break 'event_loop;
                     }
                 },
@@ -313,7 +323,14 @@ impl TuiApp for TargetQualityApp {
                 Err(RecvTimeoutError::Timeout) => {
                     terminal.draw(|f| self.render(f))?;
                 },
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
+                    }
+                    let _ = terminal.draw(|f| self.render(f));
+                    self.restore(terminal)?;
+                    break;
+                },
             }
         }
         Ok(())
@@ -489,13 +506,8 @@ impl TargetQualityApp {
             *attempted_cancel = true;
             let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
             if already_cancelled {
-                let _ = ratatui::crossterm::terminal::disable_raw_mode();
-                let _ = ratatui::crossterm::execute!(
-                    std::io::stdout(),
-                    ratatui::crossterm::terminal::LeaveAlternateScreen
-                );
                 debug!("Force quit Condor");
-                std::process::exit(0);
+                return Ok(true);
             } else if !stdout_is_terminal {
                 println!("Waiting for Encoders to finish. Press Ctrl+C again to exit immediately.");
             }

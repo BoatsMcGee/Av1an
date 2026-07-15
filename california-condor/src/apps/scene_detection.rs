@@ -126,6 +126,10 @@ impl TuiApp for SceneDetectionApp {
                     &cancelled,
                     stdout_is_terminal,
                 ) {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
+                    }
+                    let _ = terminal.draw(|f| self.render(f));
                     let _ = self.restore(terminal);
                     break 'event_loop;
                 }
@@ -146,6 +150,10 @@ impl TuiApp for SceneDetectionApp {
                         &cancelled,
                         stdout_is_terminal,
                     ) {
+                        if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                            self.cached_state = snapshot;
+                        }
+                        let _ = terminal.draw(|f| self.render(f));
                         let _ = self.restore(terminal);
                         break 'event_loop;
                     }
@@ -161,7 +169,14 @@ impl TuiApp for SceneDetectionApp {
                 Err(RecvTimeoutError::Timeout) => {
                     terminal.draw(|f| self.render(f))?;
                 },
-                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Disconnected) => {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
+                    }
+                    let _ = terminal.draw(|f| self.render(f));
+                    let _ = self.restore(terminal);
+                    break;
+                },
             }
         }
         Ok(())
@@ -255,13 +270,8 @@ impl SceneDetectionApp {
             *attempted_cancel = true;
             let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
             if already_cancelled {
-                let _ = ratatui::crossterm::terminal::disable_raw_mode();
-                let _ = ratatui::crossterm::execute!(
-                    std::io::stdout(),
-                    ratatui::crossterm::terminal::LeaveAlternateScreen
-                );
                 debug!("Force quit Condor");
-                std::process::exit(0);
+                return true;
             } else if !stdout_is_terminal {
                 println!(
                     "Scene Detection does not support cancelling. Press Ctrl+C again to exit."

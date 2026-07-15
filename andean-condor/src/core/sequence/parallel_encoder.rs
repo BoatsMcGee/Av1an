@@ -393,31 +393,7 @@ impl ParallelEncoder {
                                         },
                                     },
                                 ))?;
-                                // Scene completed
-                                if progress.frame == total_scene_frames {
-                                    task_progress_tx.send(SequenceStatus::Subprocess {
-                                        parent: Status::Processing {
-                                            id:         DETAILS.name.to_string(),
-                                            completion: SequenceCompletion::Frames {
-                                                completed: total_final_encoded as u64,
-                                                total:     total_process_frames as u64,
-                                            },
-                                        },
-                                        child:  Status::Completed {
-                                            id: task.original_index.to_string(),
-                                        },
-                                    })?;
-                                }
-                                // Process completed
-                                if total_final_encoded == total_process_frames {
-                                    task_progress_tx.send(SequenceStatus::Whole(
-                                        Status::Completed {
-                                            id: DETAILS.name.to_string(),
-                                        },
-                                    ))?;
-                                }
                             }
-                            // Scene's pass/frame completed
                             task_progress_tx.send(SequenceStatus::Subprocess {
                                 parent: Status::Processing {
                                     id:         DETAILS.name.to_string(),
@@ -436,6 +412,35 @@ impl ParallelEncoder {
                                     },
                                 },
                             })?;
+                            if progress.pass.0 == total_passes {
+                                // Scene completed
+                                if progress.frame == total_scene_frames {
+                                    task_progress_tx.send(SequenceStatus::Subprocess {
+                                        parent: Status::Processing {
+                                            id:         DETAILS.name.to_string(),
+                                            completion: SequenceCompletion::Frames {
+                                                completed: total_final_pass_frames_encoded
+                                                    .load(Ordering::Relaxed)
+                                                    as u64,
+                                                total:     total_process_frames as u64,
+                                            },
+                                        },
+                                        child:  Status::Completed {
+                                            id: task.original_index.to_string(),
+                                        },
+                                    })?;
+                                }
+                                // Process completed
+                                if total_final_pass_frames_encoded.load(Ordering::Relaxed)
+                                    == total_process_frames
+                                {
+                                    task_progress_tx.send(SequenceStatus::Whole(
+                                        Status::Completed {
+                                            id: DETAILS.name.to_string(),
+                                        },
+                                    ))?;
+                                }
+                            }
                         }
                         Ok(())
                     });
