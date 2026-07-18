@@ -3,7 +3,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::sequence::{
     bitrate_optimizer::{BitrateOptimizerConfig, BitrateOptimizerConfigHandler},
-    noise_detector::{NoiseDetectorConfig, NoiseDetectorData, NoiseDetectorDataHandler},
+    noise_detector::{
+        NoiseDetectorConfig,
+        NoiseDetectorConfigHandler,
+        NoiseDetectorData,
+        NoiseDetectorDataHandler,
+    },
     noise_scaler::{
         NoiseScalerConfig,
         NoiseScalerConfigHandler,
@@ -29,13 +34,13 @@ use crate::models::sequence::{
 
 pub mod benchmarker;
 pub mod bitrate_optimizer;
-pub mod convex_hull;
 pub mod noise_detector;
 pub mod noise_scaler;
 pub mod parallel_encoder;
 pub mod quality_check;
 pub mod scene_concatenator;
 pub mod scene_detector;
+pub mod speed_scaler;
 pub mod target_quality;
 
 pub trait Sequence: Default {}
@@ -48,6 +53,7 @@ pub trait SequenceConfigHandler: Default + Clone + Serialize {}
 pub struct DefaultSequenceConfig
 where
     Self: SequenceConfigHandler
+        + NoiseDetectorConfigHandler
         + NoiseScalerConfigHandler
         + TargetQualityConfigHandler
         + BitrateOptimizerConfigHandler
@@ -79,6 +85,18 @@ impl Default for DefaultSequenceConfig {
 }
 
 impl SequenceConfigHandler for DefaultSequenceConfig {
+}
+
+impl NoiseDetectorConfigHandler for DefaultSequenceConfig {
+    #[inline]
+    fn noise_detector(&self) -> Result<&Option<NoiseDetectorConfig>> {
+        Ok(&self.noise_detector)
+    }
+
+    #[inline]
+    fn noise_detector_mut(&mut self) -> Result<&mut Option<NoiseDetectorConfig>> {
+        Ok(&mut self.noise_detector)
+    }
 }
 
 impl NoiseScalerConfigHandler for DefaultSequenceConfig {

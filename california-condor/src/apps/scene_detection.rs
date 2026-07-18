@@ -2,10 +2,11 @@ use std::{
     io::IsTerminal,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver},
+        mpsc::{self, Receiver, RecvTimeoutError},
         Arc,
     },
     thread,
+    time::Duration,
 };
 
 use andean_condor::core::{
@@ -25,19 +26,26 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    apps::TuiApp,
+    apps::{shared_progress::SharedProgress, TuiApp},
     components::{input_info::InputInfo, progress_bar::ProgressBar},
 };
+#[derive(Clone)]
+pub struct SceneDetectionState {
+    pub frames_processed: u64,
+    pub total_frames:     u64,
+    pub scenes:           Vec<(u64, u64)>,
+    pub scenes_len:       usize,
+}
 
 pub struct SceneDetectionApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub started:                    std::time::Instant,
-    initial_frames:                 u64,
-    pub frames_processed:           u64,
-    pub total_frames:               u64,
-    pub scenes:                     Vec<(u64, u64)>,
     pub clip_info:                  ClipInfo,
+    initial_frames:                 u64,
+    pub total_frames:               u64,
     attempted_cancel:               bool,
+    shared_progress:                SharedProgress<SceneDetectionState>,
+    cached_state:                   SceneDetectionState,
 }
 
 impl TuiApp for SceneDetectionApp {
@@ -64,8 +72,9 @@ impl TuiApp for SceneDetectionApp {
             if tick_tx.send(SceneDetectionAppEvent::Tick).is_err() {
                 break;
             }
-            thread::sleep(std::time::Duration::from_millis(16)); // ~60 FPS
+            thread::sleep(Duration::from_millis(33)); // ~30 FPS
         });
+        let shared_progress = self.shared_progress.clone();
         thread::spawn(move || {
             for progress in progress_rx {
                 if let SequenceStatus::Whole(Status::Processing {
@@ -76,17 +85,29 @@ impl TuiApp for SceneDetectionApp {
                         SequenceCompletion::Frames {
                             completed, ..
                         } => {
-                            let _ = event_tx.send(SceneDetectionAppEvent::Progress(completed));
+                            shared_progress.apply(|state| {
+                                state.frames_processed = completed;
+                                true
+                            });
                         },
                         SequenceCompletion::Custom {
                             name,
                             completed,
                             total,
                         } if name == "new-scene" => {
-                            let _ = event_tx.send(SceneDetectionAppEvent::NewScene {
-                                start: completed as u64,
-                                end:   total as u64,
+                            shared_progress.apply(|state| {
+                                state.scenes.push((completed as u64, total as u64));
+                                state.scenes_len = state.scenes.len();
+                                true
                             });
+                            if !std::io::stdout().is_terminal() {
+                                let event = SceneDetectionConsoleEvent::NewScene {
+                                    start: completed as u64,
+                                    end:   total as u64,
+                                };
+                                let event = serde_json::to_string(&event).unwrap();
+                                println!("[Scene Detector][New Scene]: {}", event);
+                            }
                         },
                         _ => {},
                     }
@@ -97,59 +118,64 @@ impl TuiApp for SceneDetectionApp {
 
         let mut terminal = self.init()?;
         let stdout_is_terminal = std::io::stdout().is_terminal();
-        loop {
-            match event_rx.recv()? {
-                SceneDetectionAppEvent::Tick => {
+        'event_loop: loop {
+            while let Ok(SceneDetectionAppEvent::Input(key)) = event_rx.try_recv() {
+                if Self::handle_ctrl_c(
+                    key,
+                    &mut self.attempted_cancel,
+                    &cancelled,
+                    stdout_is_terminal,
+                ) {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
+                    }
+                    let _ = terminal.draw(|f| self.render(f));
+                    let _ = self.restore(terminal);
+                    break 'event_loop;
+                }
+            }
+
+            if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                self.cached_state = snapshot;
+            }
+
+            match event_rx.recv_timeout(Duration::from_millis(33)) {
+                Ok(SceneDetectionAppEvent::Tick) => {
                     terminal.draw(|f| self.render(f))?;
                 },
-                SceneDetectionAppEvent::Progress(completed) => {
-                    self.frames_processed = completed;
-                    if !stdout_is_terminal {
-                        let event = SceneDetectionConsoleEvent::ProcessedFrame {
-                            completed,
-                            total: self.total_frames,
-                        };
-                        let event = serde_json::to_string(&event)?;
-                        println!("[Scene Detector][Progress]: {}", event);
+                Ok(SceneDetectionAppEvent::Input(key)) => {
+                    if Self::handle_ctrl_c(
+                        key,
+                        &mut self.attempted_cancel,
+                        &cancelled,
+                        stdout_is_terminal,
+                    ) {
+                        if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                            self.cached_state = snapshot;
+                        }
+                        let _ = terminal.draw(|f| self.render(f));
+                        let _ = self.restore(terminal);
+                        break 'event_loop;
                     }
                 },
-                SceneDetectionAppEvent::NewScene {
-                    start,
-                    end,
-                } => {
-                    self.scenes.push((start, end));
-                    if !stdout_is_terminal {
-                        let event = SceneDetectionConsoleEvent::NewScene {
-                            start,
-                            end,
-                        };
-                        let event = serde_json::to_string(&event)?;
-                        println!("[Scene Detector][New Scene]: {}", event);
+                Ok(SceneDetectionAppEvent::Quit) => {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
                     }
-                },
-                SceneDetectionAppEvent::Quit => {
+                    let _ = terminal.draw(|f| self.render(f));
                     self.restore(terminal)?;
                     break;
                 },
-                SceneDetectionAppEvent::Input(key) => {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                        // Prevents duplicate event from key release in Windows
-                        && key.is_press()
-                    {
-                        self.attempted_cancel = true;
-                        let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
-                        if already_cancelled {
-                            self.restore(terminal)?;
-                            debug!("Force quit Condor");
-                            std::process::exit(0);
-                        } else if !stdout_is_terminal {
-                            println!(
-                                "Scene Detection does not support cancelling. Press Ctrl+C again \
-                                 to exit."
-                            );
-                        }
+                Err(RecvTimeoutError::Timeout) => {
+                    terminal.draw(|f| self.render(f))?;
+                },
+                Err(RecvTimeoutError::Disconnected) => {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
                     }
+                    let _ = terminal.draw(|f| self.render(f));
+                    let _ = self.restore(terminal);
+                    break;
                 },
             }
         }
@@ -192,12 +218,12 @@ impl TuiApp for SceneDetectionApp {
                 "Detecting Scenes...".to_owned()
             },
             completed_title:     "Scene Detection Completed".to_owned(),
-            top_right_title:     format!("{} found", self.scenes.len()),
+            top_right_title:     format!("{} found", self.cached_state.scenes_len),
             bottom_center_title: String::new(),
             unit_per_second:     "FPS".to_owned(),
             unit:                "Frame".to_owned(),
             initial_completed:   self.initial_frames,
-            completed:           self.frames_processed,
+            completed:           self.cached_state.frames_processed,
             total:               self.total_frames,
         };
         let progress_bar = progress_bar.generate(Some(self.started));
@@ -212,25 +238,54 @@ impl SceneDetectionApp {
         scenes: Vec<(u64, u64)>,
         clip_info: ClipInfo,
     ) -> SceneDetectionApp {
+        let scenes_len = scenes.len();
+        let state = SceneDetectionState {
+            frames_processed: initial_frames,
+            total_frames,
+            scenes,
+            scenes_len,
+        };
         SceneDetectionApp {
             original_panic_hook: None,
             started: std::time::Instant::now(),
             initial_frames,
-            frames_processed: initial_frames,
             total_frames,
-            scenes,
             clip_info,
             attempted_cancel: false,
+            shared_progress: SharedProgress::new(state.clone()),
+            cached_state: state,
         }
+    }
+
+    fn handle_ctrl_c(
+        key: ratatui::crossterm::event::KeyEvent,
+        attempted_cancel: &mut bool,
+        cancelled: &Arc<AtomicBool>,
+        stdout_is_terminal: bool,
+    ) -> bool {
+        if key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.is_press()
+        {
+            *attempted_cancel = true;
+            let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
+            if already_cancelled {
+                debug!("Force quit Condor");
+                return true;
+            } else if !stdout_is_terminal {
+                println!(
+                    "Scene Detection does not support cancelling. Press Ctrl+C again to exit."
+                );
+            }
+        }
+        false
     }
 }
 
 enum SceneDetectionAppEvent {
     Quit,
-    Tick,                              // 60 FPS
-    Input(event::KeyEvent),            // Keyboard events
-    Progress(u64),                     // New frames processed
-    NewScene { start: u64, end: u64 }, // New scene found
+    Tick,                   // 30 FPS
+    Input(event::KeyEvent), // Keyboard events
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

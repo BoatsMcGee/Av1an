@@ -48,7 +48,7 @@ pub fn init_logging(
     let mut module_configs = HashMap::new();
 
     // Configure condor CLI module
-    module_configs.insert("condor", ModuleConfig {
+    module_configs.insert("california_condor", ModuleConfig {
         console_level,
         file_level,
         console_enabled: true,

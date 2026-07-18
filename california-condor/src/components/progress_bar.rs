@@ -20,10 +20,23 @@ pub struct ProgressBar {
 }
 
 impl ProgressBar {
+    /// SAFETY: `Gauge::ratio()` panics if the value is not between 0.0 and
+    /// 1.0 (inclusive) or is NaN.  We clamp to [0.0, 1.0] to prevent crashes
+    /// when `total == 0` (division by zero → inf/NaN).
+    #[inline]
+    fn clamped_ratio(completed: u64, total: u64) -> f64 {
+        if total == 0 {
+            0.0
+        } else {
+            (completed as f64 / total as f64).clamp(0.0, 1.0)
+        }
+    }
+
     #[inline]
     pub fn generate(&self, started: Option<std::time::Instant>) -> Gauge<'_> {
         let mut title = self.processing_title.clone();
-        let progress_percent = (self.completed as f64 / self.total as f64) * 100.0;
+        let ratio = Self::clamped_ratio(self.completed, self.total);
+        let progress_percent = ratio * 100.0;
         let (label, elapsed_hms, remaining_hms, _eta_hms) = started.map_or_else(
             || {
                 (
@@ -72,7 +85,7 @@ impl ProgressBar {
                     .title_bottom(Line::from(self.bottom_center_title.clone()).centered())
                     .title_bottom(Line::from(remaining_hms.unwrap_or_default()).right_aligned()),
             )
-            .ratio(self.completed as f64 / self.total as f64)
+            .ratio(ratio)
             .label(Span::styled(label, Style::default()))
             .gauge_style(Style::default().fg(self.color))
     }

@@ -3,10 +3,11 @@ use std::{
     io::IsTerminal,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver},
+        mpsc::{self, Receiver, RecvTimeoutError},
         Arc,
     },
     thread,
+    time::Duration,
 };
 
 use andean_condor::{
@@ -34,16 +35,21 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    apps::TuiApp,
+    apps::{shared_progress::SharedProgress, TuiApp},
     components::{encoder_info::EncoderInfo, input_info::InputInfo},
 };
+#[derive(Clone)]
+pub struct BenchmarkerState {
+    pub results: BTreeMap<u8, WorkerStatus>,
+}
 
 pub struct BenchmarkerApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub encoder:                    Encoder,
     pub clip_info:                  ClipInfo,
-    pub results:                    BTreeMap<u8, WorkerStatus>,
     attempted_cancel:               bool,
+    shared_progress:                SharedProgress<BenchmarkerState>,
+    cached_state:                   BenchmarkerState,
 }
 
 impl TuiApp for BenchmarkerApp {
@@ -71,8 +77,9 @@ impl TuiApp for BenchmarkerApp {
             if tick_tx.send(BenchmarkerAppEvent::Tick).is_err() {
                 break;
             }
-            thread::sleep(std::time::Duration::from_millis(16)); // ~60 FPS
+            thread::sleep(Duration::from_millis(33)); // ~30 FPS
         });
+        let shared_progress = self.shared_progress.clone();
         thread::spawn(move || {
             for progress in progress_rx {
                 match progress {
@@ -84,7 +91,19 @@ impl TuiApp for BenchmarkerApp {
                                 let _ = event_tx.send(BenchmarkerAppEvent::Quit);
                             } else {
                                 let workers = id.parse::<u8>().expect("Workers is a number");
-                                let _ = event_tx.send(BenchmarkerAppEvent::WorkerAdded(workers));
+                                shared_progress.apply(|state| {
+                                    state.results.entry(workers).and_modify(|ws| ws.added = true);
+                                    true
+                                });
+                                if !std::io::stdout().is_terminal() {
+                                    let event = BenchmarkerConsoleEvent::WorkerAdded {
+                                        worker: workers,
+                                    };
+                                    println!(
+                                        "[Benchmarker][Worker Added] {}",
+                                        serde_json::to_string(&event).unwrap()
+                                    );
+                                }
                             }
                         },
                         Status::Failed {
@@ -92,10 +111,25 @@ impl TuiApp for BenchmarkerApp {
                             error,
                         } => {
                             let workers = id.parse::<u8>().expect("Workers is a number");
-                            let _ =
-                                event_tx.send(BenchmarkerAppEvent::WorkerFailed(workers, error));
+                            shared_progress.apply(|state| {
+                                state
+                                    .results
+                                    .entry(workers)
+                                    .and_modify(|ws| ws.failed_reason = Some(error.clone()));
+                                true
+                            });
+                            if !std::io::stdout().is_terminal() {
+                                let event = BenchmarkerConsoleEvent::WorkerFailed {
+                                    worker: workers,
+                                    error,
+                                };
+                                println!(
+                                    "[Benchmarker][Worker Failed] {}",
+                                    serde_json::to_string(&event).unwrap()
+                                );
+                            }
                         },
-                        _ => (),
+                        _ => {},
                     },
                     SequenceStatus::Subprocess {
                         parent: _,
@@ -110,19 +144,58 @@ impl TuiApp for BenchmarkerApp {
                                 },
                         } => {
                             let workers = id.parse::<u8>().expect("Workers is a number");
-                            let _ = event_tx.send(BenchmarkerAppEvent::Progress {
-                                worker:        workers,
-                                current_frame: completed,
-                                total_frames:  total,
+                            shared_progress.apply(|state| {
+                                state
+                                    .results
+                                    .entry(workers)
+                                    .and_modify(|ws| {
+                                        ws.current_frame = completed;
+                                        ws.total_frames = total;
+                                    })
+                                    .or_insert_with(|| WorkerStatus {
+                                        started:       std::time::Instant::now(),
+                                        added:         false,
+                                        finished:      None,
+                                        failed_reason: None,
+                                        current_frame: completed,
+                                        total_frames:  total,
+                                    });
+                                true
                             });
+                            if !std::io::stdout().is_terminal() {
+                                let event = BenchmarkerConsoleEvent::Progress {
+                                    worker:        workers,
+                                    current_frame: completed,
+                                    total_frames:  total,
+                                };
+                                println!(
+                                    "[Benchmarker][Progress] {}",
+                                    serde_json::to_string(&event).unwrap()
+                                );
+                            }
                         },
                         Status::Completed {
                             id,
                         } => {
                             let workers = id.parse::<u8>().expect("Workers is a number");
-                            let _ = event_tx.send(BenchmarkerAppEvent::WorkerCompleted(workers));
+                            shared_progress.apply(|state| {
+                                state
+                                    .results
+                                    .entry(workers)
+                                    .and_modify(|ws| ws.finished = Some(std::time::Instant::now()));
+                                true
+                            });
+                            if !std::io::stdout().is_terminal() {
+                                let event = BenchmarkerConsoleEvent::WorkerCompleted {
+                                    worker: workers,
+                                };
+                                println!(
+                                    "[Benchmarker][Worker Completed] {}",
+                                    serde_json::to_string(&event).unwrap()
+                                );
+                            }
                         },
-                        _ => (),
+                        _ => {},
                     },
                 }
             }
@@ -131,104 +204,66 @@ impl TuiApp for BenchmarkerApp {
 
         let stdout_is_terminal = std::io::stdout().is_terminal();
         let mut terminal = self.init()?;
-        loop {
-            match event_rx.recv()? {
-                BenchmarkerAppEvent::Tick => {
+        'event_loop: loop {
+            while let Ok(BenchmarkerAppEvent::Input(key)) = event_rx.try_recv() {
+                if Self::handle_ctrl_c(
+                    key,
+                    &mut self.attempted_cancel,
+                    &cancelled,
+                    &mut terminal,
+                    stdout_is_terminal,
+                )? {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
+                    }
+                    let _ = terminal.draw(|f| self.render(f));
+                    self.restore(terminal)?;
+                    break 'event_loop;
+                }
+            }
+
+            if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                self.cached_state = snapshot;
+            }
+
+            match event_rx.recv_timeout(Duration::from_millis(33)) {
+                Ok(BenchmarkerAppEvent::Tick) => {
                     terminal.draw(|f| self.render(f))?;
                 },
-                BenchmarkerAppEvent::Progress {
-                    worker,
-                    current_frame,
-                    total_frames,
-                } => {
-                    self.results
-                        .entry(worker)
-                        .and_modify(|status| {
-                            status.current_frame = current_frame;
-                        })
-                        .or_insert_with(|| WorkerStatus {
-                            started: std::time::Instant::now(),
-                            added: false,
-                            finished: None,
-                            failed_reason: None,
-                            current_frame,
-                            total_frames,
-                        });
-                    if !stdout_is_terminal {
-                        let event = BenchmarkerConsoleEvent::Progress {
-                            worker,
-                            current_frame,
-                            total_frames,
-                        };
-                        println!("[Benchmarker][Progress] {}", serde_json::to_string(&event)?);
+                Ok(BenchmarkerAppEvent::Input(key)) => {
+                    if Self::handle_ctrl_c(
+                        key,
+                        &mut self.attempted_cancel,
+                        &cancelled,
+                        &mut terminal,
+                        stdout_is_terminal,
+                    )? {
+                        if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                            self.cached_state = snapshot;
+                        }
+                        let _ = terminal.draw(|f| self.render(f));
+                        self.restore(terminal)?;
+                        break 'event_loop;
                     }
                 },
-                BenchmarkerAppEvent::WorkerCompleted(worker) => {
-                    self.results.entry(worker).and_modify(|status| {
-                        status.finished = Some(std::time::Instant::now());
-                    });
-                    if !stdout_is_terminal {
-                        let event = BenchmarkerConsoleEvent::WorkerCompleted {
-                            worker,
-                        };
-                        println!(
-                            "[Benchmarker][Worker Completed] {}",
-                            serde_json::to_string(&event)?
-                        );
+                Ok(BenchmarkerAppEvent::Quit) => {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
                     }
-                },
-                BenchmarkerAppEvent::WorkerAdded(worker) => {
-                    self.results.entry(worker).and_modify(|status| {
-                        status.added = true;
-                    });
-                    if !stdout_is_terminal {
-                        let event = BenchmarkerConsoleEvent::WorkerAdded {
-                            worker,
-                        };
-                        println!(
-                            "[Benchmarker][Worker Added] {}",
-                            serde_json::to_string(&event)?
-                        );
-                    }
-                },
-                BenchmarkerAppEvent::WorkerFailed(worker, reason) => {
-                    self.results.entry(worker).and_modify(|status| {
-                        status.failed_reason = Some(reason.clone());
-                    });
-                    if !stdout_is_terminal {
-                        let event = BenchmarkerConsoleEvent::WorkerFailed {
-                            worker,
-                            error: reason,
-                        };
-                        println!(
-                            "[Benchmarker][Worker Failed] {}",
-                            serde_json::to_string(&event)?
-                        );
-                    }
-                },
-                BenchmarkerAppEvent::Quit => {
+                    let _ = terminal.draw(|f| self.render(f));
                     self.restore(terminal)?;
                     break;
                 },
-                BenchmarkerAppEvent::Input(key) => {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                        // Prevents duplicate event from key release in Windows
-                        && key.is_press()
-                    {
-                        self.attempted_cancel = true;
-                        let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
-                        if already_cancelled {
-                            self.restore(terminal)?;
-                            debug!("Force quit Condor");
-                            std::process::exit(0);
-                        } else if !stdout_is_terminal {
-                            println!(
-                                "Waiting for Benchmarker to finish. Press Ctrl+C again to exit \
-                                 immediately."
-                            );
-                        }
+                Err(RecvTimeoutError::Timeout) => {
+                    terminal.draw(|f| self.render(f))?;
+                },
+                Err(RecvTimeoutError::Disconnected) => {
+                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                        self.cached_state = snapshot;
                     }
+                    let _ = terminal.draw(|f| self.render(f));
+                    self.restore(terminal)?;
+                    break;
                 },
             }
         }
@@ -256,6 +291,7 @@ impl TuiApp for BenchmarkerApp {
         frame.render_widget(encoder_info, top_info_areas[1]);
 
         let rows = self
+            .cached_state
             .results
             .iter()
             .map(|(worker, status)| {
@@ -289,16 +325,46 @@ impl TuiApp for BenchmarkerApp {
 
 impl BenchmarkerApp {
     pub fn new(encoder: Encoder, clip_info: ClipInfo) -> BenchmarkerApp {
+        let state = BenchmarkerState {
+            results: BTreeMap::new(),
+        };
         BenchmarkerApp {
             original_panic_hook: None,
-            results: BTreeMap::new(),
             encoder,
             clip_info,
             attempted_cancel: false,
+            shared_progress: SharedProgress::new(state.clone()),
+            cached_state: state,
         }
+    }
+
+    fn handle_ctrl_c(
+        key: ratatui::crossterm::event::KeyEvent,
+        attempted_cancel: &mut bool,
+        cancelled: &Arc<AtomicBool>,
+        _terminal: &mut super::StdOutOrErrTerminal,
+        stdout_is_terminal: bool,
+    ) -> Result<bool> {
+        if key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.is_press()
+        {
+            *attempted_cancel = true;
+            let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
+            if already_cancelled {
+                debug!("Force quit Condor");
+                return Ok(true);
+            } else if !stdout_is_terminal {
+                println!(
+                    "Waiting for Benchmarker to finish. Press Ctrl+C again to exit immediately."
+                );
+            }
+        }
+        Ok(false)
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct WorkerStatus {
     pub started:       std::time::Instant,
     pub finished:      Option<std::time::Instant>,
@@ -321,7 +387,6 @@ impl WorkerStatus {
     }
 
     fn status(&self) -> String {
-        // if let Some(reason) = &self.failed_reason {
         if self.failed_reason.is_some() {
             "✕".to_owned()
         } else if self.added {
@@ -334,16 +399,8 @@ impl WorkerStatus {
 
 enum BenchmarkerAppEvent {
     Quit,
-    Tick,                   // 60 FPS
+    Tick,                   // 30 FPS
     Input(event::KeyEvent), // Keyboard events
-    Progress {
-        worker:        u8,
-        current_frame: u64,
-        total_frames:  u64,
-    },
-    WorkerCompleted(u8),
-    WorkerAdded(u8),
-    WorkerFailed(u8, String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,10 +3,11 @@ use std::{
     io::IsTerminal,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver},
+        mpsc::{self, Receiver, RecvTimeoutError},
         Arc,
     },
     thread,
+    time::Duration,
 };
 
 use andean_condor::{
@@ -29,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    apps::TuiApp,
+    apps::{shared_progress::SharedProgress, TuiApp},
     components::{
         active_encoders::ActiveEncoders,
         encoder_info::EncoderInfo,
@@ -39,6 +40,24 @@ use crate::{
     configuration::CliSequenceData,
 };
 
+#[derive(Debug, Clone)]
+pub struct SceneProgressInfo {
+    pub scene_index:      u64,
+    pub current_pass:     u8,
+    pub total_passes:     u8,
+    pub frames_processed: u64,
+    pub total_frames:     u64,
+    pub started:          std::time::Instant,
+}
+
+#[derive(Clone)]
+pub struct ParallelEncoderState {
+    pub active_scenes:          BTreeMap<u64, SceneProgressInfo>,
+    pub completed_scenes_count: usize,
+    pub estimated_bitrate:      f64,
+    pub estimated_bytes:        u64,
+}
+
 pub struct ParallelEncoderApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub started:                    std::time::Instant,
@@ -47,8 +66,11 @@ pub struct ParallelEncoderApp {
     pub initial_frames:             u64,
     pub scenes:                     BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
     pub active_scenes:              BTreeMap<u64, SceneEncoder>,
+    pub total_frames:               u64,
     pub clip_info:                  ClipInfo,
     attempted_cancel:               bool,
+    shared_progress:                SharedProgress<ParallelEncoderState>,
+    cached_state:                   ParallelEncoderState,
 }
 
 impl TuiApp for ParallelEncoderApp {
@@ -75,8 +97,9 @@ impl TuiApp for ParallelEncoderApp {
             if tick_tx.send(ParallelEncoderAppEvent::Tick).is_err() {
                 break;
             }
-            thread::sleep(std::time::Duration::from_millis(16)); // ~60 FPS
+            thread::sleep(Duration::from_millis(33));
         });
+        let shared_progress = self.shared_progress.clone();
         thread::spawn(move || {
             for progress in progress_rx {
                 match progress {
@@ -113,16 +136,37 @@ impl TuiApp for ParallelEncoderApp {
                                     frames,
                                 },
                         } => {
-                            let (current_pass, total_passes) = passes;
-                            let (current_frame, total_frames) = frames;
                             let scene_original_index =
                                 id.parse::<u64>().expect("Scene index is a number");
-                            let _ = event_tx.send(ParallelEncoderAppEvent::Progress {
+                            let (current_pass, total_passes) = passes;
+                            let (current_frame, _total_frames) = frames;
+
+                            let _ = event_tx.send(ParallelEncoderAppEvent::SceneProgress {
                                 scene: scene_original_index,
                                 current_pass,
                                 total_passes,
                                 current_frame,
-                                total_frames,
+                                total_frames: _total_frames,
+                            });
+
+                            shared_progress.apply(|state| {
+                                state
+                                    .active_scenes
+                                    .entry(scene_original_index)
+                                    .and_modify(|info| {
+                                        info.current_pass = current_pass;
+                                        info.total_passes = total_passes;
+                                        info.frames_processed = current_frame;
+                                    })
+                                    .or_insert_with(|| SceneProgressInfo {
+                                        scene_index: scene_original_index,
+                                        current_pass,
+                                        total_passes,
+                                        frames_processed: current_frame,
+                                        total_frames: _total_frames,
+                                        started: std::time::Instant::now(),
+                                    });
+                                true // dirty
                             });
                         },
                         Status::Completed {
@@ -130,11 +174,16 @@ impl TuiApp for ParallelEncoderApp {
                         } => {
                             let scene_original_index =
                                 id.parse::<u64>().expect("Scene index is a number");
+
+                            shared_progress.apply(|state| {
+                                state.active_scenes.remove(&scene_original_index);
+                                true
+                            });
                             let _ = event_tx.send(ParallelEncoderAppEvent::SceneCompleted(
                                 scene_original_index,
                             ));
                         },
-                        _ => (),
+                        _ => {},
                     },
                 }
             }
@@ -143,25 +192,58 @@ impl TuiApp for ParallelEncoderApp {
 
         let stdout_is_terminal = std::io::stdout().is_terminal();
         let mut terminal = self.init()?;
-        loop {
-            match event_rx.recv()? {
-                ParallelEncoderAppEvent::Tick => {
+        'event_loop: loop {
+            if self.drain_scene_progress(
+                &event_rx,
+                &cancelled,
+                &mut terminal,
+                stdout_is_terminal,
+            )? {
+                let _ = terminal.draw(|f| self.render(f));
+                self.restore(terminal)?;
+                break 'event_loop;
+            }
+
+            if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                self.cached_state = snapshot;
+            }
+
+            match event_rx.recv_timeout(Duration::from_millis(33)) {
+                Ok(ParallelEncoderAppEvent::Tick) => {
                     terminal.draw(|f| self.render(f))?;
                 },
-                ParallelEncoderAppEvent::Progress {
+                Ok(ParallelEncoderAppEvent::Input(key)) => {
+                    if Self::handle_ctrl_c(
+                        key,
+                        &mut self.attempted_cancel,
+                        &cancelled,
+                        &mut terminal,
+                        stdout_is_terminal,
+                    )? {
+                        let _ = terminal.draw(|f| self.render(f));
+                        self.restore(terminal)?;
+                        break 'event_loop;
+                    }
+                },
+                Ok(ParallelEncoderAppEvent::SceneProgress {
                     scene,
                     current_pass,
                     total_passes,
                     current_frame,
                     total_frames,
-                } => {
-                    let active_scene = self.active_scenes.get_mut(&scene);
-                    if let Some(active_scene) = active_scene {
+                }) => {
+                    if current_pass == total_passes && self.active_scenes.contains_key(&scene) {
+                        self.scenes.entry(scene).and_modify(|(completed, _)| {
+                            *completed = current_frame;
+                        });
+                    }
+
+                    if let Some(active_scene) = self.active_scenes.get_mut(&scene) {
                         active_scene.current_pass = current_pass;
                         active_scene.total_passes = total_passes;
                         active_scene.frames_processed = current_frame;
                         active_scene.total_frames = total_frames;
-                    } else {
+                    } else if current_frame < total_frames {
                         let scene_encoder = SceneEncoder {
                             scene: self.scenes.get(&scene).expect("Scene exists").1.clone(),
                             started: std::time::Instant::now(),
@@ -171,62 +253,37 @@ impl TuiApp for ParallelEncoderApp {
                             total_frames,
                         };
                         self.active_scenes.insert(scene, scene_encoder);
-                        if !stdout_is_terminal {
-                            let event = ParallelEncoderConsoleEvent::NewScene {
-                                scene_index: scene,
-                                time:        std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .expect("Time is valid")
-                                    .as_millis(),
-                            };
-                            println!(
-                                "[Parallel Encoder][New Scene] {}",
-                                serde_json::to_string(&event)?
-                            );
-                        }
-                    }
-
-                    if current_pass == total_passes {
-                        self.scenes.entry(scene).and_modify(|(completed, _scene)| {
-                            *completed = current_frame;
-                        });
-                        if current_frame == total_frames {
-                            self.active_scenes.remove(&scene);
-                        }
-                    }
-                    if !stdout_is_terminal {
-                        let (total_frames_completed, total_frames) =
-                            self.scenes.iter().fold((0, 0), |acc, (_, (completed, scene))| {
-                                (
-                                    acc.0 + completed,
-                                    acc.1 + (scene.end_frame - scene.start_frame) as u64,
-                                )
-                            });
-                        let event = ParallelEncoderConsoleEvent::Progress {
-                            scene: SceneProgress {
-                                index: scene,
-                                current_pass,
-                                total_passes,
-                                current_frame,
-                                total_frames,
-                            },
-                            current_frame: total_frames_completed,
-                            total_frames,
-                        };
-                        let event = serde_json::to_string(&event).unwrap();
-                        println!("[Parallel Encoder][Progress] {}", event);
                     }
                 },
-                ParallelEncoderAppEvent::SceneCompleted(scene) => {
+                Ok(ParallelEncoderAppEvent::SceneCompleted(scene)) => {
                     self.scenes.entry(scene).and_modify(|(completed, scene)| {
                         *completed = (scene.end_frame - scene.start_frame) as u64;
                     });
                     self.active_scenes.remove(&scene);
+                    self.cached_state.completed_scenes_count = self
+                        .scenes
+                        .iter()
+                        .filter(|(_, (_, s))| {
+                            s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0)
+                        })
+                        .count();
                 },
-                ParallelEncoderAppEvent::SceneBytes(scene, bytes) => {
+                Ok(ParallelEncoderAppEvent::SceneBytes(scene, bytes)) => {
                     self.scenes.entry(scene).and_modify(|(_, scene)| {
                         scene.sequence_data.parallel_encoder.bytes = Some(bytes);
                     });
+                    let completed_count = self
+                        .scenes
+                        .iter()
+                        .filter(|(_, (_, s))| {
+                            s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0)
+                        })
+                        .count();
+                    self.cached_state.completed_scenes_count = completed_count;
+                    let (bitrate, estimated_bytes) =
+                        Self::estimate_size(&self.scenes, &self.clip_info);
+                    self.cached_state.estimated_bitrate = bitrate;
+                    self.cached_state.estimated_bytes = estimated_bytes;
                     if !stdout_is_terminal {
                         let event = ParallelEncoderConsoleEvent::SceneSize {
                             scene_index: scene,
@@ -238,29 +295,18 @@ impl TuiApp for ParallelEncoderApp {
                         );
                     }
                 },
-                ParallelEncoderAppEvent::Quit => {
+                Ok(ParallelEncoderAppEvent::Quit) => {
+                    let _ = terminal.draw(|f| self.render(f));
                     self.restore(terminal)?;
                     break;
                 },
-                ParallelEncoderAppEvent::Input(key) => {
-                    if key.code == KeyCode::Char('c')
-                        && key.modifiers.contains(KeyModifiers::CONTROL)
-                        // Prevents duplicate event from key release in Windows
-                        && key.is_press()
-                    {
-                        self.attempted_cancel = true;
-                        let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
-                        if already_cancelled {
-                            self.restore(terminal)?;
-                            debug!("Force quit Condor");
-                            std::process::exit(0);
-                        } else if !stdout_is_terminal {
-                            println!(
-                                "Waiting for Encoders to finish. Press Ctrl+C again to exit \
-                                 immediately."
-                            );
-                        }
-                    }
+                Err(RecvTimeoutError::Timeout) => {
+                    terminal.draw(|f| self.render(f))?;
+                },
+                Err(RecvTimeoutError::Disconnected) => {
+                    let _ = terminal.draw(|f| self.render(f));
+                    self.restore(terminal)?;
+                    break;
                 },
             }
         }
@@ -277,13 +323,9 @@ impl TuiApp for ParallelEncoderApp {
             ])
             .split(frame.area());
 
-        let (total_frames_completed, total_frames) =
-            self.scenes.iter().fold((0, 0), |acc, (_, (completed, scene))| {
-                (
-                    acc.0 + completed,
-                    acc.1 + (scene.end_frame - scene.start_frame) as u64,
-                )
-            });
+        let total_frames_completed: u64 =
+            self.scenes.iter().map(|(_, (completed, _))| completed).sum();
+        let total_frames = self.total_frames;
         let top_info = Block::bordered()
             .border_type(ratatui::widgets::BorderType::Rounded)
             .title(Line::from("Input").centered())
@@ -303,14 +345,11 @@ impl TuiApp for ParallelEncoderApp {
             MAIN_COLOR,
             self.workers,
             self.encoder.clone(),
-            self.active_scenes.clone().into_iter().collect(),
+            &self.active_scenes,
         );
         frame.render_widget(active_encoders, layout[1]);
 
-        let completed_scenes = self.scenes.iter().filter(|(_, (_, scene))| {
-            scene.sequence_data.parallel_encoder.bytes.is_some_and(|bytes| bytes > 0)
-        });
-        let (bitrate, estimated_bytes) = self.estimate_size();
+        let scenes_completed = self.cached_state.completed_scenes_count;
         let progress_bar = ProgressBar {
             color:               MAIN_COLOR,
             processing_title:    if self.attempted_cancel {
@@ -323,20 +362,16 @@ impl TuiApp for ParallelEncoderApp {
             } else {
                 "Encoding Completed".to_owned()
             },
-            top_right_title:     if estimated_bytes > 0 {
+            top_right_title:     if self.cached_state.estimated_bytes > 0 {
                 format!(
                     "{:.1}kbps est. {:.1} MB",
-                    bitrate / 1e3,
-                    estimated_bytes as f64 / 1e6
+                    self.cached_state.estimated_bitrate / 1e3,
+                    self.cached_state.estimated_bytes as f64 / 1e6
                 )
             } else {
                 String::new()
             },
-            bottom_center_title: format!(
-                "{}/{} Scenes",
-                completed_scenes.count(),
-                self.scenes.len()
-            ),
+            bottom_center_title: format!("{}/{} Scenes", scenes_completed, self.scenes.len()),
             unit_per_second:     "FPS".to_owned(),
             unit:                "Frame".to_owned(),
             initial_completed:   self.initial_frames,
@@ -349,29 +384,149 @@ impl TuiApp for ParallelEncoderApp {
 }
 
 impl ParallelEncoderApp {
+    fn drain_scene_progress(
+        &mut self,
+        event_rx: &mpsc::Receiver<ParallelEncoderAppEvent>,
+        cancelled: &Arc<AtomicBool>,
+        terminal: &mut super::StdOutOrErrTerminal,
+        stdout_is_terminal: bool,
+    ) -> Result<bool> {
+        loop {
+            match event_rx.try_recv() {
+                Ok(ParallelEncoderAppEvent::SceneProgress {
+                    scene,
+                    current_pass,
+                    total_passes,
+                    current_frame,
+                    total_frames,
+                }) => {
+                    if current_pass == total_passes && self.active_scenes.contains_key(&scene) {
+                        self.scenes.entry(scene).and_modify(|(completed, _)| {
+                            *completed = current_frame;
+                        });
+                    }
+
+                    if let Some(active_scene) = self.active_scenes.get_mut(&scene) {
+                        active_scene.current_pass = current_pass;
+                        active_scene.total_passes = total_passes;
+                        active_scene.frames_processed = current_frame;
+                        active_scene.total_frames = total_frames;
+                    } else if current_frame < total_frames {
+                        let scene_encoder = SceneEncoder {
+                            scene: self.scenes.get(&scene).expect("Scene exists").1.clone(),
+                            started: std::time::Instant::now(),
+                            current_pass,
+                            total_passes,
+                            frames_processed: current_frame,
+                            total_frames,
+                        };
+                        self.active_scenes.insert(scene, scene_encoder);
+                    }
+                },
+                Ok(ParallelEncoderAppEvent::SceneCompleted(scene)) => {
+                    self.scenes.entry(scene).and_modify(|(completed, scene)| {
+                        *completed = (scene.end_frame - scene.start_frame) as u64;
+                    });
+                    self.active_scenes.remove(&scene);
+                    self.cached_state.completed_scenes_count = self
+                        .scenes
+                        .iter()
+                        .filter(|(_, (_, s))| {
+                            s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0)
+                        })
+                        .count();
+                },
+                Ok(ParallelEncoderAppEvent::SceneBytes(scene, bytes)) => {
+                    self.scenes.entry(scene).and_modify(|(_, scene)| {
+                        scene.sequence_data.parallel_encoder.bytes = Some(bytes);
+                    });
+                    let completed_count = self
+                        .scenes
+                        .iter()
+                        .filter(|(_, (_, s))| {
+                            s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0)
+                        })
+                        .count();
+                    self.cached_state.completed_scenes_count = completed_count;
+                    let (bitrate, estimated_bytes) =
+                        Self::estimate_size(&self.scenes, &self.clip_info);
+                    self.cached_state.estimated_bitrate = bitrate;
+                    self.cached_state.estimated_bytes = estimated_bytes;
+                    if !stdout_is_terminal {
+                        let event = ParallelEncoderConsoleEvent::SceneSize {
+                            scene_index: scene,
+                            bytes,
+                        };
+                        println!(
+                            "[Parallel Encoder][Scene Size] {}",
+                            serde_json::to_string(&event)?
+                        );
+                    }
+                },
+                Ok(ParallelEncoderAppEvent::Input(key)) => {
+                    if Self::handle_ctrl_c(
+                        key,
+                        &mut self.attempted_cancel,
+                        cancelled,
+                        terminal,
+                        stdout_is_terminal,
+                    )? {
+                        return Ok(true);
+                    }
+                },
+                _ => break,
+            }
+        }
+        Ok(false)
+    }
+
     pub fn new(
         workers: u8,
         encoder: Encoder,
         scenes: BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
         clip_info: ClipInfo,
     ) -> ParallelEncoderApp {
+        let total_frames =
+            scenes.iter().map(|(_, (_, s))| (s.end_frame - s.start_frame) as u64).sum();
+
+        let initial_state = ParallelEncoderState {
+            active_scenes:          BTreeMap::new(),
+            completed_scenes_count: scenes
+                .iter()
+                .filter(|(_, (_, s))| s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0))
+                .count(),
+            estimated_bitrate:      0.0,
+            estimated_bytes:        0,
+        };
+        let estimate = Self::estimate_size(&scenes, &clip_info);
+        let initial_state = ParallelEncoderState {
+            estimated_bitrate: estimate.0,
+            estimated_bytes: estimate.1,
+            ..initial_state
+        };
+
         ParallelEncoderApp {
             original_panic_hook: None,
             started: std::time::Instant::now(),
             workers,
             encoder,
-            initial_frames: scenes.iter().fold(0, |acc, (_, (completed, _total))| acc + completed),
+            initial_frames: scenes.iter().fold(0, |acc, (_, (completed, _))| acc + completed),
             scenes,
             active_scenes: BTreeMap::new(),
+            total_frames,
             clip_info,
             attempted_cancel: false,
+            shared_progress: SharedProgress::new(initial_state.clone()),
+            cached_state: initial_state,
         }
     }
 
-    pub fn estimate_size(&self) -> (f64, u64) {
-        let total_frames = self.clip_info.num_frames;
-        let (frames_completed, bytes_completed) = self
-            .scenes
+    pub fn estimate_size(
+        scenes: &BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
+        clip_info: &ClipInfo,
+    ) -> (f64, u64) {
+        let total_frames = clip_info.num_frames;
+        let (frames_completed, bytes_completed) = scenes
             .iter()
             .filter(|(_, (_, scene))| scene.sequence_data.parallel_encoder.bytes.is_some())
             .fold(
@@ -383,21 +538,46 @@ impl ParallelEncoderApp {
                     )
                 },
             );
-        let framerate =
-            *self.clip_info.frame_rate.numer() as f64 / *self.clip_info.frame_rate.denom() as f64;
+        if frames_completed == 0 {
+            return (0.0, 0);
+        }
+        let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
         let seconds = frames_completed as f64 / framerate;
         let total_seconds = total_frames as f64 / framerate;
         let bitrate = (bytes_completed * 8) as f64 / seconds;
         let estimated_bytes = ((bitrate * total_seconds) / 8.0) as u64;
         (bitrate, estimated_bytes)
     }
+
+    fn handle_ctrl_c(
+        key: ratatui::crossterm::event::KeyEvent,
+        attempted_cancel: &mut bool,
+        cancelled: &Arc<AtomicBool>,
+        _terminal: &mut super::StdOutOrErrTerminal,
+        stdout_is_terminal: bool,
+    ) -> Result<bool> {
+        if key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.is_press()
+        {
+            *attempted_cancel = true;
+            let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
+            if already_cancelled {
+                debug!("Force quit Condor");
+                return Ok(true);
+            } else if !stdout_is_terminal {
+                println!("Waiting for Encoders to finish. Press Ctrl+C again to exit immediately.");
+            }
+        }
+        Ok(false)
+    }
 }
 
 enum ParallelEncoderAppEvent {
     Quit,
-    Tick,                   // 60 FPS
+    Tick,                   // 30 FPS
     Input(event::KeyEvent), // Keyboard events
-    Progress {
+    SceneProgress {
         scene:         u64,
         current_pass:  u8,
         total_passes:  u8,

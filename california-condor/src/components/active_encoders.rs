@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use andean_condor::models::encoder::Encoder;
 use ratatui::{
     buffer::Buffer,
@@ -12,14 +14,19 @@ use crate::{
     components::{encoder_info::EncoderInfo, progress_bar::ProgressBar},
 };
 
-pub struct ActiveEncoders {
+/// Renders the per-worker progress panels inside the parallel encoder TUI.
+///
+/// Takes a reference to the full `SceneEncoder` map (no clone on render) so
+/// that each worker's area can display both the per-scene encoder parameters
+/// (top half) and a full progress bar with FPS/elapsed/remaining (bottom half).
+pub struct ActiveEncoders<'a> {
     pub color:          Color,
     pub workers:        u8,
     pub parent_encoder: Encoder,
-    pub active_scenes:  Vec<(u64, SceneEncoder)>,
+    pub active_scenes:  &'a BTreeMap<u64, SceneEncoder>,
 }
 
-impl Widget for ActiveEncoders {
+impl Widget for ActiveEncoders<'_> {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
         Self: Sized,
@@ -41,15 +48,22 @@ impl Widget for ActiveEncoders {
                 )));
             let worker_area_inner = bordered_area.inner(*worker_area);
             bordered_area.render(*worker_area, buf);
-            let active_worker_areas = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
-                .split(worker_area_inner);
 
+            // Split the bordered area into two halves:
+            //   [0] per-scene encoder parameters,
+            //   [1] per-scene progress bar (full ProgressBar widget)
+            let active_worker_areas =
+                Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
+                    .split(worker_area_inner);
+
+            // Top half: per-scene encoder parameters (only if different from parent)
             let encoder_info = EncoderInfo::new(
                 scene_encoder.scene.encoder.clone(),
                 Some(self.parent_encoder.clone()),
             );
             encoder_info.generate(false).render(active_worker_areas[0], buf);
 
+            // Bottom half: full progress bar with FPS, elapsed, remaining
             let progress_bar = ProgressBar {
                 color:               self.color,
                 processing_title:    String::new(),
@@ -62,7 +76,6 @@ impl Widget for ActiveEncoders {
                 completed:           scene_encoder.frames_processed,
                 total:               scene_encoder.total_frames,
             };
-
             progress_bar
                 .generate(Some(scene_encoder.started))
                 .render(active_worker_areas[1], buf);
@@ -70,13 +83,13 @@ impl Widget for ActiveEncoders {
     }
 }
 
-impl ActiveEncoders {
+impl<'a> ActiveEncoders<'a> {
     #[inline]
     pub fn new(
         color: Color,
         workers: u8,
         parent_encoder: Encoder,
-        active_scenes: Vec<(u64, SceneEncoder)>,
+        active_scenes: &'a BTreeMap<u64, SceneEncoder>,
     ) -> Self {
         Self {
             color,

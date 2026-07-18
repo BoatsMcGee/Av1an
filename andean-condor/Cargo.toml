@@ -1,7 +1,7 @@
 [package]
 name = "andean-condor"
 version = "0.0.1"
-rust-version = "1.92"
+rust-version = "1.97"
 edition = "2024"
 authors = ["Zen <master_of_zen@protonmail.com>", "Boats McGee"]
 description = """
@@ -16,23 +16,21 @@ readme = "./README.md"
 [dependencies]
 anyhow = { workspace = true }
 arrayvec = "0.7.2"
-av-decoders = { git = "https://github.com/BoatsMcGee/av-decoders", branch = "ffms2-track-index", version = "0.11", features = [
-    "vapoursynth",
+av-decoders = { git = "https://github.com/BoatsMcGee/av-decoders", branch = "vapoursynth-get-output", version = "0.11", features = [
     "ffms2",
+    "vapoursynth",
 ] }
-av-format = "0.7.0"
+av-format = "0.7"
 av-ivf = "0.5.0"
-av-scenechange = { git = "https://github.com/BoatsMcGee/av-scenechange", branch = "av-decoders-0.11.0", version = "0.23.1", default-features = false, features = [
+av-scenechange = { git = "https://github.com/BoatsMcGee/av-scenechange", branch = "av-decoders-0.11.0", version = "0.24", default-features = false, features = [
     "asm",
     "vapoursynth",
 ] }
-av1-grain = { version = "0.4.1", default-features = false, features = [
-    "create",
-] }
+av1-grain = { version = "0.5", default-features = false, features = ["create"] }
 cfg-if = "1.0.4"
 crossbeam-channel = "0.5.15"
 crossbeam-utils = "0.8.5"
-itertools = "0.14.0"
+itertools = "0.15.0"
 nom = "8.0.0"
 once_cell = { workspace = true }
 pastey = "0.2.0"
@@ -41,11 +39,11 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.148"
 simdutf8 = "0.1.5"
 strum = { version = "0.28", features = ["derive"] }
-sysinfo = "0.38"
+sysinfo = "0.39"
 textwrap = "0.16.2"
 thiserror = "2.0.17"
 tracing = { workspace = true }
-vapoursynth = "0.5.0"
+vapoursynth = "0.5"
 which = "8.0.0"
 
 [features]
