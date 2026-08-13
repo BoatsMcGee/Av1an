@@ -457,7 +457,7 @@ impl EncoderBase {
     pub fn friendly_name(&self) -> &'static str {
         match self {
             EncoderBase::AOM => "Alliance for Open Media AV1",
-            EncoderBase::RAV1E => "rav1e",
+            EncoderBase::RAV1E => "Rust AV1 Encoder",
             EncoderBase::VPX => "WebM VP8/VP9",
             EncoderBase::SVTAV1 => "Scalable Video Technology for AV1",
             EncoderBase::AVM => "Alliance for Open Media Video Model",
