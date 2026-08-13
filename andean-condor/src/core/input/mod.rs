@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use av_decoders::{Decoder, Ffms2Decoder, VapoursynthDecoder};
 pub use av_decoders::{DecoderError, ModifyNode};
 use thiserror::Error as ThisError;
@@ -21,6 +21,7 @@ use crate::{
     },
     utils::semaphore::Semaphore,
     vapoursynth::{
+        VapourSynthError,
         get_clip_info as get_vs_clip_info,
         plugins::{
             bestsource::VideoSource as BestSource,
@@ -28,7 +29,6 @@ use crate::{
             ffms2::Source as FFMS2,
             lsmash::LWLibavSource,
         },
-        VapourSynthError,
     },
 };
 

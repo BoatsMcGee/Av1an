@@ -1,6 +1,6 @@
 use std::{
     fmt::Write,
-    path::{absolute, Path, PathBuf},
+    path::{Path, PathBuf, absolute},
 };
 
 use anyhow::Result;
@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    VapourSynthError,
+    plugins::{Plugin, PluginFunction},
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -147,10 +147,16 @@ pub struct Source {
     pub alpha: Option<bool>,
 }
 
-impl PluginFunction for Source {
-    const PLUGIN_NAME: &'static str = "ffms2";
+impl Plugin for Source {
+    const PLUGIN_NAME: &'static str = "FFmpegSource";
     const PLUGIN_ID: &'static str = "com.vapoursynth.ffms2";
+    const PLUGIN_DOCS: Option<&'static str> = Some("https://github.com/ffms/ffms2");
+}
+
+impl PluginFunction for Source {
     const FUNCTION_NAME: &'static str = "Source";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://github.com/FFMS/ffms2/blob/master/doc/ffms2-vapoursynth.md#source");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("source", &ValueType::Data)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

@@ -15,8 +15,7 @@ pub fn catmull_rom(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
     if xi < x[1] || xi > x[2] {
         trace!(
             "Catmull-Rom interpolation: xi = {xi} outside interpolation range [{}, {}]",
-            x[1],
-            x[2]
+            x[1], x[2]
         );
         return None;
     }

@@ -1,2 +1,2 @@
-pub mod semaphore;
 pub mod interpolators;
+pub mod semaphore;

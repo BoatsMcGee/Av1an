@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, time::SystemTime};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use av_scenechange::ScenecutResult;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};

@@ -1,9 +1,9 @@
 use std::{
     io::IsTerminal,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
-        Arc,
     },
     thread,
     time::Duration,
@@ -15,18 +15,18 @@ use andean_condor::core::{
 };
 use anyhow::Result;
 use ratatui::{
+    Frame,
     crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers},
     layout::{Constraint, Layout},
     style::Color,
     text::Line,
     widgets::Block,
-    Frame,
 };
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    apps::{shared_progress::SharedProgress, TuiApp},
+    apps::{TuiApp, shared_progress::SharedProgress},
     components::{input_info::InputInfo, progress_bar::ProgressBar},
 };
 #[derive(Clone)]
@@ -60,19 +60,23 @@ impl TuiApp for SceneDetectionApp {
     ) -> Result<()> {
         let (event_tx, event_rx) = mpsc::channel();
         let input_tx = event_tx.clone();
-        thread::spawn(move || loop {
-            if let Ok(TermEvent::Key(key)) = event::read()
-                && input_tx.send(SceneDetectionAppEvent::Input(key)).is_err()
-            {
-                break;
+        thread::spawn(move || {
+            loop {
+                if let Ok(TermEvent::Key(key)) = event::read()
+                    && input_tx.send(SceneDetectionAppEvent::Input(key)).is_err()
+                {
+                    break;
+                }
             }
         });
         let tick_tx = event_tx.clone();
-        thread::spawn(move || loop {
-            if tick_tx.send(SceneDetectionAppEvent::Tick).is_err() {
-                break;
+        thread::spawn(move || {
+            loop {
+                if tick_tx.send(SceneDetectionAppEvent::Tick).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(33)); // ~30 FPS
             }
-            thread::sleep(Duration::from_millis(33)); // ~30 FPS
         });
         let shared_progress = self.shared_progress.clone();
         thread::spawn(move || {

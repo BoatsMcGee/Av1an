@@ -2,9 +2,9 @@ use std::{
     collections::BTreeMap,
     io::IsTerminal,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
-        Arc,
     },
     thread,
     time::Duration,
@@ -19,18 +19,18 @@ use andean_condor::{
 };
 use anyhow::Result;
 use ratatui::{
+    Frame,
     crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers},
     layout::{Constraint, Layout},
     style::Color,
     text::Line,
     widgets::Block,
-    Frame,
 };
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    apps::{shared_progress::SharedProgress, TuiApp},
+    apps::{TuiApp, shared_progress::SharedProgress},
     components::{
         active_encoders::ActiveEncoders,
         encoder_info::EncoderInfo,
@@ -85,19 +85,23 @@ impl TuiApp for ParallelEncoderApp {
     ) -> Result<()> {
         let (event_tx, event_rx) = mpsc::channel();
         let input_tx = event_tx.clone();
-        thread::spawn(move || loop {
-            if let Ok(TermEvent::Key(key)) = event::read()
-                && input_tx.send(ParallelEncoderAppEvent::Input(key)).is_err()
-            {
-                break;
+        thread::spawn(move || {
+            loop {
+                if let Ok(TermEvent::Key(key)) = event::read()
+                    && input_tx.send(ParallelEncoderAppEvent::Input(key)).is_err()
+                {
+                    break;
+                }
             }
         });
         let tick_tx = event_tx.clone();
-        thread::spawn(move || loop {
-            if tick_tx.send(ParallelEncoderAppEvent::Tick).is_err() {
-                break;
+        thread::spawn(move || {
+            loop {
+                if tick_tx.send(ParallelEncoderAppEvent::Tick).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(33));
             }
-            thread::sleep(Duration::from_millis(33));
         });
         let shared_progress = self.shared_progress.clone();
         thread::spawn(move || {
@@ -205,7 +209,7 @@ impl TuiApp for ParallelEncoderApp {
             }
 
             if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                self.cached_state = snapshot;
+                self.cached_state.active_scenes = snapshot.active_scenes;
             }
 
             match event_rx.recv_timeout(Duration::from_millis(33)) {

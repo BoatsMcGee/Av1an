@@ -1,16 +1,16 @@
-use ironmark::{render_ansi_terminal, ParseOptions};
+use ironmark::{ParseOptions, render_ansi_terminal};
 
 pub fn process_command_tree(cmd: clap::Command) -> clap::Command {
     cmd.mut_args(|mut arg| {
         if let Some(long_help) = arg.get_long_help() {
             let pure_ansi =
                 render_ansi_terminal(&long_help.to_string(), &ParseOptions::default(), None);
-            arg = arg.long_help(pure_ansi);
+            arg = arg.long_help(pure_ansi.trim_end().to_string());
         }
         if let Some(short_help) = arg.get_help() {
             let pure_ansi =
                 render_ansi_terminal(&short_help.to_string(), &ParseOptions::default(), None);
-            arg = arg.help(pure_ansi);
+            arg = arg.help(pure_ansi.trim_end().to_string());
         }
 
         arg
@@ -263,6 +263,35 @@ macro_rules! available_filters {
 "#
     };
 }
+
+pub const HELP_MINIMUM_ISO: &str = r#"The lowest ISO for Photon Noise generation.
+
+Defaults to `0`.
+"#;
+pub const HELP_MINIMUM_ISO_SHORT: &str = short_help(HELP_MINIMUM_ISO);
+
+pub const HELP_MAXIMUM_ISO: &str = r#"The highest ISO for Photon Noise generation.
+
+Defaults to `64000`.
+"#;
+pub const HELP_MAXIMUM_ISO_SHORT: &str = short_help(HELP_MAXIMUM_ISO);
+
+pub const HELP_NOISE_GENERATOR_TOLERANCE: &str = r#"Tolerance for the Noise level when converging ISO.
+
+The ISO search stops once the generated noise is within this tolerance of the
+detected Noise level.
+
+Defaults to `0.0005`.
+"#;
+pub const HELP_NOISE_GENERATOR_TOLERANCE_SHORT: &str = short_help(HELP_NOISE_GENERATOR_TOLERANCE);
+
+pub const HELP_NOISE_GENERATOR_MAXIMUM_PASSES: &str = r#"Maximum number of search passes
+per scene.
+
+Defaults to `10`.
+"#;
+pub const HELP_NOISE_GENERATOR_MAXIMUM_PASSES_SHORT: &str =
+    short_help(HELP_NOISE_GENERATOR_MAXIMUM_PASSES);
 
 pub const HELP_FILTERS: &str = concat!(
     r#"VapourSynth filters to apply to the input.

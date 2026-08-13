@@ -5,8 +5,8 @@ use anyhow::Result;
 
 use crate::{
     commands::{
-        handlers::{configure_temp, load_configuration},
         ConcatenationMethod,
+        handlers::{configure_temp, load_configuration},
     },
     configuration::Configuration,
 };

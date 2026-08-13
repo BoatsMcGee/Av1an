@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::vapoursynth::script_builder::{
-    script::{Imports, Line, ModuleAlias, ModuleName},
     NodeVariableName,
     VapourSynthPluginScript,
+    script::{Imports, Line, ModuleAlias, ModuleName},
 };
 
 /// Only used for script generation
@@ -587,7 +587,17 @@ impl Default for VSJETKernel {
 
 /// Method for handling image borders during sampling.
 #[derive(
-    Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, IntoStaticStr, Default, Display,
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    EnumString,
+    IntoStaticStr,
+    Default,
+    Display,
 )]
 #[serde(rename_all = "UPPERCASE")]
 pub enum BorderHandling {
@@ -603,7 +613,17 @@ pub enum BorderHandling {
 /// Whether to descale only height, only width, or both. "h" or "w" respectively
 /// for the former two.
 #[derive(
-    Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, IntoStaticStr, Default, Display,
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    EnumString,
+    IntoStaticStr,
+    Default,
+    Display,
 )]
 pub enum DescaleMode {
     #[strum(serialize = "w")]
@@ -615,7 +635,9 @@ pub enum DescaleMode {
     Both,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, IntoStaticStr, Display)]
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, IntoStaticStr, Display,
+)]
 pub enum Doubler {
     #[strum(serialize = "ArtCNN")]
     ArtCNN(ArtCNNModel),
@@ -631,7 +653,17 @@ impl Default for Doubler {
 }
 
 #[derive(
-    Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, IntoStaticStr, Default, Display,
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    EnumString,
+    IntoStaticStr,
+    Default,
+    Display,
 )]
 pub enum ArtCNNModel {
     #[strum(serialize = "C4F32")]
@@ -661,7 +693,17 @@ pub enum ArtCNNModel {
 
 /// Waifu2x model variants
 #[derive(
-    Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, IntoStaticStr, Default, Display,
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    EnumString,
+    IntoStaticStr,
+    Default,
+    Display,
 )]
 pub enum Waifu2xModel {
     /// Waifu2x model for anime-style art.

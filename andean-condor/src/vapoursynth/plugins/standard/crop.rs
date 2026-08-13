@@ -5,13 +5,17 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    VapourSynthError,
+    plugins::{
+        Plugin,
+        PluginFunction,
+        standard::{DOCS, ID, NAME},
+    },
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -22,10 +26,16 @@ pub struct Crop {
     pub right:  Option<u32>,
 }
 
+impl Plugin for Crop {
+    const PLUGIN_NAME: &'static str = NAME;
+    const PLUGIN_ID: &'static str = ID;
+    const PLUGIN_DOCS: Option<&'static str> = Some(DOCS);
+}
+
 impl PluginFunction for Crop {
-    const PLUGIN_NAME: &'static str = "std";
-    const PLUGIN_ID: &'static str = "com.vapoursynth.std";
     const FUNCTION_NAME: &'static str = "Crop";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://www.vapoursynth.com/doc/functions/video/crop_cropabs.html#std.Crop");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("clip", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[
@@ -101,10 +111,16 @@ pub struct CropAbs {
     pub top:  Option<u32>,
 }
 
+impl Plugin for CropAbs {
+    const PLUGIN_NAME: &'static str = NAME;
+    const PLUGIN_ID: &'static str = ID;
+    const PLUGIN_DOCS: Option<&'static str> = Some(DOCS);
+}
+
 impl PluginFunction for CropAbs {
-    const PLUGIN_NAME: &'static str = "std";
-    const PLUGIN_ID: &'static str = "com.vapoursynth.std";
     const FUNCTION_NAME: &'static str = "CropAbs";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://www.vapoursynth.com/doc/functions/video/crop_cropabs.html#std.CropAbs");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[
         ("clip", &ValueType::VideoNode),
         ("width", &ValueType::Int),

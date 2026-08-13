@@ -1,44 +1,41 @@
 use std::{
     collections::HashMap,
-    sync::{self, atomic::AtomicBool, Arc},
+    sync::{self, Arc, atomic::AtomicBool},
     thread,
     time::SystemTime,
 };
 
 use anyhow::Result;
 use thiserror::Error;
-use vapoursynth::format::PresetFormat;
 
 use crate::{
     core::{
+        Condor,
         input::Input,
         sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
-        Condor,
     },
     models::{
         input::{Input as InputModel, VapourSynthScriptSource},
         sequence::{
+            SequenceConfigHandler,
+            SequenceDataHandler,
             noise_detector::{
                 NoiseDetectorConfigHandler,
                 NoiseDetectorData,
                 NoiseDetectorDataHandler,
             },
-            SequenceConfigHandler,
-            SequenceDataHandler,
         },
     },
     vapoursynth::{
         get_core,
         plugins::{
-            ffms2::Source,
-            resize::bicubic::Bicubic,
-            standard::{plane_stats::PlaneStats, splice::Splice, trim::Trim},
             MetricPluginFunction,
+            ffms2::Source,
+            standard::{plane_stats::PlaneStats, splice::Splice, trim::Trim},
         },
-        script_builder::{script::VapourSynthScript, VapourSynthPluginScript},
+        script_builder::{VapourSynthPluginScript, script::VapourSynthScript},
     },
 };
-
 static DETAILS: SequenceDetails = SequenceDetails {
     name:        "Noise Detector",
     description: "Measure the amount of noise of the video per scene",
@@ -134,19 +131,13 @@ where
         };
         let vapoursynth_decoder = decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
         let env = &vapoursynth_decoder.env;
-        let reference_node = vapoursynth_decoder.get_output(
+        let mut reference_node = vapoursynth_decoder.get_output(
             vapoursynth_decoder.get_output_index(),
             vapoursynth_decoder.get_node_modifier(),
         )?;
         let core = get_core(env)?;
 
-        // WNNM requires 32-bit format
-        let bicubic_32_plugin = Bicubic {
-            format: Some(PresetFormat::YUV420PS),
-            ..Default::default()
-        };
-        let mut reference_node = bicubic_32_plugin.invoke(core, &reference_node)?;
-        let mut denoised_node = bicubic_32_plugin.invoke(core, &reference_node)?;
+        let mut denoised_node = reference_node.clone();
 
         for filter in &config.reference_filters {
             reference_node = filter.invoke_plugin_function(core, &reference_node)?;

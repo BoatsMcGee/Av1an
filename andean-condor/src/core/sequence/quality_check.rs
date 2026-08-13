@@ -1,16 +1,16 @@
-use std::sync::{self, atomic::AtomicBool, Arc};
+use std::sync::{self, Arc, atomic::AtomicBool};
 
 use crate::{
     core::{
+        Condor,
         input::Input,
         sequence::{Sequence, SequenceDetails, SequenceStatus},
-        Condor,
     },
     models::sequence::{
-        quality_check::QualityCheckDataHandler,
-        target_quality::types::QualityMetric,
         SequenceConfigHandler,
         SequenceDataHandler,
+        quality_check::QualityCheckDataHandler,
+        target_quality::types::QualityMetric,
     },
 };
 

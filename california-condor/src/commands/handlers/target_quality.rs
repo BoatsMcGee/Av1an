@@ -3,19 +3,19 @@ use std::path::{Path, PathBuf};
 use andean_condor::{
     core::sequence::target_quality::TargetQuality,
     models::sequence::target_quality::{
+        TargetQualityConfig,
         types::{
-            ProbeStatistic,
-            ProbeStrategy,
-            QualityMetric,
-            SubsetProbeLength,
-            SubsetProbePosition,
             DEFAULT_BUTTERAUGLI_TARGET_RANGE,
             DEFAULT_CVVDP_TARGET_RANGE,
             DEFAULT_SSIMULACRA2_TARGET_RANGE,
             DEFAULT_VMAF_TARGET_RANGE,
             DEFAULT_XPSNR_TARGET_RANGE,
+            ProbeStatistic,
+            ProbeStrategy,
+            QualityMetric,
+            SubsetProbeLength,
+            SubsetProbePosition,
         },
-        TargetQualityConfig,
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
@@ -23,10 +23,10 @@ use anyhow::Result;
 
 use crate::{
     commands::{
-        handlers::{configure_input, configure_temp, load_configuration},
         DecoderMethod,
         TargetQualityMetric,
         TargetQualityProfile,
+        handlers::{configure_input, configure_temp, load_configuration},
     },
     configuration::Configuration,
     utils::parameter_parser::EncoderParamsParser,
@@ -245,7 +245,7 @@ pub fn configure_target_quality(
 #[cfg(test)]
 mod tests {
     use andean_condor::models::{
-        encoder::{cli_parameter::CLIParameter, EncoderBase},
+        encoder::{EncoderBase, cli_parameter::CLIParameter},
         input::{Input, VapourSynthImportMethod},
         sequence::target_quality::types::{InterpolationMethod, TargetQualityProbing},
     };

@@ -1,7 +1,7 @@
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Condvar,
     Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 pub struct Semaphore {

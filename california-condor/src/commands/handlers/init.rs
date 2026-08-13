@@ -1,25 +1,25 @@
 use std::path::Path;
 
 use andean_condor::vapoursynth::vapoursynth_filters::VapourSynthFilter;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tracing::{error, info};
 
 use crate::{
+    DEFAULT_CONFIG_PATH,
     commands::{
+        ConcatenationMethod,
+        CondorCliError,
+        DecoderMethod,
+        EncoderMethod,
+        TargetQualityMetric,
         handlers::{
             concatenate::configure_concatenate,
             configure_temp,
             encode::{configure_encoder, configure_parallel_encoder},
             target_quality::configure_target_quality,
         },
-        ConcatenationMethod,
-        CondorCliError,
-        DecoderMethod,
-        EncoderMethod,
-        TargetQualityMetric,
     },
     configuration::Configuration,
-    DEFAULT_CONFIG_PATH,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -103,16 +103,16 @@ mod tests {
         core::sequence::target_quality::TargetQuality,
         models::{
             encoder::{
-                cli_parameter::CLIParameter,
-                photon_noise::PhotonNoise,
                 Encoder,
                 EncoderBase,
                 EncoderPasses,
+                cli_parameter::CLIParameter,
+                photon_noise::PhotonNoise,
             },
             input::{Input, VapourSynthImportMethod},
             sequence::{
                 scene_concatenator::ConcatMethod,
-                target_quality::{types::QualityMetric, TargetQualityConfig},
+                target_quality::{TargetQualityConfig, types::QualityMetric},
             },
         },
     };
@@ -121,11 +121,11 @@ mod tests {
     use super::*;
     use crate::{
         commands::{
-            handlers::load_configuration,
             ConcatenationMethod,
             DecoderMethod,
             EncoderMethod,
             TargetQualityMetric,
+            handlers::load_configuration,
         },
         test_helpers::{check_basic_config, default_config, get_test_video, set_cwd},
         utils::hash_path::hash_path,

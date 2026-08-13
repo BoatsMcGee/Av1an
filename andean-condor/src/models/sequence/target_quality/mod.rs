@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 use crate::models::{
     input::Input as InputModel,
     sequence::{
+        SequenceConfigHandler,
         target_quality::types::{
+            DEFAULT_MAXIMUM_PROBES,
             InterpolationMethod,
             QualityMetric,
             QualityPass,
             TargetQualityProbing,
-            DEFAULT_MAXIMUM_PROBES,
         },
-        SequenceConfigHandler,
     },
 };
 

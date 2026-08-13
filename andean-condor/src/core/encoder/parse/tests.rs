@@ -7,21 +7,25 @@ use crate::core::encoder::parse::*;
 //     macro_rules! generate_tests {
 //       ($($x:ident),* $(,)?) => {
 //         $(
-//           let returned: HashSet<String> = valid_params(include_str!(concat!("../../tests/", stringify!($x), "_help.txt")), Encoder::$x)
-//             .iter()
+//           let returned: HashSet<String> =
+// valid_params(include_str!(concat!("../../tests/", stringify!($x),
+// "_help.txt")), Encoder::$x)             .iter()
 //             .map(|s| s.to_string())
 //             .collect();
-//           let expected: HashSet<String> = include_str!(concat!("../../tests/", stringify!($x), "_params.txt"))
+//           let expected: HashSet<String> =
+// include_str!(concat!("../../tests/", stringify!($x), "_params.txt"))
 //             .split_ascii_whitespace()
 //             .map(|s| s.to_string())
 //             .collect();
 
 //           for arg in expected.iter() {
-//             assert!(returned.contains(Borrow::<str>::borrow(&**arg)), "expected '{}', but it was missing in return value (for encoder {})", arg, stringify!($x));
-//           }
+//             assert!(returned.contains(Borrow::<str>::borrow(&**arg)),
+// "expected '{}', but it was missing in return value (for encoder {})", arg,
+// stringify!($x));           }
 //           for arg in returned.iter() {
-//             assert!(expected.contains(Borrow::<str>::borrow(&**arg)), "return value contains '{}', but it was not expected (for encoder {})", arg, stringify!($x));
-//           }
+//             assert!(expected.contains(Borrow::<str>::borrow(&**arg)), "return
+// value contains '{}', but it was not expected (for encoder {})", arg,
+// stringify!($x));           }
 //           assert_eq!(returned, expected);
 //         )*
 //       };

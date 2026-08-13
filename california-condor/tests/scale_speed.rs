@@ -7,7 +7,6 @@ use california_condor::{
     test_helpers::*,
     utils::hash_path::hash_path,
 };
-
 use common::{condor_cmd, path_str};
 
 #[cfg(test)]
@@ -81,7 +80,21 @@ mod tests {
 
         condor_cmd(&temp)
             .env("CONDOR_TEST_MODE", "1")
-            .args(["scale-speed", "--quantizers", "20", "--speeds", "6", "--quantizers", "35", "--speeds", "4", "--quantizers", "50", "--speeds", "2"])
+            .args([
+                "scale-speed",
+                "--quantizers",
+                "20",
+                "--speeds",
+                "6",
+                "--quantizers",
+                "35",
+                "--speeds",
+                "4",
+                "--quantizers",
+                "50",
+                "--speeds",
+                "2",
+            ])
             .assert()
             .success();
 
@@ -129,7 +142,21 @@ mod tests {
 
         condor_cmd(&temp)
             .env("CONDOR_TEST_MODE", "1")
-            .args(["scale-speed", "--quantizers", "10", "--speeds", "8", "--quantizers", "25", "--speeds", "5", "--quantizers", "35", "--speeds", "3"])
+            .args([
+                "scale-speed",
+                "--quantizers",
+                "10",
+                "--speeds",
+                "8",
+                "--quantizers",
+                "25",
+                "--speeds",
+                "5",
+                "--quantizers",
+                "35",
+                "--speeds",
+                "3",
+            ])
             .assert()
             .success();
 

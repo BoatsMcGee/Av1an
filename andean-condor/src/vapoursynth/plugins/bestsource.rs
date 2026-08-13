@@ -1,6 +1,6 @@
 use std::{
     fmt::Write,
-    path::{absolute, Path, PathBuf},
+    path::{Path, PathBuf, absolute},
 };
 
 use anyhow::Result;
@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    VapourSynthError,
+    plugins::{Plugin, PluginFunction},
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -180,10 +180,16 @@ pub struct VideoSource {
     pub exporttimestamps: Option<bool>,
 }
 
-impl PluginFunction for VideoSource {
+impl Plugin for VideoSource {
     const PLUGIN_NAME: &'static str = "BestSource";
     const PLUGIN_ID: &'static str = "com.vapoursynth.bestsource";
+    const PLUGIN_DOCS: Option<&'static str> = Some("https://github.com/vapoursynth/bestsource");
+}
+
+impl PluginFunction for VideoSource {
     const FUNCTION_NAME: &'static str = "VideoSource";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://github.com/vapoursynth/bestsource#vapoursynth-usage");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("source", &ValueType::Data)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

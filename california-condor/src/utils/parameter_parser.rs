@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
 use andean_condor::models::encoder::cli_parameter::CLIParameter;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use nom::{
+    IResult,
+    Parser,
     branch::alt,
     bytes::complete::{tag, take_till1},
     character::complete::{char, multispace0, multispace1},
     combinator::rest,
     multi::many0,
     sequence::{preceded, separated_pair},
-    IResult,
-    Parser,
 };
 use thiserror::Error;
 use tracing::{debug, error};
@@ -211,8 +211,8 @@ mod tests {
         assert!(result.contains_key("f"), "input contains f");
     }
 
-    // TODO: Restrict allowed characters in parameter names so the "," isn't allowed (current parses as a flag)
-    // #[test]
+    // TODO: Restrict allowed characters in parameter names so the "," isn't
+    // allowed (current parses as a flag) #[test]
     // fn parse_unsupported_delimiters() {
     //     let result = EncoderParamsParser::parse_string("--invalid-param,43");
     //     assert_matches!(result, Err(_), "input should not parse");
@@ -221,7 +221,7 @@ mod tests {
     // TODO: Why does this parse successfully as empty?
     // #[test]
     // fn parse_invalid_params() {
-    //     let result = EncoderParamsParser::parse_string("lorem ipsum dolor sit amet");
-    //     assert_matches!(result, Err(_), "input should not parse");
-    // }
+    //     let result = EncoderParamsParser::parse_string("lorem ipsum dolor sit
+    // amet");     assert_matches!(result, Err(_), "input should not
+    // parse"); }
 }

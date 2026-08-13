@@ -2,8 +2,8 @@ use std::{
     collections::VecDeque,
     sync::{
         self,
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -15,23 +15,23 @@ use thiserror::Error;
 
 use crate::{
     core::{
+        Condor,
         input::Input,
         sequence::{
-            parallel_encoder::{ParallelEncoder, Task as ParallelEncodeTask},
             Sequence,
             SequenceCompletion,
             SequenceDetails,
             SequenceStatus,
             Status,
+            parallel_encoder::{ParallelEncoder, Task as ParallelEncodeTask},
         },
-        Condor,
     },
     models::sequence::{
+        SequenceConfigHandler,
+        SequenceDataHandler,
         benchmarker::BenchmarkerConfigHandler,
         parallel_encoder::{BufferStrategy, ParallelEncoderConfigHandler},
         scene_detector::SceneDetectorDataHandler,
-        SequenceConfigHandler,
-        SequenceDataHandler,
     },
 };
 
@@ -262,6 +262,7 @@ where
             }
         }
 
+        condor.save()?;
         // delete benchmarker data
         std::fs::remove_dir_all(benchmarker_directory)?;
 

@@ -5,13 +5,18 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::{MetricPluginFunction, PluginFunction},
+    VapourSynthError,
+    plugins::{
+        MetricPluginFunction,
+        Plugin,
+        PluginFunction,
+        vszip::{DOCS, ID, NAME},
+    },
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -24,10 +29,16 @@ pub struct XPSNR {
     pub verbose:             Option<bool>,
 }
 
+impl Plugin for XPSNR {
+    const PLUGIN_NAME: &'static str = NAME;
+    const PLUGIN_ID: &'static str = ID;
+    const PLUGIN_DOCS: Option<&'static str> = Some(DOCS);
+}
+
 impl PluginFunction for XPSNR {
-    const PLUGIN_NAME: &'static str = "VapourSynth Zig Image Process";
-    const PLUGIN_ID: &'static str = "com.julek.vszip";
     const FUNCTION_NAME: &'static str = "XPSNR";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://github.com/dnjulek/vapoursynth-zip/wiki/XPSNR");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("reference", &ValueType::VideoNode), ("distorted", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
@@ -65,10 +76,27 @@ impl XPSNR {
 
         Ok(node)
     }
+
+    /// Combine the per-plane XPSNR scores into a single weighted score, giving
+    /// luma four times the weight of each chroma plane.
+    #[inline]
+    pub fn weight_xpsnr(y: f64, u: f64, v: f64) -> f64 {
+        -10.0
+            * f64::log10(
+                4.0f64.mul_add(
+                    f64::powf(10.0, -y / 10.0),
+                    f64::powf(10.0, -u / 10.0) + f64::powf(10.0, -v / 10.0),
+                ) / 6.0,
+            )
+    }
 }
 
 impl MetricPluginFunction for XPSNR {
-    const PROPERTY_NAMES: &'static [&'static str] = &["XPSNR", "_XPSNR"];
+    /// The plugin writes one score per plane and no combined score, so all
+    /// three properties are required. Use
+    /// [`MetricPluginFunction::get_multiple_scores`] to read them and
+    /// [`XPSNR::weight_xpsnr`] to reduce them to a single score.
+    const PROPERTY_NAMES: &'static [&'static str] = &["XPSNR_Y", "XPSNR_U", "XPSNR_V"];
 }
 
 impl VapourSynthPluginScript for XPSNR {

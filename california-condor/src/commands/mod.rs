@@ -4,15 +4,15 @@ use andean_condor::{
     models::{
         encoder::EncoderBase,
         sequence::scene_detector::{
-            SceneDetectionMethod as CoreSCDMethod,
-            ScenecutMethod,
             DEFAULT_MAX_SCENE_LENGTH_SECONDS,
             DEFAULT_MIN_SCENE_LENGTH_FRAMES,
+            SceneDetectionMethod as CoreSCDMethod,
+            ScenecutMethod,
         },
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
-use clap::{value_parser, Parser as ClapParser, Subcommand};
+use clap::{Parser as ClapParser, Subcommand, value_parser};
 use serde::{Deserialize, Serialize};
 use strum::{Display as DisplayMacro, EnumString, IntoStaticStr};
 use thiserror::Error;
@@ -21,12 +21,14 @@ use crate::commands::help_text::*;
 
 pub mod handlers;
 pub mod help_text;
+pub mod version;
 
 #[derive(Debug, ClapParser)]
 #[command(
     name = "condor",
     about = "A simple, extensible Commandline tool for the Condor chunked encoding framework.",
-    version = "0.0.1"
+    version = "0.0.1",
+    disable_version_flag = true
 )]
 pub struct CondorCli {
     #[command(subcommand)]
@@ -40,6 +42,9 @@ pub struct CondorCli {
     /// Enable verbose output and logging.
     #[arg(long, global = true, default_value_t = false)]
     pub verbose:           bool,
+    /// Display Encoder and VapourSynth installation information.
+    #[arg(short('v'), long, global = true, default_value_t = false)]
+    pub version:           bool,
     // Main command arguments
     #[arg(long, short('i'), value_name = "Input", help = HELP_INPUT_SHORT, long_help = HELP_INPUT)]
     pub input:             Option<PathBuf>,

@@ -3,10 +3,10 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{self, atomic::AtomicBool, Arc},
+    sync::{self, Arc, atomic::AtomicBool},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use av_format::{
     buffer::AccReader,
     demuxer::{Context as DemuxerContext, Event},
@@ -20,14 +20,14 @@ use tracing::{error, trace};
 
 use crate::{
     core::{
-        input::Input,
-        sequence::{parallel_encoder::ParallelEncoder, Sequence, SequenceDetails, SequenceStatus},
         Condor,
+        input::Input,
+        sequence::{Sequence, SequenceDetails, SequenceStatus, parallel_encoder::ParallelEncoder},
     },
     models::sequence::{
-        scene_concatenator::{ConcatMethod, SceneConcatenatorConfigHandler},
         SequenceConfigHandler,
         SequenceDataHandler,
+        scene_concatenator::{ConcatMethod, SceneConcatenatorConfigHandler},
     },
 };
 

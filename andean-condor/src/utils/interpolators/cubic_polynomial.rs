@@ -14,8 +14,7 @@ pub fn cubic_polynomial(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
         trace!(
             "Cubic polynomial interpolation: unexpected extrapolation case - xi = {xi}, range = \
              [{}, {}]",
-            x[0],
-            x[3]
+            x[0], x[3]
         );
         return None;
     }

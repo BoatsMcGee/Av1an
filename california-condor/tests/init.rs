@@ -3,16 +3,16 @@ use andean_condor::{
     ffmpeg::FFPixelFormat,
     models::{
         encoder::{
-            cli_parameter::CLIParameter,
-            photon_noise::PhotonNoise,
             Encoder,
             EncoderBase,
             EncoderPasses,
+            cli_parameter::CLIParameter,
+            photon_noise::PhotonNoise,
         },
         input::{Input as InputModel, VapourSynthImportMethod},
         sequence::{
             scene_concatenator::ConcatMethod,
-            target_quality::{types::QualityMetric, TargetQualityConfig},
+            target_quality::{TargetQualityConfig, types::QualityMetric},
         },
     },
     vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},

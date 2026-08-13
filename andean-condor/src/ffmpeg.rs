@@ -1,6 +1,6 @@
 use std::{path::Path, process::Command, str::FromStr};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use av_format::rational::Rational64;
 use serde::{Deserialize, Serialize};
 use vapoursynth::format::PresetFormat;

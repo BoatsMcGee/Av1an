@@ -52,9 +52,8 @@ impl Widget for ActiveEncoders<'_> {
             // Split the bordered area into two halves:
             //   [0] per-scene encoder parameters,
             //   [1] per-scene progress bar (full ProgressBar widget)
-            let active_worker_areas =
-                Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
-                    .split(worker_area_inner);
+            let active_worker_areas = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
+                .split(worker_area_inner);
 
             // Top half: per-scene encoder parameters (only if different from parent)
             let encoder_info = EncoderInfo::new(

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use av_format::rational::Rational64;
 use vapoursynth::{
     api::API,
@@ -22,6 +22,8 @@ pub enum VapourSynthError {
     PluginNotFound { plugin: String },
     #[error("VapourSynth Plugin {plugin} failed to load: {message}")]
     PluginLoadError { plugin: String, message: String },
+    #[error("VapourSynth Plugin {plugin} function {function} not found")]
+    PluginFunctionNotFound { plugin: String, function: String },
     #[error("VapourSynth Plugin {plugin} failed to set arguments: {message}")]
     PluginArgumentsError {
         plugin:   String,

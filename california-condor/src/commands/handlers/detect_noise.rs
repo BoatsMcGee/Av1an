@@ -8,8 +8,8 @@ use anyhow::Result;
 
 use crate::{
     commands::{
-        handlers::{configure_input, load_configuration},
         DecoderMethod,
+        handlers::{configure_input, load_configuration},
     },
     configuration::Configuration,
 };
@@ -250,12 +250,6 @@ mod tests {
             None,
         )
         .expect("init_handler should succeed");
-        // // Mock scenes and save to config file (simulates Scene Detector)
-        // let (mut config, _) =
-        //     load_configuration(Some(&config_path)).expect("load_config should
-        // succeed"); config.condor.scenes =
-        // test_video.mock_scenes(&config.condor.encoder); config.save(&
-        // config_path).expect("save should succeed");
         let (config, found_config_path) = detect_noise_handler(
             Some(&config_path),
             Some(&test_video.path),

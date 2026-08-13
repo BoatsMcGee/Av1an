@@ -1,6 +1,6 @@
 use std::{
     fmt::Write,
-    path::{absolute, Path, PathBuf},
+    path::{Path, PathBuf, absolute},
 };
 
 use anyhow::Result;
@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    VapourSynthError,
+    plugins::{Plugin, PluginFunction},
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -186,10 +186,16 @@ pub struct LWLibavSource {
     pub rap_verification: Option<bool>,
 }
 
-impl PluginFunction for LWLibavSource {
-    const PLUGIN_NAME: &'static str = "lsmash";
+impl Plugin for LWLibavSource {
+    const PLUGIN_NAME: &'static str = "L-SMASH-Works";
     const PLUGIN_ID: &'static str = "systems.innocent.lsmas";
+    const PLUGIN_DOCS: Option<&'static str> =
+        Some("https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works");
+}
+
+impl PluginFunction for LWLibavSource {
     const FUNCTION_NAME: &'static str = "LWLibavSource";
+    const FUNCTION_DOCS: Option<&'static str> = Some("https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works/blob/master/VapourSynth/README.md#lsmaslwlibavsource");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("source", &ValueType::Data)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

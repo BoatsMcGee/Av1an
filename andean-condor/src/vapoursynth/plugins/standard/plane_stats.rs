@@ -4,13 +4,18 @@ use anyhow::Result;
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::{MetricPluginFunction, PluginFunction},
+    VapourSynthError,
+    plugins::{
+        MetricPluginFunction,
+        Plugin,
+        PluginFunction,
+        standard::{DOCS, ID, NAME},
+    },
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 pub struct PlaneStats {
@@ -21,10 +26,16 @@ pub struct PlaneStats {
     pub prop:        Option<String>,
 }
 
+impl Plugin for PlaneStats {
+    const PLUGIN_NAME: &'static str = NAME;
+    const PLUGIN_ID: &'static str = ID;
+    const PLUGIN_DOCS: Option<&'static str> = Some(DOCS);
+}
+
 impl PluginFunction for PlaneStats {
-    const PLUGIN_NAME: &'static str = "std";
-    const PLUGIN_ID: &'static str = "com.vapoursynth.std";
     const FUNCTION_NAME: &'static str = "PlaneStats";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://www.vapoursynth.com/doc/functions/video/planestats.html");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("clipa", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

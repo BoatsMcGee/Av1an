@@ -9,7 +9,17 @@ pub mod cli_parameter;
 pub mod photon_noise;
 
 #[derive(
-    Debug, Clone, Copy, Serialize, Deserialize, EnumString, IntoStaticStr, Display, PartialEq, Eq,
+    Debug,
+    Clone,
+    Copy,
+    Serialize,
+    Deserialize,
+    EnumString,
+    IntoStaticStr,
+    Display,
+    PartialEq,
+    Eq,
+    Hash,
 )]
 pub enum EncoderBase {
     #[strum(serialize = "aom")]

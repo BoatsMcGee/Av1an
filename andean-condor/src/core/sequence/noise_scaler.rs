@@ -1,19 +1,19 @@
-use std::sync::{self, atomic::AtomicBool, Arc};
+use std::sync::{self, Arc, atomic::AtomicBool};
 
 use tracing::debug;
 
 use crate::{
     core::{
-        sequence::{Sequence, SequenceDetails, SequenceStatus},
         Condor,
+        sequence::{Sequence, SequenceDetails, SequenceStatus},
     },
     models::{
         encoder::Encoder,
         sequence::{
-            noise_detector::NoiseDetectorDataHandler,
-            noise_scaler::{NoiseScalerConfigHandler, NoiseScalerData, NoiseScalerDataHandler},
             SequenceConfigHandler,
             SequenceDataHandler,
+            noise_detector::NoiseDetectorDataHandler,
+            noise_scaler::{NoiseScalerConfigHandler, NoiseScalerData, NoiseScalerDataHandler},
         },
     },
 };
