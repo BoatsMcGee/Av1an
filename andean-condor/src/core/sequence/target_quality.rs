@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
-    sync::{self, atomic::AtomicBool, Arc},
+    sync::{self, Arc, atomic::AtomicBool},
     thread,
     time::SystemTime,
 };
@@ -13,47 +13,48 @@ use tracing::{debug, trace};
 
 use crate::{
     core::{
+        Condor,
+        encoder::EncoderCapability,
         input::Input,
         sequence::{
-            parallel_encoder::{ParallelEncoder, Task as ParallelEncoderTask},
-            scene_concatenator::SceneConcatenator,
             Sequence,
             SequenceCompletion,
             SequenceDetails,
             SequenceStatus,
             Status,
+            parallel_encoder::{ParallelEncoder, Task as ParallelEncoderTask},
+            scene_concatenator::SceneConcatenator,
         },
-        Condor,
     },
     models::{
-        encoder::{cli_parameter::CLIParameter, Encoder, EncoderBase},
+        encoder::{Encoder, EncoderBase, cli_parameter::CLIParameter},
         input::{Input as InputModel, VapourSynthScriptSource},
         sequence::{
+            SequenceConfigHandler,
+            SequenceDataHandler,
             parallel_encoder::{BufferStrategy, ParallelEncoderConfigHandler},
             scene_concatenator::{ConcatMethod, SceneConcatenatorConfigHandler},
             target_quality::{
-                types::{InterpolationMethod, QualityMetric, QualityPass},
                 TargetQualityConfig,
                 TargetQualityConfigHandler,
                 TargetQualityData,
                 TargetQualityDataHandler,
+                types::{InterpolationMethod, QualityMetric, QualityPass},
             },
-            SequenceConfigHandler,
-            SequenceDataHandler,
         },
     },
     utils::interpolators,
     vapoursynth::{
         get_core,
         plugins::{
+            MetricPluginFunction,
             ffms2::Source,
             resize::bicubic::Bicubic,
             standard::{splice::Splice, trim::Trim},
             vship::{butteraugli::BUTTERAUGLI, cvvdp::CVVDP, ssimulacra2::SSIMULACRA2},
             vszip::xpsnr::XPSNR,
-            MetricPluginFunction,
         },
-        script_builder::{script::VapourSynthScript, VapourSynthPluginScript},
+        script_builder::{VapourSynthPluginScript, script::VapourSynthScript},
     },
 };
 
@@ -226,7 +227,12 @@ where
                 .map(|(index, scene)| {
                     let frame_indices =
                         config.probing.strategy.frame_indices(scene.start_frame, scene.end_frame);
-                    let encoder = Self::remove_psychovisual_parameters(&scene.encoder);
+                    let mut encoder = scene.encoder.clone();
+                    if let Some(parameters) = config.probing.encoder_options.as_ref() {
+                        encoder.parameters_mut().clear();
+                        encoder.parameters_mut().extend(parameters.clone());
+                    }
+                    let encoder = Self::remove_psychovisual_parameters(&encoder);
                     let output = pass_directory.join(format!(
                         "{}.{}",
                         ParallelEncoder::scene_id(index),
@@ -312,7 +318,12 @@ where
                             } => 0.25,
                             Encoder::SVTAV1 {
                                 ..
-                            } => 1.0, // TODO: Implement svt_av1_supports_quarter_steps()
+                            } if task
+                                .encoder
+                                .supports_capability(EncoderCapability::SvtAv1QuarterStepCrf) =>
+                            {
+                                0.25
+                            },
                             _ => 1.0,
                         },
                     )?;
@@ -673,6 +684,7 @@ impl TargetQuality {
                     ),
                     ("psy-rd", CLIParameter::new_number("--", " ", 0.0)),
                     ("ac-bias", CLIParameter::new_number("--", " ", 0.0)),
+                    ("photon-noise", CLIParameter::new_number("--", " ", 0.0)),
                 ]
                 .into_iter()
                 .map(|(key, value)| (key.to_owned(), value))
@@ -1055,11 +1067,19 @@ impl TargetQuality {
                     (reference_node, distorted_node)
                 };
                 let plugin = XPSNR {
-                    temporal: Some(true),
+                    temporal: Some(false),
+                    verbose: Some(false),
                     ..Default::default()
                 };
                 let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                XPSNR::get_scores(&node, None, compare_progress_tx)?
+                // XPSNR returns a score per plane, combine them into the weighted XPSNR score.
+                XPSNR::get_multiple_scores(&node, XPSNR::PROPERTY_NAMES, compare_progress_tx)?
+                    .into_iter()
+                    .map(|plane_scores| match plane_scores.as_slice() {
+                        [y, u, v] => Ok(XPSNR::weight_xpsnr(*y, *u, *v)),
+                        _ => Err(TargetQualityError::QualityMeasurementFailed),
+                    })
+                    .collect::<Result<Vec<f64>, _>>()?
             },
             QualityMetric::CVVDP {
                 resolution,

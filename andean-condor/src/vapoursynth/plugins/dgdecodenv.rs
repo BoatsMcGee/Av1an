@@ -1,6 +1,6 @@
 use std::{
     fmt::Write,
-    path::{absolute, Path, PathBuf},
+    path::{Path, PathBuf, absolute},
     process::Command,
 };
 
@@ -9,13 +9,13 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    VapourSynthError,
+    plugins::{Plugin, PluginFunction},
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -83,10 +83,17 @@ pub struct DGSource {
     pub lv_dither:      Option<i32>,
 }
 
-impl PluginFunction for DGSource {
-    const PLUGIN_NAME: &'static str = "dgdecodenv";
+impl Plugin for DGSource {
+    const PLUGIN_NAME: &'static str = "DGDecNV";
     const PLUGIN_ID: &'static str = "com.vapoursynth.dgdecodenv";
+    const PLUGIN_DOCS: Option<&'static str> =
+        Some("https://www.rationalqm.us/dgdecnv/dgdecnv.html");
+}
+
+impl PluginFunction for DGSource {
     const FUNCTION_NAME: &'static str = "DGSource";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://www.rationalqm.us/dgdecnv/QuickStart.html");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("source", &ValueType::Data)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

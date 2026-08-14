@@ -1,13 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::models::sequence::noise_scaler::NoiseScalerConfig;
-use anyhow::{bail, Result};
-use tracing::error;
+use anyhow::Result;
 
-use crate::{
-    commands::{handlers::load_configuration, CondorCliError},
-    configuration::Configuration,
-};
+use crate::{commands::handlers::load_configuration, configuration::Configuration};
 
 pub fn scale_noise_handler(
     config_path: Option<&Path>,
@@ -17,12 +13,6 @@ pub fn scale_noise_handler(
     scale_chroma: bool,
 ) -> Result<(Configuration, PathBuf)> {
     let (mut configuration, config_path) = load_configuration(config_path)?;
-
-    if configuration.condor.scenes.is_empty() {
-        let err = CondorCliError::NoScenes;
-        error!("{}", err);
-        bail!(err);
-    }
 
     configure_noise_scaler(
         &mut configuration,

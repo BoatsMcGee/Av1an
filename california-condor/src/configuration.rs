@@ -5,17 +5,20 @@ use std::{
 
 use andean_condor::{
     core::{
-        input::{DecoderError, Input, ModifyNode},
-        output::Output,
         Condor,
         SaveCallback,
+        input::{DecoderError, Input, ModifyNode},
+        output::Output,
     },
     ffmpeg::FFPixelFormat,
     models::{
+        Condor as CondorModel,
         encoder::{Encoder, EncoderBase},
         input::{Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource},
         output::Output as OutputModel,
         sequence::{
+            SequenceConfigHandler,
+            SequenceDataHandler,
             benchmarker::{BenchmarkerConfig, BenchmarkerConfigHandler},
             bitrate_optimizer::{BitrateOptimizerConfig, BitrateOptimizerConfigHandler},
             noise_detector::{
@@ -38,12 +41,12 @@ use andean_condor::{
             },
             scene_concatenator::{SceneConcatenatorConfig, SceneConcatenatorConfigHandler},
             scene_detector::{
+                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
                 SceneDetectionMethod,
                 SceneDetectorConfig,
                 SceneDetectorData,
                 SceneDetectorDataHandler,
                 ScenecutMethod,
-                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
             },
             speed_scaler::{SpeedScalerConfig, SpeedScalerConfigHandler},
             target_quality::{
@@ -52,10 +55,7 @@ use andean_condor::{
                 TargetQualityData,
                 TargetQualityDataHandler,
             },
-            SequenceConfigHandler,
-            SequenceDataHandler,
         },
-        Condor as CondorModel,
     },
     vapoursynth::{
         plugins::{
@@ -65,7 +65,7 @@ use andean_condor::{
             lsmash::LWLibavSource,
             resize::Scaler,
         },
-        script_builder::{script::VapourSynthScript, VapourSynthPluginScript},
+        script_builder::{VapourSynthPluginScript, script::VapourSynthScript},
         vapoursynth_filters::VapourSynthFilter,
     },
 };

@@ -1,16 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::{
-    models::encoder::{photon_noise::PhotonNoise, Encoder, EncoderBase, EncoderPasses},
+    models::encoder::{Encoder, EncoderBase, EncoderPasses, photon_noise::PhotonNoise},
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::Result;
 
 use crate::{
     commands::{
-        handlers::{configure_input, configure_temp, load_configuration},
         DecoderMethod,
         EncoderMethod,
+        handlers::{configure_input, configure_temp, load_configuration},
     },
     configuration::Configuration,
     utils::parameter_parser::EncoderParamsParser,

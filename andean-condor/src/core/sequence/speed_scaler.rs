@@ -1,16 +1,16 @@
-use std::sync::{self, atomic::AtomicBool, Arc};
+use std::sync::{self, Arc, atomic::AtomicBool};
 
 use thiserror::Error;
 
 use crate::{
     core::{
-        sequence::{Sequence, SequenceDetails, SequenceStatus},
         Condor,
+        sequence::{Sequence, SequenceDetails, SequenceStatus},
     },
     models::sequence::{
-        speed_scaler::SpeedScalerConfigHandler,
         SequenceConfigHandler,
         SequenceDataHandler,
+        speed_scaler::SpeedScalerConfigHandler,
     },
     utils::interpolators::natural_cubic_spline,
 };
@@ -96,8 +96,10 @@ where
                     scene.encoder.set_speed(speed.round() as i8);
                 } else {
                     // Quantizer outside of range, use extremes
-                    let (fastest, _lowest_quantizer) = sorted_speed_quantizers.first().expect("Speed-Quantizer exists");
-                    let (slowest, highest_quantizer) = sorted_speed_quantizers.last().expect("Speed-Quantizer exists");
+                    let (fastest, _lowest_quantizer) =
+                        sorted_speed_quantizers.first().expect("Speed-Quantizer exists");
+                    let (slowest, highest_quantizer) =
+                        sorted_speed_quantizers.last().expect("Speed-Quantizer exists");
                     if quantizer >= *highest_quantizer {
                         scene.encoder.set_speed(*slowest);
                     } else {

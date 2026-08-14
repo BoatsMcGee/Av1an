@@ -4,49 +4,59 @@ use anyhow::Result;
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
+    VapourSynthError,
     plugins::{
+        Plugin,
+        PluginFunction,
         resize::{
             ChromaLocation,
             ColorPrimaries,
+            DOCS,
             DitherType,
+            ID,
             MatrixCoefficients,
+            NAME,
             Range,
             TransferCharacteristics,
         },
-        PluginFunction,
     },
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Debug, Clone, Default)]
 pub struct Bob {
-    pub width:       Option<u32>,
-    pub height:      Option<u32>,
-    pub format:      Option<vapoursynth::format::PresetFormat>,
-    pub matrix:      Option<MatrixCoefficients>,
-    pub matrix_in:   Option<MatrixCoefficients>,
-    pub transfer:    Option<TransferCharacteristics>,
-    pub transfer_in: Option<TransferCharacteristics>,
-    pub primaries:   Option<ColorPrimaries>,
+    pub width:        Option<u32>,
+    pub height:       Option<u32>,
+    pub format:       Option<vapoursynth::format::PresetFormat>,
+    pub matrix:       Option<MatrixCoefficients>,
+    pub matrix_in:    Option<MatrixCoefficients>,
+    pub transfer:     Option<TransferCharacteristics>,
+    pub transfer_in:  Option<TransferCharacteristics>,
+    pub primaries:    Option<ColorPrimaries>,
     pub primaries_in: Option<ColorPrimaries>,
-    pub range:       Option<Range>,
-    pub range_in:    Option<Range>,
-    pub chromaloc:   Option<ChromaLocation>,
+    pub range:        Option<Range>,
+    pub range_in:     Option<Range>,
+    pub chromaloc:    Option<ChromaLocation>,
     pub chromaloc_in: Option<ChromaLocation>,
-    pub dither_type: Option<DitherType>,
-    pub filter:      Option<String>,
-    pub tff:         Option<bool>,
+    pub dither_type:  Option<DitherType>,
+    pub filter:       Option<String>,
+    pub tff:          Option<bool>,
+}
+
+impl Plugin for Bob {
+    const PLUGIN_NAME: &'static str = NAME;
+    const PLUGIN_ID: &'static str = ID;
+    const PLUGIN_DOCS: Option<&'static str> = Some(DOCS);
 }
 
 impl PluginFunction for Bob {
-    const PLUGIN_NAME: &'static str = "resize";
-    const PLUGIN_ID: &'static str = "com.vapoursynth.resize";
     const FUNCTION_NAME: &'static str = "Bob";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://www.vapoursynth.com/doc/functions/video/resize.html#resize.Bob");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("clip", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

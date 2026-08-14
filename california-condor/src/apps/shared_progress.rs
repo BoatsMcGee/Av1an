@@ -1,7 +1,7 @@
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
     Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 /// Thread-safe container for sharing mutable progress state between a

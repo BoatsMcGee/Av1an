@@ -8,8 +8,8 @@ use anyhow::Result;
 
 use crate::{
     commands::{
-        handlers::{configure_input, load_configuration},
         DecoderMethod,
+        handlers::{configure_input, load_configuration},
     },
     configuration::Configuration,
 };
@@ -77,7 +77,7 @@ pub fn configure_noise_detector(
             configuration,
             &existing_input,
             input_path,
-            None,
+            decoder,
             vs_args,
             None,
         )?;
@@ -139,7 +139,11 @@ mod tests {
             .as_path()
             .to_path_buf();
 
-        let expected_config = default_config(&test_video, &output, &temp_abs);
+        let mut expected_config = default_config(&test_video, &output, &temp_abs);
+        expected_config.condor.sequence_config.noise_detector =
+            Some(NoiseDetectorConfig::default());
+        // immutable shadow
+        let expected_config = expected_config;
 
         init_handler(
             // Simulate default directory to avoid changing CWD
@@ -250,12 +254,6 @@ mod tests {
             None,
         )
         .expect("init_handler should succeed");
-        // // Mock scenes and save to config file (simulates Scene Detector)
-        // let (mut config, _) =
-        //     load_configuration(Some(&config_path)).expect("load_config should
-        // succeed"); config.condor.scenes =
-        // test_video.mock_scenes(&config.condor.encoder); config.save(&
-        // config_path).expect("save should succeed");
         let (config, found_config_path) = detect_noise_handler(
             Some(&config_path),
             Some(&test_video.path),

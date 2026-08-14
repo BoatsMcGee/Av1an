@@ -1,4 +1,4 @@
-use std::sync::{self, atomic::AtomicBool, Arc};
+use std::sync::{self, Arc, atomic::AtomicBool};
 
 use anyhow::Result;
 use thiserror::Error;
@@ -6,14 +6,14 @@ use tracing::debug;
 
 use crate::{
     core::{
-        sequence::{Sequence, SequenceDetails, SequenceStatus},
         Condor,
+        sequence::{Sequence, SequenceDetails, SequenceStatus},
     },
     models::sequence::{
-        bitrate_optimizer::BitrateOptimizerConfigHandler,
-        target_quality::TargetQualityDataHandler,
         SequenceConfigHandler,
         SequenceDataHandler,
+        bitrate_optimizer::BitrateOptimizerConfigHandler,
+        target_quality::TargetQualityDataHandler,
     },
 };
 

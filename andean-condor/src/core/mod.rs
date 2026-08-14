@@ -1,6 +1,6 @@
 use std::{
     path::Path,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 use anyhow::Result;
@@ -13,6 +13,7 @@ use crate::{
         sequence::{SequenceDetails, SequenceStatus, Sequences},
     },
     models::{
+        Condor as CondorModel,
         encoder::Encoder,
         scene::Scene,
         sequence::{
@@ -21,7 +22,6 @@ use crate::{
             SequenceConfigHandler,
             SequenceDataHandler,
         },
-        Condor as CondorModel,
     },
 };
 

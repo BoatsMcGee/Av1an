@@ -11,7 +11,7 @@ use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
 };
-use tracing_subscriber::{filter::LevelFilter, fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt, prelude::*};
 
 // Store the worker guard globally
 static WORKER_GUARD: OnceCell<WorkerGuard> = OnceCell::new();

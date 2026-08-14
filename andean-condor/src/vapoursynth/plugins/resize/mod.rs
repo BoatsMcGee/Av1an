@@ -10,6 +10,11 @@ pub mod spline16;
 pub mod spline36;
 pub mod spline64;
 
+pub(in crate::vapoursynth::plugins::resize) const NAME: &str = "Resize";
+pub(in crate::vapoursynth::plugins::resize) const ID: &str = "com.vapoursynth.resize";
+pub(in crate::vapoursynth::plugins::resize) const DOCS: &str =
+    "https://www.vapoursynth.com/doc/functions/video/resize.html";
+
 #[derive(
     Debug, Copy, Clone, Display, Serialize, Deserialize, EnumString, IntoStaticStr, PartialEq, Eq,
 )]

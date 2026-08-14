@@ -2,9 +2,9 @@ use std::{
     collections::BTreeMap,
     io::IsTerminal,
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
-        Arc,
     },
     thread,
     time::Duration,
@@ -14,28 +14,28 @@ use andean_condor::{
     core::{
         input::clip_info::ClipInfo,
         sequence::{
-            benchmarker::Benchmarker,
             SequenceCompletion,
             SequenceDetails,
             SequenceStatus,
             Status,
+            benchmarker::Benchmarker,
         },
     },
     models::encoder::Encoder,
 };
 use anyhow::Result;
 use ratatui::{
+    Frame,
     crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers},
     layout::{Constraint, Layout},
     text::Line,
     widgets::{Block, Cell, Row, Table},
-    Frame,
 };
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::{
-    apps::{shared_progress::SharedProgress, TuiApp},
+    apps::{TuiApp, shared_progress::SharedProgress},
     components::{encoder_info::EncoderInfo, input_info::InputInfo},
 };
 #[derive(Clone)]
@@ -65,19 +65,23 @@ impl TuiApp for BenchmarkerApp {
         const DETAILS: SequenceDetails = Benchmarker::DETAILS;
         let (event_tx, event_rx) = mpsc::channel();
         let input_tx = event_tx.clone();
-        thread::spawn(move || loop {
-            if let Ok(TermEvent::Key(key)) = event::read()
-                && input_tx.send(BenchmarkerAppEvent::Input(key)).is_err()
-            {
-                break;
+        thread::spawn(move || {
+            loop {
+                if let Ok(TermEvent::Key(key)) = event::read()
+                    && input_tx.send(BenchmarkerAppEvent::Input(key)).is_err()
+                {
+                    break;
+                }
             }
         });
         let tick_tx = event_tx.clone();
-        thread::spawn(move || loop {
-            if tick_tx.send(BenchmarkerAppEvent::Tick).is_err() {
-                break;
+        thread::spawn(move || {
+            loop {
+                if tick_tx.send(BenchmarkerAppEvent::Tick).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(33)); // ~30 FPS
             }
-            thread::sleep(Duration::from_millis(33)); // ~30 FPS
         });
         let shared_progress = self.shared_progress.clone();
         thread::spawn(move || {

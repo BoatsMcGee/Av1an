@@ -13,8 +13,7 @@ pub fn akima(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
     if xi < x[0] || xi > x[3] {
         trace!(
             "Akima interpolation: unexpected extrapolation case - xi = {xi}, range = [{}, {}]",
-            x[0],
-            x[3]
+            x[0], x[3]
         );
         return None;
     }

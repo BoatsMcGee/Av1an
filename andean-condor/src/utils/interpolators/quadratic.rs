@@ -13,8 +13,7 @@ pub fn quadratic(x: &[f64; 3], y: &[f64; 3], xi: f64) -> Option<f64> {
     if xi < x[0] || xi > x[2] {
         trace!(
             "Quadratic interpolation: unexpected extrapolation case - xi = {xi}, range = [{}, {}]",
-            x[0],
-            x[2]
+            x[0], x[2]
         );
         return None;
     }

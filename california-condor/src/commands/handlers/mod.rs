@@ -6,13 +6,13 @@ use andean_condor::models::input::{
     VapourSynthImportMethod,
     VapourSynthScriptSource,
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tracing::{debug, error};
 
 use crate::{
-    commands::{DecoderMethod, CondorCliError},
-    configuration::{ConfigError, Configuration},
     DEFAULT_CONFIG_PATH,
+    commands::{CondorCliError, DecoderMethod},
+    configuration::{ConfigError, Configuration},
 };
 
 pub mod benchmarker;

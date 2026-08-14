@@ -8,7 +8,8 @@ use std::{
 use andean_condor::{
     ffmpeg::FFPixelFormat,
     models::{
-        encoder::{photon_noise::PhotonNoise, Encoder, EncoderBase, EncoderPasses},
+        Condor,
+        encoder::{Encoder, EncoderBase, EncoderPasses, photon_noise::PhotonNoise},
         input::{ImportMethod, Input, VapourSynthImportMethod, VapourSynthScriptSource},
         output::Output,
         scene::Scene,
@@ -20,21 +21,20 @@ use andean_condor::{
             parallel_encoder::{BufferStrategy, ParallelEncoderConfig},
             scene_concatenator::{ConcatMethod, SceneConcatenatorConfig},
             scene_detector::{
+                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
                 SceneDetectionMethod,
                 SceneDetectorConfig,
                 ScenecutMethod,
-                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
             },
             speed_scaler::SpeedScalerConfig,
-            target_quality::{types::QualityMetric, TargetQualityConfig},
+            target_quality::{TargetQualityConfig, types::QualityMetric},
         },
-        Condor,
     },
     vapoursynth::{
         plugins::{bestsource::VideoSource, resize::Scaler, standard::box_blur::BoxBlur},
         script_builder::{
-            script::{Line, VapourSynthScript},
             VapourSynthPluginScript,
+            script::{Line, VapourSynthScript},
         },
         vapoursynth_filters::VapourSynthFilter,
     },
@@ -583,7 +583,7 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
             },
         }
     } else {
-        assert!(expected_input.is_none(), "{input_name} is None");
+        assert_matches!(input, None, "{input_name} is None");
     }
 }
 
@@ -606,7 +606,12 @@ pub fn check_output(output: &Output, expected_output: &Output) {
     );
 }
 
-pub fn check_encoder_pass(pass: &EncoderPasses, expected_pass: &EncoderPasses) {
+pub fn check_encoder_pass(
+    pass: &EncoderPasses,
+    expected_pass: &EncoderPasses,
+    encoder_name: Option<&str>,
+) {
+    let encoder_name = encoder_name.unwrap_or("encoder");
     match expected_pass {
         EncoderPasses::All(expected_passes) => {
             assert_matches!(*pass, EncoderPasses::All { .. }, "encoder pass is All");
@@ -614,30 +619,30 @@ pub fn check_encoder_pass(pass: &EncoderPasses, expected_pass: &EncoderPasses) {
                 EncoderPasses::All(passes) => {
                     assert_eq!(
                         passes, expected_passes,
-                        "encoder passes are {expected_passes:?}"
+                        "{encoder_name} passes are {expected_passes:?}"
                     );
                 },
-                _ => panic!("expected encoder pass to be All"),
+                _ => panic!("expected {encoder_name} pass to be All"),
             }
         },
         EncoderPasses::Specific(expected_current, expected_total) => {
             assert_matches!(
                 pass,
                 EncoderPasses::Specific { .. },
-                "encoder pass is Specific"
+                "{encoder_name} pass is Specific"
             );
             match pass {
                 EncoderPasses::Specific(current, total) => {
                     assert_eq!(
                         current, expected_current,
-                        "encoder current pass is {expected_current:?}"
+                        "{encoder_name} current pass is {expected_current:?}"
                     );
                     assert_eq!(
                         total, expected_total,
-                        "encoder total passes is {expected_total:?}"
+                        "{encoder_name} total passes is {expected_total:?}"
                     );
                 },
-                _ => panic!("expected encoder pass to be Specific"),
+                _ => panic!("expected {encoder_name} pass to be Specific"),
             }
         },
     }
@@ -646,46 +651,51 @@ pub fn check_encoder_pass(pass: &EncoderPasses, expected_pass: &EncoderPasses) {
 pub fn check_photon_noise(
     photon_noise: Option<&PhotonNoise>,
     expected_photon_noise: Option<&PhotonNoise>,
+    encoder_name: Option<&str>,
 ) {
+    let encoder_name = encoder_name.unwrap_or("encoder");
     if let Some(expected_photon_noise) = expected_photon_noise {
         let photon_noise = photon_noise.expect("encoder photon noise is Some");
         assert_eq!(
             photon_noise.iso, expected_photon_noise.iso,
-            "encoder photon noise iso is {}",
+            "{encoder_name} photon noise iso is {}",
             expected_photon_noise.iso
         );
         assert_eq!(
             photon_noise.chroma_iso, expected_photon_noise.chroma_iso,
-            "encoder photon noise chroma iso is {:?}",
+            "{encoder_name} photon noise chroma iso is {:?}",
             expected_photon_noise.chroma_iso
         );
         assert_eq!(
             photon_noise.width, expected_photon_noise.width,
-            "encoder photon noise width is {:?}",
+            "{encoder_name} photon noise width is {:?}",
             expected_photon_noise.width
         );
         assert_eq!(
             photon_noise.height, expected_photon_noise.height,
-            "encoder photon noise height is {:?}",
+            "{encoder_name} photon noise height is {:?}",
             expected_photon_noise.height
         );
         assert_eq!(
             photon_noise.c_y, expected_photon_noise.c_y,
-            "encoder photon noise c_y is {:?}",
+            "{encoder_name} photon noise c_y is {:?}",
             expected_photon_noise.c_y
         );
         assert_eq!(
             photon_noise.ccb, expected_photon_noise.ccb,
-            "encoder photon noise ccb is {:?}",
+            "{encoder_name} photon noise ccb is {:?}",
             expected_photon_noise.ccb
         );
         assert_eq!(
             photon_noise.ccr, expected_photon_noise.ccr,
-            "encoder photon noise ccr is {:?}",
+            "{encoder_name} photon noise ccr is {:?}",
             expected_photon_noise.ccr
         );
     } else {
-        assert!(photon_noise.is_none(), "encoder photon noise is None");
+        assert!(
+            photon_noise.is_none(),
+            "{encoder_name} photon noise is None"
+        );
     }
 }
 
@@ -719,8 +729,12 @@ pub fn check_encoder(encoder: &Encoder, expected_encoder: &Encoder, encoder_name
                         options, expected_options,
                         "{encoder_name} options are {options:?}"
                     );
-                    check_encoder_pass(pass, expected_pass);
-                    check_photon_noise(photon_noise.as_ref(), expected_photon_noise.as_ref());
+                    check_encoder_pass(pass, expected_pass, Some(encoder_name));
+                    check_photon_noise(
+                        photon_noise.as_ref(),
+                        expected_photon_noise.as_ref(),
+                        Some(encoder_name),
+                    );
                 },
                 _ => panic!("expected {encoder_name} to be AOM"),
             }
@@ -747,8 +761,12 @@ pub fn check_encoder(encoder: &Encoder, expected_encoder: &Encoder, encoder_name
                         options, expected_options,
                         "{encoder_name} options are {options:?}"
                     );
-                    check_encoder_pass(pass, expected_pass);
-                    check_photon_noise(photon_noise.as_ref(), expected_photon_noise.as_ref());
+                    check_encoder_pass(pass, expected_pass, Some(encoder_name));
+                    check_photon_noise(
+                        photon_noise.as_ref(),
+                        expected_photon_noise.as_ref(),
+                        Some(encoder_name),
+                    );
                 },
                 _ => panic!("expected {encoder_name} to be RAV1E"),
             }
@@ -773,7 +791,7 @@ pub fn check_encoder(encoder: &Encoder, expected_encoder: &Encoder, encoder_name
                         options, expected_options,
                         "{encoder_name} options are {options:?}"
                     );
-                    check_encoder_pass(pass, expected_pass);
+                    check_encoder_pass(pass, expected_pass, Some(encoder_name));
                 },
                 _ => panic!("expected {encoder_name} to be VPX"),
             }
@@ -800,8 +818,12 @@ pub fn check_encoder(encoder: &Encoder, expected_encoder: &Encoder, encoder_name
                         options, expected_options,
                         "{encoder_name} options are {options:?}"
                     );
-                    check_encoder_pass(pass, expected_pass);
-                    check_photon_noise(photon_noise.as_ref(), expected_photon_noise.as_ref());
+                    check_encoder_pass(pass, expected_pass, Some(encoder_name));
+                    check_photon_noise(
+                        photon_noise.as_ref(),
+                        expected_photon_noise.as_ref(),
+                        Some(encoder_name),
+                    );
                 },
                 _ => panic!("expected {encoder_name} to be SVT-AV1"),
             }
@@ -828,8 +850,12 @@ pub fn check_encoder(encoder: &Encoder, expected_encoder: &Encoder, encoder_name
                         options, expected_options,
                         "{encoder_name} options are {options:?}"
                     );
-                    check_encoder_pass(pass, expected_pass);
-                    check_photon_noise(photon_noise.as_ref(), expected_photon_noise.as_ref());
+                    check_encoder_pass(pass, expected_pass, Some(encoder_name));
+                    check_photon_noise(
+                        photon_noise.as_ref(),
+                        expected_photon_noise.as_ref(),
+                        Some(encoder_name),
+                    );
                 },
                 _ => panic!("expected {encoder_name} to be AVM"),
             }
@@ -854,7 +880,7 @@ pub fn check_encoder(encoder: &Encoder, expected_encoder: &Encoder, encoder_name
                         options, expected_options,
                         "{encoder_name} options are {options:?}"
                     );
-                    check_encoder_pass(pass, expected_pass);
+                    check_encoder_pass(pass, expected_pass, Some(encoder_name));
                 },
                 _ => panic!("expected {encoder_name} to be x264"),
             }
@@ -879,7 +905,7 @@ pub fn check_encoder(encoder: &Encoder, expected_encoder: &Encoder, encoder_name
                         options, expected_options,
                         "{encoder_name} options are {options:?}"
                     );
-                    check_encoder_pass(pass, expected_pass);
+                    check_encoder_pass(pass, expected_pass, Some(encoder_name));
                 },
                 _ => panic!("expected {encoder_name} to be x265"),
             }
@@ -904,7 +930,7 @@ pub fn check_encoder(encoder: &Encoder, expected_encoder: &Encoder, encoder_name
                         options, expected_options,
                         "{encoder_name} options are {options:?}"
                     );
-                    check_encoder_pass(pass, expected_pass);
+                    check_encoder_pass(pass, expected_pass, Some(encoder_name));
                 },
                 _ => panic!("expected {encoder_name} to be VVenC"),
             }
@@ -1024,7 +1050,7 @@ pub fn check_noise_detector(
             expected_config.denoised_filters
         );
     } else {
-        assert!(noise_detector.is_none(), "Noise Detector is None");
+        assert_matches!(noise_detector, None, "Noise Detector is None");
     }
 }
 
@@ -1055,7 +1081,7 @@ pub fn check_noise_scaler(
             expected_config.scale_chroma
         );
     } else {
-        assert!(noise_scaler.is_none(), "Noise Scaler is None");
+        assert_matches!(noise_scaler, None, "Noise Scaler is None");
     }
 }
 
@@ -1332,7 +1358,10 @@ pub fn check_target_quality(
             expected_target_quality.probing.encoder_options
         );
     } else {
-        assert!(target_quality.is_none(), "Target Quality is None");
+        assert!(
+            expected_target_quality.is_none(),
+            "Expected Target Quality is None"
+        );
     }
 }
 

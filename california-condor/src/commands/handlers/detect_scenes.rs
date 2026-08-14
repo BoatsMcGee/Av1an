@@ -5,9 +5,9 @@ use anyhow::Result;
 
 use crate::{
     commands::{
-        handlers::{configure_input, configure_temp, load_configuration},
         DecoderMethod,
         SceneDetectionMethod,
+        handlers::{configure_input, configure_temp, load_configuration},
     },
     configuration::Configuration,
 };

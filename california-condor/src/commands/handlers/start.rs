@@ -1,11 +1,18 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::vapoursynth::vapoursynth_filters::VapourSynthFilter;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tracing::{debug, error, trace};
 
 use crate::{
+    DEFAULT_CONFIG_PATH,
     commands::{
+        ConcatenationMethod,
+        CondorCliError,
+        DecoderMethod,
+        EncoderMethod,
+        TargetQualityMetric,
+        TargetQualityProfile,
         handlers::{
             concatenate::configure_concatenate,
             configure_input,
@@ -14,15 +21,8 @@ use crate::{
             encode::{configure_encoder, configure_parallel_encoder},
             target_quality::configure_target_quality,
         },
-        ConcatenationMethod,
-        CondorCliError,
-        DecoderMethod,
-        EncoderMethod,
-        TargetQualityMetric,
-        TargetQualityProfile,
     },
     configuration::{ConfigError, Configuration},
-    DEFAULT_CONFIG_PATH,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -183,11 +183,12 @@ mod tests {
     use andean_condor::{
         ffmpeg::FFPixelFormat,
         models::{
-            encoder::{cli_parameter::CLIParameter, Encoder, EncoderBase, EncoderPasses},
+            encoder::{Encoder, EncoderBase, EncoderPasses, cli_parameter::CLIParameter},
             input::{ImportMethod, Input, VapourSynthImportMethod, VapourSynthScriptSource},
             sequence::{
                 scene_concatenator::ConcatMethod,
                 target_quality::{
+                    TargetQualityConfig,
                     types::{
                         ProbeStatistic,
                         ProbeStrategy,
@@ -196,7 +197,6 @@ mod tests {
                         SubsetProbePosition,
                         TargetQualityProbing,
                     },
-                    TargetQualityConfig,
                 },
             },
         },

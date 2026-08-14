@@ -5,17 +5,17 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        mpsc::{self},
         Arc,
         Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self},
     },
     thread,
     time::Instant,
 };
 
-use anyhow::{bail, Result};
-use av1_grain::{generate_photon_noise_params, GrainTableSegment, NoiseGenArgs, TransferFunction};
+use anyhow::{Result, bail};
+use av1_grain::{GrainTableSegment, NoiseGenArgs, TransferFunction, generate_photon_noise_params};
 use cfg_if::cfg_if;
 use nom::AsBytes;
 use path_abs::PathInfo;
@@ -23,18 +23,20 @@ use thiserror::Error;
 use tracing::info;
 
 use crate::{
-    core::input::{color_range::ColorRange, Input},
+    core::input::{Input, color_range::ColorRange},
     models::encoder::{
-        cli_parameter::CLIParameter,
-        photon_noise::PhotonNoise,
         Encoder,
         EncoderBase,
         EncoderPasses,
+        cli_parameter::CLIParameter,
+        photon_noise::PhotonNoise,
     },
 };
 
+pub mod capability;
 pub mod parse;
 pub mod string_or_bytes;
+pub use capability::EncoderCapability;
 pub use parse::*;
 pub use string_or_bytes::StringOrBytes;
 
@@ -87,6 +89,17 @@ impl Encoder {
         }
 
         default_name
+    }
+
+    /// Checks if the encoder binary supports a specific capability,
+    /// using the global capability cache to avoid repeated expensive probes.
+    #[inline]
+    pub fn supports_capability(&self, capability: EncoderCapability) -> bool {
+        let Ok(executable_path) = which::which(self.executable()) else {
+            return false;
+        };
+
+        capability::check_capability(self.base(), &executable_path, capability)
     }
 
     #[inline]
@@ -1228,6 +1241,122 @@ impl Encoder {
     #[inline]
     pub fn parse_encoded_frames(&self, line: &str) -> Option<u64> {
         Self::parse_encoded_frames_base(&self.base(), line)
+    }
+
+    #[inline]
+    pub fn version_text(&self) -> Option<String> {
+        match self {
+            Encoder::AOM {
+                ..
+            } => {
+                let result = Command::new(self.executable()).arg("--help").output().ok()?;
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let version_line = stdout.lines().find(|line| line.starts_with("    av1"))?;
+                Some(
+                    version_line
+                        .split_once('-')
+                        .expect("unexpected aom version string format")
+                        .1
+                        .replace("(default)", "")
+                        .trim()
+                        .to_string(),
+                )
+            },
+            Encoder::RAV1E {
+                ..
+            } => {
+                let result = Command::new(self.executable()).arg("--version").output().ok()?;
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let version_line = stdout.lines().find(|line| line.starts_with("rav1e"))?;
+                Some(version_line.to_string())
+            },
+            Encoder::VPX {
+                ..
+            } => {
+                let result = Command::new(self.executable()).arg("--help").output().ok()?;
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let version_line = stdout.lines().find(|line| line.starts_with("    vp9"))?;
+                Some(
+                    version_line
+                        .split_once('-')
+                        .expect("unexpected vpx version string format")
+                        .1
+                        .replace("(default)", "")
+                        .trim()
+                        .to_string(),
+                )
+            },
+            Encoder::SVTAV1 {
+                ..
+            } => {
+                let result = Command::new(self.executable()).arg("--version").output().ok()?;
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let version_line = stdout.lines().find(|line| line.starts_with("SVT-AV1"))?;
+                Some(version_line.to_string())
+            },
+            Encoder::AVM {
+                ..
+            } => {
+                let result = Command::new(self.executable()).arg("--help").output().ok()?;
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let version_line = stdout.lines().find(|line| line.starts_with("    av2"))?;
+                Some(
+                    version_line
+                        .split_once('-')
+                        .expect("unexpected avm version string format")
+                        .1
+                        .replace("(default)", "")
+                        .trim()
+                        .to_string(),
+                )
+            },
+            Encoder::X264 {
+                ..
+            } => {
+                let result = Command::new(self.executable()).arg("--version").output().ok()?;
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let version_line = stdout.lines().find(|line| line.starts_with("x264"))?;
+                Some(
+                    version_line
+                        .split_once(" ")
+                        .expect("unexpected x264 version string format")
+                        .1
+                        .trim()
+                        .to_string(),
+                )
+            },
+            Encoder::X265 {
+                ..
+            } => {
+                let result = Command::new(self.executable()).arg("--version").output().ok()?;
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                let version_line = stderr.lines().find(|line| line.starts_with("x265"))?;
+                Some(
+                    version_line
+                        .split_once(':')
+                        .expect("unexpected x265 version string format")
+                        .1
+                        .trim()
+                        .to_string(),
+                )
+            },
+            Encoder::VVenC {
+                ..
+            } => {
+                let result = Command::new(self.executable()).arg("--version").output().ok()?;
+                let stdout = String::from_utf8_lossy(&result.stdout);
+                let version_line = stdout.lines().find(|line| line.starts_with("vvencapp"))?;
+                Some(version_line.to_string())
+            },
+            Encoder::FFmpeg {
+                ..
+            } => {
+                let result = Command::new(self.executable()).output().ok()?;
+                let stderr = String::from_utf8_lossy(&result.stderr);
+                let version_line = stderr.lines().find(|line| line.starts_with("ffmpeg"))?;
+                version_line.split(' ').nth(2).map(String::from)
+            },
+        }
     }
 }
 

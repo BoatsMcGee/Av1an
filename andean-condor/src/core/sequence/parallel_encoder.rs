@@ -5,29 +5,31 @@ use std::{
     path::PathBuf,
     sync::{
         self,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
         Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::{self},
 };
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use av1_grain::write_grain_table;
 use thiserror::Error;
 use tracing::{debug, error, trace};
 
 use crate::{
     core::{
+        Condor,
         encoder::{EncodeProgress, EncoderResult},
         input::Input,
         sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
-        Condor,
     },
     models::{
         encoder::Encoder,
         scene::SubScene,
         sequence::{
+            SequenceConfigHandler,
+            SequenceDataHandler,
             noise_detector::NoiseDetectorDataHandler,
             parallel_encoder::{
                 BufferStrategy,
@@ -35,8 +37,6 @@ use crate::{
                 ParallelEncoderDataHandler,
             },
             scene_detector::SceneDetectorDataHandler,
-            SequenceConfigHandler,
-            SequenceDataHandler,
         },
     },
     utils::semaphore::Semaphore,

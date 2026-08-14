@@ -1,4 +1,3 @@
-use andean_condor::models::sequence::benchmarker::BenchmarkerConfig;
 use california_condor::{
     commands::handlers::load_configuration,
     test_helpers::*,
@@ -12,6 +11,8 @@ use common::{condor_cmd, path_str};
 
 #[cfg(test)]
 mod tests {
+    use andean_condor::models::encoder::cli_parameter::CLIParameter;
+
     use super::*;
 
     #[test]
@@ -51,7 +52,7 @@ mod tests {
     }
 
     #[test]
-    fn with_threshold_and_no_scenes() {
+    fn with_custom_options() {
         if !ffmpeg_is_available() {
             return;
         }
@@ -68,25 +69,81 @@ mod tests {
             .to_path_buf();
         let config_path = temp.path().join("condor.json");
 
-        let mut expected_config = default_config(&test_video, &output, &temp_abs);
-        expected_config.condor.sequence_config.benchmarker = BenchmarkerConfig {
-            threshold:  15,
-            max_memory: Some(2048),
-        };
-        let expected_config = expected_config;
-
-        condor_cmd(&temp)
-            .args(["init", path_str(&test_video.path), path_str(&output)])
-            .assert()
-            .success();
+        // Mock an existing config file with scenes
+        let mut config = default_config(&test_video, &output, &temp_abs);
+        config.condor.encoder.parameters_mut().insert(
+            "preset".to_owned(),
+            CLIParameter::new_number("--", " ", 10.0),
+        );
+        config.condor.scenes = test_video.mock_scenes(&config.condor.encoder);
+        config.save(&config_path).expect("configuration save should succeed");
 
         condor_cmd(&temp)
             .env("CONDOR_TEST_MODE", "1")
-            .args(["benchmark", "--threshold", "15", "--max-memory", "2048"])
+            .args(["benchmark", "--threshold", "100"])
             .assert()
             .success();
 
-        let (config, _) = load_configuration(Some(&config_path)).expect("config should load");
+        let mut expected_config = config;
+        expected_config.condor.sequence_config.benchmarker.threshold = 100;
+        expected_config.condor.sequence_config.parallel_encoder.workers = Some(1);
+        // immutable shadow
+        let expected_config = expected_config;
+
+        let (config, _) =
+            load_configuration(Some(&config_path)).expect("load_configuration should succeed");
+
+        check_basic_config(&config, &expected_config);
+        assert_eq!(
+            config.condor.scenes.len(),
+            test_video.scenes.len(),
+            "scenes contains {} scenes",
+            test_video.scenes.len()
+        );
+    }
+
+    #[test]
+    fn with_workers_preconfigured() {
+        if !ffmpeg_is_available() {
+            return;
+        }
+        let test_video = get_test_video();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let output = temp.path().join("out.mkv");
+        let input_abs = path_abs::PathAbs::new(test_video.path.clone())
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp_abs = path_abs::PathAbs::new(temp.path().join(hash_path(&input_abs)))
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let config_path = temp.path().join("condor.json");
+
+        // Mock an existing config file with scenes
+        let mut config = default_config(&test_video, &output, &temp_abs);
+        config.condor.encoder.parameters_mut().insert(
+            "preset".to_owned(),
+            CLIParameter::new_number("--", " ", 10.0),
+        );
+        config.condor.scenes = test_video.mock_scenes(&config.condor.encoder);
+        config.condor.sequence_config.parallel_encoder.workers = Some(10);
+        config.save(&config_path).expect("configuration save should succeed");
+
+        // Should skip when workers is already set
+        condor_cmd(&temp)
+            .env("CONDOR_TEST_MODE", "1")
+            .args(["benchmark", "--threshold", "100"])
+            .assert()
+            .success();
+
+        let mut expected_config = config;
+        expected_config.condor.sequence_config.benchmarker.threshold = 100;
+        // immutable shadow
+        let expected_config = expected_config;
+
+        let (config, _) =
+            load_configuration(Some(&config_path)).expect("load_configuration should succeed");
 
         check_basic_config(&config, &expected_config);
     }

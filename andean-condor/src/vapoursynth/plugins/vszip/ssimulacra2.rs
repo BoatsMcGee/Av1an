@@ -4,13 +4,18 @@ use anyhow::Result;
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::{MetricPluginFunction, PluginFunction},
+    VapourSynthError,
+    plugins::{
+        MetricPluginFunction,
+        Plugin,
+        PluginFunction,
+        vszip::{DOCS, ID, NAME},
+    },
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 pub struct SSIMULACRA2 {
@@ -20,10 +25,16 @@ pub struct SSIMULACRA2 {
     pub distorted_node_name: String,
 }
 
+impl Plugin for SSIMULACRA2 {
+    const PLUGIN_NAME: &'static str = NAME;
+    const PLUGIN_ID: &'static str = ID;
+    const PLUGIN_DOCS: Option<&'static str> = Some(DOCS);
+}
+
 impl PluginFunction for SSIMULACRA2 {
-    const PLUGIN_NAME: &'static str = "VapourSynth Zig Image Process";
-    const PLUGIN_ID: &'static str = "com.julek.vszip";
     const FUNCTION_NAME: &'static str = "SSIMULACRA2";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://github.com/dnjulek/vapoursynth-zip/wiki/SSIMULACRA2");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("reference", &ValueType::VideoNode), ("distorted", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[];

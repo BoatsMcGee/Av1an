@@ -7,6 +7,8 @@ use tracing::{debug, info, level_filters::LevelFilter};
 
 use crate::{
     commands::{
+        Commands,
+        CondorCli,
         handlers::{
             benchmarker::benchmarker_handler,
             concatenate::concatenate_handler,
@@ -21,8 +23,7 @@ use crate::{
             target_quality::target_quality_handler,
         },
         help_text::process_command_tree,
-        Commands,
-        CondorCli,
+        version::print_version,
     },
     configuration::Configuration,
     logging::init_logging,
@@ -68,6 +69,10 @@ fn run() -> anyhow::Result<()> {
     cmd = process_command_tree(cmd);
     let matches = cmd.get_matches();
     let cli = CondorCli::from_arg_matches(&matches).map_err(|err| err.exit())?;
+
+    if cli.version {
+        return print_version(cli.verbose);
+    }
 
     let cwd = std::env::current_dir()?;
     let config_path = cli.config_file;

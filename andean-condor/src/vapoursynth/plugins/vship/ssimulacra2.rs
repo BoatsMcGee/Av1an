@@ -5,13 +5,18 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::{MetricPluginFunction, PluginFunction},
+    VapourSynthError,
+    plugins::{
+        MetricPluginFunction,
+        Plugin,
+        PluginFunction,
+        vship::{DOCS, ID, NAME},
+    },
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -24,10 +29,16 @@ pub struct SSIMULACRA2 {
     pub gpu_id:              Option<u32>,
 }
 
+impl Plugin for SSIMULACRA2 {
+    const PLUGIN_NAME: &'static str = NAME;
+    const PLUGIN_ID: &'static str = ID;
+    const PLUGIN_DOCS: Option<&'static str> = Some(DOCS);
+}
+
 impl PluginFunction for SSIMULACRA2 {
-    const PLUGIN_NAME: &'static str = "VapourSynth-HIP";
-    const PLUGIN_ID: &'static str = "com.lumen.vship";
     const FUNCTION_NAME: &'static str = "SSIMULACRA2";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://codeberg.org/Line-fr/Vship/src/branch/main/doc/SSIMULACRA2.md");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("reference", &ValueType::VideoNode), ("distorted", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =

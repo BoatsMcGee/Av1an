@@ -6,13 +6,17 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    VapourSynthError,
+    plugins::{
+        Plugin,
+        PluginFunction,
+        vszip::{DOCS, ID, NAME},
+    },
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -26,10 +30,16 @@ pub struct RFS {
     pub mismatch:    Option<bool>,
 }
 
+impl Plugin for RFS {
+    const PLUGIN_NAME: &'static str = NAME;
+    const PLUGIN_ID: &'static str = ID;
+    const PLUGIN_DOCS: Option<&'static str> = Some(DOCS);
+}
+
 impl PluginFunction for RFS {
-    const PLUGIN_NAME: &'static str = "VapourSynth Zig Image Process";
-    const PLUGIN_ID: &'static str = "com.julek.vszip";
     const FUNCTION_NAME: &'static str = "RFS";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://github.com/dnjulek/vapoursynth-zip/wiki/RFS");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("clip", &ValueType::VideoNode), ("planes", &ValueType::Int)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
-    plugins::PluginFunction,
+    VapourSynthError,
+    plugins::{Plugin, PluginFunction},
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -30,16 +30,24 @@ pub struct BM3DCUDA {
     pub bm_range:   Option<u32>,
     pub ps_range:   Option<u32>,
 
-    /// Multi-threaded copy between CPU and GPU at the expense of 4x memory consumption.
+    /// Multi-threaded copy between CPU and GPU at the expense of 4x memory
+    /// consumption.
     ///
     /// Defaults to `true`
-    pub fast:       Option<bool>,
+    pub fast: Option<bool>,
+}
+
+impl Plugin for BM3DCUDA {
+    const PLUGIN_NAME: &'static str = "VapourSynth-BM3DCUDA";
+    const PLUGIN_ID: &'static str = "com.wolframrhodium.bm3dcuda";
+    const PLUGIN_DOCS: Option<&'static str> =
+        Some("https://github.com/WolframRhodium/VapourSynth-BM3DCUDA");
 }
 
 impl PluginFunction for BM3DCUDA {
-    const PLUGIN_NAME: &'static str = "VapourSynth-BM3DCUDA";
-    const PLUGIN_ID: &'static str = "com.wolframrhodium.bm3dcuda";
     const FUNCTION_NAME: &'static str = "BM3Dv2";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://github.com/WolframRhodium/VapourSynth-BM3DCUDA#parameters");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("clip", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

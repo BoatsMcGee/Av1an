@@ -1,33 +1,33 @@
 use std::sync::{
     self,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
     Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use anyhow::{Ok, Result};
-use av_scenechange::{detect_scene_changes, DetectionOptions};
+use av_scenechange::{DetectionOptions, detect_scene_changes};
 use thiserror::Error;
 use tracing::{debug, trace};
 
 use crate::{
     core::{
+        Condor,
         input::Input,
         sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
-        Condor,
     },
     models::{
         scene::Scene,
         sequence::{
+            SequenceConfigHandler,
+            SequenceDataHandler,
             scene_detector::{
+                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
                 SceneDetectionMethod,
                 SceneDetectorDataHandler,
                 ScenecutMethod,
                 ScenecutScore,
-                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
             },
-            SequenceConfigHandler,
-            SequenceDataHandler,
         },
     },
 };

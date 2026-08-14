@@ -1,31 +1,40 @@
 #[path = "common.rs"]
 mod common;
 
-use andean_condor::{
-    core::sequence::target_quality::TargetQuality,
-    models::{
-        encoder::cli_parameter::CLIParameter,
-        sequence::target_quality::{
-            types::{InterpolationMethod, QualityMetric, TargetQualityProbing},
-            TargetQualityConfig,
-        },
+use andean_condor::models::{
+    encoder::{EncoderBase, cli_parameter::CLIParameter},
+    sequence::target_quality::{
+        TargetQualityConfig,
+        types::{QualityMetric, TargetQualityProbing},
     },
 };
-use andean_condor::models::encoder::EncoderBase;
 use california_condor::{
     commands::handlers::load_configuration,
     test_helpers::*,
     utils::hash_path::hash_path,
 };
-
 use common::{condor_cmd, path_str};
 
 #[cfg(test)]
 mod tests {
+    use andean_condor::{
+        ffmpeg::FFPixelFormat,
+        models::{
+            input::{Input, VapourSynthImportMethod},
+            sequence::target_quality::types::{
+                ProbeStatistic,
+                ProbeStrategy,
+                SubsetProbeLength,
+                SubsetProbePosition,
+            },
+        },
+        vapoursynth::vapoursynth_filters::VapourSynthFilter,
+    };
+
     use super::*;
 
     #[test]
-    fn with_metric_target_and_no_scenes() {
+    fn with_custom_options() {
         if !ffmpeg_is_available() {
             return;
         }
@@ -41,156 +50,132 @@ mod tests {
             .as_path()
             .to_path_buf();
         let config_path = temp.path().join("condor.json");
-
-        let target_value = 85.0;
-        let mut expected_config = default_config(&test_video, &output, &temp_abs);
         let mut tq_encoder_params = EncoderBase::SVTAV1.default_parameters();
         tq_encoder_params.extend(CLIParameter::new_numbers("--", " ", &[
-            ("preset", 4.0),
+            ("preset", 8.0),
             ("tune", 1.0),
         ]));
-        expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
-            metric:          QualityMetric::SSIMULACRA2 {
-                target_range: (target_value - 1.0, target_value + 1.0),
-                resolution:   None,
-                threads:      None,
-            },
-            maximum_probes:  4,
-            quantizer_range: TargetQuality::default_quantizer_range(&EncoderBase::SVTAV1),
-            interpolators:   (InterpolationMethod::Natural, InterpolationMethod::Pchip),
-            input:           None,
-            metric_input:    None,
-            probing:         TargetQualityProbing {
-                encoder_options: Some(tq_encoder_params),
-                ..Default::default()
-            },
-        });
-        let expected_config = expected_config;
 
-        condor_cmd(&temp)
-            .args(["init", path_str(&test_video.path), path_str(&output), "--target-metric", "ssimulacra2", "--target", "85"])
-            .assert()
-            .success();
+        // Mock an existing config file with scenes
+        let mut config = default_config(&test_video, &output, &temp_abs);
+        // Allow testing with SVT Essential (does not support 8-bit)
+        config.input_filters = vec![VapourSynthFilter::Resize {
+            scaler: None,
+            width:  None,
+            height: None,
+            format: Some(FFPixelFormat::YUV420P10LE),
+        }];
+        config.condor.encoder.parameters_mut().insert(
+            "preset".to_owned(),
+            CLIParameter::new_number("--", " ", 6.0),
+        );
+        config.condor.scenes = test_video.mock_scenes(&config.condor.encoder);
+        config.save(&config_path).expect("configuration save should succeed");
 
         condor_cmd(&temp)
             .env("CONDOR_TEST_MODE", "1")
-            .args(["target-quality", "--params", "--preset 4 --tune 1"])
+            .args([
+                "target-quality",
+                "--input",
+                path_str(&test_video.path),
+                "--decoder",
+                "vs-ffms2",
+                "--filters",
+                "resize:format=yuv420p10le;",
+                "--metric",
+                "xpsnr",
+                "--target",
+                "45",
+                "--min-q",
+                "20",
+                "--max-q",
+                "40",
+                "--profile",
+                "fast",
+                "--params",
+                "--preset 8 --tune 1",
+            ])
             .assert()
             .success();
 
-        let (config, _) = load_configuration(Some(&config_path)).expect("config should load");
+        let mut expected_config = config.clone();
+        expected_config.tq_input_filters = expected_config.input_filters.clone();
+        expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
+            metric: QualityMetric::XPSNR {
+                target_range: (44.0, 46.0),
+                resolution:   None,
+            },
+            quantizer_range: (20, 40),
+            input: Some(Input::VapourSynth {
+                path:          input_abs,
+                import_method: VapourSynthImportMethod::FFMS2 {
+                    index: None
+                },
+                cache_path:    None,
+            }),
+            probing: TargetQualityProbing {
+                encoder_options: Some(tq_encoder_params),
+                strategy:        ProbeStrategy::Subset {
+                    position: SubsetProbePosition::Middle,
+                    length:   SubsetProbeLength::Frames(11),
+                },
+                statistic:       ProbeStatistic::Mean,
+            },
+            ..Default::default()
+        });
+        let expected_crf = |index| match index {
+            0 => 35.0,
+            1 => 23.0,
+            2 => 20.0,
+            3 => 20.0,
+            4 => 40.0,
+            _ => 0.0,
+        };
+        expected_config.condor.scenes.iter_mut().enumerate().for_each(|(index, scene)| {
+            scene.encoder.parameters_mut().insert(
+                "crf".to_owned(),
+                CLIParameter::new_number("--", " ", expected_crf(index)),
+            );
+        });
+        // immutable shadow
+        let expected_config = expected_config;
+
+        let (config, _) =
+            load_configuration(Some(&config_path)).expect("load_configuration should succeed");
 
         check_basic_config(&config, &expected_config);
-    }
-
-    #[test]
-    fn with_all_metric_variants_and_no_scenes() {
-        if !ffmpeg_is_available() {
-            return;
-        }
-        let test_video = get_test_video();
-        let target_value = 80.0;
-        let test_cases: &[(&str, QualityMetric)] = &[
-            (
-                "vmaf",
-                QualityMetric::VMAF {
-                    target_range: (target_value - 1.0, target_value + 1.0),
-                    resolution:   None,
-                    scaler:       String::new(),
-                    filter:       None,
-                    threads:      1,
-                    model:        None,
-                    features:     vec![],
-                },
-            ),
-            (
-                "ssimulacra2",
-                QualityMetric::SSIMULACRA2 {
-                    target_range: (target_value - 1.0, target_value + 1.0),
-                    resolution:   None,
-                    threads:      None,
-                },
-            ),
-            (
-                "butteraugli",
-                QualityMetric::BUTTERAUGLI {
-                    target_range:         (target_value - 0.1, target_value + 0.1),
-                    resolution:           None,
-                    threads:              None,
-                    intensity_multiplier: None,
-                    norm:                 None,
-                },
-            ),
-            (
-                "butteraugli-3",
-                QualityMetric::BUTTERAUGLI {
-                    target_range:         (target_value - 0.1, target_value + 0.1),
-                    resolution:           None,
-                    threads:              None,
-                    intensity_multiplier: None,
-                    norm:                 Some(3),
-                },
-            ),
-            (
-                "xpsnr",
-                QualityMetric::XPSNR {
-                    target_range: (target_value - 1.0, target_value + 1.0),
-                    resolution:   None,
-                },
-            ),
-            (
-                "cvvdp",
-                QualityMetric::CVVDP {
-                    target_range:      (target_value - 0.1, target_value + 0.1),
-                    resolution:        None,
-                    display_model:     None,
-                    resize_to_display: None,
-                    disable_temporal:  None,
-                },
-            ),
-        ];
-
-        for (metric_name, expected_metric) in test_cases {
-            let temp = tempfile::tempdir().expect("failed to create temp dir");
-            let config_path = temp.path().join("condor.json");
-
-            condor_cmd(&temp)
-                .args([
-                    "init",
-                    path_str(&test_video.path),
-                    path_str(&temp.path().join("out.mkv")),
-                    "--target-metric",
-                    metric_name,
-                    "--target",
-                    "80",
-                ])
-                .assert()
-                .success();
-
-            condor_cmd(&temp)
-                .env("CONDOR_TEST_MODE", "1")
-                .args(["target-quality"])
-                .assert()
-                .success();
-
-            let (config, _) = load_configuration(Some(&config_path)).expect("config should load");
-            let tq = config
+        assert_eq!(
+            config.condor.scenes.len(),
+            test_video.scenes.len(),
+            "scenes contains {} scenes",
+            test_video.scenes.len()
+        );
+        config.condor.scenes.iter().enumerate().for_each(|(index, scene)| {
+            assert!(
+                !scene.sequence_data.target_quality.passes.is_empty(),
+                "scene {} should have Target Quality passes",
+                index
+            );
+            let maximum_probes = config
                 .condor
                 .sequence_config
                 .target_quality
-                .unwrap_or_else(|| panic!("target_quality is set for {metric_name}"));
-            assert_eq!(
-                std::mem::discriminant(&tq.metric),
-                std::mem::discriminant(expected_metric),
-                "target quality metric variant matches for {metric_name}",
-            );
-            let tr = tq.metric.target_range();
-            let etr = expected_metric.target_range();
+                .as_ref()
+                .expect("Target Quality sequence_config should exist")
+                .maximum_probes;
             assert!(
-                (tr.0 - etr.0).abs() < 0.01 && (tr.1 - etr.1).abs() < 0.01,
-                "target range for {metric_name}: expected ({}, {}), got ({}, {})",
-                etr.0, etr.1, tr.0, tr.1,
+                scene.sequence_data.target_quality.passes.len() <= maximum_probes as usize,
+                "scene {} should have at most {} Target Quality passes",
+                index,
+                maximum_probes
             );
-        }
+            assert_eq!(
+                scene.encoder.parameters().get("crf").expect("crf should exist"),
+                &CLIParameter::new_number("--", " ", expected_crf(index)),
+                "scene {} should have crf {}",
+                index,
+                expected_crf(index)
+            );
+        });
     }
 }

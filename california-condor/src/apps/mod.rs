@@ -1,19 +1,19 @@
 use std::{
-    io::{self, stderr, stdout, BufWriter, IsTerminal, Write},
-    sync::{atomic::AtomicBool, mpsc::Receiver, Arc},
+    io::{self, BufWriter, IsTerminal, Write, stderr, stdout},
+    sync::{Arc, atomic::AtomicBool, mpsc::Receiver},
 };
 
 use andean_condor::core::sequence::SequenceStatus;
 use anyhow::Result;
 use ratatui::{
+    Frame,
+    Terminal,
     crossterm::{
         self,
         execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
     prelude::CrosstermBackend,
-    Frame,
-    Terminal,
 };
 
 pub mod benchmarker;

@@ -1,14 +1,16 @@
 use std::{
     collections::BTreeMap,
     io::{IsTerminal, Write},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
     thread,
     time::{Duration, Instant},
 };
 
 use andean_condor::{
     core::{
+        Condor,
         sequence::{
+            Sequence,
             benchmarker::Benchmarker,
             bitrate_optimizer::BitrateOptimizer,
             noise_detector::NoiseDetector,
@@ -18,24 +20,22 @@ use andean_condor::{
             scene_detector::SceneDetector,
             speed_scaler::SpeedScaler,
             target_quality::TargetQuality,
-            Sequence,
         },
-        Condor,
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use thiserror::Error as ThisError;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     apps::{
+        TuiApp,
         benchmarker::BenchmarkerApp,
         noise_detection::NoiseDetectionApp,
         parallel_encoder::ParallelEncoderApp,
         scene_detection::SceneDetectionApp,
         target_quality::TargetQualityApp,
-        TuiApp,
     },
     configuration::{CliSequenceConfig, CliSequenceData, Configuration},
 };
@@ -333,7 +333,7 @@ pub fn run_target_quality_tui(
     input_filters: &[VapourSynthFilter],
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
-    debug!("Instantiating Parallel Encoder Input");
+    debug!("Instantiating Target Quality Input");
     let (target_quality_input, clip_info) = if let Some(Some(input)) =
         &condor.sequence_config.target_quality.as_ref().map(|tq| tq.input.clone())
     {
@@ -341,7 +341,7 @@ pub fn run_target_quality_tui(
         let clip_info = tq_input.clip_info()?;
         (Some(tq_input), clip_info)
     } else if let Some(pe_input) = &condor.sequence_config.parallel_encoder.input {
-        // fallback to Parallel Encoder input
+        debug!("Falling back to Parallel Encoder input");
         let mut tq_input = Configuration::instantiate_input_with_filters(pe_input, input_filters)?;
         let clip_info = tq_input.clip_info()?;
         (Some(tq_input), clip_info)
@@ -560,6 +560,7 @@ pub fn run_parallel_encoder_tui(
     Ok(())
 }
 
+#[tracing::instrument(skip_all)]
 pub fn run_scene_concatenator_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
     cancelled: Arc<AtomicBool>,

@@ -4,23 +4,27 @@ use anyhow::Result;
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::vapoursynth::{
+    VapourSynthError,
     plugins::{
+        Plugin,
+        PluginFunction,
         resize::{
             ChromaLocation,
             ColorPrimaries,
+            DOCS,
             DitherType,
+            ID,
             MatrixCoefficients,
+            NAME,
             Range,
             TransferCharacteristics,
         },
-        PluginFunction,
     },
     script_builder::{
-        script::{Imports, Line},
         NodeVariableName,
         VapourSynthPluginScript,
+        script::{Imports, Line},
     },
-    VapourSynthError,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -43,10 +47,16 @@ pub struct Bicubic {
     pub b:            Option<f64>,
 }
 
+impl Plugin for Bicubic {
+    const PLUGIN_NAME: &'static str = NAME;
+    const PLUGIN_ID: &'static str = ID;
+    const PLUGIN_DOCS: Option<&'static str> = Some(DOCS);
+}
+
 impl PluginFunction for Bicubic {
-    const PLUGIN_NAME: &'static str = "resize";
-    const PLUGIN_ID: &'static str = "com.vapoursynth.resize";
     const FUNCTION_NAME: &'static str = "Bicubic";
+    const FUNCTION_DOCS: Option<&'static str> =
+        Some("https://www.vapoursynth.com/doc/functions/video/resize.html#resize.Bicubic");
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("clip", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

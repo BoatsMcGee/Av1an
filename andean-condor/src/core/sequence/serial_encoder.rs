@@ -1,7 +1,7 @@
 use std::{
     io::Cursor,
     path::{Path, PathBuf},
-    sync::{self, atomic::AtomicBool, Arc, Mutex},
+    sync::{self, Arc, Mutex, atomic::AtomicBool},
     thread,
     time::Instant,
 };
@@ -11,17 +11,17 @@ use thiserror::Error;
 
 use crate::{
     core::{
+        Condor,
         encoder::EncodeProgress,
         input::Input,
         sequence::{Sequence, SequenceDetails, SequenceStatus},
-        Condor,
     },
     models::{
         encoder::Encoder,
         sequence::{
-            scene_detector::SceneDetectorDataHandler,
             SequenceConfigHandler,
             SequenceDataHandler,
+            scene_detector::SceneDetectorDataHandler,
         },
     },
 };

@@ -1,16 +1,30 @@
-use std::{collections::BTreeMap, fmt::Display, str::FromStr};
+use std::{
+    collections::BTreeMap,
+    fmt::{Display, Write},
+    str::FromStr,
+};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, node::Node};
 
 use crate::{
     ffmpeg::FFPixelFormat,
+    models::encoder::photon_noise::PhotonNoise,
     vapoursynth::{
+        VapourSynthError,
         plugins::{
+            fgs::FGS,
+            mvutensils::{
+                analyse_many::AnalyseMany,
+                degrain::Degrain,
+                mvu_super::MVUSuper,
+                recalculate::Recalculate,
+            },
             rescale::{Doubler, RescaleBuilder, VSJETKernel},
             resize::{
+                Scaler,
                 bicubic::Bicubic,
                 bilinear::Bilinear,
                 bob::Bob,
@@ -19,19 +33,28 @@ use crate::{
                 spline16::Spline16,
                 spline36::Spline36,
                 spline64::Spline64,
-                Scaler,
             },
             standard::{crop::Crop, trim::Trim},
             vszip::{bilateral::Bilateral, wnnm::WNNM},
+            zoomvtools::{
+                analyse::Analyse as ZoomAnalyse,
+                degrain::Degrain as ZoomDegrainPlugin,
+                recalculate::Recalculate as ZoomRecalculate,
+                zmv_super::ZMVSuper,
+            },
         },
         script_builder::{
-            script::{Imports, Line},
             NodeVariableName,
             VapourSynthPluginScript,
+            script::{Imports, Line},
         },
     },
 };
 
+/// The [`Degrain`](VapourSynthFilter::Degrain) variant is a composite filter
+/// that intentionally carries many configuration fields, so the enum is larger
+/// than the other variants.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum VapourSynthFilter {
     Crop {
@@ -75,6 +98,118 @@ pub enum VapourSynthFilter {
         algorithm: Option<Vec<u32>>,
         pbficnum:  Option<Vec<u32>>,
     },
+    /// MVUtensils Degrain - motion-compensated temporal denoising workflow.
+    /// This is a composite filter that internally chains Super -> AnalyseMany
+    /// -> (optional Recalculate) -> Degrain.
+    Degrain {
+        blksize:        Option<Vec<usize>>,
+        overlap:        Option<Vec<usize>>,
+        pad:            Option<Vec<usize>>,
+        pel:            Option<usize>,
+        sharp:          Option<usize>,
+        rfilter:        Option<usize>,
+        radius:         Option<usize>,
+        search:         Option<usize>,
+        searchparam:    Option<usize>,
+        mvlambda:       Option<usize>,
+        chroma:         Option<bool>,
+        lsad:           Option<usize>,
+        plevel:         Option<usize>,
+        globalmv:       Option<bool>,
+        pnew:           Option<usize>,
+        pzero:          Option<usize>,
+        pglobal:        Option<usize>,
+        badsad:         Option<usize>,
+        badrange:       Option<usize>,
+        meander:        Option<bool>,
+        trymany:        Option<usize>,
+        satd:           Option<bool>,
+        recalculate:    Option<bool>,
+        recalc_thsad:   Option<usize>,
+        recalc_smooth:  Option<bool>,
+        recalc_blksize: Option<Vec<usize>>,
+        recalc_overlap: Option<Vec<usize>>,
+        thsad:          Option<Vec<usize>>,
+        thsad2:         Option<Vec<usize>>,
+        planes:         Option<Vec<usize>>,
+        limit:          Option<Vec<f64>>,
+        thscd1:         Option<usize>,
+        thscd2:         Option<f64>,
+        prefix:         Option<String>,
+    },
+    /// ZooMVTools Degrain - motion-compensated temporal denoising workflow.
+    /// This is a composite filter that internally chains ZMVSuper -> two
+    /// Analyse calls (isb=0 forward, isb=1 backward) -> (optional
+    /// Recalculate on both) -> Degrain1 (implemented as Degrain).
+    ZoomDegrain {
+        hpad:               Option<usize>,
+        vpad:               Option<usize>,
+        pel:                Option<usize>,
+        levels:             Option<usize>,
+        chroma:             Option<bool>,
+        sharp:              Option<usize>,
+        rfilter:            Option<usize>,
+        blksize:            Option<usize>,
+        blksizev:           Option<usize>,
+        search:             Option<usize>,
+        searchparam:        Option<usize>,
+        pelsearch:          Option<usize>,
+        lambda:             Option<usize>,
+        lsad:               Option<usize>,
+        plevel:             Option<usize>,
+        global:             Option<bool>,
+        pnew:               Option<usize>,
+        pzero:              Option<usize>,
+        pglobal:            Option<usize>,
+        overlap:            Option<usize>,
+        overlapv:           Option<usize>,
+        divide:             Option<usize>,
+        badsad:             Option<usize>,
+        badrange:           Option<usize>,
+        truemotion:         Option<bool>,
+        meander:            Option<bool>,
+        trymany:            Option<bool>,
+        fields:             Option<bool>,
+        tff:                Option<bool>,
+        search_coarse:      Option<usize>,
+        dct:                Option<usize>,
+        recalculate:        Option<bool>,
+        recalc_thsad:       Option<usize>,
+        recalc_smooth:      Option<bool>,
+        recalc_blksize:     Option<usize>,
+        recalc_blksizev:    Option<usize>,
+        recalc_search:      Option<usize>,
+        recalc_searchparam: Option<usize>,
+        recalc_lambda:      Option<usize>,
+        recalc_overlap:     Option<usize>,
+        recalc_overlapv:    Option<usize>,
+        recalc_divide:      Option<usize>,
+        thsad:              Option<usize>,
+        thsadc:             Option<usize>,
+        plane:              Option<i32>,
+        limit:              Option<usize>,
+        limitc:             Option<usize>,
+        thscd1:             Option<usize>,
+        thscd2:             Option<usize>,
+    },
+    /// FGS (Film Grain Synthesis) - applies photon-noise film grain using
+    /// dav1d's grain engine. Builds a [`PhotonNoise`] from the supplied
+    /// parameters and delegates to the `com.vs.fgs` plugin's `FGS` function.
+    FGS {
+        /// Required ISO strength for the luma grain.
+        iso:          u32,
+        /// Optional ISO strength for chroma grain (defaults to luma `iso`).
+        chroma_iso:   Option<u32>,
+        /// Optional custom luma AR coefficients (max 24).
+        cy:           Option<Vec<i8>>,
+        /// Optional custom chroma-blue AR coefficients (max 25).
+        ccb:          Option<Vec<i8>>,
+        /// Optional custom chroma-red AR coefficients (max 25).
+        ccr:          Option<Vec<i8>>,
+        /// When `true`, randomizes the grain seed per frame for dynamic
+        /// variation.
+        dynamic_seed: Option<bool>,
+    },
 }
 
 impl FromStr for VapourSynthFilter {
@@ -82,7 +217,6 @@ impl FromStr for VapourSynthFilter {
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Parse the string representation of the enum variant
         let parts: Vec<&str> = s.split(':').collect();
         let variant_name = parts[0];
         let variant_args = parts[1]
@@ -214,6 +348,302 @@ impl FromStr for VapourSynthFilter {
                         .collect()
                 }),
             }),
+            "degrain" => Ok(VapourSynthFilter::Degrain {
+                blksize:        variant_args.get("blksize").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                overlap:        variant_args.get("overlap").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                pad:            variant_args.get("pad").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                pel:            variant_args
+                    .get("pel")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                sharp:          variant_args
+                    .get("sharp")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                rfilter:        variant_args
+                    .get("rfilter")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                radius:         variant_args
+                    .get("radius")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                search:         variant_args
+                    .get("search")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                searchparam:    variant_args
+                    .get("searchparam")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                mvlambda:       variant_args
+                    .get("mvlambda")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                chroma:         variant_args
+                    .get("chroma")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                lsad:           variant_args
+                    .get("lsad")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                plevel:         variant_args
+                    .get("plevel")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                globalmv:       variant_args
+                    .get("globalmv")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                pnew:           variant_args
+                    .get("pnew")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                pzero:          variant_args
+                    .get("pzero")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                pglobal:        variant_args
+                    .get("pglobal")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                badsad:         variant_args
+                    .get("badsad")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                badrange:       variant_args
+                    .get("badrange")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                meander:        variant_args
+                    .get("meander")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                trymany:        variant_args
+                    .get("trymany")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                satd:           variant_args
+                    .get("satd")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                recalculate:    variant_args
+                    .get("recalculate")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                recalc_thsad:   variant_args
+                    .get("recalc_thsad")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalc_smooth:  variant_args
+                    .get("recalc_smooth")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                recalc_blksize: variant_args.get("recalc_blksize").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                recalc_overlap: variant_args.get("recalc_overlap").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                thsad:          variant_args.get("thsad").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                thsad2:         variant_args.get("thsad2").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                planes:         variant_args.get("planes").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                limit:          variant_args.get("limit").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                thscd1:         variant_args
+                    .get("thscd1")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                thscd2:         variant_args
+                    .get("thscd2")
+                    .map(|v| v.parse::<f64>().expect("Failed to parse filter argument value")),
+                prefix:         variant_args.get("prefix").cloned(),
+            }),
+            "zoom_degrain" => Ok(VapourSynthFilter::ZoomDegrain {
+                hpad:               variant_args
+                    .get("hpad")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                vpad:               variant_args
+                    .get("vpad")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                pel:                variant_args
+                    .get("pel")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                levels:             variant_args
+                    .get("levels")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                chroma:             variant_args
+                    .get("chroma")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                sharp:              variant_args
+                    .get("sharp")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                rfilter:            variant_args
+                    .get("rfilter")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                blksize:            variant_args
+                    .get("blksize")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                blksizev:           variant_args
+                    .get("blksizev")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                search:             variant_args
+                    .get("search")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                searchparam:        variant_args
+                    .get("searchparam")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                pelsearch:          variant_args
+                    .get("pelsearch")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                lambda:             variant_args
+                    .get("lambda")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                lsad:               variant_args
+                    .get("lsad")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                plevel:             variant_args
+                    .get("plevel")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                global:             variant_args
+                    .get("global")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                pnew:               variant_args
+                    .get("pnew")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                pzero:              variant_args
+                    .get("pzero")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                pglobal:            variant_args
+                    .get("pglobal")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                overlap:            variant_args
+                    .get("overlap")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                overlapv:           variant_args
+                    .get("overlapv")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                divide:             variant_args
+                    .get("divide")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                badsad:             variant_args
+                    .get("badsad")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                badrange:           variant_args
+                    .get("badrange")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                truemotion:         variant_args
+                    .get("truemotion")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                meander:            variant_args
+                    .get("meander")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                trymany:            variant_args
+                    .get("trymany")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                fields:             variant_args
+                    .get("fields")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                tff:                variant_args
+                    .get("tff")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                search_coarse:      variant_args
+                    .get("search_coarse")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                dct:                variant_args
+                    .get("dct")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalculate:        variant_args
+                    .get("recalculate")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                recalc_thsad:       variant_args
+                    .get("recalc_thsad")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalc_smooth:      variant_args
+                    .get("recalc_smooth")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                recalc_blksize:     variant_args
+                    .get("recalc_blksize")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalc_blksizev:    variant_args
+                    .get("recalc_blksizev")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalc_search:      variant_args
+                    .get("recalc_search")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalc_searchparam: variant_args
+                    .get("recalc_searchparam")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalc_lambda:      variant_args
+                    .get("recalc_lambda")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalc_overlap:     variant_args
+                    .get("recalc_overlap")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalc_overlapv:    variant_args
+                    .get("recalc_overlapv")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                recalc_divide:      variant_args
+                    .get("recalc_divide")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                thsad:              variant_args
+                    .get("thsad")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                thsadc:             variant_args
+                    .get("thsadc")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                plane:              variant_args
+                    .get("plane")
+                    .map(|v| v.parse::<i32>().expect("Failed to parse filter argument value")),
+                limit:              variant_args
+                    .get("limit")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                limitc:             variant_args
+                    .get("limitc")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                thscd1:             variant_args
+                    .get("thscd1")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+                thscd2:             variant_args
+                    .get("thscd2")
+                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
+            }),
+            "fgs" => Ok(VapourSynthFilter::FGS {
+                iso:          variant_args
+                    .get("iso")
+                    .map(|v| v.parse::<u32>().expect("Failed to parse filter argument value"))
+                    .expect("FGS filter requires an `iso` argument"),
+                chroma_iso:   variant_args
+                    .get("chroma_iso")
+                    .map(|v| v.parse::<u32>().expect("Failed to parse filter argument value")),
+                cy:           variant_args.get("cy").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                ccb:          variant_args.get("ccb").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                ccr:          variant_args.get("ccr").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                dynamic_seed: variant_args
+                    .get("dynamic_seed")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+            }),
             _ => Err(anyhow::anyhow!("Invalid variant name: {}", variant_name)),
         }
     }
@@ -322,6 +752,296 @@ impl Display for VapourSynthFilter {
                     .map(|v| format!("pbficnum={};", v.iter().join(",")))
                     .unwrap_or_default()
             ),
+            VapourSynthFilter::Degrain {
+                blksize,
+                overlap,
+                pel,
+                radius,
+                search,
+                mvlambda,
+                chroma,
+                recalculate,
+                thsad,
+                thsad2,
+                planes,
+                limit,
+                thscd1,
+                thscd2,
+                ..
+            } => {
+                let mut result = String::from("degrain:");
+                if let Some(v) = blksize {
+                    let _ = write!(result, "blksize={};", v.iter().join(","));
+                }
+                if let Some(v) = overlap {
+                    let _ = write!(result, "overlap={};", v.iter().join(","));
+                }
+                if let Some(v) = pel {
+                    let _ = write!(result, "pel={};", v);
+                }
+                if let Some(v) = radius {
+                    let _ = write!(result, "radius={};", v);
+                }
+                if let Some(v) = search {
+                    let _ = write!(result, "search={};", v);
+                }
+                if let Some(v) = mvlambda {
+                    let _ = write!(result, "mvlambda={};", v);
+                }
+                if let Some(v) = chroma {
+                    let _ = write!(result, "chroma={};", v);
+                }
+                if let Some(v) = recalculate {
+                    let _ = write!(result, "recalculate={};", v);
+                }
+                if let Some(v) = thsad {
+                    let _ = write!(result, "thsad={};", v.iter().join(","));
+                }
+                if let Some(v) = thsad2 {
+                    let _ = write!(result, "thsad2={};", v.iter().join(","));
+                }
+                if let Some(v) = planes {
+                    let _ = write!(result, "planes={};", v.iter().join(","));
+                }
+                if let Some(v) = limit {
+                    let _ = write!(result, "limit={};", v.iter().join(","));
+                }
+                if let Some(v) = thscd1 {
+                    let _ = write!(result, "thscd1={};", v);
+                }
+                if let Some(v) = thscd2 {
+                    let _ = write!(result, "thscd2={};", v);
+                }
+                result
+            },
+            VapourSynthFilter::ZoomDegrain {
+                hpad,
+                vpad,
+                pel,
+                levels,
+                chroma,
+                sharp,
+                rfilter,
+                blksize,
+                blksizev,
+                search,
+                searchparam,
+                pelsearch,
+                lambda,
+                lsad,
+                plevel,
+                global,
+                pnew,
+                pzero,
+                pglobal,
+                overlap,
+                overlapv,
+                divide,
+                badsad,
+                badrange,
+                truemotion,
+                meander,
+                trymany,
+                fields,
+                tff,
+                search_coarse,
+                dct,
+                recalculate,
+                recalc_thsad,
+                recalc_smooth,
+                recalc_blksize,
+                recalc_blksizev,
+                recalc_search,
+                recalc_searchparam,
+                recalc_lambda,
+                recalc_overlap,
+                recalc_overlapv,
+                recalc_divide,
+                thsad,
+                thsadc,
+                plane,
+                limit,
+                limitc,
+                thscd1,
+                thscd2,
+            } => {
+                let mut result = String::from("zoom_degrain:");
+                if let Some(v) = hpad {
+                    let _ = write!(result, "hpad={};", v);
+                }
+                if let Some(v) = vpad {
+                    let _ = write!(result, "vpad={};", v);
+                }
+                if let Some(v) = pel {
+                    let _ = write!(result, "pel={};", v);
+                }
+                if let Some(v) = levels {
+                    let _ = write!(result, "levels={};", v);
+                }
+                if let Some(v) = chroma {
+                    let _ = write!(result, "chroma={};", v);
+                }
+                if let Some(v) = sharp {
+                    let _ = write!(result, "sharp={};", v);
+                }
+                if let Some(v) = rfilter {
+                    let _ = write!(result, "rfilter={};", v);
+                }
+                if let Some(v) = blksize {
+                    let _ = write!(result, "blksize={};", v);
+                }
+                if let Some(v) = blksizev {
+                    let _ = write!(result, "blksizev={};", v);
+                }
+                if let Some(v) = search {
+                    let _ = write!(result, "search={};", v);
+                }
+                if let Some(v) = searchparam {
+                    let _ = write!(result, "searchparam={};", v);
+                }
+                if let Some(v) = pelsearch {
+                    let _ = write!(result, "pelsearch={};", v);
+                }
+                if let Some(v) = lambda {
+                    let _ = write!(result, "lambda={};", v);
+                }
+                if let Some(v) = lsad {
+                    let _ = write!(result, "lsad={};", v);
+                }
+                if let Some(v) = plevel {
+                    let _ = write!(result, "plevel={};", v);
+                }
+                if let Some(v) = global {
+                    let _ = write!(result, "global={};", v);
+                }
+                if let Some(v) = pnew {
+                    let _ = write!(result, "pnew={};", v);
+                }
+                if let Some(v) = pzero {
+                    let _ = write!(result, "pzero={};", v);
+                }
+                if let Some(v) = pglobal {
+                    let _ = write!(result, "pglobal={};", v);
+                }
+                if let Some(v) = overlap {
+                    let _ = write!(result, "overlap={};", v);
+                }
+                if let Some(v) = overlapv {
+                    let _ = write!(result, "overlapv={};", v);
+                }
+                if let Some(v) = divide {
+                    let _ = write!(result, "divide={};", v);
+                }
+                if let Some(v) = badsad {
+                    let _ = write!(result, "badsad={};", v);
+                }
+                if let Some(v) = badrange {
+                    let _ = write!(result, "badrange={};", v);
+                }
+                if let Some(v) = truemotion {
+                    let _ = write!(result, "truemotion={};", v);
+                }
+                if let Some(v) = meander {
+                    let _ = write!(result, "meander={};", v);
+                }
+                if let Some(v) = trymany {
+                    let _ = write!(result, "trymany={};", v);
+                }
+                if let Some(v) = fields {
+                    let _ = write!(result, "fields={};", v);
+                }
+                if let Some(v) = tff {
+                    let _ = write!(result, "tff={};", v);
+                }
+                if let Some(v) = search_coarse {
+                    let _ = write!(result, "search_coarse={};", v);
+                }
+                if let Some(v) = dct {
+                    let _ = write!(result, "dct={};", v);
+                }
+                if let Some(v) = recalculate {
+                    let _ = write!(result, "recalculate={};", v);
+                }
+                if let Some(v) = recalc_thsad {
+                    let _ = write!(result, "recalc_thsad={};", v);
+                }
+                if let Some(v) = recalc_smooth {
+                    let _ = write!(result, "recalc_smooth={};", v);
+                }
+                if let Some(v) = recalc_blksize {
+                    let _ = write!(result, "recalc_blksize={};", v);
+                }
+                if let Some(v) = recalc_blksizev {
+                    let _ = write!(result, "recalc_blksizev={};", v);
+                }
+                if let Some(v) = recalc_search {
+                    let _ = write!(result, "recalc_search={};", v);
+                }
+                if let Some(v) = recalc_searchparam {
+                    let _ = write!(result, "recalc_searchparam={};", v);
+                }
+                if let Some(v) = recalc_lambda {
+                    let _ = write!(result, "recalc_lambda={};", v);
+                }
+                if let Some(v) = recalc_overlap {
+                    let _ = write!(result, "recalc_overlap={};", v);
+                }
+                if let Some(v) = recalc_overlapv {
+                    let _ = write!(result, "recalc_overlapv={};", v);
+                }
+                if let Some(v) = recalc_divide {
+                    let _ = write!(result, "recalc_divide={};", v);
+                }
+                if let Some(v) = thsad {
+                    let _ = write!(result, "thsad={};", v);
+                }
+                if let Some(v) = thsadc {
+                    let _ = write!(result, "thsadc={};", v);
+                }
+                if let Some(v) = plane {
+                    let _ = write!(result, "plane={};", v);
+                }
+                if let Some(v) = limit {
+                    let _ = write!(result, "limit={};", v);
+                }
+                if let Some(v) = limitc {
+                    let _ = write!(result, "limitc={};", v);
+                }
+                if let Some(v) = thscd1 {
+                    let _ = write!(result, "thscd1={};", v);
+                }
+                if let Some(v) = thscd2 {
+                    let _ = write!(result, "thscd2={};", v);
+                }
+                result
+            },
+            VapourSynthFilter::FGS {
+                iso,
+                chroma_iso,
+                cy,
+                ccb,
+                ccr,
+                dynamic_seed,
+            } => {
+                let mut result = String::from("fgs:");
+                let _ = write!(result, "iso={};", iso);
+                if let Some(v) = chroma_iso {
+                    let _ = write!(result, "chroma_iso={};", v);
+                }
+                if let Some(v) = cy {
+                    let _ = write!(result, "cy={};", v.iter().join(","));
+                }
+                if let Some(v) = ccb {
+                    let _ = write!(result, "ccb={};", v.iter().join(","));
+                }
+                if let Some(v) = ccr {
+                    let _ = write!(result, "ccr={};", v.iter().join(","));
+                }
+                if let Some(v) = dynamic_seed {
+                    let _ = write!(result, "dynamic_seed={};", v);
+                }
+                result
+            },
         };
         write!(f, "{s}")
     }
@@ -343,6 +1063,15 @@ impl VapourSynthFilter {
             bail!("Cannot invoke script-only filter");
         }
 
+        self.invoke_plugin_function_impl(core, node)
+            .map_err(|e: VapourSynthError| anyhow::anyhow!(e))
+    }
+
+    fn invoke_plugin_function_impl<'core>(
+        &self,
+        core: CoreRef<'core>,
+        node: &Node<'core>,
+    ) -> Result<Node<'core>, VapourSynthError> {
         match self {
             VapourSynthFilter::Crop {
                 top,
@@ -369,7 +1098,13 @@ impl VapourSynthFilter {
                 let width = width.map(|v| v as u32);
                 let height = height.map(|v| v as u32);
                 let format = if let Some(format) = format {
-                    Some(format.to_vapoursynth_format()?)
+                    Some(format.to_vapoursynth_format().map_err(|e| {
+                        VapourSynthError::PluginFunctionError {
+                            plugin:   "Resize".to_owned(),
+                            function: "Resize".to_owned(),
+                            message:  e.to_string(),
+                        }
+                    })?)
                 } else {
                     None
                 };
@@ -495,6 +1230,312 @@ impl VapourSynthFilter {
                 };
 
                 Ok(plugin.invoke(core, node, None)?)
+            },
+            VapourSynthFilter::Degrain {
+                blksize,
+                overlap,
+                pad,
+                pel,
+                sharp,
+                rfilter,
+                radius,
+                search,
+                searchparam,
+                mvlambda,
+                chroma,
+                lsad,
+                plevel,
+                globalmv,
+                pnew,
+                pzero,
+                pglobal,
+                badsad,
+                badrange,
+                meander,
+                trymany,
+                satd,
+                recalculate,
+                recalc_thsad,
+                recalc_smooth,
+                recalc_blksize,
+                recalc_overlap,
+                thsad,
+                thsad2,
+                planes,
+                limit,
+                thscd1,
+                thscd2,
+                prefix,
+            } => {
+                // Step 1: Create super clip
+                let super_plugin = MVUSuper {
+                    blksize:      blksize
+                        .clone()
+                        .map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    overlap:      overlap
+                        .clone()
+                        .map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    pad:          pad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    pel:          pel.map(|v| v as u32),
+                    sharp:        sharp.map(|v| v as u32),
+                    rfilter:      rfilter.map(|v| v as u32),
+                    onelevel:     Some(false),
+                    pelclip_name: None,
+                    prefix:       prefix.clone(),
+                };
+                let super_node = super_plugin.invoke(core, node, None)?;
+
+                // Step 2: AnalyseMany to produce vector clips
+                let analyse_many_plugin = AnalyseMany {
+                    super_name:  None,
+                    blksize:     blksize.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    overlap:     overlap.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    levels:      None,
+                    search:      search.map(|v| v as u32),
+                    searchparam: searchparam.map(|v| v as u32),
+                    pelsearch:   None,
+                    mvlambda:    mvlambda.map(|v| v as u32),
+                    chroma:      *chroma,
+                    delta:       Some(1),
+                    lsad:        lsad.map(|v| v as u32),
+                    plevel:      plevel.map(|v| v as u32),
+                    globalmv:    *globalmv,
+                    pnew:        pnew.map(|v| v as u32),
+                    pzero:       pzero.map(|v| v as u32),
+                    pglobal:     pglobal.map(|v| v as u32),
+                    badsad:      badsad.map(|v| v as u32),
+                    badrange:    badrange.map(|v| v as u32),
+                    meander:     *meander,
+                    trymany:     trymany.map(|v| v as u32),
+                    fields:      Some(false),
+                    tff:         Some(false),
+                    satd:        *satd,
+                    radius:      radius.map(|v| v as u32),
+                    prefix:      prefix.clone(),
+                };
+                let vectors_node = analyse_many_plugin.invoke(core, &super_node)?;
+
+                // Step 3: Optional Recalculate
+                let vectors_node = if recalculate.unwrap_or(false) {
+                    let recalc_plugin = Recalculate {
+                        super_name:   None,
+                        vectors_name: None,
+                        thsad:        recalc_thsad.map(|v| v as u32),
+                        smooth:       *recalc_smooth,
+                        blksize:      recalc_blksize
+                            .clone()
+                            .map(|v| v.into_iter().map(|u| u as u32).collect()),
+                        overlap:      recalc_overlap
+                            .clone()
+                            .map(|v| v.into_iter().map(|u| u as u32).collect()),
+                        search:       None,
+                        searchparam:  None,
+                        mvlambda:     None,
+                        chroma:       *chroma,
+                        pnew:         None,
+                        meander:      None,
+                        fields:       None,
+                        tff:          None,
+                        satd:         None,
+                        prefix:       prefix.clone(),
+                    };
+                    recalc_plugin.invoke(core, &super_node, &vectors_node)?
+                } else {
+                    vectors_node
+                };
+
+                // Step 4: Degrain
+                let degrain_plugin = Degrain {
+                    clip_name:    None,
+                    super_name:   None,
+                    vectors_name: None,
+                    thsad:        thsad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    thsad2:       thsad2.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    planes:       planes.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    limit:        limit.clone(),
+                    thscd1:       thscd1.map(|v| v as u32),
+                    thscd2:       *thscd2,
+                    weights:      None,
+                    prefix:       prefix.clone(),
+                };
+                degrain_plugin.invoke(core, node, &super_node, &vectors_node)
+            },
+            VapourSynthFilter::ZoomDegrain {
+                hpad,
+                vpad,
+                pel,
+                levels,
+                chroma,
+                sharp,
+                rfilter,
+                blksize,
+                blksizev,
+                search,
+                searchparam,
+                pelsearch,
+                lambda,
+                lsad,
+                plevel,
+                global,
+                pnew,
+                pzero,
+                pglobal,
+                overlap,
+                overlapv,
+                divide,
+                badsad,
+                badrange,
+                truemotion,
+                meander,
+                trymany,
+                fields,
+                tff,
+                search_coarse,
+                dct,
+                recalculate,
+                recalc_thsad,
+                recalc_smooth,
+                recalc_blksize,
+                recalc_blksizev,
+                recalc_search,
+                recalc_searchparam,
+                recalc_lambda,
+                recalc_overlap,
+                recalc_overlapv,
+                recalc_divide,
+                thsad,
+                thsadc,
+                plane,
+                limit,
+                limitc,
+                thscd1,
+                thscd2,
+            } => {
+                // Step 1: Create super clip
+                let super_plugin = ZMVSuper {
+                    hpad:         hpad.map(|v| v as u32),
+                    vpad:         vpad.map(|v| v as u32),
+                    pel:          pel.map(|v| v as u32),
+                    levels:       levels.map(|v| v as u32),
+                    chroma:       *chroma,
+                    sharp:        sharp.map(|v| v as u32),
+                    rfilter:      rfilter.map(|v| v as u32),
+                    pelclip_name: None,
+                    opt:          Some(4),
+                };
+                let super_node = super_plugin.invoke(core, node, None)?;
+
+                // Step 2: Analyse forward (isb=0) and backward (isb=1)
+                let analyse_forward = ZoomAnalyse {
+                    super_clip_name: None,
+                    blksize:         blksize.map(|v| v as u32),
+                    blksizev:        blksizev.map(|v| v as u32),
+                    levels:          levels.map(|v| v as u32),
+                    search:          search.map(|v| v as u32),
+                    searchparam:     searchparam.map(|v| v as u32),
+                    pelsearch:       pelsearch.map(|v| v as u32),
+                    isb:             Some(0),
+                    lambda:          lambda.map(|v| v as u32),
+                    chroma:          *chroma,
+                    delta:           Some(-1),
+                    truemotion:      *truemotion,
+                    lsad:            lsad.map(|v| v as u32),
+                    plevel:          plevel.map(|v| v as u32),
+                    global:          *global,
+                    pnew:            pnew.map(|v| v as u32),
+                    pzero:           pzero.map(|v| v as u32),
+                    pglobal:         pglobal.map(|v| v as u32),
+                    overlap:         overlap.map(|v| v as u32),
+                    overlapv:        overlapv.map(|v| v as u32),
+                    divide:          divide.map(|v| v as u32),
+                    badsad:          badsad.map(|v| v as u32),
+                    badrange:        badrange.map(|v| v as u32),
+                    opt:             Some(4),
+                    meander:         *meander,
+                    trymany:         *trymany,
+                    fields:          *fields,
+                    tff:             *tff,
+                    search_coarse:   search_coarse.map(|v| v as u32),
+                    dct:             dct.map(|v| v as u32),
+                };
+                let mvfw_node = analyse_forward.clone().invoke(core, &super_node)?;
+
+                let mut analyse_backward = analyse_forward;
+                analyse_backward.isb = Some(1);
+                analyse_backward.delta = Some(1);
+                let mvbw_node = analyse_backward.invoke(core, &super_node)?;
+
+                // Step 3: Optional Recalculate on both vector clips
+                let (mvbw_node, mvfw_node) = if recalculate.unwrap_or(false) {
+                    let recalc_plugin = ZoomRecalculate {
+                        super_clip_name: None,
+                        vectors_name:    None,
+                        thsad:           recalc_thsad.map(|v| v as u32),
+                        smooth:          *recalc_smooth,
+                        blksize:         recalc_blksize.map(|v| v as u32),
+                        blksizev:        recalc_blksizev.map(|v| v as u32),
+                        search:          recalc_search.map(|v| v as u32),
+                        searchparam:     recalc_searchparam.map(|v| v as u32),
+                        lambda:          recalc_lambda.map(|v| v as u32),
+                        chroma:          *chroma,
+                        truemotion:      Some(true),
+                        pnew:            Some(25),
+                        overlap:         recalc_overlap.map(|v| v as u32),
+                        overlapv:        recalc_overlapv.map(|v| v as u32),
+                        divide:          recalc_divide.map(|v| v as u32),
+                        opt:             Some(4),
+                        meander:         Some(true),
+                        fields:          *fields,
+                        tff:             *tff,
+                        dct:             Some(0),
+                    };
+                    let mvbw_node = recalc_plugin.clone().invoke(core, &super_node, &mvbw_node)?;
+                    let mvfw_node = recalc_plugin.invoke(core, &super_node, &mvfw_node)?;
+                    (mvbw_node, mvfw_node)
+                } else {
+                    (mvbw_node, mvfw_node)
+                };
+
+                // Step 4: Degrain1
+                let degrain_plugin = ZoomDegrainPlugin {
+                    clip_name:       None,
+                    super_clip_name: None,
+                    mvbw_name:       None,
+                    mvfw_name:       None,
+                    thsad:           thsad.map(|v| v as u32),
+                    thsadc:          thsadc.map(|v| v as u32),
+                    plane:           *plane,
+                    limit:           limit.map(|v| v as u32),
+                    limitc:          limitc.map(|v| v as u32),
+                    thscd1:          thscd1.map(|v| v as u32),
+                    thscd2:          thscd2.map(|v| v as u32),
+                    opt:             Some(4),
+                };
+                degrain_plugin.invoke(core, node, &super_node, &mvbw_node, &mvfw_node)
+            },
+            VapourSynthFilter::FGS {
+                iso,
+                chroma_iso,
+                cy,
+                ccb,
+                ccr,
+                dynamic_seed,
+            } => {
+                let photon_noise = PhotonNoise {
+                    iso:        *iso,
+                    chroma_iso: *chroma_iso,
+                    width:      None,
+                    height:     None,
+                    c_y:        cy.clone(),
+                    ccb:        ccb.clone(),
+                    ccr:        ccr.clone(),
+                };
+                let fgs = FGS {
+                    photon_noise,
+                    dynamic_seed: *dynamic_seed,
+                    simd_mask: None,
+                };
+                fgs.invoke(core, node)
             },
         }
     }
@@ -664,6 +1705,348 @@ impl VapourSynthFilter {
                 };
 
                 plugin.generate_script(node_name)?
+            },
+            VapourSynthFilter::Degrain {
+                blksize,
+                overlap,
+                pad,
+                pel,
+                sharp,
+                rfilter,
+                radius,
+                search,
+                searchparam,
+                mvlambda,
+                chroma,
+                lsad,
+                plevel,
+                globalmv,
+                pnew,
+                pzero,
+                pglobal,
+                badsad,
+                badrange,
+                meander,
+                trymany,
+                satd,
+                recalculate,
+                recalc_thsad,
+                recalc_smooth,
+                recalc_blksize,
+                recalc_overlap,
+                thsad,
+                thsad2,
+                planes,
+                limit,
+                thscd1,
+                thscd2,
+                prefix,
+            } => {
+                let mut lines = vec![];
+
+                let super_name = "mvu_super".to_string();
+                let vectors_name = "mvu_vectors".to_string();
+
+                // Step 1: Super
+                let super_plugin = MVUSuper {
+                    blksize:      blksize
+                        .clone()
+                        .map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    overlap:      overlap
+                        .clone()
+                        .map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    pad:          pad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    pel:          pel.map(|v| v as u32),
+                    sharp:        sharp.map(|v| v as u32),
+                    rfilter:      rfilter.map(|v| v as u32),
+                    onelevel:     Some(false),
+                    pelclip_name: None,
+                    prefix:       prefix.clone(),
+                };
+                let (_, super_lines) = super_plugin.generate_script(super_name.clone())?;
+                lines.extend(super_lines);
+
+                // Step 2: AnalyseMany
+                let analyse_many_plugin = AnalyseMany {
+                    super_name:  Some(super_name.clone()),
+                    blksize:     blksize.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    overlap:     overlap.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    levels:      None,
+                    search:      search.map(|v| v as u32),
+                    searchparam: searchparam.map(|v| v as u32),
+                    pelsearch:   None,
+                    mvlambda:    mvlambda.map(|v| v as u32),
+                    chroma:      *chroma,
+                    delta:       Some(1),
+                    lsad:        lsad.map(|v| v as u32),
+                    plevel:      plevel.map(|v| v as u32),
+                    globalmv:    *globalmv,
+                    pnew:        pnew.map(|v| v as u32),
+                    pzero:       pzero.map(|v| v as u32),
+                    pglobal:     pglobal.map(|v| v as u32),
+                    badsad:      badsad.map(|v| v as u32),
+                    badrange:    badrange.map(|v| v as u32),
+                    meander:     *meander,
+                    trymany:     trymany.map(|v| v as u32),
+                    fields:      Some(false),
+                    tff:         Some(false),
+                    satd:        *satd,
+                    radius:      radius.map(|v| v as u32),
+                    prefix:      prefix.clone(),
+                };
+                let (_, analyse_lines) =
+                    analyse_many_plugin.generate_script(vectors_name.clone())?;
+                lines.extend(analyse_lines);
+
+                // Step 3: Optional Recalculate
+                let final_vectors_name = if recalculate.unwrap_or(false) {
+                    let recalc_name = "mvu_vectors_recalc".to_string();
+                    let recalc_plugin = Recalculate {
+                        super_name:   Some(super_name.clone()),
+                        vectors_name: Some(vectors_name),
+                        thsad:        recalc_thsad.map(|v| v as u32),
+                        smooth:       *recalc_smooth,
+                        blksize:      recalc_blksize
+                            .clone()
+                            .map(|v| v.into_iter().map(|u| u as u32).collect()),
+                        overlap:      recalc_overlap
+                            .clone()
+                            .map(|v| v.into_iter().map(|u| u as u32).collect()),
+                        search:       None,
+                        searchparam:  None,
+                        mvlambda:     None,
+                        chroma:       *chroma,
+                        pnew:         None,
+                        meander:      None,
+                        fields:       None,
+                        tff:          None,
+                        satd:         None,
+                        prefix:       prefix.clone(),
+                    };
+                    let (_, recalc_lines) = recalc_plugin.generate_script(recalc_name.clone())?;
+                    lines.extend(recalc_lines);
+                    recalc_name
+                } else {
+                    vectors_name
+                };
+
+                // Step 4: Degrain
+                let degrain_plugin = Degrain {
+                    clip_name:    Some(node_name.clone()),
+                    super_name:   Some(super_name),
+                    vectors_name: Some(final_vectors_name),
+                    thsad:        thsad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    thsad2:       thsad2.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    planes:       planes.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    limit:        limit.clone(),
+                    thscd1:       thscd1.map(|v| v as u32),
+                    thscd2:       *thscd2,
+                    weights:      None,
+                    prefix:       prefix.clone(),
+                };
+                let (_, degrain_lines) = degrain_plugin.generate_script(node_name)?;
+                lines.extend(degrain_lines);
+
+                (None, lines)
+            },
+            VapourSynthFilter::ZoomDegrain {
+                hpad,
+                vpad,
+                pel,
+                levels,
+                chroma,
+                sharp,
+                rfilter,
+                blksize,
+                blksizev,
+                search,
+                searchparam,
+                pelsearch,
+                lambda,
+                lsad,
+                plevel,
+                global,
+                pnew,
+                pzero,
+                pglobal,
+                overlap,
+                overlapv,
+                divide,
+                badsad,
+                badrange,
+                truemotion,
+                meander,
+                trymany,
+                fields,
+                tff,
+                search_coarse,
+                dct,
+                recalculate,
+                recalc_thsad,
+                recalc_smooth,
+                recalc_blksize,
+                recalc_blksizev,
+                recalc_search,
+                recalc_searchparam,
+                recalc_lambda,
+                recalc_overlap,
+                recalc_overlapv,
+                recalc_divide,
+                thsad,
+                thsadc,
+                plane,
+                limit,
+                limitc,
+                thscd1,
+                thscd2,
+            } => {
+                let mut lines = vec![];
+
+                let super_name = "zmv_super".to_string();
+                let mvfw_name = "zmv_mvfw".to_string();
+                let mvbw_name = "zmv_mvbw".to_string();
+
+                // Step 1: Super
+                let super_plugin = ZMVSuper {
+                    hpad:         hpad.map(|v| v as u32),
+                    vpad:         vpad.map(|v| v as u32),
+                    pel:          pel.map(|v| v as u32),
+                    levels:       levels.map(|v| v as u32),
+                    chroma:       *chroma,
+                    sharp:        sharp.map(|v| v as u32),
+                    rfilter:      rfilter.map(|v| v as u32),
+                    pelclip_name: None,
+                    opt:          Some(4),
+                };
+                let (_, super_lines) = super_plugin.generate_script(super_name.clone())?;
+                lines.extend(super_lines);
+
+                // Step 2: Analyse forward (isb=0) and backward (isb=1)
+                let analyse_plugin = ZoomAnalyse {
+                    super_clip_name: Some(super_name.clone()),
+                    blksize:         blksize.map(|v| v as u32),
+                    blksizev:        blksizev.map(|v| v as u32),
+                    levels:          levels.map(|v| v as u32),
+                    search:          search.map(|v| v as u32),
+                    searchparam:     searchparam.map(|v| v as u32),
+                    pelsearch:       pelsearch.map(|v| v as u32),
+                    isb:             Some(0),
+                    lambda:          lambda.map(|v| v as u32),
+                    chroma:          *chroma,
+                    delta:           Some(-1),
+                    truemotion:      *truemotion,
+                    lsad:            lsad.map(|v| v as u32),
+                    plevel:          plevel.map(|v| v as u32),
+                    global:          *global,
+                    pnew:            pnew.map(|v| v as u32),
+                    pzero:           pzero.map(|v| v as u32),
+                    pglobal:         pglobal.map(|v| v as u32),
+                    overlap:         overlap.map(|v| v as u32),
+                    overlapv:        overlapv.map(|v| v as u32),
+                    divide:          divide.map(|v| v as u32),
+                    badsad:          badsad.map(|v| v as u32),
+                    badrange:        badrange.map(|v| v as u32),
+                    opt:             Some(4),
+                    meander:         *meander,
+                    trymany:         *trymany,
+                    fields:          *fields,
+                    tff:             *tff,
+                    search_coarse:   search_coarse.map(|v| v as u32),
+                    dct:             dct.map(|v| v as u32),
+                };
+                let (_, analyse_fw_lines) = analyse_plugin.generate_script(mvfw_name.clone())?;
+                lines.extend(analyse_fw_lines);
+
+                let mut analyse_backward = analyse_plugin;
+                analyse_backward.isb = Some(1);
+                analyse_backward.delta = Some(1);
+                let (_, analyse_bw_lines) = analyse_backward.generate_script(mvbw_name.clone())?;
+                lines.extend(analyse_bw_lines);
+
+                // Step 3: Optional Recalculate on both vector clips
+                let (final_mvbw_name, final_mvfw_name) = if recalculate.unwrap_or(false) {
+                    let recalc_bw_name = "zmv_mvbw_recalc".to_string();
+                    let recalc_fw_name = "zmv_mvfw_recalc".to_string();
+                    let recalc_plugin = ZoomRecalculate {
+                        super_clip_name: Some(super_name.clone()),
+                        vectors_name:    Some(mvbw_name),
+                        thsad:           recalc_thsad.map(|v| v as u32),
+                        smooth:          *recalc_smooth,
+                        blksize:         recalc_blksize.map(|v| v as u32),
+                        blksizev:        recalc_blksizev.map(|v| v as u32),
+                        search:          recalc_search.map(|v| v as u32),
+                        searchparam:     recalc_searchparam.map(|v| v as u32),
+                        lambda:          recalc_lambda.map(|v| v as u32),
+                        chroma:          *chroma,
+                        truemotion:      Some(true),
+                        pnew:            Some(25),
+                        overlap:         recalc_overlap.map(|v| v as u32),
+                        overlapv:        recalc_overlapv.map(|v| v as u32),
+                        divide:          recalc_divide.map(|v| v as u32),
+                        opt:             Some(4),
+                        meander:         Some(true),
+                        fields:          *fields,
+                        tff:             *tff,
+                        dct:             Some(0),
+                    };
+                    let (_, recalc_bw_lines) =
+                        recalc_plugin.generate_script(recalc_bw_name.clone())?;
+                    lines.extend(recalc_bw_lines);
+
+                    let mut recalc_forward = recalc_plugin;
+                    recalc_forward.vectors_name = Some(mvfw_name);
+                    let (_, recalc_fw_lines) =
+                        recalc_forward.generate_script(recalc_fw_name.clone())?;
+                    lines.extend(recalc_fw_lines);
+
+                    (recalc_bw_name, recalc_fw_name)
+                } else {
+                    (mvbw_name, mvfw_name)
+                };
+
+                // Step 4: Degrain1
+                let degrain_plugin = ZoomDegrainPlugin {
+                    clip_name:       Some(node_name.clone()),
+                    super_clip_name: Some(super_name),
+                    mvbw_name:       Some(final_mvbw_name),
+                    mvfw_name:       Some(final_mvfw_name),
+                    thsad:           thsad.map(|v| v as u32),
+                    thsadc:          thsadc.map(|v| v as u32),
+                    plane:           *plane,
+                    limit:           limit.map(|v| v as u32),
+                    limitc:          limitc.map(|v| v as u32),
+                    thscd1:          thscd1.map(|v| v as u32),
+                    thscd2:          thscd2.map(|v| v as u32),
+                    opt:             Some(4),
+                };
+                let (_, degrain_lines) = degrain_plugin.generate_script(node_name)?;
+                lines.extend(degrain_lines);
+
+                (None, lines)
+            },
+            VapourSynthFilter::FGS {
+                iso,
+                chroma_iso,
+                cy,
+                ccb,
+                ccr,
+                dynamic_seed,
+            } => {
+                let photon_noise = PhotonNoise {
+                    iso:        *iso,
+                    chroma_iso: *chroma_iso,
+                    width:      None,
+                    height:     None,
+                    c_y:        cy.clone(),
+                    ccb:        ccb.clone(),
+                    ccr:        ccr.clone(),
+                };
+                let fgs = FGS {
+                    photon_noise,
+                    dynamic_seed: *dynamic_seed,
+                    simd_mask: None,
+                };
+                fgs.generate_script(node_name)?
             },
         };
 

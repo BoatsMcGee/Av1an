@@ -1,5 +1,5 @@
-pub use av1_grain::TransferFunction;
 use av_format::rational::Rational64;
+pub use av1_grain::TransferFunction;
 
 use crate::core::input::{color_range::ColorRange, pixel_format::PixelFormat};
 
