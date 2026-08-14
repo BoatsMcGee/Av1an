@@ -11,9 +11,11 @@ use vapoursynth::{core::CoreRef, node::Node};
 
 use crate::{
     ffmpeg::FFPixelFormat,
+    models::encoder::photon_noise::PhotonNoise,
     vapoursynth::{
         VapourSynthError,
         plugins::{
+            fgs::FGS,
             mvutensils::{
                 analyse_many::AnalyseMany,
                 degrain::Degrain,
@@ -189,6 +191,24 @@ pub enum VapourSynthFilter {
         limitc:             Option<usize>,
         thscd1:             Option<usize>,
         thscd2:             Option<usize>,
+    },
+    /// FGS (Film Grain Synthesis) - applies photon-noise film grain using
+    /// dav1d's grain engine. Builds a [`PhotonNoise`] from the supplied
+    /// parameters and delegates to the `com.vs.fgs` plugin's `FGS` function.
+    FGS {
+        /// Required ISO strength for the luma grain.
+        iso:          u32,
+        /// Optional ISO strength for chroma grain (defaults to luma `iso`).
+        chroma_iso:   Option<u32>,
+        /// Optional custom luma AR coefficients (max 24).
+        cy:           Option<Vec<i8>>,
+        /// Optional custom chroma-blue AR coefficients (max 25).
+        ccb:          Option<Vec<i8>>,
+        /// Optional custom chroma-red AR coefficients (max 25).
+        ccr:          Option<Vec<i8>>,
+        /// When `true`, randomizes the grain seed per frame for dynamic
+        /// variation.
+        dynamic_seed: Option<bool>,
     },
 }
 
@@ -597,6 +617,33 @@ impl FromStr for VapourSynthFilter {
                     .get("thscd2")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
             }),
+            "fgs" => Ok(VapourSynthFilter::FGS {
+                iso:          variant_args
+                    .get("iso")
+                    .map(|v| v.parse::<u32>().expect("Failed to parse filter argument value"))
+                    .expect("FGS filter requires an `iso` argument"),
+                chroma_iso:   variant_args
+                    .get("chroma_iso")
+                    .map(|v| v.parse::<u32>().expect("Failed to parse filter argument value")),
+                cy:           variant_args.get("cy").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                ccb:          variant_args.get("ccb").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                ccr:          variant_args.get("ccr").map(|v| {
+                    v.split(',')
+                        .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
+                        .collect()
+                }),
+                dynamic_seed: variant_args
+                    .get("dynamic_seed")
+                    .map(|v| matches!(v.as_str(), "true" | "1")),
+            }),
             _ => Err(anyhow::anyhow!("Invalid variant name: {}", variant_name)),
         }
     }
@@ -965,6 +1012,33 @@ impl Display for VapourSynthFilter {
                 }
                 if let Some(v) = thscd2 {
                     let _ = write!(result, "thscd2={};", v);
+                }
+                result
+            },
+            VapourSynthFilter::FGS {
+                iso,
+                chroma_iso,
+                cy,
+                ccb,
+                ccr,
+                dynamic_seed,
+            } => {
+                let mut result = String::from("fgs:");
+                let _ = write!(result, "iso={};", iso);
+                if let Some(v) = chroma_iso {
+                    let _ = write!(result, "chroma_iso={};", v);
+                }
+                if let Some(v) = cy {
+                    let _ = write!(result, "cy={};", v.iter().join(","));
+                }
+                if let Some(v) = ccb {
+                    let _ = write!(result, "ccb={};", v.iter().join(","));
+                }
+                if let Some(v) = ccr {
+                    let _ = write!(result, "ccr={};", v.iter().join(","));
+                }
+                if let Some(v) = dynamic_seed {
+                    let _ = write!(result, "dynamic_seed={};", v);
                 }
                 result
             },
@@ -1438,6 +1512,30 @@ impl VapourSynthFilter {
                     opt:             Some(4),
                 };
                 degrain_plugin.invoke(core, node, &super_node, &mvbw_node, &mvfw_node)
+            },
+            VapourSynthFilter::FGS {
+                iso,
+                chroma_iso,
+                cy,
+                ccb,
+                ccr,
+                dynamic_seed,
+            } => {
+                let photon_noise = PhotonNoise {
+                    iso:        *iso,
+                    chroma_iso: *chroma_iso,
+                    width:      None,
+                    height:     None,
+                    c_y:        cy.clone(),
+                    ccb:        ccb.clone(),
+                    ccr:        ccr.clone(),
+                };
+                let fgs = FGS {
+                    photon_noise,
+                    dynamic_seed: *dynamic_seed,
+                    simd_mask: None,
+                };
+                fgs.invoke(core, node)
             },
         }
     }
@@ -1925,6 +2023,30 @@ impl VapourSynthFilter {
                 lines.extend(degrain_lines);
 
                 (None, lines)
+            },
+            VapourSynthFilter::FGS {
+                iso,
+                chroma_iso,
+                cy,
+                ccb,
+                ccr,
+                dynamic_seed,
+            } => {
+                let photon_noise = PhotonNoise {
+                    iso:        *iso,
+                    chroma_iso: *chroma_iso,
+                    width:      None,
+                    height:     None,
+                    c_y:        cy.clone(),
+                    ccb:        ccb.clone(),
+                    ccr:        ccr.clone(),
+                };
+                let fgs = FGS {
+                    photon_noise,
+                    dynamic_seed: *dynamic_seed,
+                    simd_mask: None,
+                };
+                fgs.generate_script(node_name)?
             },
         };
 
