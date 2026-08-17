@@ -40,7 +40,7 @@ jobs:
           curl -L -o ffms2.7z "https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z"
           7z x ffms2.7z
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: Swatinem/rust-cache@v2
 

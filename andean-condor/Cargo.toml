@@ -23,9 +23,7 @@ av-scenechange = { version = "0.24", default-features = false, features = [
     "asm",
     "vapoursynth",
 ] }
-av1-grain = { version = "0.5", default-features = false, features = [
-    "create",
-] }
+av1-grain = { version = "0.5", default-features = false, features = ["create"] }
 cfg-if = "1.0.4"
 crossbeam-channel = "0.5.15"
 crossbeam-utils = "0.8.5"
