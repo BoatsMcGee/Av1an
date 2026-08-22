@@ -1,16 +1,43 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    core::input::Input,
-    models::sequence::target_quality::types::{QualityMetric, QualityPass},
+use crate::models::{
+    input::Input as InputModel,
+    sequence::{
+        SequenceConfigHandler,
+        target_quality::types::{ProbeStatistic, ProbeStrategy, QualityMetric, QualityPass},
+    },
 };
 
-pub trait QualityCheckSequence {
-    fn metric(&self) -> Result<QualityMetric>;
-    fn metric_mut(&mut self) -> Result<&mut QualityMetric>;
-    fn input(&self) -> Result<Option<Input>>;
-    fn input_mut(&mut self) -> Result<&mut Option<Input>>;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QualityCheckConfig
+where
+    Self: SequenceConfigHandler,
+{
+    pub metric:    QualityMetric,
+    pub strategy:  ProbeStrategy,
+    pub statistic: ProbeStatistic,
+    pub input:     Option<InputModel>,
+}
+
+impl Default for QualityCheckConfig {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            metric:    QualityMetric::default(),
+            strategy:  ProbeStrategy::Whole,
+            statistic: ProbeStatistic::Mean,
+            input:     None,
+        }
+    }
+}
+
+impl SequenceConfigHandler for QualityCheckConfig {
+}
+
+pub trait QualityCheckConfigHandler {
+    fn quality_check(&self) -> Result<&Option<QualityCheckConfig>>;
+    fn quality_check_mut(&mut self) -> Result<&mut Option<QualityCheckConfig>>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

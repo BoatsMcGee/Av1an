@@ -1216,6 +1216,93 @@ impl Encoder {
     }
 
     #[inline]
+    pub fn speed(&self) -> Option<String> {
+        match self {
+            Encoder::AOM {
+                options, ..
+            } => options.get("cpu-used").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(value.to_string()),
+                _ => None,
+            }),
+            Encoder::RAV1E {
+                options, ..
+            } => options.get("speed").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(value.to_string()),
+                _ => None,
+            }),
+            Encoder::SVTAV1 {
+                options, ..
+            } => options.get("preset").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(value.to_string()),
+                _ => None,
+            }),
+            Encoder::AVM {
+                options, ..
+            } => options.get("cpu-used").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(value.to_string()),
+                _ => None,
+            }),
+            Encoder::VPX {
+                options, ..
+            } => options.get("cpu-used").and_then(|p| match p {
+                CLIParameter::Number {
+                    value, ..
+                } => Some(value.to_string()),
+                _ => None,
+            }),
+            Encoder::X264 {
+                options, ..
+            } => options.get("preset").and_then(|p| match p {
+                CLIParameter::String {
+                    value, ..
+                } => Some(value.clone()),
+                _ => None,
+            }),
+            Encoder::X265 {
+                options, ..
+            } => options.get("preset").and_then(|p| match p {
+                CLIParameter::String {
+                    value, ..
+                } => Some(value.clone()),
+                CLIParameter::Number {
+                    value, ..
+                } => Some(value.to_string()),
+                _ => None,
+            }),
+            Encoder::VVenC {
+                options, ..
+            } => options.get("preset").and_then(|p| match p {
+                CLIParameter::String {
+                    value, ..
+                } => Some(value.clone()),
+                CLIParameter::Number {
+                    value, ..
+                } => Some(value.to_string()),
+                _ => None,
+            }),
+            Encoder::FFmpeg {
+                options, ..
+            } => options.get("preset").and_then(|p| match p {
+                CLIParameter::String {
+                    value, ..
+                } => Some(value.clone()),
+                CLIParameter::Number {
+                    value, ..
+                } => Some(value.to_string()),
+                _ => None,
+            }),
+        }
+    }
+
+    #[inline]
     pub fn parse_encoded_frames_base(encoder: &EncoderBase, line: &str) -> Option<u64> {
         match encoder {
             EncoderBase::AOM | EncoderBase::VPX | EncoderBase::AVM => {

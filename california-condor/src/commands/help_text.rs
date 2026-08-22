@@ -392,3 +392,16 @@ pub const HELP_TARGET_QUALITY_PROFILE: &str = r#"The preset profile to choose th
 Defaults to **standard**.
 "#;
 pub const HELP_TARGET_QUALITY_PROFILE_SHORT: &str = short_help(HELP_TARGET_QUALITY_PROFILE);
+
+pub const HELP_QUALITY_CHECK_PROFILE: &str = r#"The preset profile to choose the Quality Check Strategy and Statistic.
+
+Defaults to **standard**.
+"#;
+pub const HELP_QUALITY_CHECK_PROFILE_SHORT: &str = short_help(HELP_QUALITY_CHECK_PROFILE);
+
+pub const HELP_QUALITY_CHECK_METRIC: &str = r#"The quality metric used for Quality Check.
+
+Defaults to **ssimulacra2**.
+"#;
+
+pub const HELP_QUALITY_CHECK_METRIC_SHORT: &str = short_help(HELP_QUALITY_CHECK_METRIC);

@@ -90,7 +90,7 @@ pub struct CondorCli {
     #[arg(long, value_name = "ISO", help = HELP_CHROMA_NOISE_SHORT, long_help = HELP_CHROMA_NOISE)]
     pub chroma_noise:      Option<u32>,
     #[arg(long, value_name = "Metric", help = HELP_TARGET_METRIC_SHORT, long_help = HELP_TARGET_METRIC)]
-    pub target_metric:     Option<TargetQualityMetric>,
+    pub target_metric:     Option<QualityMetric>,
     #[arg(long, value_name = "Score", help = HELP_TARGET_SHORT, long_help = HELP_TARGET)]
     pub target:            Option<f64>,
     #[arg(long, value_name = "Quantizer", help = HELP_MINIMUM_QUANTIZER_SHORT, long_help = HELP_MINIMUM_QUANTIZER)]
@@ -98,7 +98,7 @@ pub struct CondorCli {
     #[arg(long, value_name = "Quantizer", help = HELP_MAXIMUM_QUANTIZER_SHORT, long_help = HELP_MAXIMUM_QUANTIZER)]
     pub maximum_quantizer: Option<u8>,
     #[arg(long, value_name = "Profile", help = HELP_TARGET_QUALITY_PROFILE_SHORT, long_help = HELP_TARGET_QUALITY_PROFILE)]
-    pub target_profile:    Option<TargetQualityProfile>,
+    pub target_profile:    Option<QualityProfile>,
     /// Skip Scene Detection. Useful when encoding a subset of scenes.
     #[arg(long, default_value_t = false)]
     pub skip_scd:          bool,
@@ -131,7 +131,7 @@ pub enum Commands {
         #[arg(long, value_name = "ISO", help = HELP_PHOTON_NOISE_SHORT, long_help = HELP_PHOTON_NOISE)]
         photon_noise:  Option<u32>,
         #[arg(long, value_name = "Metric", help = HELP_TARGET_METRIC_SHORT, long_help = HELP_TARGET_METRIC)]
-        target_metric: Option<TargetQualityMetric>,
+        target_metric: Option<QualityMetric>,
         #[arg(long, value_name = "Score", help = HELP_TARGET_SHORT, long_help = HELP_TARGET)]
         target:        Option<f64>,
     },
@@ -212,7 +212,7 @@ pub enum Commands {
         #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_PARAMS_SHORT, long_help = HELP_PARAMS)]
         params:            Option<String>,
         #[arg(long, value_name = "Metric", help = HELP_TARGET_METRIC_SHORT, long_help = HELP_TARGET_METRIC)]
-        metric:            Option<TargetQualityMetric>,
+        metric:            Option<QualityMetric>,
         #[arg(long, value_name = "Score", help = HELP_TARGET_SHORT, long_help = HELP_TARGET)]
         target:            Option<f64>,
         #[arg(long("min-q"), value_name = "Quantizer", help = HELP_MINIMUM_QUANTIZER_SHORT, long_help = HELP_MINIMUM_QUANTIZER)]
@@ -220,7 +220,7 @@ pub enum Commands {
         #[arg(long("max-q"), value_name = "Quantizer", help = HELP_MAXIMUM_QUANTIZER_SHORT, long_help = HELP_MAXIMUM_QUANTIZER)]
         maximum_quantizer: Option<u8>,
         #[arg(long, value_name = "Profile", help = HELP_TARGET_QUALITY_PROFILE_SHORT, long_help = HELP_TARGET_QUALITY_PROFILE)]
-        profile:           Option<TargetQualityProfile>,
+        profile:           Option<QualityProfile>,
     },
     /// Optimize bitrate for scenes that exceed normal bitrate after Target
     /// Quality.
@@ -291,6 +291,22 @@ pub enum Commands {
     Concatenate {
         #[arg(long, value_name = "Concatenation Method", help = HELP_CONCAT_SHORT, long_help = HELP_CONCAT)]
         method: Option<ConcatenationMethod>,
+    },
+    /// Measure the quality of the concatenated output per scene (Triggers
+    /// TUI).
+    QualityCheck {
+        #[arg(long, short('i'), value_name = "Input", help = HELP_INPUT_SHORT, long_help = HELP_INPUT)]
+        input:   Option<PathBuf>,
+        #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
+        decoder: Option<DecoderMethod>,
+        #[arg(long, value_name = "VapourSynth Filters", help = HELP_FILTERS_SHORT, long_help = HELP_FILTERS)]
+        filters: Option<Vec<VapourSynthFilter>>,
+        #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
+        vs_args: Option<Vec<String>>,
+        #[arg(long, value_name = "Metric", help = HELP_QUALITY_CHECK_METRIC_SHORT, long_help = HELP_QUALITY_CHECK_METRIC)]
+        metric:  Option<QualityMetric>,
+        #[arg(long, value_name = "Profile", help = HELP_QUALITY_CHECK_PROFILE_SHORT, long_help = HELP_QUALITY_CHECK_PROFILE)]
+        profile: Option<QualityProfile>,
     },
     /// Clean temporary files.
     Clean {
@@ -512,7 +528,7 @@ pub enum ConcatenationMethod {
     DisplayMacro,
     clap::ValueEnum,
 )]
-pub enum TargetQualityMetric {
+pub enum QualityMetric {
     /// Video Multi-Method Assessment Fusion
     ///
     /// (unimplemented)
@@ -571,7 +587,7 @@ pub enum TargetQualityMetric {
     DisplayMacro,
     clap::ValueEnum,
 )]
-pub enum TargetQualityProfile {
+pub enum QualityProfile {
     /// Fast
     ///
     /// Measures the average of the middle 11 frames.
@@ -630,9 +646,9 @@ mod tests {
         CondorCli,
         DecoderMethod,
         EncoderMethod,
+        QualityMetric,
+        QualityProfile,
         SceneDetectionMethod,
-        TargetQualityMetric,
-        TargetQualityProfile,
     };
     use crate::test_helpers::get_test_video;
 
@@ -1300,7 +1316,7 @@ mod tests {
                     result,
                     Ok(CondorCli {
                         command: Some(Commands::TargetQuality {
-                            metric: Some(TargetQualityMetric::SSIMULACRA2),
+                            metric: Some(QualityMetric::SSIMULACRA2),
                             target: Some(90.0),
                             ..
                         }),
@@ -1318,7 +1334,7 @@ mod tests {
                     result,
                     Ok(CondorCli {
                         command: Some(Commands::TargetQuality {
-                            profile: Some(TargetQualityProfile::Slow),
+                            profile: Some(QualityProfile::Slow),
                             ..
                         }),
                         ..
@@ -1330,12 +1346,12 @@ mod tests {
             #[test]
             fn with_all_metric_variants() {
                 for (name, expected) in [
-                    ("vmaf", TargetQualityMetric::VMAF),
-                    ("ssimulacra2", TargetQualityMetric::SSIMULACRA2),
-                    ("butteraugli", TargetQualityMetric::BUTTERAUGLI),
-                    ("butteraugli-3", TargetQualityMetric::BUTTERAUGLI3Norm),
-                    ("xpsnr", TargetQualityMetric::XPSNR),
-                    ("cvvdp", TargetQualityMetric::CVVDP),
+                    ("vmaf", QualityMetric::VMAF),
+                    ("ssimulacra2", QualityMetric::SSIMULACRA2),
+                    ("butteraugli", QualityMetric::BUTTERAUGLI),
+                    ("butteraugli-3", QualityMetric::BUTTERAUGLI3Norm),
+                    ("xpsnr", QualityMetric::XPSNR),
+                    ("cvvdp", QualityMetric::CVVDP),
                 ] {
                     let result = CondorCli::try_parse_from([
                         "condor",
@@ -1373,9 +1389,9 @@ mod tests {
             #[test]
             fn with_all_profile_variants() {
                 for (name, expected) in [
-                    ("fast", TargetQualityProfile::Fast),
-                    ("standard", TargetQualityProfile::Standard),
-                    ("slow", TargetQualityProfile::Slow),
+                    ("fast", QualityProfile::Fast),
+                    ("standard", QualityProfile::Standard),
+                    ("slow", QualityProfile::Slow),
                 ] {
                     let result =
                         CondorCli::try_parse_from(["condor", "target-quality", "--profile", name]);
@@ -1476,6 +1492,113 @@ mod tests {
                     result,
                     Err(_),
                     "\"condor target-quality --profile nonexistent\" does not parse"
+                );
+            }
+        }
+
+        mod quality_check {
+            use super::*;
+
+            #[test]
+            fn default() {
+                let result = CondorCli::try_parse_from(["condor", "quality-check"]);
+                assert_matches!(
+                    result,
+                    Ok(CondorCli {
+                        command: Some(Commands::QualityCheck { .. }),
+                        ..
+                    }),
+                    "\"condor quality-check\" parses"
+                );
+            }
+
+            #[test]
+            fn with_metric() {
+                let result = CondorCli::try_parse_from([
+                    "condor",
+                    "quality-check",
+                    "--metric",
+                    "ssimulacra2",
+                ]);
+                assert_matches!(
+                    result,
+                    Ok(CondorCli {
+                        command: Some(Commands::QualityCheck {
+                            metric: Some(QualityMetric::SSIMULACRA2),
+                            ..
+                        }),
+                        ..
+                    }),
+                    "\"condor quality-check --metric ssimulacra2\" parses"
+                );
+            }
+
+            #[test]
+            fn with_profile() {
+                let result =
+                    CondorCli::try_parse_from(["condor", "quality-check", "--profile", "fast"]);
+                assert_matches!(
+                    result,
+                    Ok(CondorCli {
+                        command: Some(Commands::QualityCheck {
+                            profile: Some(QualityProfile::Fast),
+                            ..
+                        }),
+                        ..
+                    }),
+                    "\"condor quality-check --profile fast\" parses"
+                );
+            }
+
+            #[test]
+            fn with_all_metric_variants() {
+                for (name, expected) in [
+                    ("vmaf", QualityMetric::VMAF),
+                    ("ssimulacra2", QualityMetric::SSIMULACRA2),
+                    ("butteraugli", QualityMetric::BUTTERAUGLI),
+                    ("butteraugli-3", QualityMetric::BUTTERAUGLI3Norm),
+                    ("xpsnr", QualityMetric::XPSNR),
+                    ("cvvdp", QualityMetric::CVVDP),
+                ] {
+                    let result =
+                        CondorCli::try_parse_from(["condor", "quality-check", "--metric", name]);
+                    assert_matches!(
+                        result,
+                        Ok(CondorCli {
+                            command: Some(Commands::QualityCheck {
+                                metric: Some(_),
+                                ..
+                            }),
+                            ..
+                        }),
+                        "\"condor quality-check --metric {name}\" parses"
+                    );
+                    if let Ok(CondorCli {
+                        command:
+                            Some(Commands::QualityCheck {
+                                metric: Some(ref m),
+                                ..
+                            }),
+                        ..
+                    }) = result
+                    {
+                        assert_eq!(m, &expected, "metric variant matches for {name}");
+                    }
+                }
+            }
+
+            #[test]
+            fn with_invalid_metric() {
+                let result = CondorCli::try_parse_from([
+                    "condor",
+                    "quality-check",
+                    "--metric",
+                    "nonexistent",
+                ]);
+                assert_matches!(
+                    result,
+                    Err(_),
+                    "\"condor quality-check --metric nonexistent\" does not parse"
                 );
             }
         }
@@ -2113,28 +2236,22 @@ mod tests {
 
         #[test]
         fn target_quality_metric_strum_serialization() {
-            assert_eq!(<&str>::from(&TargetQualityMetric::VMAF), "vmaf");
+            assert_eq!(<&str>::from(&QualityMetric::VMAF), "vmaf");
+            assert_eq!(<&str>::from(&QualityMetric::SSIMULACRA2), "ssimulacra2");
+            assert_eq!(<&str>::from(&QualityMetric::BUTTERAUGLI), "butteraugli");
             assert_eq!(
-                <&str>::from(&TargetQualityMetric::SSIMULACRA2),
-                "ssimulacra2"
-            );
-            assert_eq!(
-                <&str>::from(&TargetQualityMetric::BUTTERAUGLI),
-                "butteraugli"
-            );
-            assert_eq!(
-                <&str>::from(&TargetQualityMetric::BUTTERAUGLI3Norm),
+                <&str>::from(&QualityMetric::BUTTERAUGLI3Norm),
                 "butteraugli-3"
             );
-            assert_eq!(<&str>::from(&TargetQualityMetric::XPSNR), "xpsnr");
-            assert_eq!(<&str>::from(&TargetQualityMetric::CVVDP), "cvvdp");
+            assert_eq!(<&str>::from(&QualityMetric::XPSNR), "xpsnr");
+            assert_eq!(<&str>::from(&QualityMetric::CVVDP), "cvvdp");
         }
 
         #[test]
         fn target_quality_profile_strum_serialization() {
-            assert_eq!(<&str>::from(&TargetQualityProfile::Fast), "fast");
-            assert_eq!(<&str>::from(&TargetQualityProfile::Standard), "standard");
-            assert_eq!(<&str>::from(&TargetQualityProfile::Slow), "slow");
+            assert_eq!(<&str>::from(&QualityProfile::Fast), "fast");
+            assert_eq!(<&str>::from(&QualityProfile::Standard), "standard");
+            assert_eq!(<&str>::from(&QualityProfile::Slow), "slow");
         }
 
         #[test]

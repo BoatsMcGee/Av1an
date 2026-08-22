@@ -6,10 +6,10 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use itertools::Itertools;
 use thiserror::Error;
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 use crate::{
     core::{
@@ -48,11 +48,16 @@ use crate::{
         get_core,
         plugins::{
             MetricPluginFunction,
+            PluginFunction,
             ffms2::Source,
             resize::bicubic::Bicubic,
             standard::{splice::Splice, trim::Trim},
-            vship::{butteraugli::BUTTERAUGLI, cvvdp::CVVDP, ssimulacra2::SSIMULACRA2},
-            vszip::xpsnr::XPSNR,
+            vship::{
+                butteraugli::BUTTERAUGLI,
+                cvvdp::CVVDP,
+                ssimulacra2::SSIMULACRA2 as VSHIPSSIMULACRA2,
+            },
+            vszip::{ssimulacra2::SSIMULACRA2, xpsnr::XPSNR},
         },
         script_builder::{VapourSynthPluginScript, script::VapourSynthScript},
     },
@@ -1010,12 +1015,20 @@ impl TargetQuality {
                 } else {
                     (reference_node, distorted_node)
                 };
-                let plugin = SSIMULACRA2 {
-                    num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
-                    ..Default::default()
-                };
-                let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                SSIMULACRA2::get_scores(&node, None, compare_progress_tx)?
+                if VSHIPSSIMULACRA2::plugin_is_installed(core) {
+                    let plugin = VSHIPSSIMULACRA2 {
+                        num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
+                        ..Default::default()
+                    };
+                    let node = plugin.invoke(core, &reference_node, &distorted_node)?;
+                    VSHIPSSIMULACRA2::get_scores(&node, None, compare_progress_tx)?
+                } else if SSIMULACRA2::plugin_is_installed(core) {
+                    let node = SSIMULACRA2::invoke(core, &reference_node, &distorted_node)?;
+                    SSIMULACRA2::get_scores(&node, None, compare_progress_tx)?
+                } else {
+                    error!("No VapourSynth SSIMULACRA2 plugin found");
+                    bail!(TargetQualityError::QualityMeasurementFailed);
+                }
             },
             QualityMetric::BUTTERAUGLI {
                 resolution,

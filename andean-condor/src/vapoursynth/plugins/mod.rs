@@ -487,26 +487,18 @@ where
 pub trait MetricPluginFunction: PluginFunction {
     const PROPERTY_NAMES: &'static [&'static str];
 
-    /// Request every frame of `node` asynchronously and extract a value from
-    /// each frame with `extract`.
-    ///
-    /// Up to [`FRAME_CONCURRENCY`] frame requests are kept in flight at a time.
-    /// Frames may complete in any order, but progress is reported over
-    /// `progress_tx` in frame order and the returned values are ordered by
-    /// frame index.
-    ///
-    /// If a frame cannot be produced, or `extract` fails, the first error wins:
-    /// no further frames are requested, requests already in flight are drained,
-    /// and that error is returned.
+    /// Asynchronously retrieve frames, extracting the value and reporting the frame score as they are computed
     #[inline]
-    fn collect_frame_values<'core, Value, Extract>(
+    fn collect_frame_values<'core, Value, Extract, OnFrame>(
         node: &Node<'core>,
         progress_tx: Sender<SequenceStatus>,
+        on_frame: OnFrame,
         extract: Extract,
     ) -> Result<Vec<Value>, VapourSynthError>
     where
         Value: Send + 'core,
         Extract: Fn(&FrameRef<'core>) -> Result<Value, VapourSynthError> + Send + Sync + 'core,
+        OnFrame: Fn(usize, &Value) -> Result<(), VapourSynthError> + Send + Sync + 'core,
     {
         let concurrency = std::thread::available_parallelism().map_or(12, |n| n.get());
         let total_frames = node.info().num_frames;
@@ -520,6 +512,7 @@ pub trait MetricPluginFunction: PluginFunction {
         }));
 
         let extract = Arc::new(extract);
+        let on_frame = Arc::new(on_frame);
         // `Value` is only known to be `Send`, so the slots cannot be preallocated
         // with a default value the way a `Vec<f64>` could be.
         let values: Arc<Mutex<Vec<Option<Value>>>> = Arc::new(Mutex::new(
@@ -582,6 +575,7 @@ pub trait MetricPluginFunction: PluginFunction {
             let first_error_clone = Arc::clone(&first_error);
             let aborted_clone = Arc::clone(&aborted);
             let extract_clone = Arc::clone(&extract);
+            let on_frame_clone = Arc::clone(&on_frame);
 
             node.get_frame_async(index, move |frame, _idx, _node| {
                 let value = match frame {
@@ -593,10 +587,21 @@ pub trait MetricPluginFunction: PluginFunction {
 
                 match value {
                     Ok(value) => {
-                        let mut values_vec =
-                            values_clone.lock().expect("values mutex should acquire lock");
-                        values_vec[index] = Some(value);
-                        drop(values_vec);
+                        if let Err(error) = on_frame_clone(index, &value) {
+                            let mut first_error =
+                                first_error_clone.lock().expect("error mutex should acquire lock");
+                            // Keep the first error encountered.
+                            if first_error.is_none() {
+                                *first_error = Some(error);
+                            }
+                            drop(first_error);
+                            aborted_clone.store(true, Ordering::Relaxed);
+                        } else {
+                            let mut values_vec =
+                                values_clone.lock().expect("values mutex should acquire lock");
+                            values_vec[index] = Some(value);
+                            drop(values_vec);
+                        }
                     },
                     Err(error) => {
                         let mut first_error =
@@ -665,7 +670,7 @@ pub trait MetricPluginFunction: PluginFunction {
     ) -> Result<Vec<f64>, VapourSynthError> {
         let property_names = property_names.unwrap_or(Self::PROPERTY_NAMES);
 
-        Self::collect_frame_values(node, progress_tx, move |frame| {
+        Self::collect_frame_values(node, progress_tx, |_index, _value| Ok(()), move |frame| {
             property_names
                 .iter()
                 .find_map(|property_name| frame.props().get_float(property_name).ok())
@@ -689,7 +694,7 @@ pub trait MetricPluginFunction: PluginFunction {
         property_names: &'core [&'core str],
         progress_tx: Sender<SequenceStatus>,
     ) -> Result<Vec<Vec<f64>>, VapourSynthError> {
-        Self::collect_frame_values(node, progress_tx, move |frame| {
+        Self::collect_frame_values(node, progress_tx, |_index, _value| Ok(()), move |frame| {
             property_names
                 .iter()
                 .map(|property_name| {

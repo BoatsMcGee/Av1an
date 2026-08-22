@@ -166,6 +166,17 @@ impl QualityMetric {
     pub fn is_inverse_metric(&self) -> bool {
         matches!(self, QualityMetric::BUTTERAUGLI { .. })
     }
+
+    #[inline]
+    pub fn friendly_name(&self) -> &'static str {
+        match self {
+            QualityMetric::VMAF { .. } => "VMAF",
+            QualityMetric::SSIMULACRA2 { .. } => "SSIMULACRA2",
+            QualityMetric::BUTTERAUGLI { .. } => "butteraugli",
+            QualityMetric::XPSNR { .. } => "XPSNR",
+            QualityMetric::CVVDP { .. } => "CVVDP",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

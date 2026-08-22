@@ -16,6 +16,7 @@ use andean_condor::{
             noise_detector::NoiseDetector,
             noise_scaler::NoiseScaler,
             parallel_encoder::ParallelEncoder,
+            quality_check::QualityCheck,
             scene_concatenator::SceneConcatenator,
             scene_detector::SceneDetector,
             speed_scaler::SpeedScaler,
@@ -34,6 +35,7 @@ use crate::{
         benchmarker::BenchmarkerApp,
         noise_detection::NoiseDetectionApp,
         parallel_encoder::ParallelEncoderApp,
+        quality_check::QualityCheckApp,
         scene_detection::SceneDetectionApp,
         target_quality::TargetQualityApp,
     },
@@ -171,7 +173,7 @@ pub fn run_scene_detector_tui(
     debug!("Running Scene Detector");
     let ctrlc_cancelled = Arc::clone(&cancelled);
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-    thread::spawn(move || -> Result<()> {
+    let tui_handle = thread::spawn(move || -> Result<()> {
         let mut scd_app = SceneDetectionApp::new(
             initial_frames,
             clip_info.num_frames as u64,
@@ -186,6 +188,8 @@ pub fn run_scene_detector_tui(
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
     }
+
+    tui_handle.join().map_err(|_| anyhow::anyhow!("Scene Detection TUI thread panicked"))??;
 
     Ok(())
 }
@@ -238,7 +242,7 @@ pub fn run_noise_detector_tui(
     debug!("Running Noise Detector");
     let ctrlc_cancelled = Arc::clone(&cancelled);
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-    thread::spawn(move || -> Result<()> {
+    let tui_handle = thread::spawn(move || -> Result<()> {
         let mut nd_app = NoiseDetectionApp::new(total_scenes as u64, clip_info);
         nd_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
@@ -248,6 +252,8 @@ pub fn run_noise_detector_tui(
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
     }
+
+    tui_handle.join().map_err(|_| anyhow::anyhow!("Noise Detection TUI thread panicked"))??;
 
     Ok(())
 }
@@ -312,7 +318,7 @@ pub fn run_benchmarker_tui(
 
     let ctrlc_cancelled = Arc::clone(&cancelled);
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-    thread::spawn(move || -> Result<()> {
+    let tui_handle = thread::spawn(move || -> Result<()> {
         let mut benchmarker_app = BenchmarkerApp::new(encoder, clip_info);
         benchmarker_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
@@ -322,6 +328,8 @@ pub fn run_benchmarker_tui(
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
     }
+
+    tui_handle.join().map_err(|_| anyhow::anyhow!("Benchmarker TUI thread panicked"))??;
 
     Ok(())
 }
@@ -399,7 +407,7 @@ pub fn run_target_quality_tui(
         .statistic;
     let ctrlc_cancelled = Arc::clone(&cancelled);
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-    thread::spawn(move || -> Result<()> {
+    let tui_handle = thread::spawn(move || -> Result<()> {
         let mut tq_app = TargetQualityApp::new(clip_info, initial_scenes, encoder, probe_statistic);
         tq_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
@@ -409,6 +417,75 @@ pub fn run_target_quality_tui(
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
     }
+
+    tui_handle.join().map_err(|_| anyhow::anyhow!("Target Quality TUI thread panicked"))??;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_quality_check_tui(
+    condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
+    qc_input_filters: &[VapourSynthFilter],
+    input_filters: &[VapourSynthFilter],
+    cancelled: Arc<AtomicBool>,
+) -> Result<()> {
+    debug!("Instantiating Quality Check Input");
+    let (quality_check_input, clip_info) = if let Some(Some(input)) =
+        &condor.sequence_config.quality_check.as_ref().map(|qc| qc.input.clone())
+    {
+        let mut qc_input = Configuration::instantiate_input_with_filters(input, qc_input_filters)?;
+        let clip_info = qc_input.clip_info()?;
+        (Some(qc_input), clip_info)
+    } else if let Some(pe_input) = &condor.sequence_config.parallel_encoder.input {
+        debug!("Falling back to Parallel Encoder input");
+        let mut qc_input = Configuration::instantiate_input_with_filters(pe_input, input_filters)?;
+        let clip_info = qc_input.clip_info()?;
+        (Some(qc_input), clip_info)
+    } else {
+        (None, condor.input.clip_info()?)
+    };
+
+    let mut quality_check = QualityCheck::new(quality_check_input);
+
+    debug!("Validating Quality Check");
+    let (_, validation_warnings) = quality_check.validate(condor)?;
+
+    for warning in validation_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Initializing Quality Check");
+    let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
+    let (_, initialization_warnings) = quality_check.initialize(condor, init_progress_tx)?;
+
+    for warning in initialization_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    debug!("Running Quality Check");
+    let initial_scenes = condor.scenes.clone();
+    let quality_check_config = condor
+        .sequence_config
+        .quality_check
+        .as_ref()
+        .expect("quality_check is required");
+    let metric = quality_check_config.metric.clone();
+    let statistic = quality_check_config.statistic;
+    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    let tui_handle = thread::spawn(move || -> Result<()> {
+        let mut qc_app = QualityCheckApp::new(clip_info, &initial_scenes, metric, statistic);
+        qc_app.run(progress_rx, ctrlc_cancelled)?;
+        Ok(())
+    });
+    let (_, processing_warnings) = quality_check.execute(condor, progress_tx, cancelled)?;
+
+    for warning in processing_warnings.iter() {
+        warn!("{}", warning);
+    }
+
+    tui_handle.join().map_err(|_| anyhow::anyhow!("Quality Check TUI thread panicked"))??;
 
     Ok(())
 }
@@ -546,7 +623,7 @@ pub fn run_parallel_encoder_tui(
 
     let ctrlc_cancelled = Arc::clone(&cancelled);
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
-    thread::spawn(move || -> Result<()> {
+    let tui_handle = thread::spawn(move || -> Result<()> {
         let mut pe_app = ParallelEncoderApp::new(workers, encoder, scenes_map, clip_info);
         pe_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
@@ -556,6 +633,8 @@ pub fn run_parallel_encoder_tui(
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
     }
+
+    tui_handle.join().map_err(|_| anyhow::anyhow!("Parallel Encoder TUI thread panicked"))??;
 
     Ok(())
 }

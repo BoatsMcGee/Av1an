@@ -19,6 +19,7 @@ use ratatui::{
 pub mod benchmarker;
 pub mod noise_detection;
 pub mod parallel_encoder;
+pub mod quality_check;
 pub mod scene_detection;
 pub mod shared_progress;
 pub mod target_quality;
