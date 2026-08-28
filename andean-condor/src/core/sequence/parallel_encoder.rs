@@ -25,6 +25,7 @@ use crate::{
         sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
     },
     models::{
+        Condor as CondorModel,
         encoder::Encoder,
         scene::SubScene,
         sequence::{
@@ -170,12 +171,7 @@ where
         // handle subscenes
 
         let mut warnings = vec![];
-        let input = if let Some(input) = &mut self.input {
-            input
-        } else {
-            &mut condor.input
-        };
-        let config = condor.sequence_config.parallel_encoder()?;
+        let config = condor.sequence_config.parallel_encoder()?.clone();
         let workers = config.workers.unwrap_or(1);
         let scenes_directory = &config.scenes_directory;
         if condor.scenes.is_empty() {
@@ -210,42 +206,76 @@ where
             })
             .collect::<VecDeque<Task>>();
 
-        let encoder_thread = Self::encode_tasks(
+        let buffer_strategy = config.buffer_strategy.clone();
+        let Condor {
+            input: condor_input,
+            output,
+            encoder,
+            scenes,
+            sequence_config,
+            save_callback,
+        } = condor;
+        let input_data = condor_input.as_data();
+        let input = self.input.as_mut().unwrap_or(condor_input);
+
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        let finished_scenes = Arc::new(Semaphore::new(0));
+        let mut on_results = |results: Vec<ParallelEncoderResult>| -> Result<()> {
+            for encoder_result in results {
+                if let Some(scene) = scenes.get_mut(encoder_result.scene)
+                    && encoder_result.bytes != 0
+                {
+                    let parallel_encode_data = scene.sequence_data.get_parallel_encoder_mut()?;
+                    parallel_encode_data.bytes = Some(encoder_result.bytes);
+                    parallel_encode_data.started_on = Some(
+                        encoder_result
+                            .started
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("Time is valid")
+                            .as_millis(),
+                    );
+                    parallel_encode_data.completed_on = Some(
+                        encoder_result
+                            .ended
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("Time is valid")
+                            .as_millis(),
+                    );
+                }
+            }
+
+            let data = CondorModel {
+                input:           input_data.clone(),
+                output:          output.as_data(),
+                encoder:         encoder.clone(),
+                scenes:          scenes.clone(),
+                sequence_config: sequence_config.clone(),
+            };
+            (save_callback)(data)?;
+            Ok(())
+        };
+        let mut stream = ResultStream {
+            results_tx,
+            results_rx: &results_rx,
+            finished_scenes,
+            on_results: &mut on_results,
+        };
+
+        let encoder_thread = Self::encode_tasks_with_sender(
             input,
             workers,
-            &config.buffer_strategy,
+            &buffer_strategy,
             tasks,
             progress_tx,
             cancelled,
+            &mut stream,
         );
 
+        Self::drain_finished_results(&mut stream)?;
+        on_results(Vec::new())?;
+
         match encoder_thread {
-            Ok(encoder_results) => {
-                for encoder_result in encoder_results.into_iter().flatten() {
-                    if let Some(scene) = condor.scenes.get_mut(encoder_result.scene)
-                        && encoder_result.bytes != 0
-                    {
-                        let parallel_encode_data =
-                            scene.sequence_data.get_parallel_encoder_mut()?;
-                        parallel_encode_data.bytes = Some(encoder_result.bytes);
-                        parallel_encode_data.started_on = Some(
-                            encoder_result
-                                .started
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .expect("Time is valid")
-                                .as_millis(),
-                        );
-                        scene.sequence_data.get_parallel_encoder_mut()?.started_on = Some(
-                            encoder_result
-                                .ended
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .expect("Time is valid")
-                                .as_millis(),
-                        );
-                    }
-                }
-                condor.save()?;
-            },
+            Ok(_) => (),
             Err(err) => bail!(err),
         }
 
@@ -285,6 +315,36 @@ impl ParallelEncoder {
         tasks: VecDeque<Task>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
+    ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        let mut on_results = |_results: Vec<ParallelEncoderResult>| -> Result<()> { Ok(()) };
+        let mut stream = ResultStream {
+            results_tx,
+            results_rx: &results_rx,
+            finished_scenes: Arc::new(Semaphore::new(0)),
+            on_results: &mut on_results,
+        };
+        let results = Self::encode_tasks_with_sender(
+            input,
+            workers,
+            buffer_strategy,
+            tasks,
+            progress_tx,
+            cancelled,
+            &mut stream,
+        )?;
+        Ok(results)
+    }
+
+    #[inline]
+    fn encode_tasks_with_sender(
+        input: &mut Input,
+        workers: u8,
+        buffer_strategy: &BufferStrategy,
+        tasks: VecDeque<Task>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Arc<AtomicBool>,
+        stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         let (task_tx, task_rx) = crossbeam_channel::unbounded();
         let mut frames_senders = BTreeMap::new();
@@ -330,6 +390,8 @@ impl ParallelEncoder {
                     encoder_semaphores.get(&task.index).expect("encoder_semaphore exists");
                 let encoder_semaphore_clone: Arc<Semaphore> = Arc::clone(encoder_semaphore);
                 let encoder_errored = Arc::clone(&encoder_errored);
+                let finished_scenes = Arc::clone(&stream.finished_scenes);
+                let results_tx = stream.results_tx.clone();
 
                 let encoder_thread = s.spawn(move || -> Result<Option<ParallelEncoderResult>> {
                     let mut fr_lock =
@@ -494,6 +556,8 @@ impl ParallelEncoder {
                         bitrate,
                         result,
                     };
+                    results_tx.send(result.clone())?;
+                    finished_scenes.release();
                     Ok(Some(result))
                 });
 
@@ -516,7 +580,11 @@ impl ParallelEncoder {
                     .get(&task.index)
                     .expect("should have encoder_semaphore")
                     .release();
+
+                Self::drain_finished_results(stream)?;
             }
+
+            Self::drain_finished_results(stream)?;
 
             let encoder_results = encoder_threads
                 .into_iter()
@@ -544,6 +612,25 @@ impl ParallelEncoder {
             Ok(encoder_results)
         })
     }
+
+    /// Drains any finished scene results from the channel and forwards them to
+    /// `on_results`
+    #[inline]
+    fn drain_finished_results<F>(stream: &mut ResultStream<'_, F>) -> Result<()>
+    where
+        F: FnMut(Vec<ParallelEncoderResult>) -> Result<()>,
+    {
+        let mut results = Vec::new();
+        while stream.finished_scenes.try_acquire().is_some() {
+            if let Ok(result) = stream.results_rx.try_recv() {
+                results.push(result);
+            }
+        }
+        if !results.is_empty() {
+            (stream.on_results)(results)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -556,6 +643,17 @@ pub struct Task {
     pub output:         PathBuf,
 }
 
+struct ResultStream<'a, F>
+where
+    F: FnMut(Vec<ParallelEncoderResult>) -> Result<()>,
+{
+    results_tx:      crossbeam_channel::Sender<ParallelEncoderResult>,
+    results_rx:      &'a crossbeam_channel::Receiver<ParallelEncoderResult>,
+    finished_scenes: Arc<Semaphore>,
+    on_results:      &'a mut F,
+}
+
+#[derive(Debug, Clone)]
 pub struct ParallelEncoderResult {
     pub scene:   usize,
     pub started: std::time::SystemTime,
