@@ -426,7 +426,7 @@ impl ParallelEncoder {
                     // Handle progress from Encoder
                     s.spawn(move || -> Result<()> {
                         for progress in encode_progress_rx {
-                            if progress.pass.0 == total_passes {
+                            if progress.pass.0 == total_passes && progress.frame > 0 {
                                 let total_final_encoded =
                                     total_final_pass_frames_encoded.fetch_add(1, Ordering::Relaxed);
                                 // Scene's final-pass frame completed

@@ -796,7 +796,7 @@ impl TargetQuality {
 
         let progress_tx_clone = progress_tx.clone();
         let (encode_progress_tx, encode_progress_rx) = sync::mpsc::channel();
-        thread::spawn(move || -> Result<()> {
+        let encode_thread = thread::spawn(move || -> Result<()> {
             for progress in encode_progress_rx {
                 match progress {
                     SequenceStatus::Whole(Status::Processing {
@@ -843,6 +843,8 @@ impl TargetQuality {
         if cancelled.load(sync::atomic::Ordering::Relaxed) {
             return Ok((tasks.to_vec(), warnings));
         }
+
+        encode_thread.join().expect("encode progress thread should join")?;
 
         let scene_paths = tasks.iter().map(|task| task.output.clone()).collect::<Vec<_>>();
         match concat_method {
@@ -940,7 +942,7 @@ impl TargetQuality {
 
         let progress_tx_clone = progress_tx.clone();
         let (compare_progress_tx, compare_progress_rx) = sync::mpsc::channel();
-        thread::spawn(move || -> Result<()> {
+        let compare_thread = thread::spawn(move || -> Result<()> {
             for progress in compare_progress_rx {
                 match progress {
                     SequenceStatus::Whole(Status::Processing {
@@ -1126,9 +1128,7 @@ impl TargetQuality {
         };
         let ended = SystemTime::now();
 
-        progress_tx.send(SequenceStatus::Whole(Status::Completed {
-            id: "Compare".to_owned(),
-        }))?;
+        compare_thread.join().expect("compare progress thread should join")?;
         drop(progress_tx);
 
         let tasks = tasks
