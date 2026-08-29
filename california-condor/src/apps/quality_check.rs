@@ -358,6 +358,7 @@ impl TuiApp for QualityCheckApp {
             initial_completed:   0,
             completed:           state.frames_compared,
             total:               state.total_frames,
+            show_label:          true,
         };
         let progress_bar = progress_bar.generate(Some(self.pass_started));
         frame.render_widget(progress_bar, layout[2]);

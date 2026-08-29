@@ -855,12 +855,24 @@ impl TargetQuality {
                     &scene_paths,
                     None,
                     framerate,
+                    &progress_tx,
+                    cancelled,
                 )?;
             },
             ConcatMethod::FFmpeg => {
-                SceneConcatenator::ffmpeg(&pass_directory, &output, &scene_paths)?;
+                SceneConcatenator::ffmpeg(
+                    &pass_directory,
+                    &output,
+                    &scene_paths,
+                    total_frames,
+                    framerate,
+                    &progress_tx,
+                    cancelled,
+                )?;
             },
-            ConcatMethod::Ivf => SceneConcatenator::ivf(&output, &scene_paths)?,
+            ConcatMethod::Ivf => {
+                SceneConcatenator::ivf(&output, &scene_paths, &progress_tx, cancelled)?;
+            },
         }
 
         let metric_input = metric_input.unwrap_or(input);

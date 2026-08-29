@@ -390,6 +390,7 @@ impl TuiApp for ParallelEncoderApp {
             initial_completed:   self.initial_frames,
             completed:           total_frames_completed,
             total:               total_frames,
+            show_label:          true,
         };
         let progress_bar = progress_bar.generate(Some(self.started));
         frame.render_widget(progress_bar, layout[2]);

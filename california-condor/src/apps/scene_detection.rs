@@ -239,6 +239,7 @@ impl TuiApp for SceneDetectionApp {
             initial_completed:   self.initial_frames,
             completed:           self.cached_state.frames_processed,
             total:               self.total_frames,
+            show_label:          true,
         };
         let progress_bar = progress_bar.generate(Some(self.started));
         frame.render_widget(progress_bar, layout[2]);

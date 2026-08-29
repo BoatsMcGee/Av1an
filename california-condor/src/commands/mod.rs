@@ -287,7 +287,7 @@ pub enum Commands {
         #[arg(long, value_name = "ISO", help = HELP_CHROMA_NOISE_SHORT, long_help = HELP_CHROMA_NOISE)]
         chroma_noise: Option<u32>,
     },
-    /// Concatenate encoded scenes into output video.
+    /// Concatenate encoded scenes into output video (Triggers TUI).
     Concatenate {
         #[arg(long, value_name = "Concatenation Method", help = HELP_CONCAT_SHORT, long_help = HELP_CONCAT)]
         method: Option<ConcatenationMethod>,

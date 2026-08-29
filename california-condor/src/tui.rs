@@ -36,6 +36,7 @@ use crate::{
         noise_detection::NoiseDetectionApp,
         parallel_encoder::ParallelEncoderApp,
         quality_check::QualityCheckApp,
+        scene_concatenator::SceneConcatenatorApp,
         scene_detection::SceneDetectionApp,
         target_quality::TargetQualityApp,
     },
@@ -189,7 +190,9 @@ pub fn run_scene_detector_tui(
         warn!("{}", warning);
     }
 
-    tui_handle.join().map_err(|_| anyhow::anyhow!("Scene Detection TUI thread panicked"))??;
+    tui_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Scene Detection TUI thread panicked"))??;
 
     Ok(())
 }
@@ -253,7 +256,9 @@ pub fn run_noise_detector_tui(
         warn!("{}", warning);
     }
 
-    tui_handle.join().map_err(|_| anyhow::anyhow!("Noise Detection TUI thread panicked"))??;
+    tui_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Noise Detection TUI thread panicked"))??;
 
     Ok(())
 }
@@ -329,7 +334,9 @@ pub fn run_benchmarker_tui(
         warn!("{}", warning);
     }
 
-    tui_handle.join().map_err(|_| anyhow::anyhow!("Benchmarker TUI thread panicked"))??;
+    tui_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Benchmarker TUI thread panicked"))??;
 
     Ok(())
 }
@@ -418,7 +425,9 @@ pub fn run_target_quality_tui(
         warn!("{}", warning);
     }
 
-    tui_handle.join().map_err(|_| anyhow::anyhow!("Target Quality TUI thread panicked"))??;
+    tui_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Target Quality TUI thread panicked"))??;
 
     Ok(())
 }
@@ -485,7 +494,9 @@ pub fn run_quality_check_tui(
         warn!("{}", warning);
     }
 
-    tui_handle.join().map_err(|_| anyhow::anyhow!("Quality Check TUI thread panicked"))??;
+    tui_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Quality Check TUI thread panicked"))??;
 
     Ok(())
 }
@@ -634,7 +645,9 @@ pub fn run_parallel_encoder_tui(
         warn!("{}", warning);
     }
 
-    tui_handle.join().map_err(|_| anyhow::anyhow!("Parallel Encoder TUI thread panicked"))??;
+    tui_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Parallel Encoder TUI thread panicked"))??;
 
     Ok(())
 }
@@ -644,6 +657,10 @@ pub fn run_scene_concatenator_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
+    let scenes_len = condor.scenes.len();
+    let clip_info = condor.input.clip_info()?;
+    let method = condor.sequence_config.scene_concatenator.method;
+
     let mut scene_concatenator = SceneConcatenator::default();
 
     // Validate - Input should be already validated
@@ -653,14 +670,26 @@ pub fn run_scene_concatenator_tui(
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
     let (_, initialization_warnings) = scene_concatenator.initialize(condor, init_progress_tx)?;
     for warning in initialization_warnings.iter() {
-        println!("{}", warning);
+        warn!("{}", warning);
     }
 
-    let (progress_tx, _progress_rx) = std::sync::mpsc::channel();
+    debug!("Running Scene Concatenator");
+    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    let tui_handle = thread::spawn(move || -> Result<()> {
+        let mut sc_app = SceneConcatenatorApp::new(clip_info, scenes_len, method);
+        sc_app.run(progress_rx, ctrlc_cancelled)?;
+        Ok(())
+    });
     let (_, processing_warnings) = scene_concatenator.execute(condor, progress_tx, cancelled)?;
+
     for warning in processing_warnings.iter() {
-        println!("{}", warning);
+        warn!("{}", warning);
     }
+
+    tui_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Scene Concatenator TUI thread panicked"))??;
 
     Ok(())
 }
