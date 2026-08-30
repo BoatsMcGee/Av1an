@@ -11,8 +11,8 @@ use crate::{
         CondorCliError,
         DecoderMethod,
         EncoderMethod,
-        TargetQualityMetric,
-        TargetQualityProfile,
+        QualityMetric,
+        QualityProfile,
         handlers::{
             concatenate::configure_concatenate,
             configure_input,
@@ -50,11 +50,11 @@ pub fn start_handler(
     tq_params: Option<&str>,
     photon_noise: Option<u32>,
     chroma_noise: Option<u32>,
-    target_metric: Option<&TargetQualityMetric>,
+    target_metric: Option<&QualityMetric>,
     target: Option<f64>,
     minimum_quantizer: Option<u8>,
     maximum_quantizer: Option<u8>,
-    target_profile: Option<&TargetQualityProfile>,
+    target_profile: Option<&QualityProfile>,
 ) -> Result<(Configuration, PathBuf)> {
     if config_path.is_some_and(|p| !p.exists()) && (input_path.is_none() || output_path.is_none()) {
         let err = CondorCliError::NoConfigOrInputOrOutput;
@@ -206,7 +206,12 @@ mod tests {
 
     use super::*;
     use crate::{
-        commands::{ConcatenationMethod, DecoderMethod, EncoderMethod, TargetQualityMetric},
+        commands::{
+            ConcatenationMethod,
+            DecoderMethod,
+            EncoderMethod,
+            QualityMetric as QualityMetricBase,
+        },
         test_helpers::{
             check_benchmarker,
             check_bitrate_optimizer,
@@ -498,11 +503,11 @@ mod tests {
             Some("--preset ultrafast"),
             Some(404),
             Some(404),
-            Some(&TargetQualityMetric::XPSNR),
+            Some(&QualityMetricBase::XPSNR),
             Some(40.0),
             Some(4),
             Some(35),
-            Some(&TargetQualityProfile::Slow),
+            Some(&QualityProfile::Slow),
         )
         .expect("start_handler should succeed");
 
@@ -715,11 +720,11 @@ mod tests {
             Some("--preset ultrafast"),
             Some(404),
             Some(404),
-            Some(&TargetQualityMetric::XPSNR),
+            Some(&QualityMetricBase::XPSNR),
             Some(40.0),
             Some(4),
             Some(35),
-            Some(&TargetQualityProfile::Slow),
+            Some(&QualityProfile::Slow),
         )
         .expect("start_handler should succeed");
 
@@ -882,11 +887,11 @@ mod tests {
             None,
             None,
             None,
-            Some(&TargetQualityMetric::CVVDP),
+            Some(&QualityMetricBase::CVVDP),
             Some(9.5),
             Some(4),
             Some(25),
-            Some(&TargetQualityProfile::Standard),
+            Some(&QualityProfile::Standard),
         )
         .expect("start_handler should succeed");
 

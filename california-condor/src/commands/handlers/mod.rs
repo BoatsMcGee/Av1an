@@ -23,6 +23,7 @@ pub mod detect_scenes;
 pub mod encode;
 pub mod init;
 pub mod optimize_bitrate;
+pub mod quality_check;
 pub mod scale_noise;
 pub mod scale_speed;
 pub mod start;

@@ -21,7 +21,7 @@ use crate::models::sequence::{
         ParallelEncoderData,
         ParallelEncoderDataHandler,
     },
-    quality_check::{QualityCheckData, QualityCheckDataHandler},
+    quality_check::{QualityCheckConfig, QualityCheckConfigHandler, QualityCheckData, QualityCheckDataHandler},
     scene_concatenator::{SceneConcatenatorConfig, SceneConcatenatorConfigHandler},
     scene_detector::{SceneDetectorConfig, SceneDetectorData, SceneDetectorDataHandler},
     target_quality::{
@@ -64,6 +64,7 @@ where
     pub noise_detector:     Option<NoiseDetectorConfig>,
     pub noise_scaler:       Option<NoiseScalerConfig>,
     pub target_quality:     Option<TargetQualityConfig>,
+    pub quality_check:      Option<QualityCheckConfig>,
     pub bitrate_optimizer:  BitrateOptimizerConfig,
     pub parallel_encoder:   ParallelEncoderConfig,
     pub scene_concatenator: SceneConcatenatorConfig,
@@ -77,6 +78,7 @@ impl Default for DefaultSequenceConfig {
             noise_detector:     None,
             noise_scaler:       None,
             target_quality:     None,
+            quality_check:      None,
             bitrate_optimizer:  BitrateOptimizerConfig::default(),
             parallel_encoder:   ParallelEncoderConfig::default(),
             scene_concatenator: SceneConcatenatorConfig::default(),
@@ -120,6 +122,18 @@ impl TargetQualityConfigHandler for DefaultSequenceConfig {
     #[inline]
     fn target_quality_mut(&mut self) -> Result<&mut Option<TargetQualityConfig>> {
         Ok(&mut self.target_quality)
+    }
+}
+
+impl QualityCheckConfigHandler for DefaultSequenceConfig {
+    #[inline]
+    fn quality_check(&self) -> Result<&Option<QualityCheckConfig>> {
+        Ok(&self.quality_check)
+    }
+
+    #[inline]
+    fn quality_check_mut(&mut self) -> Result<&mut Option<QualityCheckConfig>> {
+        Ok(&mut self.quality_check)
     }
 }
 

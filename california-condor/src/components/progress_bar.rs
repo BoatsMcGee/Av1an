@@ -17,6 +17,27 @@ pub struct ProgressBar {
     pub initial_completed:   u64,
     pub completed:           u64,
     pub total:               u64,
+    /// Whether to render the inner label (e.g. `0/100 Frames (0.00FPS)`).
+    /// When `false`, only the percentage in the title is shown.
+    pub show_label:          bool,
+}
+
+impl Default for ProgressBar {
+    fn default() -> Self {
+        Self {
+            color:               Color::DarkGray,
+            processing_title:    String::new(),
+            completed_title:     String::new(),
+            top_right_title:     String::new(),
+            bottom_center_title: String::new(),
+            unit:                String::new(),
+            unit_per_second:     String::new(),
+            initial_completed:   0,
+            completed:           0,
+            total:               0,
+            show_label:          true,
+        }
+    }
 }
 
 impl ProgressBar {
@@ -73,20 +94,24 @@ impl ProgressBar {
         if self.completed == self.total {
             title = self.completed_title.clone();
         }
-        Gauge::default()
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .title(Line::from(title).left_aligned())
-                    .title(Line::from(format!("{:.2}%", progress_percent)).centered())
-                    .title(Line::from(self.top_right_title.clone()).right_aligned())
-                    .title_bottom(Line::from(elapsed_hms.unwrap_or_default()).left_aligned())
-                    .title_bottom(Line::from(self.bottom_center_title.clone()).centered())
-                    .title_bottom(Line::from(remaining_hms.unwrap_or_default()).right_aligned()),
-            )
+        let mut block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(Line::from(title).left_aligned())
+            .title(Line::from(self.top_right_title.clone()).right_aligned())
+            .title_bottom(Line::from(elapsed_hms.unwrap_or_default()).left_aligned())
+            .title_bottom(Line::from(self.bottom_center_title.clone()).centered())
+            .title_bottom(Line::from(remaining_hms.unwrap_or_default()).right_aligned());
+        if self.show_label {
+            block = block.title(Line::from(format!("{:.2}%", progress_percent)).centered());
+        }
+        let mut gauge = Gauge::default()
+            .block(block)
             .ratio(ratio)
-            .label(Span::styled(label, Style::default()))
-            .gauge_style(Style::default().fg(self.color))
+            .gauge_style(Style::default().fg(self.color));
+        if self.show_label {
+            gauge = gauge.label(Span::styled(label, Style::default()));
+        }
+        gauge
     }
 }

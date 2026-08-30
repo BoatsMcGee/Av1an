@@ -84,6 +84,8 @@ impl TuiApp for TargetQualityApp {
             }
         });
         let shared_progress = self.shared_progress.clone();
+        let quit = Arc::new(AtomicBool::new(false));
+        let quit_flag = Arc::clone(&quit);
         thread::spawn(move || {
             for progress in progress_rx {
                 match progress {
@@ -260,6 +262,7 @@ impl TuiApp for TargetQualityApp {
                 }
             }
             let _ = event_tx.send(TargetQualityAppEvent::Quit);
+            quit_flag.store(true, Ordering::Release);
         });
 
         let stdout_is_terminal = std::io::stdout().is_terminal();
@@ -294,6 +297,14 @@ impl TuiApp for TargetQualityApp {
                 }
                 self.cached_state = snapshot;
             }
+
+            if quit.load(Ordering::Acquire) {
+                self.cached_state = self.shared_progress.read();
+                let _ = terminal.draw(|f| self.render(f));
+                self.restore(terminal)?;
+                break;
+            }
+
             match event_rx.recv_timeout(Duration::from_millis(33)) {
                 Ok(TargetQualityAppEvent::Tick) => {
                     terminal.draw(|f| self.render(f))?;
@@ -439,6 +450,7 @@ impl TuiApp for TargetQualityApp {
                 state.frames_compared
             },
             total:               state.total_frames,
+            show_label:          true,
         };
         let progress_bar = progress_bar.generate(Some(self.pass_started));
         frame.render_widget(progress_bar, layout[2]);

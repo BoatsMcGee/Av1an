@@ -39,6 +39,12 @@ use andean_condor::{
                 ParallelEncoderData,
                 ParallelEncoderDataHandler,
             },
+            quality_check::{
+                QualityCheckConfig,
+                QualityCheckConfigHandler,
+                QualityCheckData,
+                QualityCheckDataHandler,
+            },
             scene_concatenator::{SceneConcatenatorConfig, SceneConcatenatorConfigHandler},
             scene_detector::{
                 DEFAULT_MAX_SCENE_LENGTH_SECONDS,
@@ -137,6 +143,7 @@ impl Configuration {
                     parallel_encoder:   ParallelEncoderConfig::new(&scenes_directory),
                     scene_concatenator: SceneConcatenatorConfig::new(&scenes_directory),
                     target_quality:     None,
+                    quality_check:      None,
                     bitrate_optimizer:  BitrateOptimizerConfig::default(),
                     speed_scaler:       SpeedScalerConfig::default(),
                 },
@@ -185,8 +192,7 @@ impl Configuration {
         }
         let data = std::fs::read_to_string(config_path)
             .map_err(|_| ConfigError::Load(config_path.to_path_buf()))?;
-        let data = serde_json::from_str(&data)
-            .map_err(|_| ConfigError::Load(config_path.to_path_buf()))?;
+        let data = serde_json::from_str(&data).map_err(ConfigError::Serialize)?;
 
         Ok(Some(data))
     }
@@ -405,6 +411,7 @@ where
         + NoiseDetectorConfigHandler
         + NoiseScalerConfigHandler
         + TargetQualityConfigHandler
+        + QualityCheckConfigHandler
         + BitrateOptimizerConfigHandler
         + SpeedScalerConfigHandler
         + ParallelEncoderConfigHandler
@@ -417,6 +424,7 @@ where
     pub parallel_encoder:   ParallelEncoderConfig,
     pub scene_concatenator: SceneConcatenatorConfig,
     pub target_quality:     Option<TargetQualityConfig>,
+    pub quality_check:      Option<QualityCheckConfig>,
     pub bitrate_optimizer:  BitrateOptimizerConfig,
     pub speed_scaler:       SpeedScalerConfig,
 }
@@ -432,6 +440,7 @@ impl Default for CliSequenceConfig {
             parallel_encoder:   ParallelEncoderConfig::default(),
             scene_concatenator: SceneConcatenatorConfig::default(),
             target_quality:     None,
+            quality_check:      None,
             bitrate_optimizer:  BitrateOptimizerConfig::default(),
             speed_scaler:       SpeedScalerConfig::default(),
         }
@@ -478,6 +487,16 @@ impl TargetQualityConfigHandler for CliSequenceConfig {
 
     fn target_quality_mut(&mut self) -> Result<&mut Option<TargetQualityConfig>> {
         Ok(&mut self.target_quality)
+    }
+}
+
+impl QualityCheckConfigHandler for CliSequenceConfig {
+    fn quality_check(&self) -> Result<&Option<QualityCheckConfig>> {
+        Ok(&self.quality_check)
+    }
+
+    fn quality_check_mut(&mut self) -> Result<&mut Option<QualityCheckConfig>> {
+        Ok(&mut self.quality_check)
     }
 }
 
@@ -529,14 +548,15 @@ where
         + NoiseDetectorDataHandler
         + NoiseScalerDataHandler
         + ParallelEncoderDataHandler
-        + TargetQualityDataHandler, // + QualityCheckDataHandler,
+        + TargetQualityDataHandler
+        + QualityCheckDataHandler,
 {
     pub scene_detection:  SceneDetectorData,
     pub noise_detection:  Option<NoiseDetectorData>,
     pub noise_scaling:    Option<NoiseScalerData>,
     pub parallel_encoder: ParallelEncoderData,
     pub target_quality:   TargetQualityData,
-    // pub quality_check:   QualityCheckData,
+    pub quality_check:    QualityCheckData,
 }
 
 impl SequenceDataHandler for CliSequenceData {
@@ -551,7 +571,7 @@ impl Default for CliSequenceData {
             noise_scaling:    None,
             parallel_encoder: ParallelEncoderData::default(),
             target_quality:   TargetQualityData::default(),
-            // quality_check:   QualityCheckData::default(),
+            quality_check:    QualityCheckData::default(),
         }
     }
 }
@@ -606,23 +626,21 @@ impl TargetQualityDataHandler for CliSequenceData {
     }
 }
 
-// impl QualityCheckDataHandler for DefaultProcessData {
-//     #[inline]
-//     fn quality(&self) -> Result<&QualityPass> {
-//         Ok(&self.quality_check.quality)
-//     }
+impl QualityCheckDataHandler for CliSequenceData {
+    fn get_quality_check(&self) -> Result<&QualityCheckData> {
+        Ok(&self.quality_check)
+    }
 
-//     #[inline]
-//     fn quality_mut(&mut self) -> Result<&mut QualityPass> {
-//         Ok(&mut self.quality_check.quality)
-//     }
-// }
+    fn get_quality_check_mut(&mut self) -> Result<&mut QualityCheckData> {
+        Ok(&mut self.quality_check)
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("Failed to load config file: {0}")]
     Load(PathBuf),
-    #[error("Failed to serialize config file: {0}")]
+    #[error("Failed to serialize/deserialize config file: {0}")]
     Serialize(#[from] serde_json::Error),
     #[error("Failed to save config file: {0}")]
     Save(#[from] std::io::Error),

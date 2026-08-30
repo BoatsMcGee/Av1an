@@ -1,9 +1,10 @@
 use std::{
     fs::File,
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{self, Arc, atomic::AtomicBool},
+    sync::{self, Arc, Mutex, atomic::AtomicBool},
+    thread,
 };
 
 use anyhow::{Context, Result, bail};
@@ -22,7 +23,14 @@ use crate::{
     core::{
         Condor,
         input::Input,
-        sequence::{Sequence, SequenceDetails, SequenceStatus, parallel_encoder::ParallelEncoder},
+        sequence::{
+            Sequence,
+            SequenceCompletion,
+            SequenceDetails,
+            SequenceStatus,
+            Status,
+            parallel_encoder::ParallelEncoder,
+        },
     },
     models::sequence::{
         SequenceConfigHandler,
@@ -129,8 +137,8 @@ where
     fn execute(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-        _progress_tx: sync::mpsc::Sender<SequenceStatus>,
-        _cancelled: Arc<AtomicBool>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Arc<AtomicBool>,
     ) -> Result<((), Vec<anyhow::Error>)> {
         let warnings = vec![];
 
@@ -161,12 +169,15 @@ where
                 ));
                 let exists = path.exists();
 
-                (index, path, exists)
+                (index, scene, path, exists)
             })
-            .filter(|(_, _, exists)| *exists)
+            .filter(|(_, _, _, exists)| *exists)
             .collect::<Vec<_>>();
 
-        let scene_paths = scenes.iter().map(|(_, path, _)| path.clone()).collect::<Vec<_>>();
+        let total_frames = scenes.iter().fold(0, |acc, (_, scene, _, _)| {
+            acc + (scene.end_frame - scene.start_frame)
+        });
+        let scene_paths = scenes.iter().map(|(_, _, path, _)| path.clone()).collect::<Vec<_>>();
 
         match config.method {
             ConcatMethod::MKVMerge => {
@@ -176,13 +187,29 @@ where
                     &scene_paths,
                     input_path,
                     framerate,
+                    &progress_tx,
+                    &cancelled,
                 )?;
             },
             ConcatMethod::FFmpeg => {
-                Self::ffmpeg(&config.scenes_directory, &condor.output.path, &scene_paths)?;
+                Self::ffmpeg(
+                    &config.scenes_directory,
+                    &condor.output.path,
+                    &scene_paths,
+                    total_frames,
+                    framerate,
+                    &progress_tx,
+                    &cancelled,
+                )?;
             },
-            ConcatMethod::Ivf => Self::ivf(&condor.output.path, &scene_paths)?,
+            ConcatMethod::Ivf => {
+                Self::ivf(&condor.output.path, &scene_paths, &progress_tx, &cancelled)?;
+            },
         };
+
+        progress_tx.send(SequenceStatus::Whole(Status::Completed {
+            id: DETAILS.name.to_owned(),
+        }))?;
 
         Ok(((), warnings))
     }
@@ -192,12 +219,25 @@ impl SceneConcatenator {
     pub const DETAILS: SequenceDetails = DETAILS;
 
     #[inline]
+    fn send_progress(progress_tx: &sync::mpsc::Sender<SequenceStatus>, percentage: f64) {
+        if !percentage.is_finite() {
+            return;
+        }
+        let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
+            id:         DETAILS.name.to_owned(),
+            completion: SequenceCompletion::Percentage(percentage.clamp(0.0, 100.0)),
+        }));
+    }
+
+    #[inline]
     pub fn mkvmerge(
         scenes_directory: &Path,
         output: &Path,
         scene_paths: &[PathBuf],
         input: Option<&Path>,
         duration: Ratio<i64>,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &Arc<AtomicBool>,
     ) -> Result<()> {
         #[cfg(windows)]
         const MAXIMUM_CHUNKS_PER_MERGE: usize = usize::MAX;
@@ -248,6 +288,10 @@ impl SceneConcatenator {
             options.write_to_disk(&options_path)?;
         } else {
             for (group_index, chunk_group) in chunk_groups.iter().enumerate() {
+                if cancelled.load(sync::atomic::Ordering::Relaxed) {
+                    return Ok(());
+                }
+
                 let group_options_path = scratch_directory.join(format!("{group_index:05}.json"));
                 let group_output_path =
                     fix_path(scratch_directory.join(format!("{group_index:05}.mkv")));
@@ -263,14 +307,65 @@ impl SceneConcatenator {
                 let mut group_cmd = Command::new("mkvmerge");
                 group_cmd.current_dir(scenes_directory);
                 group_cmd.arg(format!("@./Scene Concatenator/{group_index:05}.json"));
+                group_cmd.stdout(Stdio::piped());
+                group_cmd.stderr(Stdio::piped());
 
-                let group_out =
-                    group_cmd.output().with_context(|| "Failed to concatenate with mkvmerge")?;
+                let mut group_child =
+                    group_cmd.spawn().with_context(|| "Failed to concatenate with mkvmerge")?;
+                let group_stdout = group_child.stdout.take().expect("mkvmerge should have STDOUT");
+                let group_stderr = group_child.stderr.take().expect("mkvmerge should have STDERR");
 
-                if !group_out.status.success() {
-                    bail!(SceneConcatenatorError::MkvmergeFailed {
-                        status: group_out.status,
-                    });
+                let group_stderr_output = Arc::new(Mutex::new(String::new()));
+                let group_stderr_clone = Arc::clone(&group_stderr_output);
+                let group_stderr_thread = thread::spawn(move || -> Result<()> {
+                    let mut reader = BufReader::new(group_stderr);
+                    let mut buf = Vec::with_capacity(256);
+                    loop {
+                        match reader.read_until(b'\n', &mut buf) {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                if let Ok(line) = simdutf8::basic::from_utf8(&buf) {
+                                    group_stderr_clone
+                                        .lock()
+                                        .expect("mutex should acquire lock")
+                                        .push_str(line);
+                                }
+                                buf.clear();
+                            },
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
+                    Ok(())
+                });
+
+                let (cancelled, group_stdout_output) = Self::stream_mkvmerge_progress(
+                    group_stdout,
+                    progress_tx,
+                    Some((group_index, chunk_groups.len())),
+                    cancelled,
+                )?;
+                if cancelled {
+                    group_child.kill()?;
+                    group_child.wait()?;
+                    return Ok(());
+                }
+
+                let group_status =
+                    group_child.wait().with_context(|| "Failed to wait for mkvmerge")?;
+                group_stderr_thread
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("mkvmerge STDERR thread panicked"))??;
+                if !group_status.success() {
+                    let error = SceneConcatenatorError::MkvmergeFailed {
+                        status: group_status,
+                        stdout: group_stdout_output,
+                        stderr: group_stderr_output
+                            .lock()
+                            .expect("mutex should acquire lock")
+                            .clone(),
+                    };
+                    error!("{}", error);
+                    bail!(error);
                 }
             }
 
@@ -290,19 +385,118 @@ impl SceneConcatenator {
 
         let mut cmd = Command::new("mkvmerge");
         cmd.arg(format!("@{}", fix_path(options_path)));
-        let out = cmd.output().with_context(|| "Failed to concatenate with mkvmerge")?;
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let mut child = cmd.spawn().with_context(|| "Failed to spawn mkvmerge")?;
+        let stdout = child.stdout.take().expect("mkvmerge should have STDOUT");
+        let stderr = child.stderr.take().expect("mkvmerge should have STDERR");
 
-        if !out.status.success() {
-            bail!(SceneConcatenatorError::MkvmergeFailed {
-                status: out.status
-            });
+        let stderr_output = Arc::new(Mutex::new(String::new()));
+        let stderr_clone = Arc::clone(&stderr_output);
+        let stderr_thread = thread::spawn(move || -> Result<()> {
+            let mut reader = BufReader::new(stderr);
+            let mut buf = Vec::with_capacity(256);
+            loop {
+                match reader.read_until(b'\n', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if let Ok(line) = simdutf8::basic::from_utf8(&buf) {
+                            stderr_clone.lock().expect("mutex should acquire lock").push_str(line);
+                        }
+                        buf.clear();
+                    },
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Ok(())
+        });
+
+        let (cancelled, stdout_output) =
+            Self::stream_mkvmerge_progress(stdout, progress_tx, None, cancelled)?;
+        if cancelled {
+            child.kill()?;
+            child.wait()?;
+            return Ok(());
+        }
+
+        let status = child.wait().with_context(|| "Failed to wait for mkvmerge")?;
+        stderr_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("mkvmerge STDERR thread panicked"))??;
+        if !status.success() {
+            let error = SceneConcatenatorError::MkvmergeFailed {
+                status,
+                stdout: stdout_output,
+                stderr: stderr_output.lock().expect("mutex should acquire lock").clone(),
+            };
+            error!("{}", error);
+            bail!(error);
         }
 
         Ok(())
     }
 
+    /// Streams mkvmerge STDOUT, parse `Progress: N%`, and emit progress
     #[inline]
-    pub fn ffmpeg(scenes_directory: &Path, output: &Path, scene_paths: &[PathBuf]) -> Result<()> {
+    fn stream_mkvmerge_progress(
+        stdout: impl std::io::Read,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        group: Option<(usize, usize)>,
+        cancelled: &Arc<AtomicBool>,
+    ) -> Result<(bool, String)> {
+        let mut reader = BufReader::new(stdout);
+        let mut buf = Vec::with_capacity(256);
+        let mut output = String::new();
+
+        loop {
+            if cancelled.load(sync::atomic::Ordering::Relaxed) {
+                return Ok((true, output));
+            }
+
+            match reader.read_until(b'\r', &mut buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if let Ok(line) = simdutf8::basic::from_utf8(&buf) {
+                        output.push_str(line);
+                        if let Some(percentage) = Self::parse_mkvmerge_progress(line) {
+                            let percentage = match group {
+                                Some((group_index, total_groups)) => {
+                                    (group_index as f64 + percentage / 100.0) / total_groups as f64
+                                        * 100.0
+                                },
+                                None => percentage,
+                            };
+                            Self::send_progress(progress_tx, percentage);
+                        }
+                    }
+                    buf.clear();
+                },
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        Ok((false, output))
+    }
+
+    /// Parses a single mkvmerge progress line (e.g. `Progress: 33%`)
+    #[inline]
+    fn parse_mkvmerge_progress(line: &str) -> Option<f64> {
+        let line = line.trim();
+        let progress = line.rfind("Progress: ")?;
+        let (_, progress) = line.split_at(progress + "Progress: ".len());
+        progress.trim().strip_suffix('%')?.trim().parse().ok()
+    }
+
+    #[inline]
+    pub fn ffmpeg(
+        scenes_directory: &Path,
+        output: &Path,
+        scene_paths: &[PathBuf],
+        total_frames: usize,
+        framerate: Ratio<i64>,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &Arc<AtomicBool>,
+    ) -> Result<()> {
         let scratch_directory = scenes_directory.join("Scene Concatenator");
         let concat_file_path = scratch_directory.join("concat.txt");
         let concat_file = {
@@ -329,7 +523,7 @@ impl SceneConcatenator {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i"]);
+        cmd.args(["-y", "-hide_banner", "-loglevel", "info", "-f", "concat", "-safe", "0", "-i"]);
         cmd.arg(concat_file_path);
         // todo: copy from input -i
         cmd.args(["-map", "0"]);
@@ -338,19 +532,132 @@ impl SceneConcatenator {
         cmd.args(["-c", "copy"]);
         cmd.arg(output);
 
-        let out = cmd.output().with_context(|| "Failed to concatenate with ffmpeg")?;
+        let mut child = cmd.spawn().with_context(|| "Failed to concatenate with FFmpeg")?;
+        let stdout = child.stdout.take().expect("FFmpeg should have STDOUT");
+        let stderr = child.stderr.take().expect("FFmpeg should have STDERR");
 
-        if !out.status.success() {
-            bail!(SceneConcatenatorError::FfmpegFailed {
-                status: out.status
-            });
+        let stdout_output = Arc::new(Mutex::new(String::new()));
+        let stdout_clone = Arc::clone(&stdout_output);
+        let stdout_thread = thread::spawn(move || -> Result<()> {
+            let mut reader = BufReader::new(stdout);
+            let mut buf = Vec::with_capacity(256);
+            loop {
+                match reader.read_until(b'\n', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if let Ok(line) = simdutf8::basic::from_utf8(&buf) {
+                            stdout_clone.lock().expect("mutex should acquire lock").push_str(line);
+                        }
+                        buf.clear();
+                    },
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Ok(())
+        });
+
+        let mut reader = BufReader::new(stderr);
+        let mut buf = Vec::with_capacity(256);
+        let mut stderr_output = String::new();
+
+        loop {
+            if cancelled.load(sync::atomic::Ordering::Relaxed) {
+                child.kill()?;
+                child.wait()?;
+                return Ok(());
+            }
+
+            match reader.read_until(b'\r', &mut buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if let Ok(line) = simdutf8::basic::from_utf8(&buf) {
+                        stderr_output.push_str(line);
+                        if let Some(percentage) =
+                            Self::parse_ffmpeg_progress(line, total_frames, framerate)
+                        {
+                            Self::send_progress(progress_tx, percentage);
+                        }
+                    }
+                    buf.clear();
+                },
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        let status = child.wait().with_context(|| "Failed to wait for FFmpeg")?;
+        stdout_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("FFmpeg STDOUT thread panicked"))??;
+        if !status.success() {
+            let error = SceneConcatenatorError::FfmpegFailed {
+                status,
+                stdout: stdout_output.lock().expect("mutex should acquire lock").clone(),
+                stderr: stderr_output,
+            };
+            error!("{}", error);
+            bail!(error);
         }
 
         Ok(())
     }
 
+    /// Parses a single ffmpeg progress line (e.g. `frame=23310 fps=4835 ...
+    /// time=00:15:46.57 ...`)
     #[inline]
-    pub fn ivf(output: &Path, scene_paths: &[PathBuf]) -> Result<()> {
+    fn parse_ffmpeg_progress(
+        line: &str,
+        total_frames: usize,
+        framerate: Ratio<i64>,
+    ) -> Option<f64> {
+        if total_frames == 0 {
+            return None;
+        }
+
+        let current_frames = Self::parse_ffmpeg_frames(line).or_else(|| {
+            Self::parse_ffmpeg_time(line).map(|seconds| Self::time_to_frames(seconds, framerate))
+        })?;
+
+        Some(current_frames as f64 / total_frames as f64 * 100.0)
+    }
+
+    #[inline]
+    fn parse_ffmpeg_frames(line: &str) -> Option<u64> {
+        let frame = line.split_whitespace().find(|token| token.starts_with("frame="))?;
+        frame.strip_prefix("frame=")?.parse().ok()
+    }
+
+    #[inline]
+    fn parse_ffmpeg_time(line: &str) -> Option<f64> {
+        let time = line.split_whitespace().find(|token| token.starts_with("time="))?;
+        let time = time.strip_prefix("time=")?;
+
+        // ffmpeg prints time as HH:MM:SS.ms or N.NN
+        let seconds = match time.split(':').collect::<Vec<_>>().as_slice() {
+            [hours, minutes, seconds] => {
+                hours.parse::<f64>().ok()?.mul_add(3600.0, 0.0)
+                    + minutes.parse::<f64>().ok()?.mul_add(60.0, 0.0)
+                    + seconds.parse::<f64>().ok()?
+            },
+            [seconds] => seconds.parse::<f64>().ok()?,
+            _ => return None,
+        };
+
+        Some(seconds)
+    }
+
+    #[inline]
+    fn time_to_frames(seconds: f64, framerate: Ratio<i64>) -> u64 {
+        // framerate = numer/denom frames per second
+        (seconds * *framerate.numer() as f64 / *framerate.denom() as f64) as u64
+    }
+
+    #[inline]
+    pub fn ivf(
+        output: &Path,
+        scene_paths: &[PathBuf],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &Arc<AtomicBool>,
+    ) -> Result<()> {
         let output = File::create(output)?;
         let mut muxer = MuxerContext::new(IvfMuxer::new(), Writer::new(output));
         let global_info = {
@@ -376,8 +683,18 @@ impl SceneConcatenator {
         muxer.configure()?;
         muxer.write_header()?;
 
+        let total_scenes = scene_paths.len();
         let mut pos_offset: usize = 0;
-        for file in scene_paths {
+        for (index, file) in scene_paths.iter().enumerate() {
+            if cancelled.load(sync::atomic::Ordering::Relaxed) {
+                return Ok(());
+            }
+
+            Self::send_progress(
+                progress_tx,
+                (index + 1) as f64 / total_scenes as f64 * 100.0,
+            );
+
             let mut last_pos: usize = 0;
             let input = std::fs::File::open(file)?;
 
@@ -494,8 +811,16 @@ pub enum SceneConcatenatorError {
     ScenesDirectoryMissing { path: PathBuf },
     #[error("Scenes directory is not a directory: {path}")]
     ScenesDirectoryInvalid { path: PathBuf },
-    #[error("Failed to concatenate with mkvmerge: {status}")]
-    MkvmergeFailed { status: std::process::ExitStatus },
-    #[error("Failed to concatenate with ffmpeg: {status}")]
-    FfmpegFailed { status: std::process::ExitStatus },
+    #[error("Failed to concatenate with mkvmerge: {status}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")]
+    MkvmergeFailed {
+        status: std::process::ExitStatus,
+        stdout: String,
+        stderr: String,
+    },
+    #[error("Failed to concatenate with ffmpeg: {status}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")]
+    FfmpegFailed {
+        status: std::process::ExitStatus,
+        stdout: String,
+        stderr: String,
+    },
 }

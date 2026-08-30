@@ -79,6 +79,8 @@ impl TuiApp for SceneDetectionApp {
             }
         });
         let shared_progress = self.shared_progress.clone();
+        let quit = Arc::new(AtomicBool::new(false));
+        let quit_flag = Arc::clone(&quit);
         thread::spawn(move || {
             for progress in progress_rx {
                 if let SequenceStatus::Whole(Status::Processing {
@@ -118,6 +120,7 @@ impl TuiApp for SceneDetectionApp {
                 }
             }
             let _ = event_tx.send(SceneDetectionAppEvent::Quit);
+            quit_flag.store(true, Ordering::Release);
         });
 
         let mut terminal = self.init()?;
@@ -141,6 +144,13 @@ impl TuiApp for SceneDetectionApp {
 
             if let Some(snapshot) = self.shared_progress.read_if_dirty() {
                 self.cached_state = snapshot;
+            }
+
+            if quit.load(Ordering::Acquire) {
+                self.cached_state = self.shared_progress.read();
+                let _ = terminal.draw(|f| self.render(f));
+                self.restore(terminal)?;
+                break;
             }
 
             match event_rx.recv_timeout(Duration::from_millis(33)) {
@@ -229,6 +239,7 @@ impl TuiApp for SceneDetectionApp {
             initial_completed:   self.initial_frames,
             completed:           self.cached_state.frames_processed,
             total:               self.total_frames,
+            show_label:          true,
         };
         let progress_bar = progress_bar.generate(Some(self.started));
         frame.render_widget(progress_bar, layout[2]);

@@ -11,7 +11,7 @@ use crate::{
         CondorCliError,
         DecoderMethod,
         EncoderMethod,
-        TargetQualityMetric,
+        QualityMetric,
         handlers::{
             concatenate::configure_concatenate,
             configure_temp,
@@ -36,7 +36,7 @@ pub fn init_handler(
     encoder: Option<&EncoderMethod>,
     params: Option<&str>,
     photon_noise: Option<u32>,
-    target_metric: Option<&TargetQualityMetric>,
+    target_metric: Option<&QualityMetric>,
     target: Option<f64>,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
@@ -124,7 +124,7 @@ mod tests {
             ConcatenationMethod,
             DecoderMethod,
             EncoderMethod,
-            TargetQualityMetric,
+            QualityMetric as QualityMetricBase,
             handlers::load_configuration,
         },
         test_helpers::{check_basic_config, default_config, get_test_video, set_cwd},
@@ -269,7 +269,7 @@ mod tests {
             Some(&EncoderMethod::AOM),
             Some("--cpu-used=7"),
             Some(4800),
-            Some(&TargetQualityMetric::SSIMULACRA2),
+            Some(&QualityMetricBase::SSIMULACRA2),
             Some(75.0),
         )
         .expect("init_handler should succeed");

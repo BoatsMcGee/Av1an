@@ -48,6 +48,27 @@ impl Semaphore {
         }
     }
 
+    /// Attempts to acquire a permit without blocking.
+    ///
+    /// Returns `Some(id)` if a permit was available and acquired,
+    /// or `None` if no permits are currently available.
+    #[inline]
+    pub fn try_acquire(&self) -> Option<usize> {
+        let current_count = self.permit_count.load(Ordering::SeqCst);
+        if current_count > 0 {
+            self.permit_count
+                .compare_exchange(
+                    current_count,
+                    current_count - 1,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                )
+                .ok()
+        } else {
+            None
+        }
+    }
+
     /// Releases a permit, allowing next acquire to succeed.
     #[inline]
     pub fn release(&self) {

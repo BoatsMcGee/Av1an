@@ -17,6 +17,7 @@ use crate::{
             encode::encode_handler,
             init::init_handler,
             optimize_bitrate::optimize_bitrate_handler,
+            quality_check::quality_check_handler,
             scale_noise::scale_noise_handler,
             scale_speed::scale_speed_handler,
             start::start_handler,
@@ -33,6 +34,7 @@ use crate::{
         run_noise_detector_tui,
         run_noise_scaler_tui,
         run_parallel_encoder_tui,
+        run_quality_check_tui,
         run_scene_concatenator_tui,
         run_scene_detector_tui,
         run_speed_scaler_tui,
@@ -279,6 +281,27 @@ fn run() -> anyhow::Result<()> {
 
             run_concatenator(&configuration, &save_file)?;
         },
+        Some(Commands::QualityCheck {
+            input,
+            decoder,
+            filters,
+            vs_args,
+            metric,
+            profile,
+        }) => {
+            let (configuration, save_file) = quality_check_handler(
+                config_path.as_deref(),
+                temp.as_deref(),
+                input.as_deref(),
+                decoder.as_ref(),
+                filters.as_deref(),
+                vs_args.as_deref(),
+                metric.as_ref(),
+                profile.as_ref(),
+            )?;
+
+            run_quality_check(&configuration, &save_file)?;
+        },
         Some(Commands::Clean {
             all: _,
         }) => {
@@ -426,6 +449,18 @@ pub fn run_condor(configuration: &Configuration, save_file: &Path, skip_scd: boo
     run_scene_concatenator_tui(&mut condor, std::sync::Arc::clone(&cancellation_token))?;
     if cancelled() {
         return Ok(());
+    }
+
+    if configuration.condor.sequence_config.quality_check.is_some() {
+        run_quality_check_tui(
+            &mut condor,
+            &configuration.tq_input_filters,
+            &configuration.input_filters,
+            std::sync::Arc::clone(&cancellation_token),
+        )?;
+        if cancelled() {
+            return Ok(());
+        }
     }
 
     info!(
@@ -664,6 +699,34 @@ pub fn run_concatenator(configuration: &Configuration, save_file: &Path) -> Resu
 
     run_scene_concatenator_tui(
         &mut condor,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )?;
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all)]
+pub fn run_quality_check(configuration: &Configuration, save_file: &Path) -> Result<()> {
+    let config_copy = configuration.clone();
+    let save_file_copy = save_file.to_path_buf();
+    debug!("Instantiating Condor with {:?}", {
+        let mut config = configuration.clone();
+        config.condor.scenes = Vec::new();
+        config
+    });
+
+    let mut condor: Condor<configuration::CliSequenceData, configuration::CliSequenceConfig> =
+        configuration.instantiate_condor(Box::new(move |data| {
+            let mut config = config_copy.clone();
+            config.condor = data;
+            Configuration::save(&config, &save_file_copy)?;
+            Ok(())
+        }))?;
+
+    run_quality_check_tui(
+        &mut condor,
+        &configuration.tq_input_filters,
+        &configuration.input_filters,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )?;
 

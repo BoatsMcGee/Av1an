@@ -103,6 +103,10 @@ pub enum SequenceCompletion {
         score:     f64,
         bitrate:   f64,
     },
+    FrameScore {
+        frame: u64,
+        score: f64,
+    },
     Custom {
         name:      String,
         completed: f64,

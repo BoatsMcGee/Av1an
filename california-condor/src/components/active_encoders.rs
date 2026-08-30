@@ -74,6 +74,7 @@ impl Widget for ActiveEncoders<'_> {
                 unit:                "Frame".to_owned(),
                 completed:           scene_encoder.frames_processed,
                 total:               scene_encoder.total_frames,
+                show_label:          true,
             };
             progress_bar
                 .generate(Some(scene_encoder.started))

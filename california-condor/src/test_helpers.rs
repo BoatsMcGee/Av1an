@@ -19,6 +19,7 @@ use andean_condor::{
             noise_detector::NoiseDetectorConfig,
             noise_scaler::NoiseScalerConfig,
             parallel_encoder::{BufferStrategy, ParallelEncoderConfig},
+            quality_check::QualityCheckConfig,
             scene_concatenator::{ConcatMethod, SceneConcatenatorConfig},
             scene_detector::{
                 DEFAULT_MAX_SCENE_LENGTH_SECONDS,
@@ -205,6 +206,7 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
                 noise_scaler:       None,
                 benchmarker:        BenchmarkerConfig::default(),
                 target_quality:     None,
+                quality_check:      None,
                 bitrate_optimizer:  BitrateOptimizerConfig {
                     bitrate_sigma_threshold: None,
                 },
@@ -363,6 +365,10 @@ pub fn check_basic_config(config: &Configuration, expected_config: &Configuratio
     check_scene_concatenator(
         &config.condor.sequence_config.scene_concatenator,
         &expected_config.condor.sequence_config.scene_concatenator,
+    );
+    check_quality_check(
+        config.condor.sequence_config.quality_check.as_ref(),
+        expected_config.condor.sequence_config.quality_check.as_ref(),
     );
 }
 
@@ -1101,6 +1107,219 @@ pub fn check_benchmarker(
     );
 }
 
+pub fn check_quality_metric(
+    quality_metric: &QualityMetric,
+    expected_quality_metric: &QualityMetric,
+    name: &str,
+) {
+    match expected_quality_metric {
+        QualityMetric::VMAF {
+            target_range: expected_target_range,
+            resolution: expected_resolution,
+            scaler: expected_scaler,
+            filter: expected_filter,
+            threads: expected_threads,
+            model: expected_model,
+            features: expected_features,
+        } => {
+            assert_matches!(
+                quality_metric,
+                QualityMetric::VMAF { .. },
+                "{name} metric is VMAF"
+            );
+            match &quality_metric {
+                QualityMetric::VMAF {
+                    target_range,
+                    resolution,
+                    scaler,
+                    filter,
+                    threads,
+                    model,
+                    features,
+                } => {
+                    assert_eq!(
+                        target_range, expected_target_range,
+                        "{name} VMAF target range is {}-{}",
+                        expected_target_range.0, expected_target_range.1
+                    );
+                    assert_eq!(
+                        resolution, expected_resolution,
+                        "{name} VMAF resolution is {expected_resolution:?}"
+                    );
+                    assert_eq!(
+                        scaler, expected_scaler,
+                        "{name} VMAF scaler is {expected_scaler}"
+                    );
+                    assert_eq!(
+                        filter, expected_filter,
+                        "{name} VMAF filter is {expected_filter:?}"
+                    );
+                    assert_eq!(
+                        threads, expected_threads,
+                        "{name} VMAF threads is {expected_threads}"
+                    );
+                    assert_eq!(
+                        model, expected_model,
+                        "{name} VMAF model is {expected_model:?}"
+                    );
+                    assert_eq!(
+                        features, expected_features,
+                        "{name} VMAF features are {expected_features:?}"
+                    );
+                },
+                other => panic!("expected QualityMetric::VMAF. Got {other:?}"),
+            }
+        },
+        QualityMetric::SSIMULACRA2 {
+            target_range,
+            resolution,
+            threads,
+        } => {
+            assert_matches!(
+                quality_metric,
+                QualityMetric::SSIMULACRA2 { .. },
+                "{name} metric is SSIMULACRA2"
+            );
+            match &quality_metric {
+                QualityMetric::SSIMULACRA2 {
+                    target_range: expected_target_range,
+                    resolution: expected_resolution,
+                    threads: expected_threads,
+                } => {
+                    assert_eq!(
+                        expected_target_range, target_range,
+                        "{name} SSIMULACRA2 target range is {}-{}",
+                        target_range.0, target_range.1
+                    );
+                    assert_eq!(
+                        expected_resolution, resolution,
+                        "{name} SSIMULACRA2 resolution is {resolution:?}"
+                    );
+                    assert_eq!(
+                        expected_threads, threads,
+                        "{name} SSIMULACRA2 threads is {threads:?}"
+                    );
+                },
+                other => panic!("expected QualityMetric::SSIMULACRA2. Got {other:?}"),
+            }
+        },
+        QualityMetric::BUTTERAUGLI {
+            target_range,
+            resolution,
+            threads,
+            intensity_multiplier,
+            norm,
+        } => {
+            assert_matches!(
+                quality_metric,
+                QualityMetric::BUTTERAUGLI { .. },
+                "{name} metric is BUTTERAUGLI"
+            );
+            match &quality_metric {
+                QualityMetric::BUTTERAUGLI {
+                    target_range: expected_target_range,
+                    resolution: expected_resolution,
+                    threads: expected_threads,
+                    intensity_multiplier: expected_intensity_multiplier,
+                    norm: expected_norm,
+                } => {
+                    assert_eq!(
+                        expected_target_range, target_range,
+                        "{name} BUTTERAUGLI target range is {}-{}",
+                        target_range.0, target_range.1
+                    );
+                    assert_eq!(
+                        expected_resolution, resolution,
+                        "{name} BUTTERAUGLI resolution is {resolution:?}"
+                    );
+                    assert_eq!(
+                        expected_threads, threads,
+                        "{name} BUTTERAUGLI threads is {threads:?}"
+                    );
+                    assert_eq!(
+                        expected_intensity_multiplier, intensity_multiplier,
+                        "{name} BUTTERAUGLI intensity multiplier is {intensity_multiplier:?}"
+                    );
+                    assert_eq!(expected_norm, norm, "{name} BUTTERAUGLI norm is {norm:?}");
+                },
+                other => panic!("expected QualityMetric::BUTTERAUGLI. Got {other:?}"),
+            }
+        },
+        QualityMetric::CVVDP {
+            target_range,
+            resolution,
+            display_model,
+            resize_to_display,
+            disable_temporal,
+        } => {
+            assert_matches!(
+                quality_metric,
+                QualityMetric::CVVDP { .. },
+                "{name} metric is CVVDP"
+            );
+            match &quality_metric {
+                QualityMetric::CVVDP {
+                    target_range: expected_target_range,
+                    resolution: expected_resolution,
+                    display_model: expected_display_model,
+                    resize_to_display: expected_resize_to_display,
+                    disable_temporal: expected_disable_temporal,
+                } => {
+                    assert_eq!(
+                        expected_target_range, target_range,
+                        "{name} CVVDP target range is {}-{}",
+                        target_range.0, target_range.1
+                    );
+                    assert_eq!(
+                        expected_resolution, resolution,
+                        "{name} CVVDP resolution is {resolution:?}"
+                    );
+                    assert_eq!(
+                        expected_display_model, display_model,
+                        "{name} CVVDP display model is {display_model:?}"
+                    );
+                    assert_eq!(
+                        expected_resize_to_display, resize_to_display,
+                        "{name} CVVDP resize to display is {resize_to_display:?}"
+                    );
+                    assert_eq!(
+                        expected_disable_temporal, disable_temporal,
+                        "{name} CVVDP disable temporal is {disable_temporal:?}"
+                    );
+                },
+                other => panic!("expected QualityMetric::CVVDP. Got {other:?}"),
+            }
+        },
+        QualityMetric::XPSNR {
+            target_range,
+            resolution,
+        } => {
+            assert_matches!(
+                quality_metric,
+                QualityMetric::XPSNR { .. },
+                "{name} metric is XPSNR"
+            );
+            match &quality_metric {
+                QualityMetric::XPSNR {
+                    target_range: expected_target_range,
+                    resolution: expected_resolution,
+                } => {
+                    assert_eq!(
+                        expected_target_range, target_range,
+                        "{name} XPSNR target range is {}-{}",
+                        target_range.0, target_range.1
+                    );
+                    assert_eq!(
+                        expected_resolution, resolution,
+                        "{name} XPSNR resolution is {resolution:?}"
+                    );
+                },
+                other => panic!("expected QualityMetric::XPSNR. Got {other:?}"),
+            }
+        },
+    }
+}
+
 pub fn check_target_quality(
     target_quality: Option<&TargetQualityConfig>,
     expected_target_quality: Option<&TargetQualityConfig>,
@@ -1117,216 +1336,11 @@ pub fn check_target_quality(
             expected_target_quality.metric_input.as_ref(),
             "Target Quality metric input",
         );
-        match &expected_target_quality.metric {
-            QualityMetric::VMAF {
-                target_range: expected_target_range,
-                resolution: expected_resolution,
-                scaler: expected_scaler,
-                filter: expected_filter,
-                threads: expected_threads,
-                model: expected_model,
-                features: expected_features,
-            } => {
-                assert_matches!(
-                    target_quality.metric,
-                    QualityMetric::VMAF { .. },
-                    "Target Quality metric is VMAF"
-                );
-                match &target_quality.metric {
-                    QualityMetric::VMAF {
-                        target_range,
-                        resolution,
-                        scaler,
-                        filter,
-                        threads,
-                        model,
-                        features,
-                    } => {
-                        assert_eq!(
-                            target_range, expected_target_range,
-                            "Target Quality VMAF target range is {}-{}",
-                            expected_target_range.0, expected_target_range.1
-                        );
-                        assert_eq!(
-                            resolution, expected_resolution,
-                            "Target Quality VMAF resolution is {expected_resolution:?}"
-                        );
-                        assert_eq!(
-                            scaler, expected_scaler,
-                            "Target Quality VMAF scaler is {expected_scaler}"
-                        );
-                        assert_eq!(
-                            filter, expected_filter,
-                            "Target Quality VMAF filter is {expected_filter:?}"
-                        );
-                        assert_eq!(
-                            threads, expected_threads,
-                            "Target Quality VMAF threads is {expected_threads}"
-                        );
-                        assert_eq!(
-                            model, expected_model,
-                            "Target Quality VMAF model is {expected_model:?}"
-                        );
-                        assert_eq!(
-                            features, expected_features,
-                            "Target Quality VMAF features are {expected_features:?}"
-                        );
-                    },
-                    other => panic!("expected QualityMetric::VMAF. Got {other:?}"),
-                }
-            },
-            QualityMetric::SSIMULACRA2 {
-                target_range,
-                resolution,
-                threads,
-            } => {
-                assert_matches!(
-                    target_quality.metric,
-                    QualityMetric::SSIMULACRA2 { .. },
-                    "Target Quality metric is SSIMULACRA2"
-                );
-                match &target_quality.metric {
-                    QualityMetric::SSIMULACRA2 {
-                        target_range: expected_target_range,
-                        resolution: expected_resolution,
-                        threads: expected_threads,
-                    } => {
-                        assert_eq!(
-                            expected_target_range, target_range,
-                            "Target Quality SSIMULACRA2 target range is {}-{}",
-                            target_range.0, target_range.1
-                        );
-                        assert_eq!(
-                            expected_resolution, resolution,
-                            "Target Quality SSIMULACRA2 resolution is {resolution:?}"
-                        );
-                        assert_eq!(
-                            expected_threads, threads,
-                            "Target Quality SSIMULACRA2 threads is {threads:?}"
-                        );
-                    },
-                    other => panic!("expected QualityMetric::SSIMULACRA2. Got {other:?}"),
-                }
-            },
-            QualityMetric::BUTTERAUGLI {
-                target_range,
-                resolution,
-                threads,
-                intensity_multiplier,
-                norm,
-            } => {
-                assert_matches!(
-                    target_quality.metric,
-                    QualityMetric::BUTTERAUGLI { .. },
-                    "Target Quality metric is BUTTERAUGLI"
-                );
-                match &target_quality.metric {
-                    QualityMetric::BUTTERAUGLI {
-                        target_range: expected_target_range,
-                        resolution: expected_resolution,
-                        threads: expected_threads,
-                        intensity_multiplier: expected_intensity_multiplier,
-                        norm: expected_norm,
-                    } => {
-                        assert_eq!(
-                            expected_target_range, target_range,
-                            "Target Quality BUTTERAUGLI target range is {}-{}",
-                            target_range.0, target_range.1
-                        );
-                        assert_eq!(
-                            expected_resolution, resolution,
-                            "Target Quality BUTTERAUGLI resolution is {resolution:?}"
-                        );
-                        assert_eq!(
-                            expected_threads, threads,
-                            "Target Quality BUTTERAUGLI threads is {threads:?}"
-                        );
-                        assert_eq!(
-                            expected_intensity_multiplier, intensity_multiplier,
-                            "Target Quality BUTTERAUGLI intensity multiplier is \
-                             {intensity_multiplier:?}"
-                        );
-                        assert_eq!(
-                            expected_norm, norm,
-                            "Target Quality BUTTERAUGLI norm is {norm:?}"
-                        );
-                    },
-                    other => panic!("expected QualityMetric::BUTTERAUGLI. Got {other:?}"),
-                }
-            },
-            QualityMetric::CVVDP {
-                target_range,
-                resolution,
-                display_model,
-                resize_to_display,
-                disable_temporal,
-            } => {
-                assert_matches!(
-                    target_quality.metric,
-                    QualityMetric::CVVDP { .. },
-                    "Target Quality metric is CVVDP"
-                );
-                match &target_quality.metric {
-                    QualityMetric::CVVDP {
-                        target_range: expected_target_range,
-                        resolution: expected_resolution,
-                        display_model: expected_display_model,
-                        resize_to_display: expected_resize_to_display,
-                        disable_temporal: expected_disable_temporal,
-                    } => {
-                        assert_eq!(
-                            expected_target_range, target_range,
-                            "Target Quality CVVDP target range is {}-{}",
-                            target_range.0, target_range.1
-                        );
-                        assert_eq!(
-                            expected_resolution, resolution,
-                            "Target Quality CVVDP resolution is {resolution:?}"
-                        );
-                        assert_eq!(
-                            expected_display_model, display_model,
-                            "Target Quality CVVDP display model is {display_model:?}"
-                        );
-                        assert_eq!(
-                            expected_resize_to_display, resize_to_display,
-                            "Target Quality CVVDP resize to display is {resize_to_display:?}"
-                        );
-                        assert_eq!(
-                            expected_disable_temporal, disable_temporal,
-                            "Target Quality CVVDP disable temporal is {disable_temporal:?}"
-                        );
-                    },
-                    other => panic!("expected QualityMetric::CVVDP. Got {other:?}"),
-                }
-            },
-            QualityMetric::XPSNR {
-                target_range,
-                resolution,
-            } => {
-                assert_matches!(
-                    target_quality.metric,
-                    QualityMetric::XPSNR { .. },
-                    "Target Quality metric is XPSNR"
-                );
-                match &target_quality.metric {
-                    QualityMetric::XPSNR {
-                        target_range: expected_target_range,
-                        resolution: expected_resolution,
-                    } => {
-                        assert_eq!(
-                            expected_target_range, target_range,
-                            "Target Quality XPSNR target range is {}-{}",
-                            target_range.0, target_range.1
-                        );
-                        assert_eq!(
-                            expected_resolution, resolution,
-                            "Target Quality XPSNR resolution is {resolution:?}"
-                        );
-                    },
-                    other => panic!("expected QualityMetric::XPSNR. Got {other:?}"),
-                }
-            },
-        }
+        check_quality_metric(
+            &target_quality.metric,
+            &expected_target_quality.metric,
+            "Target Quality",
+        );
         assert_eq!(
             target_quality.maximum_probes, expected_target_quality.maximum_probes,
             "Target Quality maximum probes is {}",
@@ -1456,4 +1470,38 @@ pub fn check_scene_concatenator(
         "Scene Concatenator output is {:?}",
         expected_scene_concatenator.output
     );
+}
+
+pub fn check_quality_check(
+    quality_check: Option<&QualityCheckConfig>,
+    expected_quality_check: Option<&QualityCheckConfig>,
+) {
+    if let Some(expected_quality_check) = expected_quality_check {
+        let quality_check = quality_check.expect("Quality Check is Some");
+        check_input(
+            quality_check.input.as_ref(),
+            expected_quality_check.input.as_ref(),
+            "Quality Check input",
+        );
+        check_quality_metric(
+            &quality_check.metric,
+            &expected_quality_check.metric,
+            "Quality Check",
+        );
+        assert_eq!(
+            quality_check.statistic, expected_quality_check.statistic,
+            "Quality Check probing statistic is {:?}",
+            expected_quality_check.statistic
+        );
+        assert_eq!(
+            quality_check.strategy, expected_quality_check.strategy,
+            "Quality Check probing strategy is {:?}",
+            expected_quality_check.strategy
+        );
+    } else {
+        assert!(
+            expected_quality_check.is_none(),
+            "Expected Quality Check is None"
+        );
+    }
 }
