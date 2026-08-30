@@ -1,8 +1,9 @@
-name: Build Av1an (Windows x64)
+name: Build California Condor (Windows x64)
 on:
   push:
     branches:
       - 'master'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,8 +14,8 @@ jobs:
 
     env:
       CARGO_INCREMENTAL: 0
-      vsynth_ver: "R72"
-      vsynth_path: "C:/Program Files/Vapoursynth"
+      FFMS_LIB_DIR: C:\ffms2\x64
+      FFMS_INCLUDE_DIR: C:\ffms2\include
 
     steps:
       - name: NASM setup
@@ -23,12 +24,23 @@ jobs:
           # version: 2.16.03
           from-source: false
 
-      - name: VapourSynth installation
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: 3.14
+          activate-environment: true
+
+      - name: VapourSynth Python package installation
         run: |
-          $tempFile = New-TemporaryFile
-          $uri = 'https://github.com/vapoursynth/vapoursynth/releases/download/VER/VapourSynth64-Portable-VER.zip'.Replace('VER', "$env:vsynth_ver")
-          Invoke-WebRequest "$uri" -OutFile "$tempFile" -TimeoutSec 10
-          Expand-Archive "$tempFile" "$env:vsynth_path"
+          uv pip install vapoursynth==79
+          vapoursynth config
+          "VSSCRIPT_PATH=$(vapoursynth get-vsscript)" >> "$env:GITHUB_ENV"
+
+      - name: FFMS2 installation
+        run: |
+          curl -L -o ffms2.7z "https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z"
+          7z x ffms2.7z
+          Move-Item -Path "ffms2-5.0-msvc" -Destination "C:\ffms2"
 
       - uses: actions/checkout@v6
 
@@ -41,18 +53,46 @@ jobs:
           $commit = git log -1 --pretty=format:"%h: %s (%an)"
           echo "message=$commit" >> $env:GITHUB_OUTPUT
 
-      - name: Av1an build
-        run: cargo build --release
+      - name: Condor build
+        if: github.ref == 'refs/heads/condor'
+        run: cargo build --release --bin condor
 
-      - name: Create or update prerelease
+      - name: Generate changelog
+        id: changelog
+        if: github.ref == 'refs/heads/condor'
+        shell: pwsh
+        run: |
+          $lastTag = git describe --tags --abbrev=0 2>$null
+          if (-not $lastTag) {
+            $lastTag = 'HEAD~1'
+          }
+          echo "last_tag=$lastTag" >> $env:GITHUB_OUTPUT
+
+          $all = git log "$lastTag..HEAD" --pretty=format:"- %s"
+          if (-not $all) {
+            $all = "No changes since $lastTag"
+          }
+          $lines = @($all -split "`n")
+          $first10 = $lines | Select-Object -First 10
+          $rest = $lines | Select-Object -Skip 10
+
+          $body = "Latest build from $env:GITHUB_SHA`n`nCommit:`n${{ steps.get_commit.outputs.message }}`n`nChanges since $lastTag:`n$($first10 -join "`n")"
+
+          if ($rest.Count -gt 0) {
+            $more = $rest.Count
+            $body += "`n`n<details>`n<summary>... and $more more commits</summary>`n`n$($rest -join "`n")`n</details>"
+          }
+
+          echo "body<<EOF" >> $env:GITHUB_OUTPUT
+          echo "$body" >> $env:GITHUB_OUTPUT
+          echo "EOF" >> $env:GITHUB_OUTPUT
+
+      - name: Create or update prerelease for Condor
+        if: github.ref == 'refs/heads/condor'
         uses: softprops/action-gh-release@v2
         with:
           prerelease: true
           tag_name: latest
-          body: |
-            Latest build from ${{ github.sha }}
-
-            Commit:
-            ${{ steps.get_commit.outputs.message }}
-          files: target/release/av1an.exe
+          body: ${{ steps.changelog.outputs.body }}
+          files: target/release/condor.exe
           fail_on_unmatched_files: true

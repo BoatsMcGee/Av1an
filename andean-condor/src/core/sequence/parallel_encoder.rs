@@ -1,0 +1,678 @@
+use std::{
+    collections::{BTreeMap, VecDeque},
+    fs,
+    io::Cursor,
+    path::PathBuf,
+    sync::{
+        self,
+        Arc,
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    thread::{self},
+};
+
+use anyhow::{Result, bail};
+use av1_grain::write_grain_table;
+use thiserror::Error;
+use tracing::{debug, error, trace};
+
+use crate::{
+    core::{
+        Condor,
+        encoder::{EncodeProgress, EncoderResult},
+        input::Input,
+        sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
+    },
+    models::{
+        Condor as CondorModel,
+        encoder::Encoder,
+        scene::SubScene,
+        sequence::{
+            SequenceConfigHandler,
+            SequenceDataHandler,
+            noise_detector::NoiseDetectorDataHandler,
+            parallel_encoder::{
+                BufferStrategy,
+                ParallelEncoderConfigHandler,
+                ParallelEncoderDataHandler,
+            },
+            scene_detector::SceneDetectorDataHandler,
+        },
+    },
+    utils::semaphore::Semaphore,
+};
+
+static DETAILS: SequenceDetails = SequenceDetails {
+    name:        "Parallel Encoder",
+    description: "Encodes a set of scenes in parallel until all scenes are encoded.",
+    version:     "0.0.1",
+};
+
+pub struct ParallelEncoder {
+    pub input: Option<Input>,
+}
+
+impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for ParallelEncoder
+where
+    DataHandler: SequenceDataHandler
+        + SceneDetectorDataHandler
+        + NoiseDetectorDataHandler
+        + ParallelEncoderDataHandler,
+    ConfigHandler: SequenceConfigHandler + ParallelEncoderConfigHandler,
+{
+    #[inline]
+    fn details(&self) -> SequenceDetails {
+        DETAILS
+    }
+
+    #[inline]
+    fn validate(
+        &mut self,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let warnings = vec![];
+
+        if condor.sequence_config.parallel_encoder()?.workers.is_some_and(|w| w == 0) {
+            bail!(ParallelEncoderError::NoWorkers);
+        }
+
+        if let Some(input) = &self.input {
+            Input::validate(&input.as_data())?;
+        }
+
+        // Ensure all the scene encoders are validated
+        for scene in &condor.scenes {
+            scene.encoder.validate()?;
+        }
+
+        // TODO: Validate all scenes output the same codec
+
+        Ok(((), warnings))
+    }
+
+    #[inline]
+    fn initialize(
+        &mut self,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        let mut warnings = vec![];
+
+        // Ensure scenes is not empty
+        if condor.scenes.is_empty() {
+            warnings.push(anyhow::Error::new(ParallelEncoderError::ScenesEmpty));
+        }
+        // let encoder = self.encoder.as_ref().map_or(&condor.encoder, |e| e);
+        if let Some(input) = &mut self.input {
+            // Initialize input by getting clip_info. For VapourSynth inputs, this may begin
+            // a lengthy caching process, hence the separation between validate and
+            // initialize.
+            progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                id:         DETAILS.name.to_owned(),
+                completion: SequenceCompletion::Custom {
+                    name:      DETAILS.name.to_owned(),
+                    completed: 0.0,
+                    total:     1.0,
+                },
+            }))?;
+            input.clip_info()?;
+            progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                id: DETAILS.name.to_owned(),
+            }))?;
+        }
+
+        let scenes_directory = &condor.sequence_config.parallel_encoder()?.scenes_directory;
+        if !scenes_directory.exists() {
+            std::fs::create_dir_all(scenes_directory)?;
+        }
+
+        // Generate Photon Noise tables
+        let input = self.input.as_mut().unwrap_or(&mut condor.input);
+        // TODO: Get transfer functions more effectively
+        // let transfer_function =
+        // input.clip_info()?.transfer_function_params_adjusted(enc_params)
+        let clip_info = input.clip_info()?;
+        let transfer_function = clip_info.transfer_characteristics;
+        for scene in &mut condor.scenes {
+            let params = scene.encoder.generate_photon_noise_table(
+                clip_info.resolution.0,
+                clip_info.resolution.1,
+                transfer_function,
+                clip_info.color_range,
+            )?;
+
+            if let Some((hashed_name, params)) = params {
+                let output_directory = scenes_directory.join(DETAILS.name);
+                let output = output_directory.join(format!("{}.tbl", hashed_name));
+                let output_clone = output.clone();
+                if !output.exists() {
+                    if !output_directory.exists() {
+                        std::fs::create_dir_all(&output_directory)?;
+                    }
+                    debug!("Writing a new photon noise table to {}", output.display());
+                    write_grain_table(output, &[params])?;
+                }
+                scene.encoder.apply_photon_noise_parameters(&output_clone)?;
+            }
+        }
+
+        Ok(((), warnings))
+    }
+
+    #[inline]
+    fn execute(
+        &mut self,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        // TODO:
+        // handle subscenes
+
+        let mut warnings = vec![];
+        let config = condor.sequence_config.parallel_encoder()?.clone();
+        let workers = config.workers.unwrap_or(1);
+        let scenes_directory = &config.scenes_directory;
+        if condor.scenes.is_empty() {
+            warnings.push(anyhow::Error::new(ParallelEncoderError::ScenesEmpty));
+            return Ok(((), warnings));
+        }
+
+        let tasks = condor
+            .scenes
+            .iter()
+            .enumerate()
+            .filter(|(index, scene)| {
+                let output = scenes_directory.join(format!(
+                    "{}.{}",
+                    Self::scene_id(*index),
+                    scene.encoder.output_extension()
+                ));
+                !output.exists()
+            })
+            .enumerate()
+            .map(|(index, (original_index, scene))| Task {
+                original_index,
+                index,
+                frame_indices: (scene.start_frame..scene.end_frame).collect::<Vec<_>>(),
+                sub_scenes: scene.sub_scenes.clone(),
+                encoder: scene.encoder.clone(),
+                output: scenes_directory.join(format!(
+                    "{}.{}",
+                    Self::scene_id(original_index),
+                    scene.encoder.output_extension()
+                )),
+            })
+            .collect::<VecDeque<Task>>();
+
+        let buffer_strategy = config.buffer_strategy.clone();
+        let Condor {
+            input: condor_input,
+            output,
+            encoder,
+            scenes,
+            sequence_config,
+            save_callback,
+        } = condor;
+        let input_data = condor_input.as_data();
+        let input = self.input.as_mut().unwrap_or(condor_input);
+
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        let finished_scenes = Arc::new(Semaphore::new(0));
+        let mut on_results = |results: Vec<ParallelEncoderResult>| -> Result<()> {
+            for encoder_result in results {
+                if let Some(scene) = scenes.get_mut(encoder_result.scene)
+                    && encoder_result.bytes != 0
+                {
+                    let parallel_encode_data = scene.sequence_data.get_parallel_encoder_mut()?;
+                    parallel_encode_data.bytes = Some(encoder_result.bytes);
+                    parallel_encode_data.started_on = Some(
+                        encoder_result
+                            .started
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("Time is valid")
+                            .as_millis(),
+                    );
+                    parallel_encode_data.completed_on = Some(
+                        encoder_result
+                            .ended
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .expect("Time is valid")
+                            .as_millis(),
+                    );
+                }
+            }
+
+            let data = CondorModel {
+                input:           input_data.clone(),
+                output:          output.as_data(),
+                encoder:         encoder.clone(),
+                scenes:          scenes.clone(),
+                sequence_config: sequence_config.clone(),
+            };
+            (save_callback)(data)?;
+            Ok(())
+        };
+        let mut stream = ResultStream {
+            results_tx,
+            results_rx: &results_rx,
+            finished_scenes,
+            on_results: &mut on_results,
+        };
+
+        let encoder_thread = Self::encode_tasks_with_sender(
+            input,
+            workers,
+            &buffer_strategy,
+            tasks,
+            progress_tx,
+            cancelled,
+            &mut stream,
+        );
+
+        Self::drain_finished_results(&mut stream)?;
+        on_results(Vec::new())?;
+
+        match encoder_thread {
+            Ok(_) => (),
+            Err(err) => bail!(err),
+        }
+
+        Ok(((), warnings))
+    }
+}
+
+impl Default for ParallelEncoder {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            input: None
+        }
+    }
+}
+
+impl ParallelEncoder {
+    pub const DETAILS: SequenceDetails = DETAILS;
+
+    #[inline]
+    pub fn new(input: Option<Input>) -> Self {
+        ParallelEncoder {
+            input,
+        }
+    }
+
+    #[inline]
+    pub fn scene_id(index: usize) -> String {
+        format!("{:>05}", index)
+    }
+
+    #[inline]
+    pub fn encode_tasks(
+        input: &mut Input,
+        workers: u8,
+        buffer_strategy: &BufferStrategy,
+        tasks: VecDeque<Task>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        let (results_tx, results_rx) = crossbeam_channel::unbounded();
+        let mut on_results = |_results: Vec<ParallelEncoderResult>| -> Result<()> { Ok(()) };
+        let mut stream = ResultStream {
+            results_tx,
+            results_rx: &results_rx,
+            finished_scenes: Arc::new(Semaphore::new(0)),
+            on_results: &mut on_results,
+        };
+        let results = Self::encode_tasks_with_sender(
+            input,
+            workers,
+            buffer_strategy,
+            tasks,
+            progress_tx,
+            cancelled,
+            &mut stream,
+        )?;
+        Ok(results)
+    }
+
+    #[inline]
+    fn encode_tasks_with_sender(
+        input: &mut Input,
+        workers: u8,
+        buffer_strategy: &BufferStrategy,
+        tasks: VecDeque<Task>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Arc<AtomicBool>,
+        stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
+    ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        let (task_tx, task_rx) = crossbeam_channel::unbounded();
+        let mut frames_senders = BTreeMap::new();
+        let mut frames_receivers = BTreeMap::new();
+        let mut encoder_semaphores = BTreeMap::new();
+        let total_tasks = tasks.len();
+        let total_process_frames = tasks.iter().fold(0, |acc, task| acc + task.frame_indices.len());
+        for task in tasks.iter() {
+            let index = task.index;
+            task_tx.send(task.clone())?;
+            let (ftx, rtx) = crossbeam_channel::unbounded();
+            frames_senders.insert(index, ftx);
+            frames_receivers.insert(index, rtx);
+            encoder_semaphores.insert(index, Arc::new(Semaphore::new(0)));
+        }
+        drop(task_tx);
+        let encoder_errored = Arc::new(AtomicBool::new(false));
+        let clip_info = input.clip_info()?;
+
+        thread::scope(|s| -> Result<_> {
+            let total_final_pass_frames_encoded = Arc::new(AtomicUsize::new(0));
+            let worker_semaphore = Arc::new(Semaphore::new(workers.into()));
+            let decoder_semaphore =
+                Arc::new(Semaphore::new((buffer_strategy.workers(workers)).into()));
+            let frame_receivers = Arc::new(Mutex::new(frames_receivers));
+            // let progress_tx = progress_tx.clone();
+            let mut encoder_threads = Vec::new();
+            let cancelled = Arc::new(cancelled);
+
+            for _ in 0..total_tasks {
+                let total_final_pass_frames_encoded = Arc::clone(&total_final_pass_frames_encoded);
+                let cancelled = Arc::clone(&cancelled);
+                let task_rx = task_rx.clone();
+                let frame_receivers = Arc::clone(&frame_receivers);
+                let task_progress_tx = progress_tx.clone();
+                let size_tx = progress_tx.clone();
+                let task = task_rx.recv()?;
+                let total_passes = task.encoder.total_passes();
+                let total_scene_frames = task.frame_indices.len();
+                let worker_semaphore = Arc::clone(&worker_semaphore);
+                let decoder_semaphore_clone = Arc::clone(&decoder_semaphore);
+                let encoder_semaphore =
+                    encoder_semaphores.get(&task.index).expect("encoder_semaphore exists");
+                let encoder_semaphore_clone: Arc<Semaphore> = Arc::clone(encoder_semaphore);
+                let encoder_errored = Arc::clone(&encoder_errored);
+                let finished_scenes = Arc::clone(&stream.finished_scenes);
+                let results_tx = stream.results_tx.clone();
+
+                let encoder_thread = s.spawn(move || -> Result<Option<ParallelEncoderResult>> {
+                    let mut fr_lock =
+                        frame_receivers.lock().expect("frame_receivers mutex should acquire lock");
+                    let frames_rx = fr_lock.remove(&task.index).expect("should have frames_rx)");
+                    drop(fr_lock);
+                    let (encode_progress_tx, encode_progress_rx) =
+                        sync::mpsc::channel::<EncodeProgress>();
+
+                    // Wait for encoder semaphore (unblocked when decoder starts)
+                    // Prevents all encoders from starting at creation
+                    encoder_semaphore_clone.acquire();
+                    trace!(
+                        "Scene {} Encoder waiting for a free Worker",
+                        task.original_index
+                    );
+                    // Wait for worker semaphore (unblocked when worker finishes)
+                    // Prevents active encoders exceeding worker limit
+                    let worker_id = worker_semaphore.acquire();
+                    if cancelled.load(Ordering::Relaxed) || encoder_errored.load(Ordering::Relaxed)
+                    {
+                        // Release decoder semaphore to allow decoder to exit
+                        worker_semaphore.release();
+                        decoder_semaphore_clone.release();
+                        return Ok(None);
+                    }
+                    debug!(
+                        "Encoding Scene {} with Worker {}",
+                        task.original_index, worker_id
+                    );
+                    let started = std::time::SystemTime::now();
+                    // Handle progress from Encoder
+                    s.spawn(move || -> Result<()> {
+                        for progress in encode_progress_rx {
+                            if progress.pass.0 == total_passes && progress.frame > 0 {
+                                let total_final_encoded =
+                                    total_final_pass_frames_encoded.fetch_add(1, Ordering::Relaxed);
+                                // Scene's final-pass frame completed
+                                task_progress_tx.send(SequenceStatus::Subprocess {
+                                    parent: Status::Processing {
+                                        id:         DETAILS.name.to_string(),
+                                        completion: SequenceCompletion::Frames {
+                                            completed: total_final_encoded as u64,
+                                            total:     total_process_frames as u64,
+                                        },
+                                    },
+                                    child:  Status::Processing {
+                                        id:         task.original_index.to_string(),
+                                        completion: SequenceCompletion::Frames {
+                                            completed: progress.frame as u64,
+                                            total:     total_scene_frames as u64,
+                                        },
+                                    },
+                                })?;
+                                task_progress_tx.send(SequenceStatus::Whole(
+                                    Status::Processing {
+                                        id:         DETAILS.name.to_string(),
+                                        completion: SequenceCompletion::Frames {
+                                            completed: total_final_encoded as u64,
+                                            total:     total_process_frames as u64,
+                                        },
+                                    },
+                                ))?;
+                            }
+                            task_progress_tx.send(SequenceStatus::Subprocess {
+                                parent: Status::Processing {
+                                    id:         DETAILS.name.to_string(),
+                                    completion: SequenceCompletion::Frames {
+                                        completed: total_final_pass_frames_encoded
+                                            .load(Ordering::Relaxed)
+                                            as u64,
+                                        total:     total_process_frames as u64,
+                                    },
+                                },
+                                child:  Status::Processing {
+                                    id:         task.original_index.to_string(),
+                                    completion: SequenceCompletion::PassFrames {
+                                        passes: progress.pass,
+                                        frames: (progress.frame as u64, total_scene_frames as u64),
+                                    },
+                                },
+                            })?;
+                            if progress.pass.0 == total_passes {
+                                // Scene completed
+                                if progress.frame == total_scene_frames {
+                                    task_progress_tx.send(SequenceStatus::Subprocess {
+                                        parent: Status::Processing {
+                                            id:         DETAILS.name.to_string(),
+                                            completion: SequenceCompletion::Frames {
+                                                completed: total_final_pass_frames_encoded
+                                                    .load(Ordering::Relaxed)
+                                                    as u64,
+                                                total:     total_process_frames as u64,
+                                            },
+                                        },
+                                        child:  Status::Completed {
+                                            id: task.original_index.to_string(),
+                                        },
+                                    })?;
+                                }
+                                // Process completed
+                                if total_final_pass_frames_encoded.load(Ordering::Relaxed)
+                                    == total_process_frames
+                                {
+                                    task_progress_tx.send(SequenceStatus::Whole(
+                                        Status::Completed {
+                                            id: DETAILS.name.to_string(),
+                                        },
+                                    ))?;
+                                }
+                            }
+                        }
+                        Ok(())
+                    });
+                    // Encode to temporary file
+                    let temp_output = task
+                        .output
+                        .with_extension(format!("temp.{}", task.encoder.output_extension()));
+                    trace!(
+                        "Encoding Scene {} to {}",
+                        task.original_index,
+                        temp_output.display()
+                    );
+                    let result = task.encoder.encode_with_stream(
+                        frames_rx,
+                        &temp_output,
+                        encode_progress_tx,
+                    )?;
+                    let ended = std::time::SystemTime::now();
+                    let framerate =
+                        *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
+                    let scene_seconds = task.frame_indices.len() as f64 * framerate;
+                    let bytes = temp_output.metadata().ok().map_or(0, |meta| meta.len());
+                    let bitrate = (bytes * 8) as f64 / scene_seconds;
+                    if result.status.success() {
+                        size_tx.send(SequenceStatus::Whole(Status::Processing {
+                            id:         task.original_index.to_string(),
+                            completion: SequenceCompletion::Custom {
+                                name:      "size".to_owned(),
+                                completed: bytes as f64,
+                                total:     bytes as f64,
+                            },
+                        }))?;
+                        // Rename to final output
+                        fs::rename(temp_output, &task.output)?;
+                    } else {
+                        encoder_errored.store(true, Ordering::Relaxed);
+                    }
+                    debug!(
+                        "Encoded Scene {} in {} seconds yielding {} bytes",
+                        task.original_index,
+                        ended.duration_since(started)?.as_secs(),
+                        bytes
+                    );
+                    worker_semaphore.release(); // Release for next worker
+                    decoder_semaphore_clone.release(); // Release for next decoder
+                    let result = ParallelEncoderResult {
+                        scene: task.original_index,
+                        started,
+                        ended,
+                        bytes,
+                        bitrate,
+                        result,
+                    };
+                    results_tx.send(result.clone())?;
+                    finished_scenes.release();
+                    Ok(Some(result))
+                });
+
+                encoder_threads.push(encoder_thread);
+            }
+
+            for task in tasks {
+                // Wait for decoder semaphore (unblocked when encoder finishes)
+                // Prevents decoder from filling up memory for upcoming tasks
+                decoder_semaphore.acquire();
+                if !cancelled.load(Ordering::Relaxed) && !encoder_errored.load(Ordering::Relaxed) {
+                    debug!("Decoding Scene {}", task.original_index);
+                    let frames_tx =
+                        frames_senders.remove(&task.index).expect("should have frames_tx");
+                    let y4m_header = input.y4m_header(Some(task.frame_indices.len()))?;
+                    frames_tx.send(Cursor::new(Vec::from(y4m_header.as_bytes())))?;
+                    input.y4m_frames(frames_tx, &task.frame_indices)?;
+                }
+                encoder_semaphores
+                    .get(&task.index)
+                    .expect("should have encoder_semaphore")
+                    .release();
+
+                Self::drain_finished_results(stream)?;
+            }
+
+            Self::drain_finished_results(stream)?;
+
+            let encoder_results = encoder_threads
+                .into_iter()
+                .map(|result| {
+                    result
+                        .join()
+                        .expect("should join encoder thread")
+                        .expect("should join encoder_thread")
+                })
+                .collect::<Vec<_>>();
+            drop(progress_tx);
+
+            let first_error = encoder_results.iter().find(|maybe_result| {
+                maybe_result.as_ref().is_some_and(|result| !result.result.status.success())
+            });
+            if let Some(Some(first_error)) = first_error {
+                let err = ParallelEncoderError::EncoderFailed {
+                    scene:  first_error.scene,
+                    result: first_error.result.clone(),
+                };
+                error!("{}", err);
+                bail!(err);
+            }
+
+            Ok(encoder_results)
+        })
+    }
+
+    /// Drains any finished scene results from the channel and forwards them to
+    /// `on_results`
+    #[inline]
+    fn drain_finished_results<F>(stream: &mut ResultStream<'_, F>) -> Result<()>
+    where
+        F: FnMut(Vec<ParallelEncoderResult>) -> Result<()>,
+    {
+        let mut results = Vec::new();
+        while stream.finished_scenes.try_acquire().is_some() {
+            if let Ok(result) = stream.results_rx.try_recv() {
+                results.push(result);
+            }
+        }
+        if !results.is_empty() {
+            (stream.on_results)(results)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Task {
+    pub original_index: usize,
+    pub index:          usize,
+    pub frame_indices:  Vec<usize>,
+    pub sub_scenes:     Option<Vec<SubScene>>,
+    pub encoder:        Encoder,
+    pub output:         PathBuf,
+}
+
+struct ResultStream<'a, F>
+where
+    F: FnMut(Vec<ParallelEncoderResult>) -> Result<()>,
+{
+    results_tx:      crossbeam_channel::Sender<ParallelEncoderResult>,
+    results_rx:      &'a crossbeam_channel::Receiver<ParallelEncoderResult>,
+    finished_scenes: Arc<Semaphore>,
+    on_results:      &'a mut F,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParallelEncoderResult {
+    pub scene:   usize,
+    pub started: std::time::SystemTime,
+    pub ended:   std::time::SystemTime,
+    pub bytes:   u64,
+    pub bitrate: f64,
+    // pub bits_per_pixel: f64,
+    pub result:  EncoderResult,
+}
+
+#[derive(Debug, Clone, Error)]
+pub enum ParallelEncoderError {
+    #[error("Must have at least one worker")]
+    NoWorkers,
+    #[error("No Scenes found")]
+    ScenesEmpty,
+    #[error("Failed to encode Scene {scene}: {result}")]
+    EncoderFailed {
+        scene:  usize,
+        result: EncoderResult,
+    },
+}
