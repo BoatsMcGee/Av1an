@@ -2,19 +2,35 @@ FROM archlinux:base-devel AS base
 
 RUN pacman -Syu --noconfirm
 
-# Install dependancies needed by all steps including runtime step
-RUN pacman -S --noconfirm --needed aom ffmpeg vapoursynth ffms2 libvpx mkvtoolnix-cli svt-av1 vmaf
+# Install dependencies needed by all steps including runtime step
+RUN pacman -S --noconfirm --needed python python-pip git ffms2 ffmpeg mkvtoolnix-cli aom svt-av1 rav1e libvpx
+# Install Python runtime dependencies system-wide so they are available to the app
+RUN python -m pip install --no-cache-dir --break-system-packages vsjetpack[full]==2.2.1 vsfgs==0.7.0 --extra-index-url https://jaded-encoding-thaumaturgy.github.io/vs-wheels/simple
 
 # Add extra plugins to ENV to cover VS R74 packaging changes
 ENV VAPOURSYNTH_EXTRA_PLUGIN_PATH="/usr/lib/vapoursynth"
 
+# Create non-root user to install AUR packages
+RUN useradd -m -G wheel aur && \
+    echo "aur ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+USER aur
+WORKDIR /home/aur
+
+# Clone and install paru
+RUN git clone https://aur.archlinux.org/paru.git && cd paru && makepkg -si --noconfirm && cd .. && rm -rf paru
+# Install ZooMVTools
+RUN paru -S --noconfirm --needed vapoursynth-plugin-zoomvtools-git
+
+USER root
+
 FROM base AS build-base
 
-# Install dependancies needed by build steps
-RUN pacman -S --noconfirm --needed rust clang nasm git
+# Install dependencies needed by build steps
+RUN pacman -S --noconfirm --needed vapoursynth rust clang nasm git
 
 RUN cargo install cargo-chef
-WORKDIR /tmp/Av1an
+WORKDIR /tmp/Condor
 
 
 FROM build-base AS planner
@@ -25,31 +41,22 @@ RUN cargo chef prepare
 
 FROM build-base AS build
 
-COPY --from=planner /tmp/Av1an/recipe.json recipe.json
+COPY --from=planner /tmp/Condor/recipe.json recipe.json
 RUN cargo chef cook --release
 
-# Compile rav1e from git, as archlinux is still on rav1e 0.4
-RUN git clone https://github.com/xiph/rav1e && \
-    cd rav1e && \
-    cargo build --release && \
-    strip ./target/release/rav1e && \
-    mv ./target/release/rav1e /usr/local/bin && \
-    cd .. && rm -rf ./rav1e
+# Build Condor California
+COPY . /tmp/Condor
 
-# Build av1an
-COPY . /tmp/Av1an
-
-RUN cargo build --release && \
-    mv ./target/release/av1an /usr/local/bin && \
-    cd .. && rm -rf ./Av1an
+RUN cargo build --release -p california-condor && \
+    mv ./target/release/condor /usr/local/bin && \
+    cd .. && rm -rf ./Condor
 
 
 FROM base AS runtime
 
 ENV MPLCONFIGDIR="/home/app_user/"
 
-COPY --from=build /usr/local/bin/rav1e /usr/local/bin/rav1e
-COPY --from=build /usr/local/bin/av1an /usr/local/bin/av1an
+COPY --from=build /usr/local/bin/condor /usr/local/bin/condor
 
 # Create user
 RUN useradd -ms /bin/bash app_user
@@ -58,4 +65,4 @@ USER app_user
 VOLUME ["/videos"]
 WORKDIR /videos
 
-ENTRYPOINT [ "/usr/local/bin/av1an" ]
+ENTRYPOINT [ "/usr/local/bin/condor" ]
