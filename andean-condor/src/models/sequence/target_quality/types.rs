@@ -170,11 +170,21 @@ impl QualityMetric {
     #[inline]
     pub fn friendly_name(&self) -> &'static str {
         match self {
-            QualityMetric::VMAF { .. } => "VMAF",
-            QualityMetric::SSIMULACRA2 { .. } => "SSIMULACRA2",
-            QualityMetric::BUTTERAUGLI { .. } => "butteraugli",
-            QualityMetric::XPSNR { .. } => "XPSNR",
-            QualityMetric::CVVDP { .. } => "CVVDP",
+            QualityMetric::VMAF {
+                ..
+            } => "VMAF",
+            QualityMetric::SSIMULACRA2 {
+                ..
+            } => "SSIMULACRA2",
+            QualityMetric::BUTTERAUGLI {
+                ..
+            } => "butteraugli",
+            QualityMetric::XPSNR {
+                ..
+            } => "XPSNR",
+            QualityMetric::CVVDP {
+                ..
+            } => "CVVDP",
         }
     }
 }

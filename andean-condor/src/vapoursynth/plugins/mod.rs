@@ -487,7 +487,8 @@ where
 pub trait MetricPluginFunction: PluginFunction {
     const PROPERTY_NAMES: &'static [&'static str];
 
-    /// Asynchronously retrieve frames, extracting the value and reporting the frame score as they are computed
+    /// Asynchronously retrieve frames, extracting the value and reporting the
+    /// frame score as they are computed
     #[inline]
     fn collect_frame_values<'core, Value, Extract, OnFrame>(
         node: &Node<'core>,
@@ -670,17 +671,22 @@ pub trait MetricPluginFunction: PluginFunction {
     ) -> Result<Vec<f64>, VapourSynthError> {
         let property_names = property_names.unwrap_or(Self::PROPERTY_NAMES);
 
-        Self::collect_frame_values(node, progress_tx, |_index, _value| Ok(()), move |frame| {
-            property_names
-                .iter()
-                .find_map(|property_name| frame.props().get_float(property_name).ok())
-                .ok_or_else(|| {
-                    Self::new_error(format!(
-                        "Score not found on any of the following properties: {}",
-                        property_names.iter().join(", ")
-                    ))
-                })
-        })
+        Self::collect_frame_values(
+            node,
+            progress_tx,
+            |_index, _value| Ok(()),
+            move |frame| {
+                property_names
+                    .iter()
+                    .find_map(|property_name| frame.props().get_float(property_name).ok())
+                    .ok_or_else(|| {
+                        Self::new_error(format!(
+                            "Score not found on any of the following properties: {}",
+                            property_names.iter().join(", ")
+                        ))
+                    })
+            },
+        )
     }
 
     /// Get several scores per frame, one for each name in `property_names`.
@@ -694,17 +700,22 @@ pub trait MetricPluginFunction: PluginFunction {
         property_names: &'core [&'core str],
         progress_tx: Sender<SequenceStatus>,
     ) -> Result<Vec<Vec<f64>>, VapourSynthError> {
-        Self::collect_frame_values(node, progress_tx, |_index, _value| Ok(()), move |frame| {
-            property_names
-                .iter()
-                .map(|property_name| {
-                    frame.props().get_float(property_name).map_err(|error| {
-                        Self::new_error(format!(
-                            "Score not found on required property \"{property_name}\": {error}"
-                        ))
+        Self::collect_frame_values(
+            node,
+            progress_tx,
+            |_index, _value| Ok(()),
+            move |frame| {
+                property_names
+                    .iter()
+                    .map(|property_name| {
+                        frame.props().get_float(property_name).map_err(|error| {
+                            Self::new_error(format!(
+                                "Score not found on required property \"{property_name}\": {error}"
+                            ))
+                        })
                     })
-                })
-                .collect()
-        })
+                    .collect()
+            },
+        )
     }
 }

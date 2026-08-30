@@ -607,30 +607,25 @@ impl QualityCheck {
                 };
                 let node = plugin.invoke(core, &reference_node, &distorted_node)?;
                 // XPSNR returns a score per plane, combine them into the weighted XPSNR score.
-                XPSNR::collect_frame_values(
-                    &node,
-                    compare_progress_tx,
-                    on_frame,
-                    |frame| {
-                        let plane_scores = XPSNR::PROPERTY_NAMES
-                            .iter()
-                            .map(|property_name| {
-                                frame.props().get_float(property_name).map_err(|error| {
-                                    XPSNR::new_error(format!(
-                                        "Score not found on required property \
-                                         \"{property_name}\": {error}"
-                                    ))
-                                })
+                XPSNR::collect_frame_values(&node, compare_progress_tx, on_frame, |frame| {
+                    let plane_scores = XPSNR::PROPERTY_NAMES
+                        .iter()
+                        .map(|property_name| {
+                            frame.props().get_float(property_name).map_err(|error| {
+                                XPSNR::new_error(format!(
+                                    "Score not found on required property \"{property_name}\": \
+                                     {error}"
+                                ))
                             })
-                            .collect::<Result<Vec<f64>, _>>()?;
-                        match plane_scores.as_slice() {
-                            [y, u, v] => Ok(XPSNR::weight_xpsnr(*y, *u, *v)),
-                            _ => Err(XPSNR::new_error(
-                                "XPSNR should return three plane scores".to_owned(),
-                            )),
-                        }
-                    },
-                )?
+                        })
+                        .collect::<Result<Vec<f64>, _>>()?;
+                    match plane_scores.as_slice() {
+                        [y, u, v] => Ok(XPSNR::weight_xpsnr(*y, *u, *v)),
+                        _ => Err(XPSNR::new_error(
+                            "XPSNR should return three plane scores".to_owned(),
+                        )),
+                    }
+                })?
             },
             QualityMetric::CVVDP {
                 resolution,
@@ -659,22 +654,17 @@ impl QualityCheck {
                     ..Default::default()
                 };
                 let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                CVVDP::collect_frame_values(
-                    &node,
-                    compare_progress_tx,
-                    on_frame,
-                    |frame| {
-                        CVVDP::PROPERTY_NAMES
-                            .iter()
-                            .find_map(|property_name| frame.props().get_float(property_name).ok())
-                            .ok_or_else(|| {
-                                CVVDP::new_error(format!(
-                                    "Score not found on any of the following properties: {}",
-                                    CVVDP::PROPERTY_NAMES.join(", ")
-                                ))
-                            })
-                    },
-                )?
+                CVVDP::collect_frame_values(&node, compare_progress_tx, on_frame, |frame| {
+                    CVVDP::PROPERTY_NAMES
+                        .iter()
+                        .find_map(|property_name| frame.props().get_float(property_name).ok())
+                        .ok_or_else(|| {
+                            CVVDP::new_error(format!(
+                                "Score not found on any of the following properties: {}",
+                                CVVDP::PROPERTY_NAMES.join(", ")
+                            ))
+                        })
+                })?
             },
         };
 
