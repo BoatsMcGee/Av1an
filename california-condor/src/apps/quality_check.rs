@@ -396,13 +396,10 @@ impl QualityCheckApp {
             .iter()
             .enumerate()
             .map(|(scene_index, scene)| {
-                (
-                    scene_index as u64,
-                    SceneReportDetails {
-                        quantizer: scene.encoder.quantizer(),
-                        speed:     scene.encoder.speed(),
-                    },
-                )
+                (scene_index as u64, SceneReportDetails {
+                    quantizer: scene.encoder.quantizer(),
+                    speed:     scene.encoder.speed(),
+                })
             })
             .collect();
         let total_frames = scores.values().fold(0, |acc, scores| acc + scores.len() as u64);
@@ -569,12 +566,10 @@ impl QualityCheckApp {
             );
             for (index, score) in &poor {
                 let details = self.cached_state.scene_details.get(index);
-                let speed =
-                    details.and_then(|d| d.speed.as_deref()).unwrap_or("-");
-                let quantizer = details.and_then(|d| d.quantizer).map_or_else(
-                    || "-".to_owned(),
-                    |q| format!("{q:.4}"),
-                );
+                let speed = details.and_then(|d| d.speed.as_deref()).unwrap_or("-");
+                let quantizer = details
+                    .and_then(|d| d.quantizer)
+                    .map_or_else(|| "-".to_owned(), |q| format!("{q:.4}"));
                 println!("{index:<8}{score:>12.4}{speed:>14}{quantizer:>12}");
             }
         }

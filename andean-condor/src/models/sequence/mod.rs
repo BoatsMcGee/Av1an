@@ -21,7 +21,12 @@ use crate::models::sequence::{
         ParallelEncoderData,
         ParallelEncoderDataHandler,
     },
-    quality_check::{QualityCheckConfig, QualityCheckConfigHandler, QualityCheckData, QualityCheckDataHandler},
+    quality_check::{
+        QualityCheckConfig,
+        QualityCheckConfigHandler,
+        QualityCheckData,
+        QualityCheckDataHandler,
+    },
     scene_concatenator::{SceneConcatenatorConfig, SceneConcatenatorConfigHandler},
     scene_detector::{SceneDetectorConfig, SceneDetectorData, SceneDetectorDataHandler},
     target_quality::{
