@@ -35,8 +35,6 @@ jobs:
     container: boatsmcgee/condor:latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          lfs: "true"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -88,8 +86,6 @@ jobs:
     container: boatsmcgee/condor:latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          lfs: "true"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
