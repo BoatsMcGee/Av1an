@@ -39,9 +39,10 @@ jobs:
       options: --user root
     steps:
       - uses: actions/checkout@v7
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+
+      - name: Setup Clang, Rust, NASM, and VapourSynth
+        run: |
+          pacman -S --noconfirm --needed clang vapoursynth rust nasm
 
       - name: Validate executables
         run: |
