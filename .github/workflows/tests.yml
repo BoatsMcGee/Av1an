@@ -19,7 +19,9 @@ env:
 jobs:
   formatting:
     runs-on: ubuntu-latest
-    container: boatsmcgee/condor:latest
+    container:
+      image: boatsmcgee/condor:latest
+      options: --user root
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust nightly
@@ -32,11 +34,11 @@ jobs:
 
   unit-tests:
     runs-on: ubuntu-latest
-    container: boatsmcgee/condor:latest
+    container:
+      image: boatsmcgee/condor:latest
+      options: --user root
     steps:
       - uses: actions/checkout@v7
-        with:
-          lfs: "true"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -85,11 +87,11 @@ jobs:
   code-coverage:
     needs: [formatting, unit-tests]
     runs-on: ubuntu-latest
-    container: boatsmcgee/condor:latest
+    container:
+      image: boatsmcgee/condor:latest
+      options: --user root
     steps:
       - uses: actions/checkout@v7
-        with:
-          lfs: "true"
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
