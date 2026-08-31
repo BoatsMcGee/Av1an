@@ -3,7 +3,7 @@ FROM archlinux:base-devel AS base
 RUN pacman -Syu --noconfirm
 
 # Install dependencies needed by all steps including runtime step
-RUN pacman -S --noconfirm --needed python python-pip git clang ffms2 ffmpeg mkvtoolnix-cli aom svt-av1 rav1e libvpx
+RUN pacman -S --noconfirm --needed python python-pip ffms2 ffmpeg mkvtoolnix-cli aom svt-av1 rav1e libvpx
 # Install Python runtime dependencies system-wide so they are available to the app
 RUN python -m pip install --no-cache-dir --break-system-packages vsjetpack[full]==2.2.4 vsfgs==0.7.0 --extra-index-url https://jaded-encoding-thaumaturgy.github.io/vs-wheels/simple
 
@@ -20,7 +20,7 @@ RUN ZOOMVTOOLS_VERSION="v2.0.2" && \
 FROM base AS build-base
 
 # Install dependencies needed by build steps
-RUN pacman -S --noconfirm --needed vapoursynth rust nasm git
+RUN pacman -S --noconfirm --needed git clang vapoursynth rust nasm
 
 RUN cargo install cargo-chef
 WORKDIR /tmp/Condor
