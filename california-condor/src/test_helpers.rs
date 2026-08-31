@@ -144,15 +144,32 @@ fn generate_test_clip_inner(path: &Path) {
     assert!(status.success(), "FFmpeg test clip generation failed");
 }
 
-/// Set the current working directory to the specified temporary directory.
-/// Use `tempfile::tempdir()` to initialize a temporary directory.
-pub fn set_cwd(temporary_directory: &Path) {
-    std::env::set_current_dir(temporary_directory).unwrap_or_else(|_| {
-        panic!(
-            "set current working directory to {}",
-            temporary_directory.display()
-        )
-    });
+/// RAII guard that temporarily changes the process working directory and
+/// restores the previous one when dropped (even on panic).
+///
+/// This prevents the process-wide CWD from pointing at a deleted temporary
+/// directory after a test finishes, which would break subsequent tests.
+pub struct CwdGuard(PathBuf);
+
+impl CwdGuard {
+    /// Set the current working directory to `directory`, returning a guard
+    /// that restores the previous working directory on drop.
+    pub fn set(directory: &Path) -> Self {
+        let previous = std::env::current_dir().expect("current directory");
+        std::env::set_current_dir(directory).unwrap_or_else(|_| {
+            panic!(
+                "set current working directory to {}",
+                directory.display()
+            )
+        });
+        Self(previous)
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
 }
 
 /// Build a default Configuration given a test video, output path, and temp
