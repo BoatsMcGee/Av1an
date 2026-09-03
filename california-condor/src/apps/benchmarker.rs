@@ -64,25 +64,29 @@ impl TuiApp for BenchmarkerApp {
     ) -> Result<()> {
         const DETAILS: SequenceDetails = Benchmarker::DETAILS;
         let (event_tx, event_rx) = mpsc::channel();
-        let input_tx = event_tx.clone();
-        thread::spawn(move || {
-            loop {
-                if let Ok(TermEvent::Key(key)) = event::read()
-                    && input_tx.send(BenchmarkerAppEvent::Input(key)).is_err()
-                {
-                    break;
+        if !crate::apps::is_test_mode() {
+            let input_tx = event_tx.clone();
+            thread::spawn(move || {
+                loop {
+                    if let Ok(TermEvent::Key(key)) = event::read()
+                        && input_tx.send(BenchmarkerAppEvent::Input(key)).is_err()
+                    {
+                        break;
+                    }
                 }
-            }
-        });
-        let tick_tx = event_tx.clone();
-        thread::spawn(move || {
-            loop {
-                if tick_tx.send(BenchmarkerAppEvent::Tick).is_err() {
-                    break;
+            });
+        }
+        if !crate::apps::is_test_mode() {
+            let tick_tx = event_tx.clone();
+            thread::spawn(move || {
+                loop {
+                    if tick_tx.send(BenchmarkerAppEvent::Tick).is_err() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(33)); // ~30 FPS
                 }
-                thread::sleep(Duration::from_millis(33)); // ~30 FPS
-            }
-        });
+            });
+        }
         let shared_progress = self.shared_progress.clone();
         let quit = Arc::new(AtomicBool::new(false));
         let quit_flag = Arc::clone(&quit);
@@ -209,8 +213,19 @@ impl TuiApp for BenchmarkerApp {
             quit_flag.store(true, Ordering::Release);
         });
 
-        let stdout_is_terminal = std::io::stdout().is_terminal();
+        if crate::apps::is_test_mode() {
+            while !quit.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(10));
+                if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                    self.cached_state = snapshot;
+                }
+                while event_rx.try_recv().is_ok() {}
+            }
+            self.cached_state = self.shared_progress.read();
+            return Ok(());
+        }
         let mut terminal = self.init()?;
+        let stdout_is_terminal = std::io::stdout().is_terminal();
         'event_loop: loop {
             while let Ok(BenchmarkerAppEvent::Input(key)) = event_rx.try_recv() {
                 if Self::handle_ctrl_c(
@@ -223,7 +238,7 @@ impl TuiApp for BenchmarkerApp {
                     if let Some(snapshot) = self.shared_progress.read_if_dirty() {
                         self.cached_state = snapshot;
                     }
-                    let _ = terminal.draw(|f| self.render(f));
+                    terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
                     break 'event_loop;
                 }
@@ -235,7 +250,7 @@ impl TuiApp for BenchmarkerApp {
 
             if quit.load(Ordering::Acquire) {
                 self.cached_state = self.shared_progress.read();
-                let _ = terminal.draw(|f| self.render(f));
+                terminal.draw(|f| self.render(f))?;
                 self.restore(terminal)?;
                 break;
             }
@@ -255,7 +270,7 @@ impl TuiApp for BenchmarkerApp {
                         if let Some(snapshot) = self.shared_progress.read_if_dirty() {
                             self.cached_state = snapshot;
                         }
-                        let _ = terminal.draw(|f| self.render(f));
+                        terminal.draw(|f| self.render(f))?;
                         self.restore(terminal)?;
                         break 'event_loop;
                     }
@@ -264,7 +279,7 @@ impl TuiApp for BenchmarkerApp {
                     if let Some(snapshot) = self.shared_progress.read_if_dirty() {
                         self.cached_state = snapshot;
                     }
-                    let _ = terminal.draw(|f| self.render(f));
+                    terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
                     break;
                 },
@@ -275,7 +290,7 @@ impl TuiApp for BenchmarkerApp {
                     if let Some(snapshot) = self.shared_progress.read_if_dirty() {
                         self.cached_state = snapshot;
                     }
-                    let _ = terminal.draw(|f| self.render(f));
+                    terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
                     break;
                 },
