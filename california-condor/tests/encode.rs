@@ -20,9 +20,11 @@ mod tests {
         ffmpeg::FFPixelFormat,
         vapoursynth::vapoursynth_filters::VapourSynthFilter,
     };
+    use serial_test::serial;
 
     use super::*;
 
+    #[serial]
     #[test]
     fn default_and_no_scenes() {
         if !ffmpeg_is_available() {
@@ -83,6 +85,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn with_options_and_no_scenes() {
         if !ffmpeg_is_available() {
@@ -162,6 +165,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn with_custom_options() {
         if !ffmpeg_is_available() {

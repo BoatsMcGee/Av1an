@@ -16,9 +16,11 @@ mod tests {
         models::sequence::noise_detector::{NoiseDetectorConfig, NoiseDetectorData},
         vapoursynth::vapoursynth_filters::VapourSynthFilter,
     };
+    use serial_test::serial;
 
     use super::*;
 
+    #[serial]
     #[test]
     fn default_and_no_scenes() {
         if !ffmpeg_is_available() {
@@ -60,6 +62,7 @@ mod tests {
         check_basic_config(&config, &expected_config);
     }
 
+    #[serial]
     #[test]
     fn with_custom_filters() {
         if !ffmpeg_is_available() {
