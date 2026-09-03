@@ -645,7 +645,8 @@ impl Input {
                     vapoursynth_decoder.get_output_index(),
                     vapoursynth_decoder.get_node_modifier(),
                 )?;
-                let frame_semaphore = Arc::new(Semaphore::new(24));
+                let concurrency = std::thread::available_parallelism().map_or(24, |n| n.get());
+                let frame_semaphore = Arc::new(Semaphore::new(concurrency));
                 let pair = Arc::new((Mutex::new(BTreeMap::new()), Condvar::new()));
 
                 for index in frame_indices {
