@@ -32,9 +32,11 @@ mod tests {
         },
         vapoursynth::vapoursynth_filters::VapourSynthFilter,
     };
+    use serial_test::serial;
 
     use super::*;
 
+    #[serial]
     #[test]
     fn with_custom_options() {
         if !ffmpeg_is_available() {

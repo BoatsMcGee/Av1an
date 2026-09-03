@@ -17,9 +17,11 @@ use common::{condor_cmd, path_str};
 #[cfg(test)]
 mod tests {
     use andean_condor::models::sequence::noise_detector::NoiseDetectorConfig;
+    use serial_test::serial;
 
     use super::*;
 
+    #[serial]
     #[test]
     fn default_and_no_noise_detector_data() {
         if !ffmpeg_is_available() {
@@ -60,6 +62,7 @@ mod tests {
         check_basic_config(&config, &expected_config);
     }
 
+    #[serial]
     #[test]
     fn with_custom_options_and_iso_100() {
         if !ffmpeg_is_available() {
