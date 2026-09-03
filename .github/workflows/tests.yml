@@ -97,7 +97,13 @@ jobs:
       - parallel:
         - name: Install Rust stable
           uses: dtolnay/rust-toolchain@stable
-        - uses: Swatinem/rust-cache@v2
+
+        - name: Setup Rust cache
+          uses: Swatinem/rust-cache@v2
+
+        - name: Setup Clang, NASM, and VapourSynth
+          run: |
+            pacman -S --noconfirm --needed clang nasm vapoursynth
 
         - name: Validate executables
           run: |
