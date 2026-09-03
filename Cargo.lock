@@ -227,8 +227,8 @@ dependencies = [
 
 [[package]]
 name = "av-scenechange"
-version = "0.24.1"
-source = "git+https://github.com/BoatsMcGee/av-scenechange?branch=av-decoders-0.11.0#3b133f89c48a8752d33aa88c16e924719570b90b"
+version = "0.25.0"
+source = "git+https://github.com/BoatsMcGee/av-scenechange?branch=av-decoders-0.11.0#bfae426ebaa3d09840c373b06dc322abe61d0374"
 dependencies = [
  "aligned",
  "anyhow",
@@ -2450,7 +2450,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys",
