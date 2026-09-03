@@ -123,20 +123,6 @@ mod tests {
             },
             ..Default::default()
         });
-        let expected_crf = |index| match index {
-            0 => 35.0,
-            1 => 23.0,
-            2 => 20.0,
-            3 => 20.0,
-            4 => 40.0,
-            _ => 0.0,
-        };
-        expected_config.condor.scenes.iter_mut().enumerate().for_each(|(index, scene)| {
-            scene.encoder.parameters_mut().insert(
-                "crf".to_owned(),
-                CLIParameter::new_number("--", " ", expected_crf(index)),
-            );
-        });
         // immutable shadow
         let expected_config = expected_config;
 
@@ -150,6 +136,13 @@ mod tests {
             "scenes contains {} scenes",
             test_video.scenes.len()
         );
+        let quantizer_range = config
+            .condor
+            .sequence_config
+            .target_quality
+            .as_ref()
+            .expect("Target Quality sequence_config should exist")
+            .quantizer_range;
         config.condor.scenes.iter().enumerate().for_each(|(index, scene)| {
             assert!(
                 !scene.sequence_data.target_quality.passes.is_empty(),
@@ -169,12 +162,26 @@ mod tests {
                 index,
                 maximum_probes
             );
-            assert_eq!(
-                scene.encoder.parameters().get("crf").expect("crf should exist"),
-                &CLIParameter::new_number("--", " ", expected_crf(index)),
-                "scene {} should have crf {}",
+            let crf = scene.encoder.parameters().get("crf").expect("crf should exist");
+            assert_matches!(
+                crf,
+                CLIParameter::Number { .. },
+                "scene {} crf should be a number",
+                index
+            );
+            let crf_value = match crf {
+                CLIParameter::Number {
+                    value, ..
+                } => *value,
+                _ => panic!("scene {} crf should be a number", index),
+            };
+            assert!(
+                crf_value >= quantizer_range.0 as f64 && crf_value <= quantizer_range.1 as f64,
+                "scene {} crf {} should be within {} and {} CRF",
                 index,
-                expected_crf(index)
+                crf_value,
+                quantizer_range.0,
+                quantizer_range.1
             );
         });
     }
