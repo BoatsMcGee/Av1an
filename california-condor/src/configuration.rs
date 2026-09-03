@@ -181,7 +181,9 @@ impl Configuration {
         if let Some(directory) = directory {
             std::fs::create_dir_all(directory).map_err(ConfigError::Save)?;
         }
-        std::fs::write(path, buffer).map_err(ConfigError::Save)?;
+        let temp_path = path.with_extension("temp");
+        std::fs::write(&temp_path, &buffer).map_err(ConfigError::Save)?;
+        std::fs::rename(&temp_path, path).map_err(ConfigError::Save)?;
         Ok(())
     }
 
