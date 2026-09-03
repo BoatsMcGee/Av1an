@@ -68,25 +68,20 @@ jobs:
         with:
           tool: cargo-msrv
 
-      # - name: Validate minimum Rust version
-      #   run: |
-      #     cargo msrv verify --path andean-condor
-      #     cargo msrv verify --path california-condor
+      - name: Validate minimum Rust version
+        run: |
+          cargo msrv verify --path andean-condor
+          cargo msrv verify --path california-condor
 
-      # - name: Testing Andean Condor
-      #   working-directory: ./andean-condor
-      #   run: |
-      #     cargo test --profile ci
+      - name: Testing Andean Condor
+        working-directory: ./andean-condor
+        run: |
+          cargo test --profile ci
 
-      # - name: Testing California Condor
-      #   working-directory: ./california-condor
-      #   run: |
-      #     cargo test --profile ci
-
-      - name: Testing Serial Integration Tests
+      - name: Testing California Condor
         working-directory: ./california-condor
         run: |
-          cargo test --profile ci --test benchmark
+          cargo test --profile ci
 
   code-coverage:
     needs: [formatting, unit-tests]

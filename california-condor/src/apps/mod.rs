@@ -47,7 +47,9 @@ pub trait TuiApp: Send + Sync + 'static {
             enable_raw_mode()?;
         }
 
-        let writer: Box<dyn Write + Send> = if use_stdout {
+        let writer: Box<dyn Write + Send> = if is_test_mode() {
+            Box::new(io::sink())
+        } else if use_stdout {
             Box::new(stdout())
         } else {
             Box::new(stderr())

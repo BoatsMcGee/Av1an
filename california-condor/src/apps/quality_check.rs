@@ -75,25 +75,29 @@ impl TuiApp for QualityCheckApp {
     ) -> Result<()> {
         let quit = Arc::new(AtomicBool::new(false));
         let (event_tx, event_rx) = mpsc::channel();
-        let input_tx = event_tx.clone();
-        thread::spawn(move || {
-            loop {
-                if let Ok(TermEvent::Key(key)) = event::read()
-                    && input_tx.send(QualityCheckAppEvent::Input(key)).is_err()
-                {
-                    break;
+        if !crate::apps::is_test_mode() {
+            let input_tx = event_tx.clone();
+            thread::spawn(move || {
+                loop {
+                    if let Ok(TermEvent::Key(key)) = event::read()
+                        && input_tx.send(QualityCheckAppEvent::Input(key)).is_err()
+                    {
+                        break;
+                    }
                 }
-            }
-        });
-        let tick_tx = event_tx.clone();
-        thread::spawn(move || {
-            loop {
-                if tick_tx.send(QualityCheckAppEvent::Tick).is_err() {
-                    break;
+            });
+        }
+        if !crate::apps::is_test_mode() {
+            let tick_tx = event_tx.clone();
+            thread::spawn(move || {
+                loop {
+                    if tick_tx.send(QualityCheckAppEvent::Tick).is_err() {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(33)); // ~30 FPS
                 }
-                thread::sleep(Duration::from_millis(33)); // ~30 FPS
-            }
-        });
+            });
+        }
         let shared_progress = self.shared_progress.clone();
         let quit_flag = Arc::clone(&quit);
         thread::spawn(move || {
@@ -204,6 +208,23 @@ impl TuiApp for QualityCheckApp {
             quit_flag.store(true, Ordering::Release);
         });
 
+        if crate::apps::is_test_mode() {
+            while !quit.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(10));
+                if let Some(snapshot) = self.shared_progress.read_if_dirty() {
+                    self.cached_state = snapshot;
+                }
+                while event_rx.try_recv().is_ok() {}
+            }
+            self.cached_state = self.shared_progress.read();
+            if self.cached_state.frames_compared == self.cached_state.total_frames
+                && !self.cached_state.scene_scores.is_empty()
+            {
+                self.print_report();
+            }
+            return Ok(());
+        }
+
         let stdout_is_terminal = std::io::stdout().is_terminal();
         let mut terminal = self.init()?;
         'event_loop: loop {
@@ -218,7 +239,7 @@ impl TuiApp for QualityCheckApp {
                     if let Some(snapshot) = self.shared_progress.read_if_dirty() {
                         self.cached_state = snapshot;
                     }
-                    let _ = terminal.draw(|f| self.render(f));
+                    terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
                     break 'event_loop;
                 }
@@ -230,7 +251,7 @@ impl TuiApp for QualityCheckApp {
 
             if quit.load(Ordering::Acquire) {
                 self.cached_state = self.shared_progress.read();
-                let _ = terminal.draw(|f| self.render(f));
+                terminal.draw(|f| self.render(f))?;
                 self.restore(terminal)?;
                 break;
             }
@@ -249,14 +270,14 @@ impl TuiApp for QualityCheckApp {
                         if let Some(snapshot) = self.shared_progress.read_if_dirty() {
                             self.cached_state = snapshot;
                         }
-                        let _ = terminal.draw(|f| self.render(f));
+                        terminal.draw(|f| self.render(f))?;
                         self.restore(terminal)?;
                         break 'event_loop;
                     }
                 },
                 Ok(QualityCheckAppEvent::Quit) => {
                     self.cached_state = self.shared_progress.read();
-                    let _ = terminal.draw(|f| self.render(f));
+                    terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
                     break;
                 },
@@ -265,7 +286,7 @@ impl TuiApp for QualityCheckApp {
                 },
                 Err(RecvTimeoutError::Disconnected) => {
                     self.cached_state = self.shared_progress.read();
-                    let _ = terminal.draw(|f| self.render(f));
+                    terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
                     break;
                 },
