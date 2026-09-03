@@ -54,12 +54,10 @@ jobs:
           echo "message=$commit" >> $env:GITHUB_OUTPUT
 
       - name: Condor build
-        if: github.ref == 'refs/heads/condor'
         run: cargo build --release --bin condor
 
       - name: Generate changelog
         id: changelog
-        if: github.ref == 'refs/heads/condor'
         shell: pwsh
         run: |
           $lastTag = git describe --tags --abbrev=0 2>$null
@@ -88,7 +86,6 @@ jobs:
           echo "EOF" >> $env:GITHUB_OUTPUT
 
       - name: Create or update prerelease for Condor
-        if: github.ref == 'refs/heads/condor'
         uses: softprops/action-gh-release@v2
         with:
           prerelease: true
