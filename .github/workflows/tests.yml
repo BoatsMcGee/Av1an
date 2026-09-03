@@ -101,9 +101,9 @@ jobs:
         - name: Setup Rust cache
           uses: Swatinem/rust-cache@v2
 
-        - name: Setup Clang, NASM, and VapourSynth
+        - name: Setup Git, Clang, NASM, and VapourSynth
           run: |
-            pacman -S --noconfirm --needed clang nasm vapoursynth
+            pacman -S --noconfirm --needed git clang nasm vapoursynth
 
         - name: Validate executables
           run: |
