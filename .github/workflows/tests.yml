@@ -70,14 +70,10 @@ jobs:
         run: |
           cargo clippy --profile ci -- -D warnings
 
-      - parallel:
-        - name: Validate Andean Condor minimum Rust version
-          run: |
-            cargo msrv verify --path andean-condor
-
-        - name: Validate California Condor minimum Rust version
-          run: |
-            cargo msrv verify --path california-condor
+      - name: Validate minimum Rust version
+        run: |
+          cargo msrv verify --path andean-condor
+          cargo msrv verify --path california-condor
 
       - name: Testing Andean Condor
         working-directory: ./andean-condor
@@ -97,26 +93,27 @@ jobs:
       options: --user root
     steps:
       - uses: actions/checkout@v7
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
-      - name: Validate executables
-        run: |
-          which aomenc
-          which SvtAv1EncApp
-          which rav1e
-          which vpxenc
-          which x265
-          which x264
-          which vspipe
-          which ffmpeg
-          which mkvmerge
+      - parallel:
+        - name: Install Rust stable
+          uses: dtolnay/rust-toolchain@stable
+        - uses: Swatinem/rust-cache@v2
 
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-llvm-cov
+        - name: Validate executables
+          run: |
+            which aomenc
+            which SvtAv1EncApp
+            which rav1e
+            which vpxenc
+            which x265
+            which x264
+            which ffmpeg
+            which mkvmerge
+
+        - name: Install cargo-llvm-cov
+          uses: taiki-e/install-action@v2
+          with:
+            tool: cargo-llvm-cov
 
       - name: Generate code coverage
         run: cargo llvm-cov --profile ci --workspace --lcov --output-path lcov.log --ignore-filename-regex tests\.rs
