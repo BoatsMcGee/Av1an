@@ -17,6 +17,8 @@ use common::{condor_cmd, path_str};
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches;
+
     use andean_condor::{
         ffmpeg::FFPixelFormat,
         models::{
