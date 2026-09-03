@@ -227,23 +227,13 @@ impl TuiApp for SceneDetectionApp {
         let input_block = Block::bordered()
             .border_type(ratatui::widgets::BorderType::Rounded)
             .title(Line::from("Input").centered());
-        let input_block = if self.attempted_cancel {
-            input_block.title_bottom(
-                Line::from(
-                    "Scene Detection does not support cancelling. Press Ctrl+C again to exit.",
-                )
-                .centered(),
-            )
-        } else {
-            input_block
-        };
         let input_info = input_info.block(input_block);
         frame.render_widget(input_info, layout[0]);
 
         let progress_bar = ProgressBar {
             color:               MAIN_COLOR,
             processing_title:    if self.attempted_cancel {
-                "Waiting for Scene Detection to Finish...".to_owned()
+                "Shutting down Scene Detector...".to_owned()
             } else {
                 "Detecting Scenes...".to_owned()
             },
@@ -305,7 +295,8 @@ impl SceneDetectionApp {
                 return true;
             } else if !stdout_is_terminal {
                 println!(
-                    "Scene Detection does not support cancelling. Press Ctrl+C again to exit."
+                    "Waiting for Scene Detector to shut down. Press Ctrl+C again to exit \
+                     immediately."
                 );
             }
         }
