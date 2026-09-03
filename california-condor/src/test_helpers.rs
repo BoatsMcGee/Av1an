@@ -156,12 +156,8 @@ impl CwdGuard {
     /// that restores the previous working directory on drop.
     pub fn set(directory: &Path) -> Self {
         let previous = std::env::current_dir().expect("current directory");
-        std::env::set_current_dir(directory).unwrap_or_else(|_| {
-            panic!(
-                "set current working directory to {}",
-                directory.display()
-            )
-        });
+        std::env::set_current_dir(directory)
+            .unwrap_or_else(|_| panic!("set current working directory to {}", directory.display()));
         Self(previous)
     }
 }
