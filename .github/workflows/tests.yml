@@ -3,7 +3,6 @@ on:
   push:
     branches:
       - master
-      - tq-tests
   pull_request:
     branches:
       - master
@@ -40,38 +39,45 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Setup Clang, NASM, and VapourSynth
-        run: |
-          pacman -S --noconfirm --needed clang nasm vapoursynth
+      - parallel:
+        - name: Install Rust stable
+          uses: dtolnay/rust-toolchain@stable
 
-      - name: Validate executables
-        run: |
-          which aomenc
-          which SvtAv1EncApp
-          which rav1e
-          which vpxenc
-          which x265
-          which x264
-          which vspipe
-          which ffmpeg
-          which mkvmerge
+        - name: Setup Rust cache
+          uses: Swatinem/rust-cache@v2
+
+        - name: Setup Clang, NASM, and VapourSynth
+          run: |
+            pacman -S --noconfirm --needed clang nasm vapoursynth
+
+        - name: Install cargo-msrv
+          uses: taiki-e/install-action@v2
+          with:
+            tool: cargo-msrv
+
+        - name: Validate executables
+          run: |
+            which aomenc
+            which SvtAv1EncApp
+            which rav1e
+            which vpxenc
+            which x265
+            which x264
+            which ffmpeg
+            which mkvmerge
 
       - name: Build Condor
         run: |
           cargo clippy --profile ci -- -D warnings
 
-      - name: Install cargo-msrv
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-msrv
+      - parallel:
+        - name: Validate Andean Condor minimum Rust version
+          run: |
+            cargo msrv verify --path andean-condor
 
-      - name: Validate minimum Rust version
-        run: |
-          cargo msrv verify --path andean-condor
-          cargo msrv verify --path california-condor
+        - name: Validate California Condor minimum Rust version
+          run: |
+            cargo msrv verify --path california-condor
 
       - name: Testing Andean Condor
         working-directory: ./andean-condor
