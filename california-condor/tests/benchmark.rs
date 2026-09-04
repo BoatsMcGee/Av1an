@@ -7,7 +7,7 @@ use california_condor::{
 #[path = "common.rs"]
 mod common;
 
-use common::{condor_cmd, path_str};
+use common::condor_cmd;
 
 #[cfg(test)]
 mod tests {
