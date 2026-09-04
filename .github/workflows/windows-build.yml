@@ -71,10 +71,11 @@ jobs:
             $all = "No changes since $lastTag"
           }
           $lines = @($all -split "`n")
-          $first10 = $lines | Select-Object -First 10
-          $rest = $lines | Select-Object -Skip 10
+          $first10 = @($lines | Select-Object -First 10)
+          $rest = @($lines | Select-Object -Skip 10)
 
-          $body = "Latest build from $env:GITHUB_SHA`n`nCommit:`n${{ steps.get_commit.outputs.message }}`n`nChanges since $lastTag:`n$($first10 -join "`n")"
+          $commit = git log -1 --pretty=format:"%h: %s (%an)"
+          $body = "Latest build from $env:GITHUB_SHA`n`nCommit:`n$commit`n`nChanges since ${lastTag}:`n$($first10 -join "`n")"
 
           if ($rest.Count -gt 0) {
             $more = $rest.Count
