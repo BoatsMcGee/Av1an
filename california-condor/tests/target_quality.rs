@@ -13,7 +13,7 @@ use california_condor::{
     test_helpers::*,
     utils::hash_path::hash_path,
 };
-use common::{condor_cmd, path_str};
+use common::condor_cmd;
 
 #[cfg(test)]
 mod tests {

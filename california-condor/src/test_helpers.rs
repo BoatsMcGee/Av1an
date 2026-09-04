@@ -43,6 +43,11 @@ use andean_condor::{
 
 use crate::configuration::{CliSequenceConfig, CliSequenceData, Configuration};
 
+/// Convert a path to a `&str`, assuming it contains valid UTF-8.
+pub fn path_str(p: &Path) -> &str {
+    p.to_str().expect("path should be valid UTF-8")
+}
+
 /// Cached test clip path, generated once per process.
 pub static TEST_CLIP: OnceLock<PathBuf> = OnceLock::new();
 

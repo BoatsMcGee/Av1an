@@ -9,7 +9,3 @@ pub fn condor_cmd(working_directory: &tempfile::TempDir) -> Command {
     cmd.current_dir(working_directory.path());
     cmd
 }
-
-pub fn path_str(p: &std::path::Path) -> &str {
-    p.to_str().expect("path should be valid UTF-8")
-}
