@@ -43,6 +43,8 @@ jobs:
           Move-Item -Path "ffms2-5.0-msvc" -Destination "C:\ffms2"
 
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: Swatinem/rust-cache@v2
 
@@ -62,11 +64,14 @@ jobs:
         run: |
           $lastTag = git describe --tags --abbrev=0 2>$null
           if (-not $lastTag) {
-            $lastTag = 'HEAD~1'
+            $lastTag = git rev-list --max-parents=0 HEAD 2>$null
+          }
+          if (-not $lastTag) {
+            $lastTag = 'HEAD'
           }
           echo "last_tag=$lastTag" >> $env:GITHUB_OUTPUT
 
-          $all = git log "$lastTag..HEAD" --pretty=format:"- %s"
+          $all = git log "$lastTag..HEAD" --pretty=format:"- %s" 2>$null
           if (-not $all) {
             $all = "No changes since $lastTag"
           }
