@@ -1,9 +1,10 @@
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::sequence::SequenceConfigHandler;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SpeedScalerConfig
 where
     Self: SequenceConfigHandler,

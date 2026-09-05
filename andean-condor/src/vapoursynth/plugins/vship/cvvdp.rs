@@ -1,6 +1,7 @@
 use std::fmt::Write;
 
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
@@ -158,7 +159,17 @@ impl VapourSynthPluginScript for CVVDP {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, IntoStaticStr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Display,
+    EnumString,
+    IntoStaticStr,
+    JsonSchema,
 )]
 pub enum DisplayModel {
     #[strum(serialize = "standard_4k")]

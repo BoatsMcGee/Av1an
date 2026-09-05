@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
@@ -20,6 +21,7 @@ pub mod photon_noise;
     PartialEq,
     Eq,
     Hash,
+    JsonSchema,
 )]
 pub enum EncoderBase {
     #[strum(serialize = "aom")]
@@ -469,7 +471,7 @@ impl EncoderBase {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum Encoder {
     AOM {
         executable:   Option<PathBuf>,
@@ -761,7 +763,7 @@ impl Encoder {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 pub enum EncoderPasses {
     All(u8),
     Specific(u8, u8),

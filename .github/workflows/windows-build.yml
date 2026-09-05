@@ -3,6 +3,8 @@ on:
   push:
     branches:
       - 'master'
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -58,6 +60,10 @@ jobs:
       - name: Condor build
         run: cargo build --release --bin condor
 
+      - name: Generate configuration schema
+        shell: pwsh
+        run: cargo run --release --bin generate-schema > california-condor/configuration.schema.json
+
       - name: Generate changelog
         id: changelog
         shell: pwsh
@@ -92,10 +98,25 @@ jobs:
           echo "EOF" >> $env:GITHUB_OUTPUT
 
       - name: Create or update prerelease for Condor
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
         with:
           prerelease: true
           tag_name: latest
           body: ${{ steps.changelog.outputs.body }}
-          files: target/release/condor.exe
+          files: |
+            target/release/condor.exe
+            california-condor/configuration.schema.json
+          fail_on_unmatched_files: true
+
+      - name: Create tagged release for Condor
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: false
+          tag_name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            target/release/condor.exe
+            california-condor/configuration.schema.json
           fail_on_unmatched_files: true

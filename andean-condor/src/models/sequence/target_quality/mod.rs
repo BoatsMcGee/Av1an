@@ -1,4 +1,5 @@
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
@@ -17,7 +18,7 @@ use crate::models::{
 
 pub mod types;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TargetQualityConfig
 where
     Self: SequenceConfigHandler,
@@ -55,7 +56,7 @@ pub trait TargetQualityConfigHandler {
     fn target_quality_mut(&mut self) -> Result<&mut Option<TargetQualityConfig>>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TargetQualityData
 where
     Self: Default,

@@ -76,14 +76,29 @@ use andean_condor::{
     },
 };
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::info;
 
 use crate::{commands::DecoderMethod, utils::hash_path::hash_path};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Fallback schema URL used when the binary was built without git metadata
+/// (e.g. from a source tarball). Normal builds bake the correct URL in via
+/// `CONDOR_SCHEMA_URL` in `build.rs`.
+pub const CONFIGURATION_SCHEMA_URL: &str =
+    "https://github.com/rust-av/Av1an/releases/download/latest/configuration.schema.json";
+
+#[inline]
+fn default_schema_url() -> String {
+    option_env!("CONDOR_SCHEMA_URL").unwrap_or(CONFIGURATION_SCHEMA_URL).to_owned()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Configuration {
+    #[serde(rename = "$schema", default = "default_schema_url")]
+    #[schemars(description = "URL of the JSON schema used to validate this configuration file")]
+    pub schema:            String,
     pub condor:            CondorModel<CliSequenceData, CliSequenceConfig>,
     // Duplicated in case Condor instantiates a VapourSynthScript Input
     pub input:             PathBuf,
@@ -118,6 +133,7 @@ impl Configuration {
         let scenes_directory = temp.join("scenes");
 
         let mut configuration = Self {
+            schema: default_schema_url(),
             condor: CondorModel {
                 input:           input_data,
                 output:          OutputModel {
@@ -405,7 +421,7 @@ impl Configuration {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CliSequenceConfig
 where
     Self: SequenceConfigHandler
@@ -542,7 +558,7 @@ impl SceneConcatenatorConfigHandler for CliSequenceConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CliSequenceData
 where
     Self: SequenceDataHandler

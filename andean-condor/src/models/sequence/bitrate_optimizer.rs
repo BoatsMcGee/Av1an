@@ -1,9 +1,10 @@
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::sequence::SequenceConfigHandler;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct BitrateOptimizerConfig
 where
     Self: SequenceConfigHandler,

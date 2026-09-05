@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
@@ -16,7 +17,17 @@ pub static DEFAULT_XPSNR_TARGET_RANGE: (f64, f64) = (44.0, 46.0);
 pub static DEFAULT_CVVDP_TARGET_RANGE: (f64, f64) = (9.4, 9.6);
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, IntoStaticStr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Display,
+    EnumString,
+    IntoStaticStr,
+    JsonSchema,
 )]
 pub enum InterpolationMethod {
     #[strum(serialize = "linear")]
@@ -36,7 +47,17 @@ pub enum InterpolationMethod {
 }
 
 #[derive(
-    Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize, EnumString, IntoStaticStr, Display,
+    Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    EnumString,
+    IntoStaticStr,
+    Display,
+    JsonSchema,
 )]
 pub enum VmafFeature {
     #[strum(serialize = "default")]
@@ -51,7 +72,7 @@ pub enum VmafFeature {
     Uhd,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum QualityMetric {
     VMAF {
         target_range: (f64, f64),
@@ -189,14 +210,14 @@ impl QualityMetric {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct TargetQualityProbing {
     pub encoder_options: Option<HashMap<String, CLIParameter>>,
     pub strategy:        ProbeStrategy,
     pub statistic:       ProbeStatistic,
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum ProbeStrategy {
     #[default]
     Whole,
@@ -251,7 +272,7 @@ impl ProbeStrategy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub enum SubsetProbePosition {
     Start,
     #[default]
@@ -259,7 +280,7 @@ pub enum SubsetProbePosition {
     End,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum SubsetProbeLength {
     Percentage(f64),
     Frames(u32),
@@ -272,7 +293,7 @@ impl Default for SubsetProbeLength {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum ProbeStatistic {
     #[default]
     Mean,
@@ -357,7 +378,7 @@ impl ProbeStatistic {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QualityPass {
     pub quantizer:    f64,
     pub scores:       Vec<f64>,
