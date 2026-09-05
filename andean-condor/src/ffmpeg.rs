@@ -2,6 +2,7 @@ use std::{path::Path, process::Command, str::FromStr};
 
 use anyhow::{Result, bail};
 use av_format::rational::Rational64;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use vapoursynth::format::PresetFormat;
 
@@ -140,7 +141,7 @@ fn parse_ffprobe_color_range(color_range: &str) -> Option<ColorRange> {
 }
 
 /// Pixel formats supported by ffmpeg
-#[derive(Eq, PartialEq, Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Copy, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub enum FFPixelFormat {
     GBRP,
     GBRP10LE,

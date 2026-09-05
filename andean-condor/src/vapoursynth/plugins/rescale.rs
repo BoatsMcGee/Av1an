@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
@@ -442,7 +443,9 @@ impl RescaleBuilder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, EnumString, IntoStaticStr, Display)]
+#[derive(
+    Debug, Clone, PartialEq, Serialize, Deserialize, EnumString, IntoStaticStr, Display, JsonSchema,
+)]
 pub enum VSJETKernel {
     /// Bicubic resizer. (b=0, c=0.5).
     #[strum(serialize = "Bicubic")]
@@ -598,6 +601,7 @@ impl Default for VSJETKernel {
     IntoStaticStr,
     Default,
     Display,
+    JsonSchema,
 )]
 #[serde(rename_all = "UPPERCASE")]
 pub enum BorderHandling {
@@ -624,6 +628,7 @@ pub enum BorderHandling {
     IntoStaticStr,
     Default,
     Display,
+    JsonSchema,
 )]
 pub enum DescaleMode {
     #[strum(serialize = "w")]
@@ -636,7 +641,17 @@ pub enum DescaleMode {
 }
 
 #[derive(
-    Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, EnumString, IntoStaticStr, Display,
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    EnumString,
+    IntoStaticStr,
+    Display,
+    JsonSchema,
 )]
 pub enum Doubler {
     #[strum(serialize = "ArtCNN")]
@@ -664,6 +679,7 @@ impl Default for Doubler {
     IntoStaticStr,
     Default,
     Display,
+    JsonSchema,
 )]
 pub enum ArtCNNModel {
     #[strum(serialize = "C4F32")]
@@ -704,6 +720,7 @@ pub enum ArtCNNModel {
     IntoStaticStr,
     Default,
     Display,
+    JsonSchema,
 )]
 pub enum Waifu2xModel {
     /// Waifu2x model for anime-style art.

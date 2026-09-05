@@ -1,4 +1,5 @@
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
@@ -9,7 +10,7 @@ use crate::models::{
     },
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QualityCheckConfig
 where
     Self: SequenceConfigHandler,
@@ -40,7 +41,7 @@ pub trait QualityCheckConfigHandler {
     fn quality_check_mut(&mut self) -> Result<&mut Option<QualityCheckConfig>>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct QualityCheckData {
     pub quality: QualityPass,
 }

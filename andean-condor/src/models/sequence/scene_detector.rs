@@ -2,6 +2,7 @@ use std::{collections::BTreeMap, time::SystemTime};
 
 use anyhow::{Result, bail};
 use av_scenechange::ScenecutResult;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
@@ -10,7 +11,7 @@ use crate::models::{input::Input as InputModel, sequence::SequenceConfigHandler}
 pub static DEFAULT_MAX_SCENE_LENGTH_SECONDS: u8 = 10;
 pub static DEFAULT_MIN_SCENE_LENGTH_FRAMES: u8 = 24;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SceneDetectorData
 where
     Self: Default,
@@ -34,7 +35,7 @@ pub trait SceneDetectorDataHandler {
     fn get_scene_detection_mut(&mut self) -> Result<&mut SceneDetectorData>;
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct SceneDetectorConfig
 where
     Self: SequenceConfigHandler,
@@ -46,7 +47,7 @@ where
 impl SequenceConfigHandler for SceneDetectorConfig {
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub enum SceneDetectionMethod {
     None {
         minimum_length: usize,
@@ -171,7 +172,17 @@ impl SceneDetectionMethod {
 }
 
 #[derive(
-    Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, Display,
+    Serialize,
+    Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    EnumString,
+    IntoStaticStr,
+    Display,
+    JsonSchema,
 )]
 pub enum ScenecutMethod {
     #[strum(serialize = "fast")]
@@ -180,7 +191,7 @@ pub enum ScenecutMethod {
     Standard,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ScenecutScore {
     pub inter_cost:             f64,
     pub imp_block_cost:         f64,

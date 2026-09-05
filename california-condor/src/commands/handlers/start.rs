@@ -78,7 +78,21 @@ pub fn start_handler(
                         error!("{}", err);
                         bail!(err);
                     },
-                    _ => unreachable!("ConfigError should be LoadError"),
+                    ConfigError::Parse(err) => {
+                        let err = CondorCliError::ConfigParseError(err);
+                        error!("{}", err);
+                        bail!(err);
+                    },
+                    ConfigError::Serialize(err) => {
+                        let err = CondorCliError::ConfigSerializeError(err);
+                        error!("{}", err);
+                        bail!(err);
+                    },
+                    ConfigError::Save(err) => {
+                        let err = CondorCliError::ConfigSaveError(err);
+                        error!("{}", err);
+                        bail!(err);
+                    },
                 },
             }
         } else {

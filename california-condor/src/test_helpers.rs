@@ -41,7 +41,12 @@ use andean_condor::{
     },
 };
 
-use crate::configuration::{CliSequenceConfig, CliSequenceData, Configuration};
+use crate::configuration::{
+    CONFIGURATION_SCHEMA_URL,
+    CliSequenceConfig,
+    CliSequenceData,
+    Configuration,
+};
 
 /// Convert a path to a `&str`, assuming it contains valid UTF-8.
 pub fn path_str(p: &Path) -> &str {
@@ -190,6 +195,7 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
         .to_path_buf();
     let scenes_directory = temp_abs.join("scenes");
     Configuration {
+        schema:            CONFIGURATION_SCHEMA_URL.to_owned(),
         condor:            Condor {
             input:           Input::VapourSynth {
                 path:          input_abs.clone(),

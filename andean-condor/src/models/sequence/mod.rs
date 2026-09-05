@@ -1,4 +1,5 @@
 use anyhow::{Ok, Result};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::sequence::{
@@ -54,7 +55,7 @@ pub trait SequenceDataHandler: Default + Clone + Serialize + Send + Sync {}
 
 pub trait SequenceConfigHandler: Default + Clone + Serialize {}
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DefaultSequenceConfig
 where
     Self: SequenceConfigHandler
@@ -178,7 +179,7 @@ impl SceneConcatenatorConfigHandler for DefaultSequenceConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DefaultSequenceData
 where
     Self: SequenceDataHandler
