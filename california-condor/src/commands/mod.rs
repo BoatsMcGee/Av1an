@@ -616,6 +616,12 @@ pub enum CondorCliError {
     ConfigFileNotFound(PathBuf),
     #[error("Failed to load config file: {0}")]
     ConfigLoadError(PathBuf),
+    #[error("Failed to parse config file: {0}")]
+    ConfigParseError(serde_json::Error),
+    #[error("Failed to serialize config file: {0}")]
+    ConfigSerializeError(serde_json::Error),
+    #[error("Failed to save config file: {0}")]
+    ConfigSaveError(std::io::Error),
     #[error("Cannot start without a config file or without input path")]
     NoConfigOrInput,
     #[error("Cannot start without a config file or without input and output paths")]

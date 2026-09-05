@@ -194,7 +194,7 @@ impl Configuration {
         }
         let data = std::fs::read_to_string(config_path)
             .map_err(|_| ConfigError::Load(config_path.to_path_buf()))?;
-        let data = serde_json::from_str(&data).map_err(ConfigError::Serialize)?;
+        let data = serde_json::from_str(&data).map_err(ConfigError::Parse)?;
 
         Ok(Some(data))
     }
@@ -642,6 +642,8 @@ impl QualityCheckDataHandler for CliSequenceData {
 pub enum ConfigError {
     #[error("Failed to load config file: {0}")]
     Load(PathBuf),
+    #[error("Failed to parse config file: {0}")]
+    Parse(serde_json::Error),
     #[error("Failed to serialize/deserialize config file: {0}")]
     Serialize(#[from] serde_json::Error),
     #[error("Failed to save config file: {0}")]
