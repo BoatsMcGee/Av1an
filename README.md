@@ -1,101 +1,155 @@
 # Av1an
 
-![av1an fully utilizing a 96-core CPU for video encoding](https://github.com/master-of-zen/Av1an/assets/46526140/15f68b63-7be5-45e8-bf48-ae7eb2fc4bb6)
+![Demonstration of the California Condor TUI](./california-condor/media/demo.avif)
 
 [![Discord server](https://discordapp.com/api/guilds/696849974230515794/embed.png)](https://discord.gg/Ar8MvJh)
-[![CI tests](https://github.com/master-of-zen/Av1an/actions/workflows/tests.yml/badge.svg)](https://github.com/master-of-zen/Av1an/actions/workflows/tests.yml)
+[![CI tests](https://github.com/rust-av/Av1an/actions/workflows/tests.yml/badge.svg)](https://github.com/rust-av/Av1an/actions/workflows/tests.yml)
 [![](https://img.shields.io/crates/v/av1an.svg)](https://crates.io/crates/av1an)
-[![](https://tokei.rs/b1/github/master-of-zen/Av1an?category=code)](https://github.com/master-of-zen/Av1an)
+[![](https://tokei.rs/b1/github/rust-av/Av1an?category=code)](https://github.com/rust-av/Av1an)
 
 <a href="https://www.buymeacoffee.com/master_of_zen" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
-Av1an is a video encoding framework. It can increase your encoding speed and improve cpu utilization by running multiple encoder processes in parallel. Key features include [Target Quality](https://rust-av.github.io/Av1an/Features/TargetQuality), [VMAF plotting](https://rust-av.github.io/Av1an/Cli/vmaf), and more available to improve video encoding.
-
-For help with av1an, please reach out to us on [Discord](https://discord.gg/Ar8MvJh) or file a GitHub issue.
+Av1an is a video encoding Rust library and command-line tool designed to be as fast as possible, easy to use, and extremely extensible. It supports a wide variety of encoders and tools to produce high quality videos.
 
 ## Features
 
-- Hyper-scalable video encoding
-- [Target Quality mode](https://rust-av.github.io/Av1an/Cli/target_quality), using metrics to control the encoder's rate control to achieve the desired video quality
-- [VapourSynth](http://www.vapoursynth.com) script support
-- Cancel and resume encoding without loss of progress
-- Minimal and clean CLI
-- Docker images available
-- Cross-platform application written in Rust
+* Support for Windows, Linux, and MacOS
+* Docker images available
+* Hyper-scalable video encoding
+* Cancel and resume at any time without losing progress
+* Real-time progress feedback
+* Terminal User Interface (TUI)
+* Modular architecture for custom workflows
 
-## Usage
+### Video Filtering
 
-Av1an is a command-line application that can run on Windows, Linux, and macOS. See the [Installation](#installation) section below for details on how to install it.
+Av1an is built with [FFMS2][ffms2] for simple decoding but also supports [VapourSynth][vapoursynth] for advanced filtering and analysis.
 
-For a complete reference, refer to our [documentation](https://rust-av.github.io/Av1an/) or run `av1an --help`.
+* Decode the input video with either the [FFMS2][ffms2], [BestSource][vs-bestsource], [L-SMASH-Works][vs-lsmash], or [DGDecNV][vs-dgdecnv] VapourSynth plugin
+* Pass a VapourSynth Python script (`.vpy` or `.py`) as the input
+* Apply custom variables to the VapourSynth script
+* Output a specific track/index from the VapourSynth script
+* Apply additional VapourSynth filters such as [Trim][vs-trim], [Crop][vs-crop], [Resize][vs-resize], and [Splice][vs-splice]
 
-### Examples
+### Video Encoding
 
-Encode a video file with the default parameters:
+Av1an supports the following encoder executables:
 
-```sh
-av1an -i input.mkv -o output.mkv
+- [aomenc][aom] - Alliance for Open Media reference AV1 encoder
+- [SvtAv1EncApp][svt-av1] - Scalable Video Technology for AV1 AV1 encoder
+- [rav1e][rav1e] - Rust AV1 encoder
+- [avmenc][avm] - Alliance for Open Media AOM Video Model reference AV2 encoder
+- [vpxenc][vpx] - WebM VP8/VP9 encoder
+- [x264][x264] - x264 H.264 encoder
+- [x265][x265] - x265 H.265 encoder
+- [vvenc][vvenc] - Fraunhofer Versatile Video Encoder H.266 encoder
+- [FFmpeg][ffmpeg] - FFmpeg
+
+### Video Analysis
+
+Av1an can analyze video properties and qualities to improve encoded video quality by:
+
+* Splitting the video into contiguous scenes
+* Scaling Photon Noise ISO based on the level of noise/grain in each scene
+* Finding the most efficient quantizer for each scene for a given quality target
+* Choosing the appropriate encoding speed for each scene
+
+## Getting Started
+
+### Installation
+
+Install the Av1an CLI, California Condor, from either the [Arch AUR][aur], [crates.io][crates], or [Docker](#docker). You can also download a Windows binary from [Releases](https://github.com/rust-av/Av1an/releases) or [compile it manually](#compiling).
+
+```bash
+$ pacman -S condor # Arch Linux & Manjaro
+$ cargo install condor # crates.io
+$ docker pull boatsmcgee/condor:latest # Docker Hub
 ```
 
-Or use a VapourSynth script and custom parameters:
+For the Rust library, [Andean Condor][andean-condor], add it as a dependency to your project `Cargo.toml` with `cargo add andean-condor`.
 
-```sh
-av1an -i input.vpy -v "--cpu-used=3 --end-usage=q --cq-level=30 --threads=8" -w 10 --target-quality 95 -a "-c:a libopus -ac 2 -b:a 192k" -l my_log -o output.mkv
+Av1an uses several external tools for decoding, filtering, and encoding video. For a complete list of dependencies, see the [Dependencies](#dependencies) page. For a quick start, install the following:
+
+* [Python][python-download] - Recommended for [VapourSynth][vapoursynth-download]
+* [vs-jetpack][vsjetpack] - Installs [VapourSynth][vapoursynth] and a convenient collection of VapourSynth plugins and Python modules for scaling, denoising, debanding, deinterlacing, metrics, etc.
+* [Vship][vship] - GPU-accelerated metrics for [SSIMULACRA 2][ssimulacra2], [butteraugli][butteraugli], and [ColorVideoVDP][cvvdp]
+* At least one of the following encoder binaries: [aomenc][aom], [SvtAv1EncApp][svt-av1], [rav1e][rav1e], [avmenc][avm], [x264][x264], [x265][x265], [vvenc][vvenc], [FFmpeg][ffmpeg]
+* Either [FFmpeg][ffmpeg] or [MKVToolNix][mkvtoolnix] for concatenating the encoded scenes
+
+> [!TIP]
+> Make sure binaries like [FFmpeg][ffmpeg], [mkvmerge][mkvtoolnix], or [SVT-AV1][svt-av1] are added to your PATH.
+
+### Usage
+
+#### California Condor CLI
+
+The Av1an CLI, California Condor, uses a single JSON configuration file to manage the entire encoding process. Each step can also be executed individually with its own command. You can use `--help` on each command for details on how to use them (e.g. `condor --help`, `condor detect-scenes --help`, `condor target-quality --help`). For a complete guide on using California Condor, see the [California Condor README](./california-condor/README.md) and [guide](./california-condor/docs/guide.md). For a quick start, see the example below.
+
+*Encode a 1080p 10-bit AV1 video with Film Grain Synthesis using rav1e. Use FFMS2 to decode the input. Downscale the scene detection input to 540p to detect scenes faster. Target a SSIMULACRA 2 quality score of 85 quickly. Use mkvmerge to concatenate the output video.*
+
+```bash
+$ condor \
+    --temp "./deletemelater" \ # Directory containing temporary files, primarily encoded scenes
+    --logs "./deletetemelater/condor.log" \ # Log file path
+    --config-file "./deletemelater/config.json" \ # JSON configuration file path
+    --input "bird takeoff.mp4" \ # Input video file path
+    --output "bird takeoff.mkv" \ # Output video file path
+    --decoder "vs-ffms2" \ # Uses FFMS2 instead of the default BestSource to decode in the input video
+    --filters "resize:scaler=bilinear;width=1920;height=1080;format=yuv420p10le" \ # Uses VapourSynth Bilinear to resize the input video to 1920x1080 and convert to YUV 4:2:0 10-bit
+    --scd-filters "resize:scaler=bilinear;width=540;height=960;" \ # Uses VapourSynth Bilinear to resize the input video to 540p for faster scene change detection
+    --encoder "rav1e" \ # Uses rav1e instead of the default SVT-AV1 encoder
+    --params "--speed 4" \ # rav1e encoder parameters used to encode each scene
+    --photon-noise 800 \ # Applies a Photon Noise film grain table with ISO strength 800 
+    --target-metric "ssimulacra2" \ # Uses SSIMULACRA 2 as the target quality metric
+    --target 85 \ # Targets a SSIMULACRA 2 quality score of 85 for each scene
+    --target-profile "fast" \ # Uses the fast Target Quality profile instead of the default standard profile
+    --concat "mkvmerge" \ # Uses mkvmerge to concatenate the encoded scenes
 ```
 
-## Supported encoders
+#### Andean Condor Library
 
-At least one encoder is required to use Av1an. The following encoders are supported:
-
-- [aomenc](https://aomedia.googlesource.com/aom/) (AV1)
-- [SvtAv1EncApp](https://gitlab.com/AOMediaCodec/SVT-AV1) (AV1)
-- [rav1e](https://github.com/xiph/rav1e) (AV1)
-- [vpxenc](https://chromium.googlesource.com/webm/libvpx/) (VP8 and VP9)
-- [x264](https://www.videolan.org/developers/x264.html) (H.264/AVC)
-- [x265](https://www.videolan.org/developers/x265.html) (H.265/HEVC)
-
-Note that Av1an requires the executable encoder. If you use a package manager to install encoders, check that the installation includes an executable encoder (e.g. vpxenc, SvtAv1EncApp) from the list above. Just installing the library (e.g. libvpx, libSvtAv1Enc) is not enough.
-
-## Installation
-
-Av1an can be installed from package managers, cargo.io, or [compiled manually](https://rust-av.github.io/Av1an/compiling). There are also pre-built [Docker images](/site/src/docker.md) which include all dependencies and are frequently updated.
-
-For Windows users, prebuilt binaries are also included in every [release](https://github.com/rust-av/Av1an/releases), and a [nightly build](https://github.com/rust-av/Av1an/releases/tag/latest) of the current `master` branch is also available.
-
-### Package managers
-
-Arch Linux & Manjaro: `pacman -S av1an`
-Cargo: `cargo install av1an`
-
-### Manual installation
-
-Prerequisites:
-
-- [FFmpeg](https://ffmpeg.org/download.html)
-- [VapourSynth](https://github.com/vapoursynth/vapoursynth/releases)
-- At least one [encoder](#supported-encoders)
-
-Optional:
-
-- [L-SMASH](https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works) VapourSynth plugin for better chunking (recommended)
-- [DGDecNV](https://www.rationalqm.us/dgdecnv/dgdecnv.html) Vapoursynth plugin for very fast and accurate chunking, `dgindexnv` executable needs to be present in system path and an NVIDIA GPU with CUVID
-- [FFMS2](https://github.com/FFMS/ffms2) VapourSynth plugin for better chunking
-- [BestSource](https://github.com/vapoursynth/bestsource) Vapoursynth plugin for slow but accurate chunking
-- [mkvmerge](https://mkvtoolnix.download/) to use mkvmerge instead of FFmpeg for file concatenation
-- [VMAF](https://github.com/Netflix/vmaf) to calculate VMAF scores and to use [Target Quality mode](site/src/Features/TargetQuality.md)
-- [XPSNR](https://github.com/fraunhoferhhi/xpsnr) to calculate XPSNR scores and to use [Target Quality mode](site/src/Features/TargetQuality.md)
-- [Vapoursynth-HIP](https://github.com/Line-fr/Vship) to calculate SSIMULACRA2 or Butteraugli scores with hardware acceleration on supported GPUs for [Target Quality mode](site/src/Features/TargetQuality.md)
-- [Vapoursynth-Zig Image Process](https://github.com/dnjulek/vapoursynth-zip) to calculate SSIMULACRA2 or XPSNR scores for [Target Quality mode](site/src/Features/TargetQuality.md)
-- [vapoursynth-julek-plugin](https://github.com/dnjulek/vapoursynth-julek-plugin) to calculate Butteraugli scores for [Target Quality mode](site/src/Features/TargetQuality.md)
-
-### VapourSynth plugins on Windows
-
-If you want to install the L-SMASH, FFMS2, or BestSource plugins and are on Windows, then you have [two installation options](http://vapoursynth.com/doc/installation.html#plugins-and-scripts). The easiest way is using the included plugin script:
-
-1. Open your VapourSynth installation directory
-2. Open a command prompt or PowerShell window via Shift + Right click
-3. Run `python3 vsrepo.py install lsmas ffms2 bs vszip julek`
+The Av1an library, Andean Condor, consists of the following components: `Input`, `Output`, `Encoder`, `Scene`, and `Sequence`. These components are managed with a single `Condor` instance. For a simple example using the library, see [here](./andean-condor/examples/simple.rs). For more information on using the library, see the [Andean Condor](./andean-condor/README.md#API) API documentation.
 
 ## Developing
 
-See [Developing and Contributing](https://rust-av.github.io/Av1an/contributing) for a guide on developing Av1an and prepare for a Pull Request.
+See [Developing and Contributing](https://rust-av.github.io/Av1an/contributing) for a guide on developing Av1an and preparing for a Pull Request.
+
+<!-- Links -->
+
+[crates]: https://crates.io "The Rust community’s crate registry"
+[aur]: https://aur.archlinux.org "archlinux user repository"
+
+[ffms2]: https://github.com/ffms/ffms2 "FFmpegSource"
+
+[aom]: https://aomedia.googlesource.com/aom "Alliance for Open Media AV1"
+[avm]: https://github.com/AOMediaCodec/avm "Alliance for Open Media AOM Video Model"
+[svt-av1]: https://gitlab.com/AOMediaCodec/SVT-AV1 "Scalabe Video Technology for AV1"
+[rav1e]: https://github.com/xiph/rav1e "Rust AV1 Encoder"
+[vpx]: https://chromium.googlesource.com/webm/libvpx "WebM VP8/VP9"
+[x264]: https://www.videolan.org/developers/x264.html "x264"
+[x265]: https://www.videolan.org/developers/x265.html "x265"
+[vvenc]: https://github.com/fraunhoferhhi/vvenc "Fraunhofer Versatile Video Encoder"
+[ffmpeg]: https://ffmpeg.org "FFmpeg"
+
+[ssimulacra2]: https://github.com/cloudinary/ssimulacra2 "SSIMULACRA 2 - Structural SIMilarity Unveiling Local And Compression Related Artifacts"
+[butteraugli]: https://github.com/google/butteraugli "butteraugli - A tool for measuring perceived differences between images"
+[cvvdp]: https://github.com/gfxdisp/colorvideovdp "ColorVideoVDP: A visible difference predictor for color images and videos"
+
+[python-download]: https://www.python.org/downloads "Python"
+[vsjetpack]: https://github.com/Jaded-Encoding-Thaumaturgy/vs-jetpack "vs-jetpack"
+
+[vapoursynth]: https://www.vapoursynth.com "VapourSynth - A video processing framework with simplicity in mind"
+[vapoursynth-download]: https://www.vapoursynth.com/doc/installation.html "Installing and Compiling"
+[vs-trim]: https://www.vapoursynth.com/doc/functions/video/trim.html "Trim"
+[vs-crop]: https://www.vapoursynth.com/doc/functions/video/crop_cropabs.html "Crop/CropAbs"
+[vs-resize]: https://www.vapoursynth.com/doc/functions/video/resize.html "Resize"
+[vs-splice]: https://www.vapoursynth.com/doc/functions/video/splice.html "Splice"
+
+[vs-bestsource]: https://github.com/vapoursynth/bestsource "BestSource"
+[vs-lsmash]: https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works "L-SMASH-Works"
+[vs-dgdecnv]: https://www.rationalqm.us/dgdecnv/dgdecnv.html "DGDecNV - AVC/HEVC/MPG/VC1 Decoder and Frame Server"
+
+[vszip]: https://github.com/dnjulek/vapoursynth-zip "VapourSynth Zig Image Process"
+[vship]: https://codeberg.org/Line-fr/Vship "Vship : Fast Metric Computation on GPU"
+
+[mkvtoolnix]: https://mkvtoolnix.download "MKVToolNix" 
