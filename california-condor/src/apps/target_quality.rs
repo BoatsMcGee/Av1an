@@ -1,13 +1,6 @@
 use std::{
     collections::BTreeMap,
     io::IsTerminal,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError},
-    },
-    thread,
-    time::Duration,
 };
 
 use andean_condor::{
@@ -17,20 +10,17 @@ use andean_condor::{
     },
     models::{encoder::Encoder, scene::Scene, sequence::target_quality::types::ProbeStatistic},
 };
-use anyhow::Result;
 use ratatui::{
     Frame,
-    crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers},
     layout::{Constraint, Layout},
     style::Color,
     text::Line,
     widgets::{Axis, Block, Chart, Dataset},
 };
 use serde::{Deserialize, Serialize};
-use tracing::debug;
 
 use crate::{
-    apps::{TuiApp, shared_progress::SharedProgress},
+    apps::{SharedProgress, TuiApp},
     components::{encoder_info::EncoderInfo, input_info::InputInfo, progress_bar::ProgressBar},
     configuration::CliSequenceData,
 };
@@ -54,315 +44,208 @@ pub struct TargetQualityApp {
 }
 
 impl TuiApp for TargetQualityApp {
+    type State = TargetQualityState;
+
     fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
         &mut self.original_panic_hook
     }
 
-    fn run(
-        &mut self,
-        progress_rx: Receiver<SequenceStatus>,
-        cancelled: Arc<AtomicBool>,
-    ) -> Result<()> {
-        let (event_tx, event_rx) = mpsc::channel();
-        if !crate::apps::is_test_mode() {
-            let input_tx = event_tx.clone();
-            thread::spawn(move || {
-                loop {
-                    if let Ok(TermEvent::Key(key)) = event::read()
-                        && input_tx.send(TargetQualityAppEvent::Input(key)).is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-        if !crate::apps::is_test_mode() {
-            let tick_tx = event_tx.clone();
-            thread::spawn(move || {
-                loop {
-                    if tick_tx.send(TargetQualityAppEvent::Tick).is_err() {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(33)); // ~30 FPS
-                }
-            });
-        }
-        let shared_progress = self.shared_progress.clone();
-        let quit = Arc::new(AtomicBool::new(false));
-        let quit_flag = Arc::clone(&quit);
-        thread::spawn(move || {
-            for progress in progress_rx {
-                match progress {
-                    SequenceStatus::Whole(status) => match status {
-                        Status::Processing {
-                            completion:
-                                SequenceCompletion::Passes {
-                                    total, ..
-                                },
-                            ..
-                        } => {
-                            shared_progress.apply(|state| {
-                                state.current_pass = total;
-                                true
-                            });
-                            if !std::io::stdout().is_terminal() {
-                                let event = TargetQualityConsoleEvent::Pass(total);
-                                println!(
-                                    "[Target Quality][Pass] {}",
-                                    serde_json::to_string(&event).unwrap()
-                                );
-                            }
+    fn shared_progress(&self) -> &SharedProgress<Self::State> {
+        &self.shared_progress
+    }
+
+    fn cached_state(&self) -> &Self::State {
+        &self.cached_state
+    }
+
+    fn cached_state_mut(&mut self) -> &mut Self::State {
+        &mut self.cached_state
+    }
+
+    fn attempted_cancel(&self) -> bool {
+        self.attempted_cancel
+    }
+
+    fn attempted_cancel_mut(&mut self) -> &mut bool {
+        &mut self.attempted_cancel
+    }
+
+    fn cancel_message(&self) -> &'static str {
+        "Waiting for Encoders to finish. Press Ctrl+C again to exit immediately."
+    }
+
+    fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool {
+        match status {
+            SequenceStatus::Whole(status) => match status {
+                Status::Processing {
+                    completion:
+                        SequenceCompletion::Passes {
+                            total, ..
                         },
-                        Status::Processing {
-                            id,
-                            completion:
-                                SequenceCompletion::Frames {
-                                    completed,
-                                    total,
-                                },
-                        } if id == "Encode" || id == "Compare" => {
-                            if id == "Encode" {
-                                shared_progress.apply(|state| {
-                                    state.frames_compared = 0;
-                                    state.frames_encoded = completed;
-                                    state.total_frames = total;
-                                    true
-                                });
-                            } else {
-                                shared_progress.apply(|state| {
-                                    if completed == 0 {
-                                        state.frames_encoded = total;
-                                    }
-                                    state.frames_compared = completed;
-                                    state.total_frames = total;
-                                    true
-                                });
-                            }
+                    ..
+                } => {
+                    state.current_pass = total;
+                    if !std::io::stdout().is_terminal() {
+                        let event = TargetQualityConsoleEvent::Pass(total);
+                        println!(
+                            "[Target Quality][Pass] {}",
+                            serde_json::to_string(&event).unwrap()
+                        );
+                    }
+                    true
+                },
+                Status::Processing {
+                    id,
+                    completion:
+                        SequenceCompletion::Frames {
+                            completed,
+                            total,
                         },
-                        _ => {},
+                } if id == "Encode" || id == "Compare" => {
+                    if id == "Encode" {
+                        state.frames_compared = 0;
+                        state.frames_encoded = completed;
+                        state.total_frames = total;
+                    } else {
+                        if completed == 0 {
+                            state.frames_encoded = total;
+                        }
+                        state.frames_compared = completed;
+                        state.total_frames = total;
+                    }
+                    true
+                },
+                _ => false,
+            },
+            SequenceStatus::Subprocess {
+                parent,
+                child,
+            } => match (parent, child) {
+                (
+                    Status::Processing {
+                        completion:
+                            SequenceCompletion::Passes {
+                                completed: current_pass,
+                                total: total_passes,
+                            },
+                        ..
                     },
-                    SequenceStatus::Subprocess {
-                        parent,
-                        child,
-                    } => match (parent, child) {
-                        (
-                            Status::Processing {
-                                completion:
-                                    SequenceCompletion::Passes {
-                                        completed: current_pass,
-                                        total: total_passes,
-                                    },
-                                ..
+                    Status::Processing {
+                        id,
+                        completion:
+                            SequenceCompletion::Frames {
+                                completed,
+                                total,
                             },
-                            Status::Processing {
-                                id,
-                                completion:
-                                    SequenceCompletion::Frames {
-                                        completed,
-                                        total,
-                                    },
+                    },
+                ) if id == "Encode" => {
+                    state.frames_compared = 0;
+                    state.frames_encoded = completed;
+                    state.total_frames = total;
+                    if !std::io::stdout().is_terminal() {
+                        let event = TargetQualityConsoleEvent::EncodeProgress {
+                            current_pass,
+                            total_passes,
+                            current_frame: completed,
+                            total_frames: total,
+                        };
+                        println!(
+                            "[Target Quality][Encode] {}",
+                            serde_json::to_string(&event).unwrap()
+                        );
+                    }
+                    true
+                },
+                (
+                    Status::Processing {
+                        completion:
+                            SequenceCompletion::Passes {
+                                completed: current_pass,
+                                total: total_passes,
                             },
-                        ) if id == "Encode" => {
-                            shared_progress.apply(|state| {
-                                state.frames_compared = 0;
-                                state.frames_encoded = completed;
-                                state.total_frames = total;
-                                true
-                            });
-                            if !std::io::stdout().is_terminal() {
-                                let event = TargetQualityConsoleEvent::EncodeProgress {
-                                    current_pass,
-                                    total_passes,
-                                    current_frame: completed,
-                                    total_frames: total,
-                                };
-                                println!(
-                                    "[Target Quality][Encode] {}",
-                                    serde_json::to_string(&event).unwrap()
-                                );
-                            }
-                        },
-                        (
-                            Status::Processing {
-                                completion:
-                                    SequenceCompletion::Passes {
-                                        completed: current_pass,
-                                        total: total_passes,
-                                    },
-                                ..
+                        ..
+                    },
+                    Status::Processing {
+                        id,
+                        completion:
+                            SequenceCompletion::Frames {
+                                completed,
+                                total,
                             },
-                            Status::Processing {
-                                id,
-                                completion:
-                                    SequenceCompletion::Frames {
-                                        completed,
-                                        total,
-                                    },
+                    },
+                ) if id == "Compare" => {
+                    if completed == 0 {
+                        state.frames_encoded = total;
+                    }
+                    state.frames_compared = completed;
+                    state.total_frames = total;
+                    if !std::io::stdout().is_terminal() {
+                        let event = TargetQualityConsoleEvent::CompareProgress {
+                            current_pass,
+                            total_passes,
+                            current_frame: completed,
+                            total_frames: total,
+                        };
+                        println!(
+                            "[Target Quality][Compare] {}",
+                            serde_json::to_string(&event).unwrap()
+                        );
+                    }
+                    true
+                },
+                (
+                    Status::Processing {
+                        completion:
+                            SequenceCompletion::Passes {
+                                completed: current_pass,
+                                total: total_passes,
                             },
-                        ) if id == "Compare" => {
-                            shared_progress.apply(|state| {
-                                if completed == 0 {
-                                    state.frames_encoded = total;
-                                }
-                                state.frames_compared = completed;
-                                state.total_frames = total;
-                                true
-                            });
-                            if !std::io::stdout().is_terminal() {
-                                let event = TargetQualityConsoleEvent::CompareProgress {
-                                    current_pass,
-                                    total_passes,
-                                    current_frame: completed,
-                                    total_frames: total,
-                                };
-                                println!(
-                                    "[Target Quality][Compare] {}",
-                                    serde_json::to_string(&event).unwrap()
-                                );
-                            }
-                        },
-                        (
-                            Status::Processing {
-                                completion:
-                                    SequenceCompletion::Passes {
-                                        completed: current_pass,
-                                        total: total_passes,
-                                    },
-                                ..
-                            },
-                            Status::Processing {
-                                id,
-                                completion:
-                                    SequenceCompletion::SceneQuality {
-                                        index,
-                                        quantizer,
-                                        score,
-                                        bitrate,
-                                    },
-                            },
-                        ) if id == "Quality" => {
-                            let pass = QualityPass {
-                                scene: index,
-                                current_pass,
-                                total_passes,
+                        ..
+                    },
+                    Status::Processing {
+                        id,
+                        completion:
+                            SequenceCompletion::SceneQuality {
+                                index,
                                 quantizer,
                                 score,
                                 bitrate,
-                            };
-                            shared_progress.apply(|state| {
-                                state.quality_passes.entry(index).or_default().push(pass.clone());
-                                true
-                            });
-                            if !std::io::stdout().is_terminal() {
-                                let event = TargetQualityConsoleEvent::QualityPass(pass);
-                                println!(
-                                    "[Target Quality][Quality] {}",
-                                    serde_json::to_string(&event).unwrap()
-                                );
-                            }
-                        },
-                        _ => {},
+                            },
                     },
-                }
-            }
-            let _ = event_tx.send(TargetQualityAppEvent::Quit);
-            quit_flag.store(true, Ordering::Release);
-        });
-
-        if crate::apps::is_test_mode() {
-            while !quit.load(Ordering::Acquire) {
-                std::thread::sleep(Duration::from_millis(10));
-                if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                    self.cached_state = snapshot;
-                }
-                while event_rx.try_recv().is_ok() {}
-            }
-            self.cached_state = self.shared_progress.read();
-            return Ok(());
+                ) if id == "Quality" => {
+                    let pass = QualityPass {
+                        scene: index,
+                        current_pass,
+                        total_passes,
+                        quantizer,
+                        score,
+                        bitrate,
+                    };
+                    state.quality_passes.entry(index).or_default().push(pass.clone());
+                    if !std::io::stdout().is_terminal() {
+                        let event = TargetQualityConsoleEvent::QualityPass(pass);
+                        println!(
+                            "[Target Quality][Quality] {}",
+                            serde_json::to_string(&event).unwrap()
+                        );
+                    }
+                    true
+                },
+                _ => false,
+            },
         }
+    }
 
-        let stdout_is_terminal = std::io::stdout().is_terminal();
-        let mut terminal = self.init()?;
-        'event_loop: loop {
-            while let Ok(TargetQualityAppEvent::Input(key)) = event_rx.try_recv() {
-                if Self::handle_ctrl_c(
-                    key,
-                    &mut self.attempted_cancel,
-                    &cancelled,
-                    &mut terminal,
-                    stdout_is_terminal,
-                )? {
-                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                        self.cached_state = snapshot;
-                    }
-                    terminal.draw(|f| self.render(f))?;
-                    self.restore(terminal)?;
-                    break 'event_loop;
-                }
-            }
-
-            if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                // Reset timer
-                let new_encode_phase =
-                    snapshot.frames_encoded == 0 && snapshot.frames_compared == 0;
-                let new_compare_phase =
-                    snapshot.frames_compared > 0 && self.cached_state.frames_compared == 0;
-                let pass_changed = snapshot.current_pass != self.cached_state.current_pass;
-                if new_encode_phase || new_compare_phase || pass_changed {
-                    self.pass_started = std::time::Instant::now();
-                }
-                self.cached_state = snapshot;
-            }
-
-            if quit.load(Ordering::Acquire) {
-                self.cached_state = self.shared_progress.read();
-                terminal.draw(|f| self.render(f))?;
-                self.restore(terminal)?;
-                break;
-            }
-
-            match event_rx.recv_timeout(Duration::from_millis(33)) {
-                Ok(TargetQualityAppEvent::Tick) => {
-                    terminal.draw(|f| self.render(f))?;
-                },
-                Ok(TargetQualityAppEvent::Input(key)) => {
-                    if Self::handle_ctrl_c(
-                        key,
-                        &mut self.attempted_cancel,
-                        &cancelled,
-                        &mut terminal,
-                        stdout_is_terminal,
-                    )? {
-                        if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                            self.cached_state = snapshot;
-                        }
-                        terminal.draw(|f| self.render(f))?;
-                        self.restore(terminal)?;
-                        break 'event_loop;
-                    }
-                },
-                Ok(TargetQualityAppEvent::Quit) => {
-                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                        self.cached_state = snapshot;
-                    }
-                    terminal.draw(|f| self.render(f))?;
-                    self.restore(terminal)?;
-                    break;
-                },
-                Err(RecvTimeoutError::Timeout) => {
-                    terminal.draw(|f| self.render(f))?;
-                },
-                Err(RecvTimeoutError::Disconnected) => {
-                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                        self.cached_state = snapshot;
-                    }
-                    terminal.draw(|f| self.render(f))?;
-                    self.restore(terminal)?;
-                    break;
-                },
-            }
+    fn on_snapshot(&mut self, snapshot: Self::State) {
+        // Reset the pass timer when entering a new encode/compare phase or pass.
+        let new_encode_phase = snapshot.frames_encoded == 0 && snapshot.frames_compared == 0;
+        let new_compare_phase =
+            snapshot.frames_compared > 0 && self.cached_state.frames_compared == 0;
+        let pass_changed = snapshot.current_pass != self.cached_state.current_pass;
+        if new_encode_phase || new_compare_phase || pass_changed {
+            self.pass_started = std::time::Instant::now();
         }
-        Ok(())
+        self.cached_state = snapshot;
     }
 
     fn render(&self, frame: &mut Frame) {
@@ -521,35 +404,6 @@ impl TargetQualityApp {
             cached_state: state,
         }
     }
-
-    fn handle_ctrl_c(
-        key: ratatui::crossterm::event::KeyEvent,
-        attempted_cancel: &mut bool,
-        cancelled: &Arc<AtomicBool>,
-        _terminal: &mut super::StdOutOrErrTerminal,
-        stdout_is_terminal: bool,
-    ) -> Result<bool> {
-        if key.code == KeyCode::Char('c')
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.is_press()
-        {
-            *attempted_cancel = true;
-            let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
-            if already_cancelled {
-                debug!("Force quit Condor");
-                return Ok(true);
-            } else if !stdout_is_terminal {
-                println!("Waiting for Encoders to finish. Press Ctrl+C again to exit immediately.");
-            }
-        }
-        Ok(false)
-    }
-}
-
-enum TargetQualityAppEvent {
-    Quit,
-    Tick,                   // 30 FPS
-    Input(event::KeyEvent), // Keyboard events
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
