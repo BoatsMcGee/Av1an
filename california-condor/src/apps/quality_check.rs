@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    io::IsTerminal,
-};
+use std::{collections::BTreeMap, io::IsTerminal};
 
 use andean_condor::{
     core::{

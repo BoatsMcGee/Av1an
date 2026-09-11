@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    io::IsTerminal,
-};
+use std::{collections::BTreeMap, io::IsTerminal};
 
 use andean_condor::{
     core::{
@@ -144,9 +141,7 @@ impl TuiApp for ParallelEncoderApp {
                     let (current_pass, total_passes) = passes;
                     let (current_frame, total_frames) = frames;
 
-                    if current_pass == total_passes
-                        && state.active_encoders.contains_key(&scene)
-                    {
+                    if current_pass == total_passes && state.active_encoders.contains_key(&scene) {
                         state.scenes.entry(scene).and_modify(|(completed, _)| {
                             *completed = current_frame;
                         });
@@ -204,12 +199,8 @@ impl TuiApp for ParallelEncoderApp {
             ])
             .split(frame.area());
 
-        let total_frames_completed: u64 = self
-            .cached_state
-            .scenes
-            .iter()
-            .map(|(_, (completed, _))| completed)
-            .sum();
+        let total_frames_completed: u64 =
+            self.cached_state.scenes.iter().map(|(_, (completed, _))| completed).sum();
         let total_frames = self.total_frames;
         let top_info = Block::bordered()
             .border_type(ratatui::widgets::BorderType::Rounded)
@@ -339,7 +330,6 @@ impl ParallelEncoderApp {
         let estimated_bytes = ((bitrate * total_seconds) / 8.0) as u64;
         (bitrate, estimated_bytes)
     }
-
 }
 
 #[derive(Debug, Clone)]

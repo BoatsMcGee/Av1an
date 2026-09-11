@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    io::IsTerminal,
-};
+use std::{collections::BTreeMap, io::IsTerminal};
 
 use andean_condor::{
     core::{
@@ -88,7 +85,7 @@ impl TuiApp for BenchmarkerApp {
                         state.results.entry(workers).and_modify(|ws| ws.added = true);
                         if !std::io::stdout().is_terminal() {
                             let event = BenchmarkerConsoleEvent::WorkerAdded {
-                                worker: workers,
+                                worker: workers
                             };
                             println!(
                                 "[Benchmarker][Worker Added] {}",
@@ -172,7 +169,7 @@ impl TuiApp for BenchmarkerApp {
                         .and_modify(|ws| ws.finished = Some(std::time::Instant::now()));
                     if !std::io::stdout().is_terminal() {
                         let event = BenchmarkerConsoleEvent::WorkerCompleted {
-                            worker: workers,
+                            worker: workers
                         };
                         println!(
                             "[Benchmarker][Worker Completed] {}",
