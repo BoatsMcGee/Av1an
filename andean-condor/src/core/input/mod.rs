@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt::Write as _,
     io::{Cursor, Write},
     path::PathBuf,
     sync::{Arc, Condvar, Mutex},
@@ -19,16 +20,7 @@ use crate::{
         VapourSynthImportMethod,
         VapourSynthScriptSource,
     },
-    vapoursynth::{
-        VapourSynthError,
-        get_clip_info as get_vs_clip_info,
-        plugins::{
-            bestsource::VideoSource as BestSource,
-            dgdecodenv::DGSource,
-            ffms2::Source as FFMS2,
-            lsmash::LWLibavSource,
-        },
-    },
+    vapoursynth::{get_clip_info as get_vs_clip_info, plugins::dgdecodenv::DGSource},
 };
 
 pub mod clip_info;
@@ -189,149 +181,65 @@ impl Input {
                 import_method,
                 cache_path,
             } => {
-                let mut vs_decoder = VapoursynthDecoder::new()?;
-                let error_handler = || {
-                    |error| match error {
-                        VapourSynthError::VideoImportError {
-                            plugin,
-                            message,
-                        } => DecoderError::VapoursynthScriptError {
-                            cause: format!(
-                                "{plugin} failed to import video: {message}",
-                                plugin = plugin,
-                                message = message
-                            ),
-                        },
-                        _ => DecoderError::GenericDecodeError {
-                            cause: "Failed to import video".to_owned(),
-                        },
-                    }
-                };
-
-                let decoder = match import_method {
+                // Create the source once, in a fixed script. A `ModifyNode` is run again for
+                // every decoded frame, so creating the source inside one reopened the file
+                // and reloaded its index for each frame. Paths and options are passed as
+                // script variables, so they are never interpreted as code.
+                let (function, cache_argument, track_argument, track) = match import_method {
                     VapourSynthImportMethod::LSMASHWorks {
                         index,
-                    } => {
-                        let source = path.clone();
-                        let cache_path = cache_path.clone();
-                        let err_handler = error_handler();
-                        let index = *index;
-                        let node_modifier: ModifyNode =
-                            Box::new(move |core: vapoursynth::core::CoreRef, _node| {
-                                let plugin = LWLibavSource {
-                                    source: source.clone(),
-                                    cachefile: cache_path.clone(),
-                                    stream_index: index.map(|i| i as i32),
-                                    ..Default::default()
-                                };
-                                let node = plugin.invoke(core).map_err(err_handler)?;
-                                let node = if let Some(modify_node) = &modify_node {
-                                    modify_node(core, Some(node))?
-                                } else {
-                                    node
-                                };
-
-                                Ok(node)
-                            });
-
-                        vs_decoder.register_node_modifier(node_modifier)?;
-                        Decoder::from_decoder_impl(av_decoders::DecoderImpl::Vapoursynth(
-                            vs_decoder,
-                        ))?
-                    },
+                    } => (
+                        "core.lsmas.LWLibavSource",
+                        "cachefile",
+                        Some("stream_index"),
+                        *index,
+                    ),
                     VapourSynthImportMethod::FFMS2 {
                         index,
-                    } => {
-                        let source = path.clone();
-                        let cache_path = cache_path.clone();
-                        let err_handler = error_handler();
-                        let index = *index;
-                        let node_modifier: ModifyNode = Box::new(move |core, _node| {
-                            let plugin = FFMS2 {
-                                source: source.clone(),
-                                cachefile: cache_path.clone(),
-                                track: index.map(|i| i as i32),
-                                ..Default::default()
-                            };
-                            let node = plugin.invoke(core).map_err(err_handler)?;
-                            let node = if let Some(modify_node) = &modify_node {
-                                modify_node(core, Some(node))?
-                            } else {
-                                node
-                            };
-
-                            Ok(node)
-                        });
-
-                        vs_decoder.register_node_modifier(node_modifier)?;
-                        Decoder::from_decoder_impl(av_decoders::DecoderImpl::Vapoursynth(
-                            vs_decoder,
-                        ))?
-                    },
+                    } => ("core.ffms2.Source", "cachefile", Some("track"), *index),
                     VapourSynthImportMethod::BestSource {
                         index,
-                    } => {
-                        let source = path.clone();
-                        let cache_path = cache_path.clone();
-                        let err_handler = error_handler();
-                        let index = *index;
-                        let node_modifier: ModifyNode = Box::new(move |core, _node| {
-                            let plugin = BestSource {
-                                source: source.clone(),
-                                cachepath: cache_path.clone(),
-                                track: index.map(|i| i as i32),
-                                ..Default::default()
-                            };
-                            let node = plugin.invoke(core).map_err(err_handler)?;
-                            let node = if let Some(modify_node) = &modify_node {
-                                modify_node(core, Some(node))?
-                            } else {
-                                node
-                            };
-
-                            Ok(node)
-                        });
-
-                        vs_decoder.register_node_modifier(node_modifier)?;
-                        Decoder::from_decoder_impl(av_decoders::DecoderImpl::Vapoursynth(
-                            vs_decoder,
-                        ))?
-                    },
+                    } => ("core.bs.VideoSource", "cachepath", Some("track"), *index),
                     VapourSynthImportMethod::DGDecNV {
                         dgindexnv_executable,
                     } => {
-                        let source = path.clone();
-                        let cache_path = cache_path.clone();
-                        let err_handler = error_handler();
                         DGSource::index_video(
                             path,
                             cache_path.as_deref(),
                             dgindexnv_executable.as_deref(),
                         )
                         .map_err(|_| DecoderError::UnsupportedDecoder)?;
-                        let node_modifier: ModifyNode = Box::new(move |core, _node| {
-                            let plugin = DGSource {
-                                source: source.clone(),
-                                // Undocumented, needs testing
-                                indexing_path: cache_path.clone(),
-                                ..Default::default()
-                            };
-                            let node = plugin.invoke(core).map_err(err_handler)?;
-                            let node = if let Some(modify_node) = &modify_node {
-                                modify_node(core, Some(node))?
-                            } else {
-                                node
-                            };
-
-                            Ok(node)
-                        });
-
-                        vs_decoder.register_node_modifier(node_modifier)?;
-                        Decoder::from_decoder_impl(av_decoders::DecoderImpl::Vapoursynth(
-                            vs_decoder,
-                        ))?
+                        ("core.dgdecodenv.DGSource", "indexing_path", None, None)
                     },
                 };
+
+                let mut script = String::from("from vapoursynth import core\nkwargs = {}\n");
+                let mut variables = HashMap::from([(
+                    "condor_source".to_owned(),
+                    std::path::absolute(path)?.display().to_string(),
+                )]);
+                if let Some(cache_path) = cache_path {
+                    writeln!(script, "kwargs[\"{cache_argument}\"] = condor_cache")?;
+                    variables.insert(
+                        "condor_cache".to_owned(),
+                        std::path::absolute(cache_path)?.display().to_string(),
+                    );
+                }
+                if let (Some(track_argument), Some(track)) = (track_argument, track) {
+                    writeln!(script, "kwargs[\"{track_argument}\"] = int(condor_track)")?;
+                    variables.insert("condor_track".to_owned(), track.to_string());
+                }
+                writeln!(
+                    script,
+                    "{function}(source=condor_source, **kwargs).set_output(0)"
+                )?;
+
+                let mut vs_decoder = VapoursynthDecoder::from_script(&script, variables, Some(0))?;
+                if let Some(node_modifier) = modify_node {
+                    vs_decoder.register_node_modifier(node_modifier)?;
+                }
+                let decoder =
+                    Decoder::from_decoder_impl(av_decoders::DecoderImpl::Vapoursynth(vs_decoder))?;
 
                 Ok(Input::VapourSynth {
                     path: path.clone(),
