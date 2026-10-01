@@ -1,8 +1,10 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::encoder::Encoder;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(bound = "SequenceData: JsonSchema")]
 pub struct Scene<SequenceData> {
     pub start_frame:   usize, // Inclusive
     pub end_frame:     usize, // Exclusive
@@ -11,7 +13,7 @@ pub struct Scene<SequenceData> {
     pub sequence_data: SequenceData,
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SubScene {
     pub start_frame: usize, // Inclusive
     pub end_frame:   usize, // Exclusive

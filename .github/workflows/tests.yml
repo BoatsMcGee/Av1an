@@ -3,7 +3,6 @@ on:
   push:
     branches:
       - master
-      - tq-tests
   pull_request:
     branches:
       - master
@@ -19,7 +18,9 @@ env:
 jobs:
   formatting:
     runs-on: ubuntu-latest
-    container: boatsmcgee/condor:latest
+    container:
+      image: boatsmcgee/condor:latest
+      options: --user root
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust nightly
@@ -32,84 +33,93 @@ jobs:
 
   unit-tests:
     runs-on: ubuntu-latest
-    container: boatsmcgee/condor:latest
+    container:
+      image: boatsmcgee/condor:latest
+      options: --user root
     steps:
       - uses: actions/checkout@v7
-        with:
-          lfs: "true"
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
-      - name: Validate executables
-        run: |
-          which aomenc
-          which SvtAv1EncApp
-          which rav1e
-          which vpxenc
-          which x265
-          which x264
-          which vspipe
-          which ffmpeg
-          which mkvmerge
+      - parallel:
+        - name: Install Rust stable
+          uses: dtolnay/rust-toolchain@stable
+
+        - name: Setup Clang, NASM, and VapourSynth
+          run: |
+            pacman -S --noconfirm --needed clang nasm vapoursynth
+
+        - name: Install cargo-msrv
+          uses: taiki-e/install-action@v2
+          with:
+            tool: cargo-msrv
+
+        - name: Validate executables
+          run: |
+            which aomenc
+            which SvtAv1EncApp
+            which rav1e
+            which vpxenc
+            which x265
+            which x264
+            which ffmpeg
+            which mkvmerge
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Build Condor
         run: |
           cargo clippy --profile ci -- -D warnings
 
-      - name: Install cargo-msrv
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-msrv
-
       - name: Validate minimum Rust version
         run: |
-          cargo msrv verify --path california-condor
           cargo msrv verify --path andean-condor
+          cargo msrv verify --path california-condor
 
-      - name: Testing Andean Condor unit tests
+      - name: Testing Andean Condor
         working-directory: ./andean-condor
         run: |
           cargo test --profile ci
 
-      - name: Testing California Condor unit tests
+      - name: Testing California Condor
         working-directory: ./california-condor
         run: |
-          cargo test --profile ci --lib
-
-      - name: Testing California Condor integration tests
-        working-directory: ./california-condor
-        run: |
-          cargo test --profile ci --tests
+          cargo test --profile ci
 
   code-coverage:
     needs: [formatting, unit-tests]
     runs-on: ubuntu-latest
-    container: boatsmcgee/condor:latest
+    container:
+      image: boatsmcgee/condor:latest
+      options: --user root
     steps:
       - uses: actions/checkout@v7
-        with:
-          lfs: "true"
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
-      - name: Validate executables
-        run: |
-          which aomenc
-          which SvtAv1EncApp
-          which rav1e
-          which vpxenc
-          which x265
-          which x264
-          which vspipe
-          which ffmpeg
-          which mkvmerge
+      - parallel:
+        - name: Install Rust stable
+          uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-llvm-cov
+        - name: Setup Git, Clang, NASM, and VapourSynth
+          run: |
+            pacman -S --noconfirm --needed git clang nasm vapoursynth
+
+        - name: Validate executables
+          run: |
+            which aomenc
+            which SvtAv1EncApp
+            which rav1e
+            which vpxenc
+            which x265
+            which x264
+            which ffmpeg
+            which mkvmerge
+
+        - name: Install cargo-llvm-cov
+          uses: taiki-e/install-action@v2
+          with:
+            tool: cargo-llvm-cov
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Generate code coverage
         run: cargo llvm-cov --profile ci --workspace --lcov --output-path lcov.log --ignore-filename-regex tests\.rs

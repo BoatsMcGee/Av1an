@@ -541,10 +541,14 @@ where
                     },
                 )?;
 
-                // Update Scene Encoder quantizer
+                // Update Scene Encoder quantizer. A probe that met the target is used as
+                // is; only scenes without one fall back to the prediction.
+                let final_quantizer =
+                    TargetQuality::verified_quantizer(&config.metric, &quantizer_score_history)
+                        .unwrap_or(predicted_quantizer);
                 condor.scenes[completed_task.original_index]
                     .encoder
-                    .set_quantizer(predicted_quantizer);
+                    .set_quantizer(final_quantizer);
 
                 let quality_pass = completed_task.passes.last().expect("passes is not empty");
 
@@ -1169,6 +1173,20 @@ impl TargetQuality {
         Ok((tasks, warnings))
     }
 
+    /// Returns the highest quantizer whose probe scored within the target
+    /// range, which is the smallest encode known to meet the target.
+    #[inline]
+    pub fn verified_quantizer(
+        metric: &QualityMetric,
+        quantizer_score_history: &[(f64, f64)],
+    ) -> Option<f64> {
+        quantizer_score_history
+            .iter()
+            .filter(|(_quantizer, score)| metric.score_within_target(*score))
+            .map(|(quantizer, _score)| *quantizer)
+            .max_by(f64::total_cmp)
+    }
+
     #[inline]
     pub fn predict_quantizer(
         quantizer_range: (f64, f64),
@@ -1297,4 +1315,63 @@ pub enum TargetQualityError {
     PreviousPassDataNotFound,
     #[error("Failed to measure quality")]
     QualityMeasurementFailed,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TargetQuality;
+    use crate::models::sequence::target_quality::types::QualityMetric;
+
+    fn ssimulacra2() -> QualityMetric {
+        QualityMetric::SSIMULACRA2 {
+            target_range: (74.0, 76.0),
+            resolution:   None,
+            threads:      None,
+        }
+    }
+
+    #[test]
+    fn verified_quantizer_uses_single_in_range_probe() {
+        // One probe inside the target must be used as-is
+        let history = [(30.0, 74.32)];
+        assert_eq!(
+            TargetQuality::verified_quantizer(&ssimulacra2(), &history),
+            Some(30.0)
+        );
+    }
+
+    #[test]
+    fn verified_quantizer_prefers_highest_in_range_quantizer() {
+        let history = [(30.0, 71.96), (17.5, 79.76), (25.25, 75.31), (26.0, 74.1)];
+        assert_eq!(
+            TargetQuality::verified_quantizer(&ssimulacra2(), &history),
+            Some(26.0)
+        );
+    }
+
+    #[test]
+    fn verified_quantizer_is_none_without_in_range_probe() {
+        let history = [(30.0, 64.67), (17.5, 82.31), (22.75, 77.86), (25.25, 73.98)];
+        assert_eq!(
+            TargetQuality::verified_quantizer(&ssimulacra2(), &history),
+            None
+        );
+        assert_eq!(TargetQuality::verified_quantizer(&ssimulacra2(), &[]), None);
+    }
+
+    #[test]
+    fn verified_quantizer_handles_inverse_metric() {
+        let butteraugli = QualityMetric::BUTTERAUGLI {
+            target_range:         (0.8, 1.2),
+            resolution:           None,
+            threads:              None,
+            intensity_multiplier: None,
+            norm:                 None,
+        };
+        let history = [(20.0, 0.6), (28.0, 0.95), (32.0, 1.15), (40.0, 1.6)];
+        assert_eq!(
+            TargetQuality::verified_quantizer(&butteraugli, &history),
+            Some(32.0)
+        );
+    }
 }

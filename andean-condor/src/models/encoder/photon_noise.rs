@@ -1,8 +1,9 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PhotonNoise {
     pub iso:        u32,
     pub chroma_iso: Option<u32>,

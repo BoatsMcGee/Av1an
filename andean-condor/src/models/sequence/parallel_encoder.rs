@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
@@ -8,7 +9,7 @@ use crate::models::{
     sequence::{SequenceConfigHandler, SequenceDataHandler},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ParallelEncoderConfig
 where
     Self: SequenceConfigHandler,
@@ -52,7 +53,7 @@ where
     fn parallel_encoder_mut(&mut self) -> Result<&mut ParallelEncoderConfig>;
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ParallelEncoderData {
     /// Must be milliseconds since UNIX Epoch
     pub started_on:   Option<u128>,
@@ -69,7 +70,7 @@ where
     fn get_parallel_encoder_mut(&mut self) -> Result<&mut ParallelEncoderData>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum BufferStrategy {
     None,
     Workers(u8),

@@ -1,9 +1,10 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum Input {
     Video {
         path:          PathBuf,
@@ -21,7 +22,7 @@ pub enum Input {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display)]
+#[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display, JsonSchema)]
 pub enum VapourSynthImportMethod {
     /// [L-SMASH-Works](https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works)
     LSMASHWorks {
@@ -49,13 +50,13 @@ pub enum VapourSynthImportMethod {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display)]
+#[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display, JsonSchema)]
 pub enum ImportMethod {
     // FFmpeg {}, // Unsupported
     FFMS2 { index: Option<u8> },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display)]
+#[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display, JsonSchema)]
 pub enum VapourSynthScriptSource {
     Path(PathBuf),
     Text(String),

@@ -16,9 +16,11 @@ mod tests {
         models::encoder::cli_parameter::CLIParameter,
         vapoursynth::vapoursynth_filters::VapourSynthFilter,
     };
+    use serial_test::serial;
 
     use super::*;
 
+    #[serial]
     #[test]
     fn with_mkvmerge() {
         if !ffmpeg_is_available() {
@@ -87,6 +89,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn with_ffmpeg() {
         if !ffmpeg_is_available() {

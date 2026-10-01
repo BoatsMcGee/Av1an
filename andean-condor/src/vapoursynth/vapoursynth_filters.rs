@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::{Result, bail};
 use itertools::Itertools;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, node::Node};
 
@@ -55,7 +56,7 @@ use crate::{
 /// that intentionally carries many configuration fields, so the enum is larger
 /// than the other variants.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum VapourSynthFilter {
     Crop {
         top:    Option<usize>,

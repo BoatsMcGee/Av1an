@@ -1,11 +1,14 @@
 use std::{
     collections::HashMap,
-    sync::{self, Arc, atomic::AtomicBool},
-    thread,
+    sync::{
+        self,
+        Arc,
+        Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::SystemTime,
 };
 
-use anyhow::Result;
 use thiserror::Error;
 
 use crate::{
@@ -15,6 +18,7 @@ use crate::{
         sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
     },
     models::{
+        Condor as CondorModel,
         input::{Input as InputModel, VapourSynthScriptSource},
         sequence::{
             SequenceConfigHandler,
@@ -27,9 +31,11 @@ use crate::{
         },
     },
     vapoursynth::{
+        VapourSynthError,
         get_core,
         plugins::{
             MetricPluginFunction,
+            PluginFunction,
             ffms2::Source,
             standard::{plane_stats::PlaneStats, splice::Splice, trim::Trim},
         },
@@ -83,12 +89,12 @@ where
         &mut self,
         condor: &mut Condor<Data, Config>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
-        _cancelled: Arc<AtomicBool>,
+        cancelled: Arc<AtomicBool>,
     ) -> anyhow::Result<((), Vec<anyhow::Error>)> {
         let warnings = vec![];
-        let mut condor_data = condor.as_data();
-        let input = self.input.as_mut().unwrap_or(&mut condor.input);
         let config = condor.sequence_config.noise_detector()?.clone().unwrap_or_default();
+        let input_data_copy = condor.input.as_data();
+        let input = self.input.as_mut().unwrap_or(&mut condor.input);
 
         let v_input = match input.as_data() {
             InputModel::Video {
@@ -146,16 +152,42 @@ where
             denoised_node = filter.invoke_plugin_function(core, &denoised_node)?;
         }
 
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(((), warnings));
+        }
+
+        let pending: Vec<usize> = condor
+            .scenes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, scene)| {
+                scene
+                    .sequence_data
+                    .get_noise_detection()
+                    .is_ok_and(|detection| detection.is_none())
+                    .then_some(index)
+            })
+            .collect();
+        let total = condor.scenes.len() as u64;
+        let base_completed = total - pending.len() as u64;
+
+        if pending.is_empty() {
+            let _ = progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                id: Self::DETAILS.name.to_owned(),
+            }));
+            return Ok(((), warnings));
+        }
+
         // Sample 1 frame in the middle of each scene
         let reference_node = {
-            let frame_nodes: Vec<_> = condor
-                .scenes
+            let frame_nodes: Vec<_> = pending
                 .iter()
-                .map(|scene| {
-                    let index = scene.start_frame + (scene.end_frame - scene.start_frame) / 2;
+                .map(|&index| {
+                    let scene = &condor.scenes[index];
+                    let frame_index = scene.start_frame + (scene.end_frame - scene.start_frame) / 2;
                     Trim {
-                        first: Some(index as u32),
-                        last: Some(index as u32),
+                        first: Some(frame_index as u32),
+                        last: Some(frame_index as u32),
                         ..Default::default()
                     }
                     .invoke(core, &reference_node)
@@ -165,14 +197,14 @@ where
             Splice::invoke(core, &frame_nodes)?
         };
         let denoised_node = {
-            let frame_nodes: Vec<_> = condor
-                .scenes
+            let frame_nodes: Vec<_> = pending
                 .iter()
-                .map(|scene| {
-                    let index = scene.start_frame + (scene.end_frame - scene.start_frame) / 2;
+                .map(|&index| {
+                    let scene = &condor.scenes[index];
+                    let frame_index = scene.start_frame + (scene.end_frame - scene.start_frame) / 2;
                     Trim {
-                        first: Some(index as u32),
-                        last: Some(index as u32),
+                        first: Some(frame_index as u32),
+                        last: Some(frame_index as u32),
                         ..Default::default()
                     }
                     .invoke(core, &denoised_node)
@@ -182,42 +214,6 @@ where
             Splice::invoke(core, &frame_nodes)?
         };
 
-        let (compare_progress_tx, compare_progress_rx) = sync::mpsc::channel();
-        thread::spawn(move || -> Result<()> {
-            for progress in compare_progress_rx {
-                match progress {
-                    SequenceStatus::Whole(Status::Processing {
-                        id: _fn_name,
-                        completion,
-                    }) => {
-                        #[allow(clippy::collapsible_match)]
-                        if let SequenceCompletion::Frames {
-                            completed,
-                            total,
-                        } = completion
-                        {
-                            progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                                id:         Self::DETAILS.name.to_owned(),
-                                completion: SequenceCompletion::Frames {
-                                    completed,
-                                    total,
-                                },
-                            }))?;
-                        }
-                    },
-                    SequenceStatus::Whole(Status::Completed {
-                        id: _,
-                    }) => {
-                        progress_tx.send(SequenceStatus::Whole(Status::Completed {
-                            id: Self::DETAILS.name.to_owned(),
-                        }))?;
-                    },
-                    _ => (),
-                }
-            }
-            Ok(())
-        });
-
         let plane_stats_node = PlaneStats {
             clip_b_name: Some("denoised".to_owned()),
             plane:       Some(0),
@@ -225,19 +221,98 @@ where
         }
         .call(core, &reference_node, Some(&denoised_node))?;
 
-        let plane_stats = PlaneStats::get_scores(&plane_stats_node, None, compare_progress_tx)?;
+        let (obsolete_progress_tx, _) = sync::mpsc::channel();
 
-        for (plane_stat, scene) in plane_stats.iter().zip(condor.scenes.iter_mut()) {
-            let noise_detection = scene.sequence_data.get_noise_detection_mut()?;
-            *noise_detection = Some(NoiseDetectorData {
-                noise:      *plane_stat,
-                luminance:  0.0,
-                created_on: SystemTime::now(),
-            });
+        // Accumulate scores here as frames complete possibly out of order
+        let slots: Arc<Mutex<Vec<Option<f64>>>> = Arc::new(Mutex::new(vec![None; pending.len()]));
+        let scored = Arc::new(AtomicU64::new(0));
+
+        let frame_tx = progress_tx.clone();
+        let frame_slots = Arc::clone(&slots);
+        let frame_scored = Arc::clone(&scored);
+        let frame_cancelled = Arc::clone(&cancelled);
+        let pending_map = pending.clone();
+        let res: Result<Vec<f64>, VapourSynthError> = PlaneStats::collect_frame_values(
+            &plane_stats_node,
+            obsolete_progress_tx,
+            move |local: usize, noise: &f64| -> Result<(), VapourSynthError> {
+                let noise = *noise;
+                if let Some(slot) = frame_slots.lock().expect("noise slots lock").get_mut(local) {
+                    *slot = Some(noise);
+                }
+                let completed_now =
+                    base_completed + frame_scored.fetch_add(1, Ordering::Relaxed) + 1;
+                let global = pending_map.get(local).copied().unwrap_or(local);
+                let _ = frame_tx.send(SequenceStatus::Subprocess {
+                    parent: Status::Processing {
+                        id:         Self::DETAILS.name.to_owned(),
+                        completion: SequenceCompletion::Custom {
+                            name:      Self::DETAILS.name.to_owned(),
+                            completed: completed_now as f64,
+                            total:     total as f64,
+                        },
+                    },
+                    child:  Status::Processing {
+                        id:         "Noise".to_owned(),
+                        completion: SequenceCompletion::SceneQuality {
+                            index:     global as u64,
+                            quantizer: 0.0,
+                            score:     noise,
+                            bitrate:   0.0,
+                        },
+                    },
+                });
+                if frame_cancelled.load(Ordering::Relaxed) {
+                    return Err(PlaneStats::new_error("Cancelled".to_owned()));
+                }
+                Ok(())
+            },
+            move |frame| {
+                PlaneStats::PROPERTY_NAMES
+                    .iter()
+                    .find_map(|property_name| frame.props().get_float(property_name).ok())
+                    .ok_or_else(|| {
+                        PlaneStats::new_error(format!(
+                            "Score not found on any of the following properties: {}",
+                            PlaneStats::PROPERTY_NAMES.join(", ")
+                        ))
+                    })
+            },
+        );
+
+        // Assign completed scores to scenes
+        {
+            let buf = slots.lock().expect("noise slots lock");
+            for (local, slot) in buf.iter().enumerate() {
+                if let Some(noise) = slot {
+                    let global = pending[local];
+                    *condor.scenes[global].sequence_data.get_noise_detection_mut()? =
+                        Some(NoiseDetectorData {
+                            noise:      *noise,
+                            luminance:  0.0,
+                            created_on: SystemTime::now(),
+                        });
+                }
+            }
         }
-        condor_data.scenes = condor.scenes.clone();
+        let data = CondorModel {
+            input:           input_data_copy,
+            output:          condor.output.as_data(),
+            encoder:         condor.encoder.clone(),
+            scenes:          condor.scenes.clone(),
+            sequence_config: condor.sequence_config.clone(),
+        };
+        (condor.save_callback)(data)?;
 
-        (condor.save_callback)(condor_data)?;
+        if let Err(error) = res
+            && !cancelled.load(Ordering::Relaxed)
+        {
+            return Err(error.into());
+        }
+
+        let _ = progress_tx.send(SequenceStatus::Whole(Status::Completed {
+            id: Self::DETAILS.name.to_owned(),
+        }));
 
         Ok(((), warnings))
     }

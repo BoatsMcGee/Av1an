@@ -123,63 +123,18 @@ where
             }
 
             if matches!(self.method, SceneDetectionMethod::AVSceneChange { .. }) {
-                match &input {
-                    // Input::Video {
-                    //     ..
-                    // } => {
-                    //     trace!(
-                    //         "Skipping {} frames by decoding with av_decoders",
-                    //         last_scene.end_frame
-                    //     );
-                    //     let bit_depth = input.clip_info()?.format_info.as_bit_depth()?;
-                    //     let start_time = std::time::Instant::now();
-                    //     for index in 0..last_scene.end_frame {
-                    //         if !cancelled.load(Ordering::Relaxed) {
-                    //             if bit_depth > 8 {
-                    //                 input.decoder().read_video_frame::<u16>()?;
-                    //             } else {
-                    //                 input.decoder().read_video_frame::<u8>()?;
-                    //             }
-                    //             progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                    //                 id:         DETAILS.name.to_owned(),
-                    //                 completion: SequenceCompletion::Frames {
-                    //                     completed: index as u64,
-                    //                     total:     frames as u64,
-                    //                 },
-                    //             }))?;
-                    //         }
-                    //     }
-                    //     trace!(
-                    //         "Skipping {} frames took {} ms",
-                    //         last_scene.end_frame,
-                    //         start_time.elapsed().as_millis()
-                    //     );
-                    // },
-                    Input::Video {
-                        ..
-                    }
-                    | Input::VapourSynth {
-                        ..
-                    }
-                    | Input::VapourSynthScript {
-                        ..
-                    } => {
-                        trace!("Skipping {} frames by seeking", last_scene.end_frame);
-                        input.decoder().seek_to_frame(last_scene.end_frame).map_err(|_| {
-                            SceneDetectorError::SceneDetectionFailed(
-                                "Failed to seek to frame".to_owned(),
-                            )
-                        })?;
-                        progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                            id:         DETAILS.name.to_owned(),
-                            completion: SequenceCompletion::Frames {
-                                completed: last_scene.end_frame as u64,
-                                total:     frames as u64,
-                            },
-                        }))?;
-                        trace!("Skipping {} frames took {} ms", last_scene.end_frame, 0);
+                trace!("Skipping {} frames by seeking", last_scene.end_frame);
+                input.decoder().seek_to_frame(last_scene.end_frame).map_err(|_| {
+                    SceneDetectorError::SceneDetectionFailed("Failed to seek to frame".to_owned())
+                })?;
+                progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                    id:         DETAILS.name.to_owned(),
+                    completion: SequenceCompletion::Frames {
+                        completed: last_scene.end_frame as u64,
+                        total:     frames as u64,
                     },
-                }
+                }))?;
+                trace!("Skipping {} frames took {} ms", last_scene.end_frame, 0);
                 if cancelled.load(Ordering::Relaxed) {
                     return Ok(((), warnings));
                 }
@@ -256,9 +211,21 @@ where
                 };
 
                 let results = if input.clip_info()?.format_info.as_bit_depth()? > 8 {
-                    detect_scene_changes::<u16>(input.decoder(), options, None, Some(&cb))
+                    detect_scene_changes::<u16>(
+                        input.decoder(),
+                        options,
+                        None,
+                        Some(&cb),
+                        Some(Arc::clone(&cancelled)),
+                    )
                 } else {
-                    detect_scene_changes::<u8>(input.decoder(), options, None, Some(&cb))
+                    detect_scene_changes::<u8>(
+                        input.decoder(),
+                        options,
+                        None,
+                        Some(&cb),
+                        Some(Arc::clone(&cancelled)),
+                    )
                 }?;
 
                 for (start_frame, end_frame) in
@@ -290,6 +257,10 @@ where
                         Some(scene_scores);
 
                     condor.scenes.push(scene);
+                }
+
+                if cancelled.load(Ordering::Relaxed) {
+                    return Ok(((), warnings));
                 }
 
                 if let Some(last_scene) = condor.scenes.last()

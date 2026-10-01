@@ -6,7 +6,7 @@ use california_condor::{
     test_helpers::*,
     utils::hash_path::hash_path,
 };
-use common::{condor_cmd, path_str};
+use common::condor_cmd;
 
 #[cfg(test)]
 mod tests {
@@ -17,9 +17,11 @@ mod tests {
         },
         vapoursynth::vapoursynth_filters::VapourSynthFilter,
     };
+    use serial_test::serial;
 
     use super::*;
 
+    #[serial]
     #[test]
     fn default() {
         if !ffmpeg_is_available() {
@@ -80,6 +82,7 @@ mod tests {
         });
     }
 
+    #[serial]
     #[test]
     fn with_custom_input() {
         if !ffmpeg_is_available() {
@@ -163,6 +166,7 @@ mod tests {
         });
     }
 
+    #[serial]
     #[test]
     fn with_fast_max_scene_length() {
         if !ffmpeg_is_available() {
@@ -250,6 +254,7 @@ mod tests {
         });
     }
 
+    #[serial]
     #[test]
     fn with_none() {
         if !ffmpeg_is_available() {

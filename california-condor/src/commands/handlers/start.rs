@@ -78,7 +78,21 @@ pub fn start_handler(
                         error!("{}", err);
                         bail!(err);
                     },
-                    _ => unreachable!("ConfigError should be LoadError"),
+                    ConfigError::Parse(err) => {
+                        let err = CondorCliError::ConfigParseError(err);
+                        error!("{}", err);
+                        bail!(err);
+                    },
+                    ConfigError::Serialize(err) => {
+                        let err = CondorCliError::ConfigSerializeError(err);
+                        error!("{}", err);
+                        bail!(err);
+                    },
+                    ConfigError::Save(err) => {
+                        let err = CondorCliError::ConfigSaveError(err);
+                        error!("{}", err);
+                        bail!(err);
+                    },
                 },
             }
         } else {
@@ -213,6 +227,7 @@ mod tests {
             QualityMetric as QualityMetricBase,
         },
         test_helpers::{
+            CwdGuard,
             check_benchmarker,
             check_bitrate_optimizer,
             check_encoder,
@@ -227,7 +242,6 @@ mod tests {
             check_target_quality,
             default_config,
             get_test_video,
-            set_cwd,
             vapoursynth_script,
         },
         utils::hash_path::hash_path,
@@ -258,7 +272,7 @@ mod tests {
             .to_path_buf();
 
         // Must run inside the temp directory so the default config path resolves there
-        set_cwd(temp.path());
+        let _cwd_guard = CwdGuard::set(temp.path());
 
         let expected_config = default_config(&test_video, &output, &temp_abs);
 

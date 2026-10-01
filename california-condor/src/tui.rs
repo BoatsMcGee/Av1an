@@ -219,7 +219,9 @@ pub fn run_noise_detector_tui(
     };
 
     let total_scenes = condor.scenes.len();
-    if condor.scenes.iter().all(|scene| scene.sequence_data.noise_detection.is_some()) {
+    if total_scenes == 0
+        || condor.scenes.iter().all(|scene| scene.sequence_data.noise_detection.is_some())
+    {
         return Ok(());
     }
 
@@ -243,10 +245,11 @@ pub fn run_noise_detector_tui(
     }
 
     debug!("Running Noise Detector");
+    let initial_scenes = condor.scenes.clone();
     let ctrlc_cancelled = Arc::clone(&cancelled);
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
-        let mut nd_app = NoiseDetectionApp::new(total_scenes as u64, clip_info);
+        let mut nd_app = NoiseDetectionApp::new(&initial_scenes, clip_info);
         nd_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });

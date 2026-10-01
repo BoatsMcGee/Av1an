@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::sequence::SequenceConfigHandler;
@@ -16,7 +17,7 @@ where
     fn scene_concatenator_mut(&mut self) -> Result<&mut SceneConcatenatorConfig>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SceneConcatenatorConfig
 where
     Self: SequenceConfigHandler,
@@ -60,6 +61,7 @@ impl SequenceConfigHandler for SceneConcatenatorConfig {
     Debug,
     strum::EnumString,
     strum::IntoStaticStr,
+    JsonSchema,
 )]
 pub enum ConcatMethod {
     #[strum(serialize = "mkvmerge")]

@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
@@ -14,7 +15,7 @@ pub mod output;
 pub mod scene;
 pub mod sequence;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Condor<SequenceData, SequenceConfig>
 where
     SequenceData: SequenceDataHandler,

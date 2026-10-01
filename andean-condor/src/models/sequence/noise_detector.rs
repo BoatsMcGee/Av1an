@@ -1,6 +1,7 @@
 use std::time::SystemTime;
 
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -8,7 +9,7 @@ use crate::{
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NoiseDetectorData {
     pub noise:      f64,
     pub luminance:  f64,
@@ -20,7 +21,7 @@ pub trait NoiseDetectorDataHandler {
     fn get_noise_detection_mut(&mut self) -> Result<&mut Option<NoiseDetectorData>>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NoiseDetectorConfig
 where
     Self: SequenceConfigHandler,

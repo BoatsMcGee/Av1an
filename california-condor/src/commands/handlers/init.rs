@@ -127,7 +127,7 @@ mod tests {
             QualityMetric as QualityMetricBase,
             handlers::load_configuration,
         },
-        test_helpers::{check_basic_config, default_config, get_test_video, set_cwd},
+        test_helpers::{CwdGuard, check_basic_config, default_config, get_test_video},
         utils::hash_path::hash_path,
     };
 
@@ -152,7 +152,7 @@ mod tests {
             .to_path_buf();
 
         // Must run inside the temp directory so the default config path resolves there
-        set_cwd(temp.path());
+        let _cwd_guard = CwdGuard::set(temp.path());
 
         let expected_config = default_config(&test_video, &output, &temp_abs);
 

@@ -7,14 +7,16 @@ use california_condor::{
 #[path = "common.rs"]
 mod common;
 
-use common::{condor_cmd, path_str};
+use common::condor_cmd;
 
 #[cfg(test)]
 mod tests {
     use andean_condor::models::encoder::cli_parameter::CLIParameter;
+    use serial_test::serial;
 
     use super::*;
 
+    #[serial]
     #[test]
     fn default_and_no_scenes() {
         if !ffmpeg_is_available() {
@@ -51,6 +53,7 @@ mod tests {
         check_basic_config(&config, &expected_config);
     }
 
+    #[serial]
     #[test]
     fn with_custom_options() {
         if !ffmpeg_is_available() {
@@ -102,6 +105,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn with_workers_preconfigured() {
         if !ffmpeg_is_available() {

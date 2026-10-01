@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
@@ -16,7 +17,17 @@ pub(in crate::vapoursynth::plugins::resize) const DOCS: &str =
     "https://www.vapoursynth.com/doc/functions/video/resize.html";
 
 #[derive(
-    Debug, Copy, Clone, Display, Serialize, Deserialize, EnumString, IntoStaticStr, PartialEq, Eq,
+    Debug,
+    Copy,
+    Clone,
+    Display,
+    Serialize,
+    Deserialize,
+    EnumString,
+    IntoStaticStr,
+    PartialEq,
+    Eq,
+    JsonSchema,
 )]
 pub enum Scaler {
     #[strum(serialize = "bicubic")]

@@ -7,7 +7,7 @@ use california_condor::{
     test_helpers::*,
     utils::hash_path::hash_path,
 };
-use common::{condor_cmd, path_str};
+use common::condor_cmd;
 
 #[cfg(test)]
 mod tests {
@@ -27,9 +27,11 @@ mod tests {
         },
         vapoursynth::vapoursynth_filters::VapourSynthFilter,
     };
+    use serial_test::serial;
 
     use super::*;
 
+    #[serial]
     #[test]
     fn with_custom_options() {
         if !ffmpeg_is_available() {
@@ -140,6 +142,7 @@ mod tests {
         });
     }
 
+    #[serial]
     #[test]
     fn resumes_partial_scenes() {
         if !ffmpeg_is_available() {

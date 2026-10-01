@@ -1,9 +1,10 @@
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::models::sequence::SequenceConfigHandler;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NoiseScalerData {
     pub scaler: f64,
 }
@@ -13,7 +14,7 @@ pub trait NoiseScalerDataHandler {
     fn get_noise_scaling_mut(&mut self) -> Result<&mut Option<NoiseScalerData>>;
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct NoiseScalerConfig
 where
     Self: SequenceConfigHandler,

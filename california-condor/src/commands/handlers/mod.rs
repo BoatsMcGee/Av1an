@@ -57,7 +57,21 @@ pub fn load_configuration(config_path: Option<&Path>) -> Result<(Configuration, 
                     error!("{}", err);
                     bail!(err);
                 },
-                _ => unreachable!("ConfigError should be LoadError"),
+                ConfigError::Parse(err) => {
+                    let err = CondorCliError::ConfigParseError(err);
+                    error!("{}", err);
+                    bail!(err);
+                },
+                ConfigError::Serialize(err) => {
+                    let err = CondorCliError::ConfigSerializeError(err);
+                    error!("{}", err);
+                    bail!(err);
+                },
+                ConfigError::Save(err) => {
+                    let err = CondorCliError::ConfigSaveError(err);
+                    error!("{}", err);
+                    bail!(err);
+                },
             },
         }
     };
@@ -137,4 +151,34 @@ pub fn configure_input(
         index.or(existing_index),
         // cache_path: None, // TODO: Support Cache Path
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+
+    use super::*;
+
+    #[test]
+    fn invalid_json_reports_parse_error() {
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let config_path = temp.path().join("condor.json");
+        std::fs::write(&config_path, "{ invalid JSON").expect("config file writes to disk");
+
+        let error = load_configuration(Some(&config_path))
+            .expect_err("invalid JSON should fail to load")
+            .downcast::<CondorCliError>()
+            .expect("load_configuration error should be CondorCliError");
+        let error_string = format!("{error:#}");
+
+        assert_matches!(
+            error,
+            CondorCliError::ConfigParseError(_),
+            "invalid JSON should be ConfigParseError"
+        );
+        assert!(
+            error_string.contains("line"),
+            "error should include the JSON parse detail, got: {error_string}"
+        );
+    }
 }
