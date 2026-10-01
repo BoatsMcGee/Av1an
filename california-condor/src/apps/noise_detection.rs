@@ -1,37 +1,31 @@
-use std::{
-    io::IsTerminal,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError},
-    },
-    thread,
-    time::Duration,
-};
+use std::{collections::BTreeMap, io::IsTerminal};
 
-use andean_condor::core::{
-    input::clip_info::ClipInfo,
-    sequence::{SequenceCompletion, SequenceStatus, Status},
+use andean_condor::{
+    core::{
+        input::clip_info::ClipInfo,
+        sequence::{SequenceCompletion, SequenceStatus, Status},
+    },
+    models::scene::Scene,
 };
-use anyhow::Result;
 use ratatui::{
     Frame,
-    crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers},
     layout::{Constraint, Layout},
     style::Color,
     text::Line,
-    widgets::Block,
+    widgets::{Axis, Block, Chart, Dataset},
 };
 use serde::{Deserialize, Serialize};
-use tracing::debug;
 
 use crate::{
-    apps::{TuiApp, shared_progress::SharedProgress},
+    apps::{SharedProgress, TuiApp},
     components::{input_info::InputInfo, progress_bar::ProgressBar},
+    configuration::CliSequenceData,
 };
 #[derive(Clone)]
 pub struct NoiseDetectionState {
     pub frames_processed: u64,
+    pub total_frames:     u64,
+    pub scene_noise:      BTreeMap<u64, f64>,
 }
 
 pub struct NoiseDetectionApp {
@@ -45,196 +39,179 @@ pub struct NoiseDetectionApp {
 }
 
 impl TuiApp for NoiseDetectionApp {
+    type State = NoiseDetectionState;
+
     fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
         &mut self.original_panic_hook
     }
 
-    fn run(
-        &mut self,
-        progress_rx: Receiver<SequenceStatus>,
-        cancelled: Arc<AtomicBool>,
-    ) -> Result<()> {
-        let (event_tx, event_rx) = mpsc::channel();
-        if !crate::apps::is_test_mode() {
-            let input_tx = event_tx.clone();
-            thread::spawn(move || {
-                loop {
-                    if let Ok(TermEvent::Key(key)) = event::read()
-                        && input_tx.send(NoiseDetectionAppEvent::Input(key)).is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-        if !crate::apps::is_test_mode() {
-            let tick_tx = event_tx.clone();
-            thread::spawn(move || {
-                loop {
-                    if tick_tx.send(NoiseDetectionAppEvent::Tick).is_err() {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(33)); // ~30 FPS
-                }
-            });
-        }
+    fn shared_progress(&self) -> &SharedProgress<Self::State> {
+        &self.shared_progress
+    }
 
-        let shared_progress = self.shared_progress.clone();
-        let total_frames = self.total_frames;
-        let quit = Arc::new(AtomicBool::new(false));
-        let quit_flag = Arc::clone(&quit);
-        thread::spawn(move || {
-            for progress in progress_rx {
-                if let SequenceStatus::Whole(Status::Processing {
-                    completion, ..
-                }) = progress
-                    && let SequenceCompletion::Frames {
+    fn cached_state(&self) -> &Self::State {
+        &self.cached_state
+    }
+
+    fn cached_state_mut(&mut self) -> &mut Self::State {
+        &mut self.cached_state
+    }
+
+    fn attempted_cancel(&self) -> bool {
+        self.attempted_cancel
+    }
+
+    fn attempted_cancel_mut(&mut self) -> &mut bool {
+        &mut self.attempted_cancel
+    }
+
+    fn cancel_message(&self) -> &'static str {
+        "Waiting for Noise Detector to shut down. Press Ctrl+C again to exit immediately."
+    }
+
+    fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool {
+        match status {
+            SequenceStatus::Whole(Status::Processing {
+                completion:
+                    SequenceCompletion::Frames {
                         completed, ..
-                    } = completion
-                {
-                    shared_progress.apply(|state| {
-                        state.frames_processed = completed;
-                        true
-                    });
+                    },
+                ..
+            }) => {
+                state.frames_processed = completed;
+                if !std::io::stdout().is_terminal() {
+                    let event = NoiseDetectionConsoleEvent::ProcessedFrame {
+                        completed,
+                        total: state.total_frames,
+                    };
+                    let event = serde_json::to_string(&event).unwrap();
+                    println!("[Noise Detector][Progress]: {event}");
+                }
+                true
+            },
+            SequenceStatus::Subprocess {
+                parent,
+                child,
+            } => match (parent, child) {
+                (
+                    Status::Processing {
+                        completion:
+                            SequenceCompletion::Custom {
+                                completed,
+                                total,
+                                ..
+                            },
+                        ..
+                    },
+                    Status::Processing {
+                        id,
+                        completion:
+                            SequenceCompletion::SceneQuality {
+                                index,
+                                score,
+                                ..
+                            },
+                    },
+                ) if id == "Noise" => {
+                    state.frames_processed = completed as u64;
+                    state.total_frames = total as u64;
+                    state.scene_noise.insert(index, score);
                     if !std::io::stdout().is_terminal() {
-                        let event = NoiseDetectionConsoleEvent::ProcessedFrame {
-                            completed,
-                            total: total_frames,
+                        let event = NoiseDetectionConsoleEvent::SceneNoise {
+                            scene: index,
+                            noise: score,
                         };
                         let event = serde_json::to_string(&event).unwrap();
-                        println!("[Noise Detector][Progress]: {}", event);
+                        println!("[Noise Detector][Scene]: {event}");
                     }
-                }
-            }
-            let _ = event_tx.send(NoiseDetectionAppEvent::Quit);
-            quit_flag.store(true, Ordering::Release);
-        });
-
-        if crate::apps::is_test_mode() {
-            while !quit.load(Ordering::Acquire) {
-                std::thread::sleep(Duration::from_millis(10));
-                if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                    self.cached_state = snapshot;
-                }
-                while event_rx.try_recv().is_ok() {}
-            }
-            self.cached_state = self.shared_progress.read();
-            return Ok(());
+                    true
+                },
+                _ => false,
+            },
+            _ => false,
         }
-
-        let mut terminal = self.init()?;
-        let stdout_is_terminal = std::io::stdout().is_terminal();
-        'event_loop: loop {
-            while let Ok(NoiseDetectionAppEvent::Input(key)) = event_rx.try_recv() {
-                if Self::handle_ctrl_c(
-                    key,
-                    &mut self.attempted_cancel,
-                    &cancelled,
-                    stdout_is_terminal,
-                ) {
-                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                        self.cached_state = snapshot;
-                    }
-                    terminal.draw(|f| self.render(f))?;
-                    self.restore(terminal)?;
-                    break 'event_loop;
-                }
-            }
-
-            if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                self.cached_state = snapshot;
-            }
-
-            if quit.load(Ordering::Acquire) {
-                self.cached_state = self.shared_progress.read();
-                terminal.draw(|f| self.render(f))?;
-                self.restore(terminal)?;
-                break;
-            }
-
-            match event_rx.recv_timeout(Duration::from_millis(33)) {
-                Ok(NoiseDetectionAppEvent::Tick) => {
-                    terminal.draw(|f| self.render(f))?;
-                },
-                Ok(NoiseDetectionAppEvent::Input(key)) => {
-                    if Self::handle_ctrl_c(
-                        key,
-                        &mut self.attempted_cancel,
-                        &cancelled,
-                        stdout_is_terminal,
-                    ) {
-                        if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                            self.cached_state = snapshot;
-                        }
-                        terminal.draw(|f| self.render(f))?;
-                        self.restore(terminal)?;
-                        break 'event_loop;
-                    }
-                },
-                Ok(NoiseDetectionAppEvent::Quit) => {
-                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                        self.cached_state = snapshot;
-                    }
-                    terminal.draw(|f| self.render(f))?;
-                    self.restore(terminal)?;
-                    break;
-                },
-                Err(RecvTimeoutError::Timeout) => {
-                    terminal.draw(|f| self.render(f))?;
-                },
-                Err(RecvTimeoutError::Disconnected) => {
-                    if let Some(snapshot) = self.shared_progress.read_if_dirty() {
-                        self.cached_state = snapshot;
-                    }
-                    terminal.draw(|f| self.render(f))?;
-                    self.restore(terminal)?;
-                    break;
-                },
-            }
-        }
-        Ok(())
     }
 
     fn render(&self, frame: &mut Frame) {
         const MAIN_COLOR: Color = Color::DarkGray;
         let layout = Layout::default()
             .constraints([
-                Constraint::Percentage(10),
-                Constraint::Percentage(80),
+                Constraint::Percentage(20),
+                Constraint::Percentage(70),
                 Constraint::Percentage(10),
             ])
             .split(frame.area());
 
+        let top_info = Block::bordered()
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .title(Line::from("Input").centered())
+            .title_bottom(Line::from("Noise Detection").centered());
+        let top_info_inner = top_info.inner(layout[0]);
+        let top_info_areas =
+            Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).split(top_info_inner);
+        frame.render_widget(top_info, layout[0]);
         let input_info = InputInfo::new(self.clip_info);
         let input_info = input_info.generate(false);
-        let input_block = Block::bordered()
-            .border_type(ratatui::widgets::BorderType::Rounded)
-            .title(Line::from("Input").centered());
-        let input_block = if self.attempted_cancel {
-            input_block.title_bottom(
-                Line::from(
-                    "Noise Detection does not support cancelling. Press Ctrl+C again to exit.",
-                )
-                .centered(),
-            )
+        frame.render_widget(input_info, top_info_areas[0]);
+
+        let state = &self.cached_state;
+        let scene_noise = state
+            .scene_noise
+            .iter()
+            .map(|(index, noise)| (*index as f64, *noise))
+            .collect::<Vec<_>>();
+        let datasets = vec![
+            Dataset::default()
+                .name("Noise Level")
+                .style(Color::Green)
+                .graph_type(ratatui::widgets::GraphType::Scatter)
+                .data(&scene_noise),
+        ];
+        let scene_count = state.scene_noise.len().max(state.total_frames as usize);
+        let max_scenes_label = format!("{}", scene_count.saturating_sub(1));
+        let max_noise = scene_noise.iter().map(|(_, n)| *n).fold(0.0_f64, f64::max);
+        let max_noise = if max_noise <= 0.0 {
+            1.0
         } else {
-            input_block
+            (max_noise * 1000.0).ceil() / 1000.0
         };
-        let input_info = input_info.block(input_block);
-        frame.render_widget(input_info, layout[0]);
+        let max_noise_label = format!("{max_noise:.3}");
+        let chart = Chart::new(datasets)
+            .block(
+                Block::bordered()
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .title(Line::from("Noise Level per Scene").centered()),
+            )
+            .x_axis(
+                Axis::default()
+                    .title("Scene")
+                    .bounds([0.0, scene_count as f64])
+                    .labels(["0", &max_scenes_label]),
+            )
+            .y_axis(
+                Axis::default()
+                    .title("Noise")
+                    .bounds([0.0, max_noise])
+                    .labels(["0", &max_noise_label]),
+            );
+        frame.render_widget(chart, layout[1]);
 
         let progress_bar = ProgressBar {
             color:               MAIN_COLOR,
             processing_title:    if self.attempted_cancel {
-                "Waiting for Noise Detection to Finish...".to_owned()
+                "Shutting down...".to_owned()
             } else {
                 "Detecting Noisy Scenes...".to_owned()
             },
-            completed_title:     "Noise Detection Completed".to_owned(),
-            top_right_title:     String::new(),
+            completed_title:     if self.attempted_cancel {
+                "Noise Detection Aborted".to_owned()
+            } else {
+                "Noise Detection Completed".to_owned()
+            },
+            top_right_title:     format!("{} found", state.scene_noise.len()),
             bottom_center_title: String::new(),
-            unit_per_second:     "FPS".to_owned(),
-            unit:                "Frame".to_owned(),
+            unit_per_second:     "SPS".to_owned(),
+            unit:                "Scene".to_owned(),
             initial_completed:   0,
             completed:           self.cached_state.frames_processed,
             total:               self.total_frames,
@@ -246,9 +223,24 @@ impl TuiApp for NoiseDetectionApp {
 }
 
 impl NoiseDetectionApp {
-    pub fn new(total_frames: u64, clip_info: ClipInfo) -> NoiseDetectionApp {
+    pub fn new(scenes: &[Scene<CliSequenceData>], clip_info: ClipInfo) -> NoiseDetectionApp {
+        let total_frames = scenes.len() as u64;
+        let scene_noise: BTreeMap<u64, f64> = scenes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, scene)| {
+                scene
+                    .sequence_data
+                    .noise_detection
+                    .as_ref()
+                    .map(|detection| (index as u64, detection.noise))
+            })
+            .collect();
+        let frames_processed = scene_noise.len() as u64;
         let state = NoiseDetectionState {
-            frames_processed: 0,
+            frames_processed,
+            total_frames,
+            scene_noise,
         };
         NoiseDetectionApp {
             original_panic_hook: None,
@@ -260,39 +252,10 @@ impl NoiseDetectionApp {
             cached_state: state,
         }
     }
-
-    fn handle_ctrl_c(
-        key: ratatui::crossterm::event::KeyEvent,
-        attempted_cancel: &mut bool,
-        cancelled: &Arc<AtomicBool>,
-        stdout_is_terminal: bool,
-    ) -> bool {
-        if key.code == KeyCode::Char('c')
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.is_press()
-        {
-            *attempted_cancel = true;
-            let already_cancelled = cancelled.swap(true, Ordering::SeqCst);
-            if already_cancelled {
-                debug!("Force quit Condor");
-                return true;
-            } else if !stdout_is_terminal {
-                println!(
-                    "Noise Detection does not support cancelling. Press Ctrl+C again to exit."
-                );
-            }
-        }
-        false
-    }
-}
-
-enum NoiseDetectionAppEvent {
-    Quit,
-    Tick,                   // 30 FPS
-    Input(event::KeyEvent), // Keyboard events
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum NoiseDetectionConsoleEvent {
     ProcessedFrame { completed: u64, total: u64 },
+    SceneNoise { scene: u64, noise: f64 },
 }

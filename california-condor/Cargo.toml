@@ -11,7 +11,7 @@ repository = "https://github.com/rust-av/Av1an"
 keywords = ["video"]
 categories = ["command-line-utilities"]
 license = "GPL-3.0"
-readme = "../README.md"
+readme = "README.md"
 
 [[bin]]
 name = "condor"
