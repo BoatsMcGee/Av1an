@@ -19,7 +19,6 @@ use crate::{
         VapourSynthImportMethod,
         VapourSynthScriptSource,
     },
-    utils::semaphore::Semaphore,
     vapoursynth::{
         VapourSynthError,
         get_clip_info as get_vs_clip_info,
@@ -645,63 +644,87 @@ impl Input {
                     vapoursynth_decoder.get_output_index(),
                     vapoursynth_decoder.get_node_modifier(),
                 )?;
-                let concurrency = std::thread::available_parallelism().map_or(24, |n| n.get());
-                let frame_semaphore = Arc::new(Semaphore::new(concurrency));
-                let pair = Arc::new((Mutex::new(BTreeMap::new()), Condvar::new()));
+                // Stream frames in order while keeping at most `window` frames requested
+                // but not yet sent, so memory stays bounded however many frames are
+                // requested and the receiver gets frames as soon as they are ready.
+                let window = std::thread::available_parallelism().map_or(24, |n| n.get());
+                let state = Arc::new((Mutex::new((BTreeMap::new(), 0_usize)), Condvar::new()));
+                let mut next_request = 0;
+                let mut next_send = 0;
 
-                for index in frame_indices {
-                    frame_semaphore.acquire();
-
-                    let pair_clone = Arc::clone(&pair);
-                    let frame_semaphore_clone = Arc::clone(&frame_semaphore);
-
-                    node.get_frame_async(*index, move |frame, _index, _node| {
-                        let frame = frame.expect("Failed to get frame");
-                        let (lock, condvar) = &*pair_clone;
-
-                        let mut map = lock.lock().expect("mutex should acquire lock");
-                        map.insert(index, frame);
-                        condvar.notify_one();
-
-                        frame_semaphore_clone.release();
-                    });
-                }
-
-                for index in frame_indices {
-                    let (map_lock, condvar) = &*pair;
-                    let map = map_lock.lock().expect("mutex should acquire lock");
-                    let mut map = condvar
-                        .wait_while(map, |m| !m.contains_key(index))
-                        .expect("Condvar should be notified");
-
-                    let frame = map.remove(index).expect("Map should have frame");
-                    drop(map);
-
-                    let framedata = {
-                        let mut data = Vec::new();
-                        data.extend_from_slice(FRAME_HEADER.as_bytes());
-                        let planes_indices = if frame.format().color_family()
-                            == vapoursynth::format::ColorFamily::RGB
+                let result = (|| -> Result<()> {
+                    while next_send < frame_indices.len() {
+                        while next_request < frame_indices.len()
+                            && next_request - next_send < window
                         {
-                            [1, 2, 0]
-                        } else {
-                            [0, 1, 2]
-                        };
+                            let state = Arc::clone(&state);
+                            let position = next_request;
+                            node.get_frame_async(
+                                frame_indices[position],
+                                move |frame, _index, _node| {
+                                    let (lock, condvar) = &*state;
+                                    let mut pending =
+                                        lock.lock().expect("mutex should acquire lock");
+                                    pending.0.insert(position, frame.map_err(|e| e.to_string()));
+                                    pending.1 += 1;
+                                    condvar.notify_all();
+                                },
+                            );
+                            next_request += 1;
+                        }
 
-                        for plane_index in planes_indices {
-                            if let Ok(plane_data) = frame.data(plane_index) {
-                                data.extend_from_slice(plane_data);
+                        let frame = {
+                            let (lock, condvar) = &*state;
+                            let pending = lock.lock().expect("mutex should acquire lock");
+                            let mut pending = condvar
+                                .wait_while(pending, |p| !p.0.contains_key(&next_send))
+                                .expect("Condvar should be notified");
+                            pending.0.remove(&next_send).expect("Map should have frame")
+                        };
+                        let frame = frame.map_err(|error| {
+                            anyhow::anyhow!("{CONTEXT} {}: {error}", frame_indices[next_send])
+                        })?;
+
+                        let framedata = {
+                            let mut data = Vec::new();
+                            data.extend_from_slice(FRAME_HEADER.as_bytes());
+                            let planes_indices = if frame.format().color_family()
+                                == vapoursynth::format::ColorFamily::RGB
+                            {
+                                [1, 2, 0]
                             } else {
-                                for row in 0..frame.height(plane_index) {
-                                    data.extend_from_slice(frame.data_row(plane_index, row));
+                                [0, 1, 2]
+                            };
+
+                            for plane_index in planes_indices {
+                                if let Ok(plane_data) = frame.data(plane_index) {
+                                    data.extend_from_slice(plane_data);
+                                } else {
+                                    for row in 0..frame.height(plane_index) {
+                                        data.extend_from_slice(frame.data_row(plane_index, row));
+                                    }
                                 }
                             }
-                        }
-                        data
-                    };
+                            data
+                        };
+                        drop(frame);
 
-                    frame_sender.send(Cursor::new(framedata))?;
-                }
+                        frame_sender.send(Cursor::new(framedata))?;
+                        next_send += 1;
+                    }
+                    Ok(())
+                })();
+
+                // Wait for every outstanding request before the node is dropped.
+                let (lock, condvar) = &*state;
+                drop(
+                    condvar
+                        .wait_while(lock.lock().expect("mutex should acquire lock"), |p| {
+                            p.1 < next_request
+                        })
+                        .expect("Condvar should be notified"),
+                );
+                result?;
                 drop(frame_sender);
             },
         }
