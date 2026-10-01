@@ -304,9 +304,10 @@ impl SceneConcatenator {
                 );
                 group_options.write_to_disk(&group_options_path)?;
 
+                // Paths in the options files are relative to this process's working
+                // directory, so mkvmerge must run from it too.
                 let mut group_cmd = Command::new("mkvmerge");
-                group_cmd.current_dir(scenes_directory);
-                group_cmd.arg(format!("@./Scene Concatenator/{group_index:05}.json"));
+                group_cmd.arg(format!("@{}", fix_path(&group_options_path)));
                 group_cmd.stdout(Stdio::piped());
                 group_cmd.stderr(Stdio::piped());
 
@@ -372,7 +373,7 @@ impl SceneConcatenator {
             let chunk_group_options_names = chunk_groups
                 .iter()
                 .enumerate()
-                .map(|(index, _)| format!("{index:05}.mkv"))
+                .map(|(index, _)| fix_path(scratch_directory.join(format!("{index:05}.mkv"))))
                 .collect::<Vec<_>>();
             let options = MKVMergeOptions::new(
                 &fixed_output,
