@@ -1471,6 +1471,17 @@ pub fn check_parallel_encoder(
                 "Parallel Encoder buffer strategy is Maximum"
             );
         },
+        BufferStrategy::Stream {
+            window: expected_window,
+        } => match parallel_encoder.buffer_strategy {
+            BufferStrategy::Stream {
+                window,
+            } => assert_eq!(
+                window, expected_window,
+                "Parallel Encoder stream window is {expected_window}"
+            ),
+            _ => panic!("expected Parallel Encoder buffer strategy to be Stream"),
+        },
     }
 }
 

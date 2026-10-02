@@ -75,6 +75,13 @@ pub enum BufferStrategy {
     None,
     Workers(u8),
     Maximum,
+    /// Stream frames to each worker's encoder instead of decoding whole scenes
+    /// ahead. Each worker keeps at most `window` frame requests in flight and
+    /// `window` frames queued for its encoder, so resident raw frames are
+    /// bounded by roughly `2 * window * workers` regardless of scene length.
+    Stream {
+        window: usize,
+    },
 }
 
 impl Default for BufferStrategy {
@@ -91,6 +98,9 @@ impl BufferStrategy {
             BufferStrategy::None => workers,
             BufferStrategy::Workers(buffer) => workers + *buffer,
             BufferStrategy::Maximum => workers * 2,
+            BufferStrategy::Stream {
+                ..
+            } => workers,
         }
     }
 }
