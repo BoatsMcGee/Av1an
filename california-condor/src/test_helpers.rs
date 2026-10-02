@@ -18,7 +18,7 @@ use andean_condor::{
             bitrate_optimizer::BitrateOptimizerConfig,
             noise_detector::NoiseDetectorConfig,
             noise_scaler::NoiseScalerConfig,
-            parallel_encoder::{BufferStrategy, ParallelEncoderConfig},
+            parallel_encoder::ParallelEncoderConfig,
             quality_check::QualityCheckConfig,
             scene_concatenator::{ConcatMethod, SceneConcatenatorConfig},
             scene_detector::{
@@ -237,7 +237,6 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
                 speed_scaler:       SpeedScalerConfig::default(),
                 parallel_encoder:   ParallelEncoderConfig {
                     workers:          None,
-                    buffer_strategy:  BufferStrategy::Workers(1),
                     scenes_directory: scenes_directory.clone(),
                     input:            None,
                 },
@@ -1440,38 +1439,6 @@ pub fn check_parallel_encoder(
         "Parallel Encoder workers is {:?}",
         expected_parallel_encoder.workers
     );
-    match expected_parallel_encoder.buffer_strategy {
-        BufferStrategy::None => {
-            assert_matches!(
-                parallel_encoder.buffer_strategy,
-                BufferStrategy::None,
-                "Parallel Encoder buffer strategy is None"
-            );
-        },
-        BufferStrategy::Workers(expected_buffer_workers) => {
-            assert_matches!(
-                parallel_encoder.buffer_strategy,
-                BufferStrategy::Workers { .. },
-                "Parallel Encoder buffer strategy is Workers"
-            );
-            match parallel_encoder.buffer_strategy {
-                BufferStrategy::Workers(buffer_workers) => {
-                    assert_eq!(
-                        buffer_workers, expected_buffer_workers,
-                        "Parallel Encoder buffer workers is {expected_buffer_workers}"
-                    );
-                },
-                _ => panic!("expected Parallel Encoder buffer strategy to be Workers"),
-            }
-        },
-        BufferStrategy::Maximum => {
-            assert_matches!(
-                parallel_encoder.buffer_strategy,
-                BufferStrategy::Maximum,
-                "Parallel Encoder buffer strategy is Maximum"
-            );
-        },
-    }
 }
 
 pub fn check_scene_concatenator(

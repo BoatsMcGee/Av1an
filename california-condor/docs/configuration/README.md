@@ -18,7 +18,7 @@ Complete `condor.json` reference. A user should be able to build a valid config 
 | [sequence-config/target-quality](./condor/sequence-config/target-quality.md) | `metric`, `maximum_probes`, `quantizer_range`, `interpolators`, `input`, `metric_input`, `probing` |
 | [sequence-config/bitrate-optimizer](./condor/sequence-config/bitrate-optimizer.md) | `bitrate_sigma_threshold`               |
 | [sequence-config/speed-scaler](./condor/sequence-config/speed-scaler.md) | `speed_quantizers`                          |
-| [sequence-config/parallel-encoder](./condor/sequence-config/parallel-encoder.md) | `workers`, `buffer_strategy`, `scenes_directory`, `input` |
+| [sequence-config/parallel-encoder](./condor/sequence-config/parallel-encoder.md) | `workers`, `scenes_directory`, `input` |
 | [sequence-config/scene-concatenator](./condor/sequence-config/scene-concatenator.md) | `method`, `scenes_directory`, `output` |
 | [sequence-config/quality-check](./condor/sequence-config/quality-check.md) | `metric`, `strategy`, `statistic`, `input` |
 

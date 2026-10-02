@@ -326,16 +326,15 @@ mod tests {
             ccr:        None,
         }));
         expected_config.condor.sequence_config.parallel_encoder = ParallelEncoderConfig {
-            input: Some(Input::VapourSynth {
+            input:            Some(Input::VapourSynth {
                 path:          input_abs.clone(),
                 import_method: VapourSynthImportMethod::DGDecNV {
                     dgindexnv_executable: None,
                 },
                 cache_path:    None,
             }),
-            workers: Some(2),
+            workers:          Some(2),
             scenes_directory: temp_abs.join("scenes"),
-            ..Default::default()
         };
         // immutable shadow
         let expected_config = expected_config;
