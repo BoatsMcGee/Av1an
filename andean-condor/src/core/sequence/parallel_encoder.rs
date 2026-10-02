@@ -32,16 +32,16 @@ use crate::{
             SequenceConfigHandler,
             SequenceDataHandler,
             noise_detector::NoiseDetectorDataHandler,
-            parallel_encoder::{
-                BufferStrategy,
-                ParallelEncoderConfigHandler,
-                ParallelEncoderDataHandler,
-            },
+            parallel_encoder::{ParallelEncoderConfigHandler, ParallelEncoderDataHandler},
             scene_detector::SceneDetectorDataHandler,
         },
     },
     utils::semaphore::Semaphore,
 };
+
+/// Frames each streaming worker keeps requested ahead and queued for its
+/// encoder. 4-8 measured as fast as larger windows with less memory.
+const STREAM_WINDOW: usize = 8;
 
 static DETAILS: SequenceDetails = SequenceDetails {
     name:        "Parallel Encoder",
@@ -206,7 +206,6 @@ where
             })
             .collect::<VecDeque<Task>>();
 
-        let buffer_strategy = config.buffer_strategy.clone();
         let Condor {
             input: condor_input,
             output,
@@ -264,7 +263,6 @@ where
         let encoder_thread = Self::encode_tasks_with_sender(
             input,
             workers,
-            &buffer_strategy,
             tasks,
             progress_tx,
             cancelled,
@@ -311,7 +309,6 @@ impl ParallelEncoder {
     pub fn encode_tasks(
         input: &mut Input,
         workers: u8,
-        buffer_strategy: &BufferStrategy,
         tasks: VecDeque<Task>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
@@ -327,7 +324,6 @@ impl ParallelEncoder {
         let results = Self::encode_tasks_with_sender(
             input,
             workers,
-            buffer_strategy,
             tasks,
             progress_tx,
             cancelled,
@@ -340,20 +336,18 @@ impl ParallelEncoder {
     fn encode_tasks_with_sender(
         input: &mut Input,
         workers: u8,
-        buffer_strategy: &BufferStrategy,
         tasks: VecDeque<Task>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
-        if let BufferStrategy::Stream {
-            window,
-        } = buffer_strategy
-        {
+        // Stream frames to every worker when the input can deliver them
+        // concurrently. Otherwise decode one scene ahead of the workers.
+        if input.streams_concurrently() {
             return Self::encode_tasks_streaming(
                 input,
                 workers,
-                (*window).max(1),
+                STREAM_WINDOW,
                 tasks,
                 &progress_tx,
                 &cancelled,
@@ -381,8 +375,7 @@ impl ParallelEncoder {
         thread::scope(|s| -> Result<_> {
             let total_final_pass_frames_encoded = Arc::new(AtomicUsize::new(0));
             let worker_semaphore = Arc::new(Semaphore::new(workers.into()));
-            let decoder_semaphore =
-                Arc::new(Semaphore::new((buffer_strategy.workers(workers)).into()));
+            let decoder_semaphore = Arc::new(Semaphore::new(usize::from(workers) + 1));
             let frame_receivers = Arc::new(Mutex::new(frames_receivers));
             // let progress_tx = progress_tx.clone();
             let mut encoder_threads = Vec::new();
@@ -692,7 +685,7 @@ pub enum ParallelEncoderError {
 }
 
 // ============================================================================
-// Streaming parallel encoding with bounded memory (BufferStrategy::Stream)
+// Streaming parallel encoding with bounded memory
 //
 // Instead of one decoder thread that decodes whole scenes into unbounded
 // channels, each of `workers` threads reads from its own `FrameSource` and

@@ -482,15 +482,38 @@ impl Input {
         Ok(stream)
     }
 
+    /// Whether [`Input::frame_sources`] can deliver frames to several readers
+    /// at once without them slowing each other down.
+    ///
+    /// True for native inputs (one decoder per reader) and for BestSource,
+    /// FFMS2, and L-SMASH imports (instances are shared only as far as the
+    /// plugin serves several positions). False for DGDecNV, which has not been
+    /// measured, and for VapourSynth scripts, whose source plugin is unknown
+    /// and is shared by every reader.
+    #[inline]
+    pub fn streams_concurrently(&self) -> bool {
+        match self {
+            Input::Video {
+                ..
+            } => true,
+            Input::VapourSynth {
+                import_method, ..
+            } => !matches!(import_method, VapourSynthImportMethod::DGDecNV { .. }),
+            Input::VapourSynthScript {
+                ..
+            } => false,
+        }
+    }
+
     /// Creates `count` independent [`FrameSource`]s, so frames can be streamed
     /// on several threads at once.
     ///
     /// - Native inputs: each source opens its own decoder when it is opened.
-    /// - `Input::VapourSynth`: BestSource is shared, since one instance serves
-    ///   reads at several positions. FFMS2, L-SMASH, and DGDecNV decode from a
-    ///   single position, so each source gets its own instance instead of
-    ///   seeking back and forth. The input's `ModifyNode` is applied to every
-    ///   source.
+    /// - `Input::VapourSynth`: each source plugin instance serves as many
+    ///   readers as it can without seeking back and forth between them. That is
+    ///   4 for BestSource, which keeps up to 4 decoders, and 1 for FFMS2,
+    ///   L-SMASH, and DGDecNV, which decode from a single position. The input's
+    ///   `ModifyNode` is applied to every source.
     /// - `Input::VapourSynthScript`: every source shares the script's output.
     #[inline]
     pub fn frame_sources(&mut self, count: usize) -> Result<Vec<FrameSource<'_>>> {
@@ -520,25 +543,30 @@ impl Input {
                     .map(std::path::absolute)
                     .transpose()?
                     .map(|cache| cache.display().to_string());
-                (0..count)
-                    .map(|index| {
-                        let node = if call.shareable || index == 0 {
-                            vapoursynth_decoder.get_output(
-                                vapoursynth_decoder.get_output_index(),
-                                vapoursynth_decoder.get_node_modifier(),
-                            )?
-                        } else {
-                            let node = call.invoke(core, &source, cache.as_deref())?;
-                            match vapoursynth_decoder.get_node_modifier() {
-                                Some(modify_node) => modify_node(core, Some(node))?,
-                                None => node,
-                            }
-                        };
-                        Ok(FrameSource {
-                            kind: FrameSourceKind::VapourSynth(node),
-                        })
-                    })
-                    .collect()
+                let mut sources = Vec::with_capacity(count);
+                let mut instance = None;
+                for index in 0..count {
+                    let node = if index < call.readers_per_instance {
+                        // The input's own source instance
+                        vapoursynth_decoder.get_output(
+                            vapoursynth_decoder.get_output_index(),
+                            vapoursynth_decoder.get_node_modifier(),
+                        )?
+                    } else {
+                        if index % call.readers_per_instance == 0 {
+                            instance = Some(call.invoke(core, &source, cache.as_deref())?);
+                        }
+                        let node = instance.clone().expect("source instance exists");
+                        match vapoursynth_decoder.get_node_modifier() {
+                            Some(modify_node) => modify_node(core, Some(node))?,
+                            None => node,
+                        }
+                    };
+                    sources.push(FrameSource {
+                        kind: FrameSourceKind::VapourSynth(node),
+                    });
+                }
+                Ok(sources)
             },
             Input::VapourSynthScript {
                 decoder, ..
@@ -707,14 +735,14 @@ impl FrameReader<'_> {
 
 /// How a VapourSynth import method calls its source plugin.
 struct SourceCall {
-    namespace:      &'static str,
-    function:       &'static str,
-    cache_argument: &'static str,
-    track_argument: Option<&'static str>,
-    track:          Option<u8>,
-    /// Whether one instance serves reads at several positions without seeking
-    /// back and forth between them.
-    shareable:      bool,
+    namespace:            &'static str,
+    function:             &'static str,
+    cache_argument:       &'static str,
+    track_argument:       Option<&'static str>,
+    track:                Option<u8>,
+    /// How many concurrent readers one instance serves without seeking back
+    /// and forth between their positions.
+    readers_per_instance: usize,
 }
 
 impl SourceCall {
@@ -723,42 +751,43 @@ impl SourceCall {
             VapourSynthImportMethod::LSMASHWorks {
                 index,
             } => Self {
-                namespace:      "lsmas",
-                function:       "LWLibavSource",
-                cache_argument: "cachefile",
-                track_argument: Some("stream_index"),
-                track:          *index,
-                shareable:      false,
+                namespace:            "lsmas",
+                function:             "LWLibavSource",
+                cache_argument:       "cachefile",
+                track_argument:       Some("stream_index"),
+                track:                *index,
+                readers_per_instance: 1,
             },
             VapourSynthImportMethod::FFMS2 {
                 index,
             } => Self {
-                namespace:      "ffms2",
-                function:       "Source",
-                cache_argument: "cachefile",
-                track_argument: Some("track"),
-                track:          *index,
-                shareable:      false,
+                namespace:            "ffms2",
+                function:             "Source",
+                cache_argument:       "cachefile",
+                track_argument:       Some("track"),
+                track:                *index,
+                readers_per_instance: 1,
             },
             VapourSynthImportMethod::BestSource {
                 index,
             } => Self {
-                namespace:      "bs",
-                function:       "VideoSource",
-                cache_argument: "cachepath",
-                track_argument: Some("track"),
-                track:          *index,
-                shareable:      true,
+                namespace:            "bs",
+                function:             "VideoSource",
+                cache_argument:       "cachepath",
+                track_argument:       Some("track"),
+                track:                *index,
+                // BestSource keeps up to 4 decoders (`maxdecoders`)
+                readers_per_instance: 4,
             },
             VapourSynthImportMethod::DGDecNV {
                 ..
             } => Self {
-                namespace:      "dgdecodenv",
-                function:       "DGSource",
-                cache_argument: "indexing_path",
-                track_argument: None,
-                track:          None,
-                shareable:      false,
+                namespace:            "dgdecodenv",
+                function:             "DGSource",
+                cache_argument:       "indexing_path",
+                track_argument:       None,
+                track:                None,
+                readers_per_instance: 1,
             },
         }
     }

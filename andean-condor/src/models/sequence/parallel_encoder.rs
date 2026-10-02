@@ -15,7 +15,6 @@ where
     Self: SequenceConfigHandler,
 {
     pub workers:          Option<u8>,
-    pub buffer_strategy:  BufferStrategy,
     pub scenes_directory: PathBuf,
     pub input:            Option<InputModel>,
 }
@@ -25,7 +24,6 @@ impl Default for ParallelEncoderConfig {
     fn default() -> Self {
         Self {
             workers:          None,
-            buffer_strategy:  BufferStrategy::Workers(1),
             scenes_directory: PathBuf::new(),
             input:            None,
         }
@@ -68,39 +66,4 @@ where
 {
     fn get_parallel_encoder(&self) -> Result<&ParallelEncoderData>;
     fn get_parallel_encoder_mut(&mut self) -> Result<&mut ParallelEncoderData>;
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub enum BufferStrategy {
-    None,
-    Workers(u8),
-    Maximum,
-    /// Stream frames to each worker's encoder instead of decoding whole scenes
-    /// ahead. Each worker keeps at most `window` frame requests in flight and
-    /// `window` frames queued for its encoder, so resident raw frames are
-    /// bounded by roughly `2 * window * workers` regardless of scene length.
-    Stream {
-        window: usize,
-    },
-}
-
-impl Default for BufferStrategy {
-    #[inline]
-    fn default() -> Self {
-        Self::Workers(1)
-    }
-}
-
-impl BufferStrategy {
-    #[inline]
-    pub fn workers(&self, workers: u8) -> u8 {
-        match self {
-            BufferStrategy::None => workers,
-            BufferStrategy::Workers(buffer) => workers + *buffer,
-            BufferStrategy::Maximum => workers * 2,
-            BufferStrategy::Stream {
-                ..
-            } => workers,
-        }
-    }
 }

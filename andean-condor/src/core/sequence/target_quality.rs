@@ -32,7 +32,7 @@ use crate::{
         sequence::{
             SequenceConfigHandler,
             SequenceDataHandler,
-            parallel_encoder::{BufferStrategy, ParallelEncoderConfigHandler},
+            parallel_encoder::ParallelEncoderConfigHandler,
             scene_concatenator::{ConcatMethod, SceneConcatenatorConfigHandler},
             target_quality::{
                 TargetQualityConfig,
@@ -183,7 +183,6 @@ where
         let config = condor.sequence_config.target_quality()?;
         let target_quality_directory = &parallel_encoder_config.scenes_directory.join(DETAILS.name);
         let workers = parallel_encoder_config.workers.unwrap_or(1);
-        let buffer_strategy = &parallel_encoder_config.buffer_strategy;
         let condor_data = condor.as_data();
 
         if condor.scenes.is_empty() {
@@ -468,7 +467,6 @@ where
                 input,
                 self.metric_input.as_mut(),
                 workers,
-                buffer_strategy,
                 &scene_concatenator_config.method,
                 tasks.as_slice(),
                 pass_progress_tx,
@@ -766,7 +764,6 @@ impl TargetQuality {
         input: &mut Input,
         metric_input: Option<&mut Input>,
         workers: u8,
-        buffer_strategy: &BufferStrategy,
         concat_method: &ConcatMethod,
         tasks: &[Task],
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
@@ -838,7 +835,6 @@ impl TargetQuality {
         let results = ParallelEncoder::encode_tasks(
             input,
             workers,
-            buffer_strategy,
             encode_tasks.iter().cloned().collect::<VecDeque<_>>(),
             encode_progress_tx,
             Arc::clone(cancelled),
