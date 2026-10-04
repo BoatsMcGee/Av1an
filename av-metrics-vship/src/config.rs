@@ -372,12 +372,21 @@ impl VshipConfig {
         self
     }
 
-    /// Whether temporal scoring is disabled, in libvship's own spelling.
+    /// Whether temporal history is carried across a discontinuity, in the
+    /// spelling the VapourSynth plugin uses for the opposite behaviour.
     ///
-    /// `true` means the temporal model is switched off entirely, matching the
-    /// VapourSynth plugin's `disableTemporal` argument. It is the inverse of
-    /// [`Self::with_reset_on_discontinuity`], which controls whether history is
-    /// *cleared* at a cut rather than whether the temporal model runs at all.
+    /// Upstream, `disableTemporal` disables the temporal filter *and* score
+    /// accumulation, so each frame scores on its own. The C API has no field
+    /// for that: `Vship_InitCVVDP_1` cannot express it. What it can express
+    /// is whether history is *cleared* at a cut, which is what
+    /// [`Self::with_reset_on_discontinuity`] sets, so that is what this maps
+    /// onto.
+    ///
+    /// The practical difference matters when pooling: with `false` here the
+    /// score is a running mean over the whole clip, whereas the plugin's
+    /// `disableTemporal` would give one value per frame. Callers wanting
+    /// per-frame scores should read each pair as it is returned instead of
+    /// pooling, rather than relying on this option.
     #[inline]
     #[must_use]
     pub const fn with_disable_temporal(self, disable_temporal: bool) -> Self {

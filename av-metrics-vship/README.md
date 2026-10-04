@@ -83,8 +83,11 @@ computed. Consequences for callers:
   756-frame 1080p clip the score is 8.1346 at the default `0.0` and 9.0475 at the
   real 23.976 fps, a gap that widens with clip length because the error
   accumulates per frame.
-- **`reset_temporal` starts a new sequence.** Call it at a scene break, which also
-  discards the accumulated score so the next value starts fresh.
+- **`reset_temporal` clears the frame history, not the score.** Per the C header,
+  `Vship_Reset` *"empties temporal filter history (but not score accumulation)"*, so
+  the running mean continues across a scene break. `reset_score` clears the
+  accumulator as well, and is what a caller needs if each scene's score is to cover
+  only that scene.
 
 Measured against the VapourSynth plugin on the same clip and the same libvship
 build, per-frame CVVDP agrees exactly once `fps` is supplied.
@@ -115,7 +118,7 @@ libvship reports a score per pair, so reducing a clip to one number is this crat
 | `with_resize_to_display` | `false` | Whether CVVDP scales both inputs to the model's display resolution. |
 | `with_fps` | `0.0` | Frame rate handed to CVVDP's temporal model. **Set this for CVVDP**: it is not a neutral default, and a zero rate accumulates error over the clip (see [CVVDP](#cvvdp-is-accumulated-not-per-frame)). Negative is rejected. |
 | `with_reset_on_discontinuity` | `true` | Whether CVVDP clears its temporal history at a discontinuity in frame index. |
-| `with_disable_temporal` | `false` | libvship's own spelling, and the inverse of the above: `true` switches the temporal model off entirely, matching the VapourSynth plugin's `disableTemporal` argument. |
+| `with_disable_temporal` | `false` | The inverse of the above, in the VapourSynth plugin's spelling. Note that upstream `disableTemporal` also disables score accumulation, which `Vship_InitCVVDP_1` has no field for; this only controls whether history is cleared at a cut. For per-frame scores, read each pair rather than pooling. |
 
 The defaults match what libvship's own CLI does for an ordinary encode. The default handler count is [`DEFAULT_HANDLER_THREADS`], which is 4 — the same as the VapourSynth plugin's own default, so the two paths agree when nothing is configured. A `threads` setting maps directly onto `with_handler_threads`.
 

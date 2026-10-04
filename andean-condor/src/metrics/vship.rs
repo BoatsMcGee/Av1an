@@ -261,6 +261,17 @@ pub fn score_probed_frames(
     let vship_config = scorer_config(config, frame_rate)?;
     let metric = vship_config.metric();
 
+    // Which Butteraugli norm is the headline depends on the configuration, not on
+    // the metric. The VapourSynth plugin reads `BUTTERAUGLI_INFNorm` unless a
+    // norm is requested and `BUTTERAUGLI_QNorm` when one is, so the native path
+    // has to follow the same rule or the two report different quantities for the
+    // same frames -- and `target_range` is calibrated against whichever the plugin
+    // reported.
+    let butteraugli_uses_q_norm = !matches!(config, QualityMetric::BUTTERAUGLI {
+        norm: Some(_),
+        ..
+    });
+
     let reference_format = VideoFormat::from_details(&reference_details);
     let distorted_format = VideoFormat::from_details(&distorted_details);
 
@@ -310,9 +321,16 @@ pub fn score_probed_frames(
                 )
                 .map_err(describe_error)?;
 
-            let value = frame_score.value(metric).ok_or_else(|| {
-                anyhow::anyhow!("libvship returned no score for {}", metric.as_str())
-            })?;
+            let value = match metric {
+                VshipMetric::Butteraugli => {
+                    frame_score.butteraugli_value(butteraugli_uses_q_norm).ok_or_else(|| {
+                        anyhow::anyhow!("libvship returned no Butteraugli norm for this pair")
+                    })?
+                },
+                _ => frame_score.value(metric).ok_or_else(|| {
+                    anyhow::anyhow!("libvship returned no score for {}", metric.as_str())
+                })?,
+            };
 
             previous = Some(source_index);
             scores.push(value);

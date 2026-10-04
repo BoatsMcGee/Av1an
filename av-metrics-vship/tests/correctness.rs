@@ -493,6 +493,64 @@ fn butteraugli_reports_all_three_norms() {
     );
 }
 
+/// The headline value for Butteraugli depends on the configured norm, not on
+/// the metric alone.
+///
+/// The VapourSynth plugin reports `BUTTERAUGLI_INFNorm` unless a norm is
+/// requested and `BUTTERAUGLI_QNorm` when one is, so a caller that always reads
+/// `norm_q` silently reports a different quantity from the plugin it replaces.
+/// Both selections must come from the same pair and must differ.
+#[test]
+fn butteraugli_selects_its_norm_from_the_configuration() {
+    require_vship!();
+
+    let pair = small_pair(Distortion::Moderate);
+    let format = format_for(&pair.reference);
+    let mut scorer =
+        VshipScorer::new(config_for(VshipMetric::Butteraugli), format, format, None).unwrap();
+
+    let (mut reference, mut distorted) = pair.decoders();
+    let scores = scorer.score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {}).unwrap();
+
+    let first = scores.first().expect("the pair is not empty");
+    let q_norm = first.norm_q.expect("Butteraugli sets `norm_q`");
+    let infinity = first.norm_inf.expect("Butteraugli sets `norm_inf`");
+
+    assert_ne!(
+        q_norm, infinity,
+        "the Q-norm and the infinity norm must be distinguishable, or the choice between them \
+         cannot matter"
+    );
+    assert_eq!(
+        first.butteraugli_value(true),
+        Some(q_norm),
+        "`true` selects the Q-norm"
+    );
+    assert_eq!(
+        first.butteraugli_value(false),
+        Some(infinity),
+        "`false` selects the infinity norm, matching the plugin's default"
+    );
+
+    // `pool` keeps the Q-norm for callers that configure `q_norm`, which is the
+    // default a Butteraugli-specific pool has always used.
+    let pooled = VshipScorer::pool(&scores, VshipMetric::Butteraugli, PoolMethod::Mean).unwrap();
+    assert!(
+        pooled > 0.0,
+        "a distorted clip must score above zero, got {pooled}"
+    );
+
+    let pooled_inf = VshipScorer::pool_butteraugli(&scores, false, PoolMethod::Mean).unwrap();
+    assert!(
+        pooled_inf > 0.0,
+        "the infinity norm of a distorted clip must be above zero, got {pooled_inf}"
+    );
+    assert_ne!(
+        pooled, pooled_inf,
+        "pooling the two norms must not coincidentally agree, or the selection is untested"
+    );
+}
+
 /// The configured norm exponent must actually reach libvship.
 #[test]
 fn butteraugli_q_norm_changes_the_score() {

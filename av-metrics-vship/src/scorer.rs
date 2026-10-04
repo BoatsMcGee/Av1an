@@ -300,14 +300,35 @@ pub struct FrameScore {
 impl FrameScore {
     /// The value to pool or report for this pair.
     ///
-    /// For Butteraugli that is the configured norm, matching the metric's own
-    /// convention; for the others it is the single score libvship produced.
+    /// For Butteraugli this is [`Self::butteraugli_value`] rather than a fixed
+    /// field, because which norm is the headline depends on the configuration
+    /// and not on the metric: `q_norm` sets the exponent libvship
+    /// minimises, while the VapourSynth plugin reports `norm_inf` unless a
+    /// norm was requested explicitly.
     #[inline]
     #[must_use]
     pub const fn value(&self, metric: VshipMetric) -> Option<f64> {
         match metric {
-            VshipMetric::Butteraugli => self.norm_q,
+            VshipMetric::Butteraugli => self.butteraugli_value(true),
             VshipMetric::Ssimulacra2 | VshipMetric::Cvvdp => self.score,
+        }
+    }
+
+    /// The value to pool or report for Butteraugli.
+    ///
+    /// With `q_norm` set, libvship's Q-norm is the quantity the metric
+    /// minimises and is what should be pooled. Without it, the reported
+    /// value is the infinity norm: that is what the VapourSynth plugin
+    /// exposes as `BUTTERAUGLI_INFNorm` when no norm is requested, and it
+    /// is what `av-metrics-vship`'s caller is expected to pool, so that
+    /// both paths agree.
+    #[inline]
+    #[must_use]
+    pub const fn butteraugli_value(&self, use_q_norm: bool) -> Option<f64> {
+        if use_q_norm {
+            self.norm_q
+        } else {
+            self.norm_inf
         }
     }
 
@@ -940,6 +961,30 @@ impl VshipScorer {
         method.apply(&values)
     }
 
+    /// Pool Butteraugli using an explicitly chosen norm.
+    ///
+    /// [`Self::pool`] always takes the Q-norm for Butteraugli, which is right
+    /// when `q_norm` is configured. A caller that leaves the norm unset
+    /// needs [`FrameScore::norm_inf`] instead, to match what the
+    /// VapourSynth plugin reports, and this is the entry point that selects
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VshipError::InvalidConfiguration`] if no score produced a
+    /// value for `method`.
+    #[inline]
+    pub fn pool_butteraugli(
+        scores: &[FrameScore],
+        use_q_norm: bool,
+        method: PoolMethod,
+    ) -> Result<f64, VshipError> {
+        let values: Vec<f64> =
+            scores.iter().filter_map(|score| score.butteraugli_value(use_q_norm)).collect();
+
+        method.apply(&values)
+    }
+
     /// Submit one frame pair and return its score.
     ///
     /// This is the low-level primitive behind [`Self::score_decoders`]. Prefer
@@ -1030,7 +1075,14 @@ impl VshipScorer {
         self.handlers.lock().map(|pool| pool.submitted).map_err(|_| poisoned())
     }
 
-    /// Clear the temporal handler's history, as a scene break would require.
+    /// Clear the temporal handler's frame history, as a scene break would
+    /// require.
+    ///
+    /// The accumulated score survives: the C header defines `Vship_Reset` as
+    /// emptying "temporal filter history of temporal metrics (but not score
+    /// accumulation)", so the running mean continues across the break. Use
+    /// [`Self::reset_score`] as well when a scene's score must cover only
+    /// itself.
     ///
     /// Meaningful only for a temporal metric; for the others libvship holds no
     /// frame state to clear, so this is a no-op rather than an error.
