@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::{self, Arc, atomic::AtomicBool},
     thread,
     time::SystemTime,
@@ -17,7 +16,7 @@ use crate::{
     },
     metrics::{self, OutputIndexing},
     models::{
-        input::{ImportMethod, Input as InputModel, VapourSynthScriptSource},
+        input::{ImportMethod, Input as InputModel},
         sequence::{
             SequenceConfigHandler,
             SequenceDataHandler,
@@ -45,7 +44,6 @@ use crate::{
             },
             vszip::{ssimulacra2::SSIMULACRA2, xpsnr::XPSNR},
         },
-        script_builder::{VapourSynthPluginScript, script::VapourSynthScript},
     },
 };
 
@@ -261,10 +259,14 @@ impl QualityCheck {
             import_method: ImportMethod::FFMS2 {
                 index: None
             },
+            // The encoded output is already in the input's format, so it must
+            // not be converted again.
+            filters:       Vec::new(),
         })?;
 
-        // Each score is reported as the metric produces it, mapped back to its global
-        // frame number so the UI's per-frame report lines up with the clip.
+        // Each score is reported as the metric produces it, mapped back to its
+        // global frame number so the UI's per-frame report lines up with the
+        // clip.
         let scores = metrics::score_vmaf_frames(
             reference,
             distorted.decoder(),
@@ -384,6 +386,9 @@ impl QualityCheck {
             import_method: ImportMethod::FFMS2 {
                 index: None
             },
+            // The encoded output is already in the input's format, so it must
+            // not be converted again.
+            filters:       Vec::new(),
         })?;
 
         // As in `measure_vmaf`, each score is reported as libvship produces it.
@@ -442,34 +447,9 @@ impl QualityCheck {
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Vec<SceneMeasurement>> {
-        let v_input = match input.as_data() {
-            InputModel::Video {
-                path, ..
-            } => {
-                const SCRIPT_OUTPUT_INDEX: u8 = 0;
-                const SCRIPT_NODE_NAME: &str = "clip";
-                let mut script = VapourSynthScript::default();
-                let script = {
-                    let (dec_import_lines, dec_lines) =
-                        Source::new(&path).generate_script(SCRIPT_NODE_NAME.to_owned())?;
-                    if let Some(dec_import_lines) = dec_import_lines {
-                        script.add_imports(dec_import_lines);
-                    }
-                    script.add_lines(dec_lines);
-
-                    script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
-                    script
-                };
-                let script_input_data = InputModel::VapourSynthScript {
-                    source:    VapourSynthScriptSource::Text(script.to_string()),
-                    variables: HashMap::new(),
-                    index:     SCRIPT_OUTPUT_INDEX,
-                };
-
-                Some(&mut Input::from_vapoursynth(&script_input_data, None)?)
-            },
-            _ => None,
-        };
+        // Owned, so it outlives the `&mut v_input` borrow taken below.
+        let mut v_input_owned = input.as_vapoursynth_script()?;
+        let v_input = v_input_owned.as_mut();
         let decoder = match input {
             Input::VapourSynth {
                 decoder, ..

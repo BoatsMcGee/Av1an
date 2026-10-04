@@ -4,17 +4,17 @@ use std::{
 };
 
 use andean_condor::{
-    core::{
-        Condor,
-        SaveCallback,
-        input::{DecoderError, Input, ModifyNode},
-        output::Output,
-    },
+    core::{Condor, SaveCallback, input::Input, output::Output},
     ffmpeg::FFPixelFormat,
     models::{
         Condor as CondorModel,
         encoder::{Encoder, EncoderBase},
-        input::{Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource},
+        input::{
+            Ffms2Filter,
+            Input as InputModel,
+            VapourSynthImportMethod,
+            VapourSynthScriptSource,
+        },
         output::Output as OutputModel,
         sequence::{
             SequenceConfigHandler,
@@ -63,17 +63,7 @@ use andean_condor::{
             },
         },
     },
-    vapoursynth::{
-        plugins::{
-            bestsource::VideoSource,
-            dgdecodenv::DGSource,
-            ffms2::Source,
-            lsmash::LWLibavSource,
-            resize::Scaler,
-        },
-        script_builder::{VapourSynthPluginScript, script::VapourSynthScript},
-        vapoursynth_filters::VapourSynthFilter,
-    },
+    vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
 };
 use anyhow::Result;
 use schemars::JsonSchema;
@@ -98,14 +88,11 @@ fn default_schema_url() -> String {
 pub struct Configuration {
     #[serde(rename = "$schema", default = "default_schema_url")]
     #[schemars(description = "URL of the JSON schema used to validate this configuration file")]
-    pub schema:            String,
-    pub condor:            CondorModel<CliSequenceData, CliSequenceConfig>,
+    pub schema: String,
+    pub condor: CondorModel<CliSequenceData, CliSequenceConfig>,
     // Duplicated in case Condor instantiates a VapourSynthScript Input
-    pub input:             PathBuf,
-    pub temp:              PathBuf,
-    pub input_filters:     Vec<VapourSynthFilter>,
-    pub scd_input_filters: Vec<VapourSynthFilter>,
-    pub tq_input_filters:  Vec<VapourSynthFilter>,
+    pub input:  PathBuf,
+    pub temp:   PathBuf,
 }
 
 impl Configuration {
@@ -166,15 +153,35 @@ impl Configuration {
             },
             input: input.to_path_buf(),
             temp,
-            input_filters: Vec::from(&[VapourSynthFilter::Resize {
-                scaler: Some(Scaler::Bicubic),
-                width:  None,
-                height: None,
-                format: Some(FFPixelFormat::YUV420P10LE),
-            }]),
-            scd_input_filters: Vec::new(),
-            tq_input_filters: Vec::new(),
         };
+
+        // `init` defaults to encoding 10-bit, so the input carries the
+        // conversion rather than the config holding a filter list.
+        match &mut configuration.condor.input {
+            InputModel::Video {
+                filters, ..
+            } => {
+                *filters = vec![Ffms2Filter::OutputFormat {
+                    bit_depth: Some(10),
+                    chroma:    None,
+                    width:     None,
+                    height:    None,
+                }];
+            },
+            InputModel::VapourSynth {
+                filters, ..
+            }
+            | InputModel::VapourSynthScript {
+                filters, ..
+            } => {
+                *filters = vec![VapourSynthFilter::Resize {
+                    scaler: Some(Scaler::Bicubic),
+                    width:  None,
+                    height: None,
+                    format: Some(FFPixelFormat::YUV420P10LE),
+                }];
+            },
+        }
 
         *configuration.condor.encoder.parameters_mut() = EncoderBase::SVTAV1.default_parameters();
 
@@ -220,30 +227,9 @@ impl Configuration {
         &self,
         save_callback: SaveCallback<CliSequenceData, CliSequenceConfig>,
     ) -> Result<Condor<CliSequenceData, CliSequenceConfig>> {
-        // let input = Self::instantiate_input_with_filters(&self.condor.input,
-        // &self.input_filters)?;
-        let input = {
-            if matches!(&self.condor.input, InputModel::Video { .. }) {
-                Input::from_video(&self.condor.input)?
-            } else if self.input_filters.iter().any(|filter| filter.is_script_only()) {
-                Self::instantiate_input_with_filters(&self.condor.input, &self.input_filters)?
-            } else {
-                let filters = self.input_filters.clone();
-                let node_modifier: ModifyNode = Box::new(move |core, node| {
-                    let mut node = node.expect("node exists");
-                    for filter in &filters {
-                        node = filter.invoke_plugin_function(core, &node).map_err(|e| {
-                            DecoderError::VapoursynthScriptError {
-                                cause: e.to_string(),
-                            }
-                        })?;
-                    }
-
-                    Ok(node)
-                });
-                Input::from_vapoursynth(&self.condor.input, Some(node_modifier))?
-            }
-        };
+        // The input carries its own filters, so every input kind is opened the
+        // same way.
+        let input = Input::from_data(&self.condor.input)?;
         let output = Output::new(&self.condor.output)?;
 
         let condor = Condor {
@@ -256,78 +242,6 @@ impl Configuration {
         };
 
         Ok(condor)
-    }
-
-    #[inline]
-    pub fn instantiate_input_with_filters(
-        input_data: &InputModel,
-        filters: &[VapourSynthFilter],
-    ) -> Result<Input> {
-        let input = {
-            match input_data {
-                InputModel::Video {
-                    ..
-                } => Input::from_video(input_data)?,
-                InputModel::VapourSynth {
-                    path,
-                    import_method,
-                    // cache_path, // Cache Path not yet supported
-                    ..
-                } => {
-                    const SCRIPT_OUTPUT_INDEX: u8 = 0;
-                    const SCRIPT_NODE_NAME: &str = "clip";
-                    let mut script = VapourSynthScript::default();
-                    let script = {
-                        let (dec_import_lines, dec_lines) = match import_method {
-                            VapourSynthImportMethod::LSMASHWorks {
-                                ..
-                            } => LWLibavSource::new(path)
-                                .generate_script(SCRIPT_NODE_NAME.to_owned())?,
-                            VapourSynthImportMethod::DGDecNV {
-                                ..
-                            } => {
-                                DGSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?
-                            },
-                            VapourSynthImportMethod::FFMS2 {
-                                ..
-                            } => Source::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?,
-                            VapourSynthImportMethod::BestSource {
-                                ..
-                            } => VideoSource::new(path)
-                                .generate_script(SCRIPT_NODE_NAME.to_owned())?,
-                        };
-                        if let Some(dec_import_lines) = dec_import_lines {
-                            script.add_imports(dec_import_lines);
-                        }
-                        script.add_lines(dec_lines);
-                        for filter in filters {
-                            let (import_lines, filter_lines) =
-                                filter.generate_script(SCRIPT_NODE_NAME.to_owned())?;
-
-                            if let Some(import_lines) = import_lines {
-                                script.add_imports(import_lines);
-                            }
-                            script.add_lines(filter_lines);
-                        }
-
-                        script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
-                        script
-                    };
-                    let script_input_data = InputModel::VapourSynthScript {
-                        source:    VapourSynthScriptSource::Text(script.to_string()),
-                        variables: HashMap::new(),
-                        index:     SCRIPT_OUTPUT_INDEX,
-                    };
-
-                    Input::from_vapoursynth(&script_input_data, None)?
-                },
-                InputModel::VapourSynthScript {
-                    ..
-                } => Input::from_data(input_data)?,
-            }
-        };
-
-        Ok(input)
     }
 
     #[inline]
@@ -348,6 +262,7 @@ impl Configuration {
                 import_method: andean_condor::models::input::ImportMethod::FFMS2 {
                     index,
                 },
+                filters:       Vec::new(),
             },
             Some(decoder) => Self::new_vs_input_model(
                 input,
@@ -396,6 +311,7 @@ impl Configuration {
                 source: VapourSynthScriptSource::Path(input.to_path_buf()),
                 variables,
                 index: index.unwrap_or_default(),
+                filters: Vec::new(),
             }
         } else {
             InputModel::VapourSynth {
@@ -404,6 +320,7 @@ impl Configuration {
                     index,
                 }),
                 cache_path:    None,
+                filters:       Vec::new(),
             }
         };
 

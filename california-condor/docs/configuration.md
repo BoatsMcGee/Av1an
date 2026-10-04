@@ -62,7 +62,7 @@ Display encoder and VapourSynth installation information. With `--verbose`, prin
 
 ## condor.json
 
-Created by [init](./commands/init.md). Contains `input`, `output`, `temp`, `input_filters`, `scd_input_filters`, `tq_input_filters`, and `condor` sequence state. Each step loads, updates, and saves it, enabling cancel and resume.
+Created by [init](./commands/init.md). Contains `input`, `output`, `temp`, and `condor` sequence state. Filters live on each input inside `condor`, not at the top level. Each step loads, updates, and saves it, enabling cancel and resume.
 
 The file includes a `$schema` URL (baked via `CONDOR_SCHEMA_URL` in `build.rs`, fallback to release `configuration.schema.json`).
 

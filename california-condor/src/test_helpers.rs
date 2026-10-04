@@ -195,14 +195,20 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
         .to_path_buf();
     let scenes_directory = temp_abs.join("scenes");
     Configuration {
-        schema:            CONFIGURATION_SCHEMA_URL.to_owned(),
-        condor:            Condor {
+        schema: CONFIGURATION_SCHEMA_URL.to_owned(),
+        condor: Condor {
             input:           Input::VapourSynth {
                 path:          input_abs.clone(),
                 import_method: VapourSynthImportMethod::BestSource {
                     index: None
                 },
                 cache_path:    None,
+                filters:       vec![VapourSynthFilter::Resize {
+                    scaler: Some(Scaler::Bicubic),
+                    width:  None,
+                    height: None,
+                    format: Some(FFPixelFormat::YUV420P10LE),
+                }],
             },
             output:          Output {
                 path:       output_abs,
@@ -247,16 +253,8 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
                 },
             },
         },
-        input:             input_abs,
-        temp:              temp_abs,
-        input_filters:     vec![VapourSynthFilter::Resize {
-            scaler: Some(Scaler::Bicubic),
-            width:  None,
-            height: None,
-            format: Some(FFPixelFormat::YUV420P10LE),
-        }],
-        scd_input_filters: vec![],
-        tq_input_filters:  vec![],
+        input:  input_abs,
+        temp:   temp_abs,
     }
 }
 
@@ -327,21 +325,6 @@ pub fn check_basic_config(config: &Configuration, expected_config: &Configuratio
         "output path is {}",
         expected_config.condor.output.path.display()
     );
-    assert_eq!(
-        config.input_filters, expected_config.input_filters,
-        "input filters is {:?}",
-        expected_config.input_filters
-    );
-    assert_eq!(
-        config.scd_input_filters, expected_config.scd_input_filters,
-        "scd_input_filters is {:?}",
-        expected_config.scd_input_filters
-    );
-    assert_eq!(
-        config.tq_input_filters, expected_config.tq_input_filters,
-        "tq_input_filters is {:?}",
-        expected_config.tq_input_filters
-    );
     check_input(
         Some(&config.condor.input),
         Some(&expected_config.condor.input),
@@ -402,14 +385,17 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
             Input::Video {
                 path,
                 import_method,
+                filters,
             } => {
                 assert_matches!(config_input, Input::Video { .. }, "{input_name} is Video");
                 match config_input {
                     Input::Video {
                         path: ci_path,
                         import_method: ci_import_method,
+                        filters: ci_filters,
                     } => {
                         assert_eq!(ci_path, path, "{input_name} path is {}", path.display());
+                        assert_eq!(ci_filters, filters, "{input_name} filters are {filters:?}");
                         match import_method {
                             ImportMethod::FFMS2 {
                                 index,
@@ -439,6 +425,7 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                 path,
                 import_method,
                 cache_path,
+                filters,
             } => {
                 assert_matches!(
                     config_input,
@@ -450,8 +437,10 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                         path: ci_path,
                         import_method: ci_import_method,
                         cache_path: ci_cache_path,
+                        filters: ci_filters,
                     } => {
                         assert_eq!(ci_path, path, "{input_name} path is {}", path.display());
+                        assert_eq!(ci_filters, filters, "{input_name} filters are {filters:?}");
                         assert_eq!(
                             ci_cache_path, cache_path,
                             "{input_name} cache path is {cache_path:?}"
@@ -553,6 +542,7 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                 source,
                 variables,
                 index,
+                filters,
             } => {
                 assert_matches!(
                     config_input,
@@ -564,7 +554,9 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                         source: ci_source,
                         variables: ci_variables,
                         index: ci_index,
+                        filters: ci_filters,
                     } => {
+                        assert_eq!(ci_filters, filters, "{input_name} filters are {filters:?}");
                         match source {
                             VapourSynthScriptSource::Path(path) => {
                                 assert_matches!(

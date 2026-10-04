@@ -7,13 +7,23 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use av_decoders::{Decoder, Ffms2Decoder, VapoursynthDecoder};
+use av_decoders::{
+    Decoder,
+    Ffms2Decoder,
+    VapoursynthDecoder,
+    VideoDetails,
+    v_frame::chroma::ChromaSubsampling,
+};
 pub use av_decoders::{DecoderError, ModifyNode};
 use thiserror::Error as ThisError;
 use vapoursynth::{core::CoreRef, map::OwnedMap, node::Node};
 
 use crate::{
-    core::input::clip_info::ClipInfo,
+    core::input::{
+        clip_info::ClipInfo,
+        ffms2_filter::{Ffms2Filter, ffms2_pixel_format},
+        pixel_format::PixelFormat,
+    },
     ffmpeg::get_clip_info,
     models::input::{
         ImportMethod,
@@ -25,25 +35,41 @@ use crate::{
         get_api,
         get_clip_info as get_vs_clip_info,
         get_core,
-        plugins::dgdecodenv::DGSource,
+        plugins::{
+            bestsource::VideoSource,
+            dgdecodenv::DGSource,
+            ffms2::Source,
+            lsmash::LWLibavSource,
+        },
+        script_builder::{VapourSynthPluginScript, script::VapourSynthScript},
+        vapoursynth_filters::VapourSynthFilter,
     },
 };
 
 pub mod clip_info;
 pub mod color_range;
+pub mod ffms2_filter;
 pub mod pixel_format;
 
 pub enum Input {
     Video {
-        path:          PathBuf,
-        import_method: ImportMethod,
-        decoder:       Decoder,
-        clip_info:     Option<ClipInfo>,
+        path:           PathBuf,
+        import_method:  ImportMethod,
+        filters:        Vec<Ffms2Filter>,
+        /// The decoded stream's format before `filters` is applied.
+        ///
+        /// `decoder`'s own details describe the *filtered* output, so this is
+        /// what a filter's unset fields resolve against, and what
+        /// [`Input::as_vapoursynth_script`] converts against.
+        source_details: VideoDetails,
+        decoder:        Decoder,
+        clip_info:      Option<ClipInfo>,
     },
     VapourSynth {
         path:          PathBuf,
         import_method: VapourSynthImportMethod,
         cache_path:    Option<PathBuf>,
+        filters:       Vec<VapourSynthFilter>,
         decoder:       Decoder,
         clip_info:     Option<ClipInfo>,
     },
@@ -51,6 +77,7 @@ pub enum Input {
         source:    VapourSynthScriptSource,
         variables: HashMap<String, String>,
         index:     u8,
+        filters:   Vec<VapourSynthFilter>,
         decoder:   Decoder,
         clip_info: Option<ClipInfo>,
     },
@@ -63,30 +90,36 @@ impl Input {
             Input::Video {
                 path,
                 import_method,
+                filters,
                 ..
             } => InputModel::Video {
                 path:          path.clone(),
                 import_method: import_method.clone(),
+                filters:       filters.clone(),
             },
             Input::VapourSynth {
                 path,
                 import_method,
                 cache_path,
+                filters,
                 ..
             } => InputModel::VapourSynth {
                 path:          path.clone(),
                 import_method: import_method.clone(),
                 cache_path:    cache_path.clone(),
+                filters:       filters.clone(),
             },
             Input::VapourSynthScript {
                 source,
                 variables,
                 index,
+                filters,
                 ..
             } => InputModel::VapourSynthScript {
                 source:    source.clone(),
                 variables: variables.clone(),
                 index:     *index,
+                filters:   filters.clone(),
             },
         }
     }
@@ -151,6 +184,7 @@ impl Input {
             InputModel::Video {
                 path,
                 import_method,
+                filters,
             } => {
                 Input::validate(data)?;
                 match import_method {
@@ -160,7 +194,50 @@ impl Input {
                     ImportMethod::FFMS2 {
                         index,
                     } => {
-                        let ffms2_decoder = Ffms2Decoder::new(path, *index)?;
+                        let mut ffms2_decoder = Ffms2Decoder::new(path, *index)?;
+
+                        // The decoded stream's own format, captured before any
+                        // filter runs. A filter's unset fields inherit from this,
+                        // so it is what the filters are resolved against -- the
+                        // decoder's details become the filtered format instead.
+                        let source_details = ffms2_decoder.video_details;
+
+                        // Pin the output format before any frame is read, so the
+                        // decoder's `VideoDetails` describes what it will produce.
+                        // Each filter resolves its unset fields from the previous
+                        // one, so later filters compose with earlier ones.
+                        let mut current = source_details;
+                        for filter in filters {
+                            let Ffms2Filter::OutputFormat {
+                                bit_depth,
+                                chroma,
+                                width,
+                                height,
+                            } = filter;
+                            let bit_depth = bit_depth.map_or(current.bit_depth, usize::from);
+                            let chroma = chroma.map_or(current.chroma_sampling, |chroma| {
+                                chroma.to_chroma_subsampling()
+                            });
+                            let width = width.map_or(current.width, |width| {
+                                usize::try_from(width).unwrap_or(current.width)
+                            });
+                            let height = height.map_or(current.height, |height| {
+                                usize::try_from(height).unwrap_or(current.height)
+                            });
+
+                            ffms2_pixel_format(bit_depth, chroma).ok_or_else(|| {
+                                anyhow::anyhow!("FFMS2 cannot output {bit_depth}-bit {chroma:?}")
+                            })?;
+
+                            ffms2_decoder.set_output_format(
+                                width,
+                                height,
+                                bit_depth as u8,
+                                chroma,
+                            )?;
+                            current = ffms2_decoder.video_details;
+                        }
+
                         let decoder = Decoder::from_decoder_impl(av_decoders::DecoderImpl::Ffms2(
                             ffms2_decoder,
                         ))?;
@@ -168,6 +245,8 @@ impl Input {
                         Ok(Input::Video {
                             path: path.clone(),
                             import_method: import_method.clone(),
+                            filters: filters.clone(),
+                            source_details,
                             decoder,
                             clip_info: None,
                         })
@@ -181,11 +260,85 @@ impl Input {
     #[inline]
     pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> Result<Self> {
         Input::validate(data)?;
+        // A script-only filter (one needing a plugin `invoke_plugin_function`
+        // cannot reach) has to be baked into the script instead of chained onto
+        // the node, so such an input is rewritten into a script input.
+        let has_script_only = match data {
+            InputModel::VapourSynth {
+                filters, ..
+            }
+            | InputModel::VapourSynthScript {
+                filters, ..
+            } => filters.iter().any(VapourSynthFilter::is_script_only),
+            InputModel::Video {
+                ..
+            } => false,
+        };
+        if has_script_only {
+            // Baking the filters into a script means starting from a fresh
+            // source node, which a caller's modifier cannot be applied to. No
+            // caller does this today, so report it rather than ignore it.
+            if modify_node.is_some() {
+                bail!(
+                    "a caller-supplied ModifyNode cannot be combined with a script-only filter, \
+                     because the script is rebuilt from the source"
+                );
+            }
+            return Self::from_vapoursynth_scripted(data);
+        }
+
+        // The input's own filters run after any caller-supplied modifier, so an
+        // explicit `ModifyNode` can reshape the source and the input's filters
+        // still act on the result.
+        let filters = match data {
+            InputModel::VapourSynth {
+                filters, ..
+            }
+            | InputModel::VapourSynthScript {
+                filters, ..
+            } => filters.clone(),
+            InputModel::Video {
+                ..
+            } => Vec::new(),
+        };
+
+        /// Chains a caller's [`ModifyNode`] and an input's own filters into
+        /// one.
+        /// The caller's modifier runs first so the input's filters act on
+        /// its output. Script-only plugins that `invoke_plugin_function` are
+        /// incompatible, so it is rejected here rather than silently skipped.
+        fn compose_modifier(
+            modify_node: Option<ModifyNode>,
+            filters: Vec<VapourSynthFilter>,
+        ) -> ModifyNode {
+            Box::new(move |core, node| {
+                let mut node = match &modify_node {
+                    Some(modify_node) => modify_node(core, node)?,
+                    None => node.ok_or_else(|| DecoderError::VapoursynthInternalError {
+                        cause: "VapourSynth output node does not exist".to_owned(),
+                    })?,
+                };
+                for filter in &filters {
+                    node = filter.invoke_plugin_function(core, &node).map_err(|e| {
+                        DecoderError::VapoursynthInternalError {
+                            cause: e.to_string(),
+                        }
+                    })?;
+                }
+                Ok(node)
+            })
+        }
+
+        let modifier = match (modify_node, filters.is_empty()) {
+            (None, true) => None,
+            (modifier, _) => Some(compose_modifier(modifier, filters)),
+        };
         match data {
             InputModel::VapourSynth {
                 path,
                 import_method,
                 cache_path,
+                ..
             } => {
                 // Create the source once, in a fixed script. A `ModifyNode` is run again for
                 // every decoded frame, so creating the source inside one reopened the file
@@ -227,7 +380,7 @@ impl Input {
                 )?;
 
                 let mut vs_decoder = VapoursynthDecoder::from_script(&script, variables, Some(0))?;
-                if let Some(node_modifier) = modify_node {
+                if let Some(node_modifier) = modifier {
                     vs_decoder.register_node_modifier(node_modifier)?;
                 }
                 let decoder =
@@ -238,6 +391,12 @@ impl Input {
                     import_method: import_method.clone(),
                     cache_path: cache_path.clone(),
                     // modify_node,
+                    filters: match data {
+                        InputModel::VapourSynth {
+                            filters, ..
+                        } => filters.clone(),
+                        _ => Vec::new(),
+                    },
                     decoder,
                     clip_info: None,
                 })
@@ -246,6 +405,7 @@ impl Input {
                 source,
                 variables,
                 index,
+                ..
             } => {
                 let mut vs_decoder = match source {
                     VapourSynthScriptSource::Path(path) => {
@@ -255,7 +415,7 @@ impl Input {
                         VapoursynthDecoder::from_script(script, variables.clone(), Some(*index))?
                     },
                 };
-                if let Some(node_modifier) = modify_node {
+                if let Some(node_modifier) = modifier {
                     vs_decoder.register_node_modifier(node_modifier)?;
                 }
 
@@ -267,11 +427,98 @@ impl Input {
                     variables: variables.clone(),
                     index: *index,
                     // modify_node,
+                    filters: match data {
+                        InputModel::VapourSynthScript {
+                            filters, ..
+                        } => filters.clone(),
+                        _ => Vec::new(),
+                    },
                     decoder,
                     clip_info: None,
                 })
             },
             _ => panic!("expected `Input::VapourSynth` or `Input::VapourSynthScript`"),
+        }
+    }
+
+    /// Builds the input by generating a VapourSynth script that imports the
+    /// source and applies the filters to it.
+    ///
+    /// Needed for filters that cannot be chained onto a node with
+    /// `invoke_plugin_function` because they require script-only plugins (such
+    /// as `Rescale`, which needs `vodesfunc`).
+    #[inline]
+    pub fn from_vapoursynth_scripted(data: &InputModel) -> Result<Self> {
+        const SCRIPT_OUTPUT_INDEX: u8 = 0;
+        const SCRIPT_NODE_NAME: &str = "clip";
+
+        match data {
+            InputModel::VapourSynth {
+                path,
+                import_method,
+                filters,
+                ..
+            } => {
+                let mut script = VapourSynthScript::default();
+                let (dec_import_lines, dec_lines) = match import_method {
+                    VapourSynthImportMethod::LSMASHWorks {
+                        ..
+                    } => LWLibavSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?,
+                    VapourSynthImportMethod::DGDecNV {
+                        ..
+                    } => DGSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?,
+                    VapourSynthImportMethod::FFMS2 {
+                        ..
+                    } => Source::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?,
+                    VapourSynthImportMethod::BestSource {
+                        ..
+                    } => VideoSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?,
+                };
+                if let Some(dec_import_lines) = dec_import_lines {
+                    script.add_imports(dec_import_lines);
+                }
+                script.add_lines(dec_lines);
+
+                for filter in filters {
+                    let (import_lines, filter_lines) =
+                        filter.generate_script(SCRIPT_NODE_NAME.to_owned())?;
+                    if let Some(import_lines) = import_lines {
+                        script.add_imports(import_lines);
+                    }
+                    script.add_lines(filter_lines);
+                }
+
+                script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
+
+                Input::from_vapoursynth(
+                    &InputModel::VapourSynthScript {
+                        source:    VapourSynthScriptSource::Text(script.to_string()),
+                        variables: HashMap::new(),
+                        index:     SCRIPT_OUTPUT_INDEX,
+                        // Already baked into the script; re-applying them
+                        // through a modifier would duplicate the work.
+                        filters:   Vec::new(),
+                    },
+                    None,
+                )
+            },
+            // A user script's output node has no name this code can reference, so
+            // a script-only filter cannot be appended to it. Report it rather
+            // than dropping the filter.
+            InputModel::VapourSynthScript {
+                filters, ..
+            } => {
+                if let Some(filter) = filters.iter().find(|f| f.is_script_only()) {
+                    bail!(
+                        "{filter} is script-only and cannot be applied to a VapourSynth script \
+                         input; put it in the script instead"
+                    );
+                }
+                Self::from_vapoursynth(data, None)
+            },
+            InputModel::Video {
+                ..
+            } => bail!("scripted VapourSynth input expected"),
         }
     }
 
@@ -288,6 +535,64 @@ impl Input {
                 ..
             } => Input::from_vapoursynth(data, None),
         }
+    }
+
+    /// Reopens a natively-decoded input through VapourSynth.
+    ///
+    /// Used by the VS-only code paths (metrics, noise detection). Any native
+    /// filters are translated into their VapourSynth equivalents first, so the
+    /// clip is converted the same way either way. Already-VapourSynth inputs
+    /// are returned as `None`.
+    #[inline]
+    pub fn as_vapoursynth_script(&mut self) -> Result<Option<Self>> {
+        const SCRIPT_OUTPUT_INDEX: u8 = 0;
+        const SCRIPT_NODE_NAME: &str = "clip";
+
+        let Input::Video {
+            path,
+            filters,
+            source_details,
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+
+        // Filters are resolved against the decoded stream's own format, since
+        // that is what their unset fields inherit from.
+        let baseline = *source_details;
+        let mut script = VapourSynthScript::default();
+        let script = {
+            let (dec_import_lines, dec_lines) =
+                Source::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?;
+            if let Some(dec_import_lines) = dec_import_lines {
+                script.add_imports(dec_import_lines);
+            }
+            script.add_lines(dec_lines);
+
+            for filter in filters {
+                for vs_filter in filter.to_vapoursynth_filters(&baseline) {
+                    let (import_lines, filter_lines) =
+                        vs_filter.generate_script(SCRIPT_NODE_NAME.to_owned())?;
+                    if let Some(import_lines) = import_lines {
+                        script.add_imports(import_lines);
+                    }
+                    script.add_lines(filter_lines);
+                }
+            }
+
+            script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
+            script
+        };
+
+        let script_input_data = InputModel::VapourSynthScript {
+            source:    VapourSynthScriptSource::Text(script.to_string()),
+            variables: HashMap::new(),
+            index:     SCRIPT_OUTPUT_INDEX,
+            filters:   Vec::new(),
+        };
+
+        Ok(Some(Input::from_vapoursynth(&script_input_data, None)?))
     }
 
     #[inline]
@@ -310,12 +615,26 @@ impl Input {
         let clip_info = match self {
             Input::Video {
                 path,
+                filters,
+                decoder,
                 clip_info,
                 ..
             } => {
-                // Ideally, these values are retrieved via VideoDetails instead
                 if clip_info.is_none() {
-                    let info = get_clip_info(path.as_path())?;
+                    // ffprobe describes the source file, so it cannot see a
+                    // filter's conversion. When one is applied, the decoder's
+                    // details are authoritative for resolution and pixel format;
+                    // ffprobe is still the only source of color range and
+                    // transfer characteristics.
+                    let mut info = get_clip_info(path.as_path())?;
+                    if !filters.is_empty() {
+                        let details = decoder.get_video_details();
+                        info.resolution = (details.width as u32, details.height as u32);
+                        info.format_info = PixelFormat::FFmpeg {
+                            format: ffms2_pixel_format(details.bit_depth, details.chroma_sampling)
+                                .unwrap_or(info.format_info.as_pixel_format()?),
+                        };
+                    }
                     *clip_info = Some(info);
                 }
 
@@ -351,6 +670,26 @@ impl Input {
         Ok(*clip_info.expect("ClipInfo is Some"))
     }
 
+    /// The `C` tag in a y4m header, describing bit depth and chroma layout.
+    ///
+    /// Derived from the decoder rather than `ClipInfo`, so it always describes
+    /// the frames that are actually written.
+    #[inline]
+    pub fn y4m_chroma_tag(bit_depth: usize, chroma: ChromaSubsampling) -> String {
+        let chroma_str = match chroma {
+            ChromaSubsampling::Monochrome => "mono",
+            ChromaSubsampling::Yuv420 => "420",
+            ChromaSubsampling::Yuv422 => "422",
+            ChromaSubsampling::Yuv444 => "444",
+        };
+        match chroma {
+            // Monochrome has no `p` marker even at high bit depth.
+            ChromaSubsampling::Monochrome => chroma_str.to_owned(),
+            _ if bit_depth > 8 => format!("{chroma_str}p{bit_depth}"),
+            _ => chroma_str.to_owned(),
+        }
+    }
+
     #[inline]
     pub fn y4m_header(&mut self, frames: Option<usize>) -> Result<String> {
         let clip_info = self.clip_info()?;
@@ -367,29 +706,9 @@ impl Input {
         };
         let details = decoder.get_video_details();
 
-        let chroma_str = match details.chroma_sampling {
-            av_decoders::v_frame::chroma::ChromaSubsampling::Monochrome => "mono",
-            av_decoders::v_frame::chroma::ChromaSubsampling::Yuv420 => "420",
-            av_decoders::v_frame::chroma::ChromaSubsampling::Yuv422 => "422",
-            av_decoders::v_frame::chroma::ChromaSubsampling::Yuv444 => "444",
-        };
-        let chroma_header = format!(
-            "{}{}{}",
-            chroma_str,
-            match details.chroma_sampling {
-                av_decoders::v_frame::chroma::ChromaSubsampling::Monochrome => "",
-                _ if details.bit_depth > 8 => "p",
-                _ => "",
-            },
-            match details.bit_depth {
-                _ if details.bit_depth > 8 => format!("{}", details.bit_depth),
-                _ => String::new(),
-            },
-        );
-
         let header = format!(
             "YUV4MPEG2 C{} W{} H{} F{}:{} Ip A0:0{}\n",
-            chroma_header,
+            Input::y4m_chroma_tag(details.bit_depth, details.chroma_sampling),
             clip_info.resolution.0,
             clip_info.resolution.1,
             clip_info.frame_rate.numer(),
@@ -910,4 +1229,241 @@ pub enum InputError {
     NotAVideoFile(PathBuf),
     #[error("File {0} is not a VapourSynth script")]
     NotAVapourSynthScript(PathBuf),
+}
+
+#[cfg(test)]
+mod tests {
+    use av_decoders::Rational32;
+
+    use super::*;
+    use crate::{
+        core::input::ffms2_filter::ChromaSampling,
+        ffmpeg::FFPixelFormat,
+        vapoursynth::plugins::resize::Scaler,
+    };
+
+    /// `VideoDetails::default` only exists under av-decoders' own `cfg(test)`,
+    /// so build one explicitly.
+    fn video_details(
+        width: usize,
+        height: usize,
+        bit_depth: usize,
+        chroma_sampling: ChromaSubsampling,
+    ) -> VideoDetails {
+        VideoDetails {
+            width,
+            height,
+            bit_depth,
+            chroma_sampling,
+            frame_rate: Rational32::new(24, 1),
+            total_frames: Some(100),
+        }
+    }
+
+    /// The y4m header's `C` tag and `ClipInfo` are read from two different
+    /// places, so a filter that changes one must not leave the other stale.
+    /// `y4m_frames` picks the sample type from `ClipInfo`, so a mismatch would
+    /// silently hand the encoder mis-parsed frames.
+    #[test]
+    fn chroma_tag_agrees_with_clip_info_bit_depth() {
+        for (bit_depth, chroma) in [
+            (8, ChromaSubsampling::Yuv420),
+            (10, ChromaSubsampling::Yuv420),
+            (12, ChromaSubsampling::Yuv420),
+            (8, ChromaSubsampling::Yuv444),
+            (10, ChromaSubsampling::Yuv444),
+            (8, ChromaSubsampling::Monochrome),
+            (10, ChromaSubsampling::Monochrome),
+        ] {
+            let tag = Input::y4m_chroma_tag(bit_depth, chroma);
+            let format =
+                ffms2_pixel_format(bit_depth, chroma).expect("FFMS2 should support this format");
+            let info = PixelFormat::FFmpeg {
+                format,
+            };
+
+            assert_eq!(
+                info.as_bit_depth().expect("bit depth should resolve"),
+                bit_depth,
+                "tag {tag} reports a different depth than ClipInfo"
+            );
+        }
+    }
+
+    #[test]
+    fn chroma_tag_matches_y4m_convention() {
+        assert_eq!(Input::y4m_chroma_tag(8, ChromaSubsampling::Yuv420), "420");
+        assert_eq!(
+            Input::y4m_chroma_tag(10, ChromaSubsampling::Yuv420),
+            "420p10"
+        );
+        assert_eq!(
+            Input::y4m_chroma_tag(12, ChromaSubsampling::Yuv422),
+            "422p12"
+        );
+        assert_eq!(
+            Input::y4m_chroma_tag(10, ChromaSubsampling::Yuv444),
+            "444p10"
+        );
+        // Monochrome never takes the `p` marker.
+        assert_eq!(
+            Input::y4m_chroma_tag(10, ChromaSubsampling::Monochrome),
+            "mono"
+        );
+    }
+
+    #[test]
+    fn unsupported_output_format_is_rejected() {
+        // FFMS2 has no 16-bit output, so the mapping must not invent one.
+        assert!(ffms2_pixel_format(16, ChromaSubsampling::Yuv420).is_none());
+        assert!(ffms2_pixel_format(10, ChromaSubsampling::Yuv420).is_some());
+    }
+
+    /// A native filter that only scales must become a VapourSynth resize, so a
+    /// VS-only code path sees the same converted clip the native path does.
+    #[test]
+    fn native_filter_becomes_vapoursynth_resize() {
+        let baseline = video_details(1920, 1080, 8, ChromaSubsampling::Yuv420);
+
+        let ten_bit = Ffms2Filter::OutputFormat {
+            bit_depth: Some(10),
+            chroma:    None,
+            width:     None,
+            height:    None,
+        };
+        assert_eq!(ten_bit.to_vapoursynth_filters(&baseline), vec![
+            VapourSynthFilter::Resize {
+                scaler: Some(Scaler::Bicubic),
+                width:  None,
+                height: None,
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }
+        ]);
+
+        let downscale = Ffms2Filter::OutputFormat {
+            bit_depth: None,
+            chroma:    None,
+            width:     Some(1280),
+            height:    Some(720),
+        };
+        assert_eq!(downscale.to_vapoursynth_filters(&baseline), vec![
+            VapourSynthFilter::Resize {
+                scaler: Some(Scaler::Bicubic),
+                width:  Some(1280),
+                height: Some(720),
+                format: None,
+            }
+        ]);
+    }
+
+    /// A filter matching the decoded stream is a no-op and must not add work.
+    #[test]
+    fn native_filter_matching_baseline_is_dropped() {
+        let baseline = video_details(1920, 1080, 10, ChromaSubsampling::Yuv420);
+
+        let noop = Ffms2Filter::OutputFormat {
+            bit_depth: Some(10),
+            chroma:    Some(ChromaSampling::Yuv420),
+            width:     Some(1920),
+            height:    Some(1080),
+        };
+        assert!(noop.to_vapoursynth_filters(&baseline).is_empty());
+
+        let empty = Ffms2Filter::OutputFormat {
+            bit_depth: None,
+            chroma:    None,
+            width:     None,
+            height:    None,
+        };
+        assert!(empty.to_vapoursynth_filters(&baseline).is_empty());
+    }
+
+    /// `Input::from_video` applies each filter to the decoder, and
+    /// `set_output_format` rewrites the decoder's details as it goes. So the
+    /// filtered format ends up *equal* to every filter's resolved result.
+    ///
+    /// Resolving against that would make every filter a no-op and drop them all
+    /// from the VapourSynth script the VS-only paths use, leaving them scoring
+    /// an unconverted clip against a converted encode. Resolving against
+    /// the pre-filter source format keeps them.
+    #[test]
+    fn filters_resolve_against_the_source_not_the_filtered_format() {
+        let source = video_details(1920, 1080, 8, ChromaSubsampling::Yuv420);
+
+        let filters = [
+            Ffms2Filter::OutputFormat {
+                bit_depth: Some(10),
+                chroma:    Some(ChromaSampling::Yuv444),
+                width:     None,
+                height:    None,
+            },
+            // Unset fields inherit from the previous filter, as they do when the
+            // decoder applies them in sequence.
+            Ffms2Filter::OutputFormat {
+                bit_depth: None,
+                chroma:    None,
+                width:     Some(1280),
+                height:    Some(720),
+            },
+        ];
+
+        // Stand in for the decoder's details after the filters were applied.
+        let mut current = source;
+        for filter in &filters {
+            let Ffms2Filter::OutputFormat {
+                bit_depth,
+                chroma,
+                width,
+                height,
+            } = filter;
+            let bit_depth = bit_depth.map_or(current.bit_depth, usize::from);
+            let chroma = chroma.map_or(current.chroma_sampling, |chroma| {
+                chroma.to_chroma_subsampling()
+            });
+            current = VideoDetails {
+                width: width.map_or(current.width, |width| width as usize),
+                height: height.map_or(current.height, |height| height as usize),
+                bit_depth,
+                chroma_sampling: chroma,
+                ..current
+            };
+        }
+        assert_eq!(
+            (
+                current.width,
+                current.height,
+                current.bit_depth,
+                current.chroma_sampling
+            ),
+            (1280, 720, 10, ChromaSubsampling::Yuv444)
+        );
+
+        // Against the filtered format every filter looks like a no-op...
+        for filter in &filters {
+            assert!(
+                filter.to_vapoursynth_filters(&current).is_empty(),
+                "a filter should not be dropped just because the decoder already applied it"
+            );
+        }
+
+        // ...whereas against the source it resolves to a real conversion.
+        let converted = filters
+            .iter()
+            .flat_map(|filter| filter.to_vapoursynth_filters(&source))
+            .collect::<Vec<_>>();
+        assert_eq!(converted, vec![
+            VapourSynthFilter::Resize {
+                scaler: Some(Scaler::Bicubic),
+                width:  None,
+                height: None,
+                format: Some(FFPixelFormat::YUV444P10LE),
+            },
+            VapourSynthFilter::Resize {
+                scaler: Some(Scaler::Bicubic),
+                width:  Some(1280),
+                height: Some(720),
+                format: None,
+            },
+        ]);
+    }
 }

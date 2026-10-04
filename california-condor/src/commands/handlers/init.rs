@@ -1,8 +1,11 @@
 use std::path::Path;
 
-use andean_condor::vapoursynth::vapoursynth_filters::VapourSynthFilter;
+use andean_condor::{
+    models::input::Input as InputModel,
+    vapoursynth::vapoursynth_filters::VapourSynthFilter,
+};
 use anyhow::{Result, bail};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     DEFAULT_CONFIG_PATH,
@@ -58,7 +61,14 @@ pub fn init_handler(
 
     configure_temp(&mut configuration, temp_path)?;
     if let Some(filters) = filters {
-        configuration.input_filters = filters.to_vec();
+        let unsupported = InputModel::unsupported_filters(filters);
+        configuration.condor.input.set_filters(filters.to_vec());
+        for filter in unsupported {
+            warn!(
+                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
+                 convert bit depth, chroma and resolution"
+            );
+        }
     }
     configure_encoder(
         &mut configuration,
@@ -219,13 +229,13 @@ mod tests {
         );
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
-        expected_config.input_filters = custom_filters.clone();
         expected_config.condor.input = Input::VapourSynth {
             path:          input_abs,
             import_method: VapourSynthImportMethod::FFMS2 {
                 index: None
             },
             cache_path:    None,
+            filters:       custom_filters.clone(),
         };
         expected_config.condor.encoder = Encoder::AOM {
             executable:   None,

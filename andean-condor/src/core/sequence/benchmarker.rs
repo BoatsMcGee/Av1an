@@ -10,7 +10,6 @@ use std::{
 };
 
 use anyhow::Result;
-use itertools::Itertools;
 use thiserror::Error;
 
 use crate::{
@@ -126,7 +125,8 @@ where
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<((), Vec<anyhow::Error>)> {
-        const MINIMUM_SCENE_FRAMES: usize = 24;
+        const BENCHMARK_SCENES: usize = 16;
+        const BENCHMARK_SCENE_FRAMES: usize = 24;
         let mut warnings = vec![];
         let parallel_encoder_config = condor.sequence_config.parallel_encoder()?;
         let config = condor.sequence_config.benchmarker()?;
@@ -151,69 +151,22 @@ where
             return Ok(((), warnings));
         }
 
-        let tasks: Vec<ParallelEncodeTask> = if condor.scenes.is_empty() {
-            let total_frames = input.clip_info()?.num_frames;
-            let mut current_start: usize = 0;
-            (0..8)
-                .map(|index| {
-                    if current_start + MINIMUM_SCENE_FRAMES > total_frames {
-                        current_start = 0;
-                    }
-                    let start = current_start;
-                    let end = current_start + MINIMUM_SCENE_FRAMES;
-                    current_start = end;
-                    ParallelEncodeTask {
-                        index,
-                        original_index: index,
-                        frame_indices: (start..end).collect::<Vec<_>>(),
-                        sub_scenes: None,
-                        encoder: condor.encoder.clone(),
-                        output: benchmarker_directory.join(format!(
-                            "{}.{}",
-                            index,
-                            condor.encoder.output_extension()
-                        )),
-                    }
-                })
-                .collect()
-        } else {
-            // pick 8 scenes of at least 24 frames
-            let has_minimum_frame_scenes = condor
-                .scenes
-                .iter()
-                .any(|scene| (scene.end_frame - scene.start_frame) >= MINIMUM_SCENE_FRAMES);
-            let sorted_scenes = condor
-                .scenes
-                .iter()
-                .filter(|scene| {
-                    !has_minimum_frame_scenes
-                        || (scene.end_frame - scene.start_frame) >= MINIMUM_SCENE_FRAMES
-                })
-                .sorted_by(|a, b| {
-                    Ord::cmp(
-                        &(a.end_frame - a.start_frame),
-                        &(b.end_frame - b.start_frame),
-                    )
-                });
-
-            sorted_scenes
-                .cycle()
-                .take(8)
-                .enumerate()
-                .map(|(index, scene)| ParallelEncodeTask {
-                    original_index: index,
+        let total_frames = input.clip_info()?.num_frames;
+        let scene_frames = BENCHMARK_SCENE_FRAMES.min(total_frames).max(1);
+        let tasks: Vec<ParallelEncodeTask> = (0..BENCHMARK_SCENES)
+            .map(|index| ParallelEncodeTask {
+                index,
+                original_index: index,
+                frame_indices: (0..scene_frames).collect::<Vec<_>>(),
+                sub_scenes: None,
+                encoder: condor.encoder.clone(),
+                output: benchmarker_directory.join(format!(
+                    "{}.{}",
                     index,
-                    frame_indices: (scene.start_frame..scene.end_frame).collect::<Vec<_>>(),
-                    sub_scenes: None,
-                    encoder: condor.encoder.clone(),
-                    output: benchmarker_directory.join(format!(
-                        "{}.{}",
-                        index,
-                        condor.encoder.output_extension()
-                    )),
-                })
-                .collect()
-        };
+                    condor.encoder.output_extension()
+                )),
+            })
+            .collect();
 
         let mut previous_result =
             Self::benchmark_workers(input, 1, tasks.as_slice(), &progress_tx, &cancelled)?;

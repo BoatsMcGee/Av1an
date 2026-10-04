@@ -148,24 +148,24 @@ mod tests {
             .success();
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
-        expected_config.input_filters = vec![
-            VapourSynthFilter::Trim {
-                start: Some(24),
-                end:   None,
-            },
-            VapourSynthFilter::Resize {
-                scaler: Some(Scaler::Bilinear),
-                width:  Some(1280),
-                height: Some(720),
-                format: Some(FFPixelFormat::YUV420P),
-            },
-        ];
         expected_config.condor.input = InputModel::VapourSynth {
             path:          input_abs,
             import_method: VapourSynthImportMethod::FFMS2 {
                 index: None
             },
             cache_path:    None,
+            filters:       vec![
+                VapourSynthFilter::Trim {
+                    start: Some(24),
+                    end:   None,
+                },
+                VapourSynthFilter::Resize {
+                    scaler: Some(Scaler::Bilinear),
+                    width:  Some(1280),
+                    height: Some(720),
+                    format: Some(FFPixelFormat::YUV420P),
+                },
+            ],
         };
         let mut custom_encoder_parameters = EncoderBase::AOM.default_parameters();
         custom_encoder_parameters.extend(CLIParameter::new_numbers("--", "=", &[

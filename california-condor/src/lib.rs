@@ -375,12 +375,7 @@ pub fn run_condor(configuration: &Configuration, save_file: &Path, skip_scd: boo
     };
 
     if !skip_scd {
-        run_scene_detector_tui(
-            &mut condor,
-            &configuration.input_filters,
-            &configuration.scd_input_filters,
-            std::sync::Arc::clone(&cancellation_token),
-        )?;
+        run_scene_detector_tui(&mut condor, std::sync::Arc::clone(&cancellation_token))?;
         if cancelled() {
             return Ok(());
         }
@@ -406,12 +401,7 @@ pub fn run_condor(configuration: &Configuration, save_file: &Path, skip_scd: boo
     }
 
     if configuration.condor.sequence_config.target_quality.is_some() {
-        run_target_quality_tui(
-            &mut condor,
-            &configuration.tq_input_filters,
-            &configuration.input_filters,
-            std::sync::Arc::clone(&cancellation_token),
-        )?;
+        run_target_quality_tui(&mut condor, std::sync::Arc::clone(&cancellation_token))?;
         if cancelled() {
             return Ok(());
         }
@@ -437,11 +427,7 @@ pub fn run_condor(configuration: &Configuration, save_file: &Path, skip_scd: boo
         }
     }
 
-    run_parallel_encoder_tui(
-        &mut condor,
-        &configuration.input_filters,
-        std::sync::Arc::clone(&cancellation_token),
-    )?;
+    run_parallel_encoder_tui(&mut condor, std::sync::Arc::clone(&cancellation_token))?;
     if cancelled() {
         return Ok(());
     }
@@ -452,12 +438,7 @@ pub fn run_condor(configuration: &Configuration, save_file: &Path, skip_scd: boo
     }
 
     if configuration.condor.sequence_config.quality_check.is_some() {
-        run_quality_check_tui(
-            &mut condor,
-            &configuration.tq_input_filters,
-            &configuration.input_filters,
-            std::sync::Arc::clone(&cancellation_token),
-        )?;
+        run_quality_check_tui(&mut condor, std::sync::Arc::clone(&cancellation_token))?;
         if cancelled() {
             return Ok(());
         }
@@ -492,8 +473,6 @@ pub fn run_scene_detector(configuration: &Configuration, save_file: &Path) -> Re
 
     run_scene_detector_tui(
         &mut condor,
-        &configuration.input_filters,
-        &configuration.scd_input_filters,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )?;
 
@@ -594,8 +573,6 @@ pub fn run_target_quality(configuration: &Configuration, save_file: &Path) -> Re
 
     run_target_quality_tui(
         &mut condor,
-        &configuration.tq_input_filters,
-        &configuration.input_filters,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )?;
 
@@ -672,7 +649,6 @@ pub fn run_encoder(configuration: &Configuration, save_file: &Path) -> Result<()
 
     run_parallel_encoder_tui(
         &mut condor,
-        &configuration.input_filters,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )?;
 
@@ -725,8 +701,6 @@ pub fn run_quality_check(configuration: &Configuration, save_file: &Path) -> Res
 
     run_quality_check_tui(
         &mut condor,
-        &configuration.tq_input_filters,
-        &configuration.input_filters,
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )?;
 

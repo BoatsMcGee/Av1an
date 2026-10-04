@@ -11,10 +11,19 @@ use common::condor_cmd;
 
 #[cfg(test)]
 mod tests {
-    use andean_condor::models::encoder::cli_parameter::CLIParameter;
+    use andean_condor::{
+        ffmpeg::FFPixelFormat,
+        models::{encoder::cli_parameter::CLIParameter, input::Input},
+        vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
+    };
     use serial_test::serial;
 
     use super::*;
+
+    /// Downscaling the clip to 540p cuts the benchmarker's encode cost roughly
+    /// fourfold, and nothing here depends on the source resolution.
+    const WIDTH: usize = 960;
+    const HEIGHT: usize = 540;
 
     #[serial]
     #[test]
@@ -74,6 +83,17 @@ mod tests {
 
         // Mock an existing config file with scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
+        if let Input::VapourSynth {
+            filters, ..
+        } = &mut config.condor.input
+        {
+            *filters = vec![VapourSynthFilter::Resize {
+                scaler: Some(Scaler::Bicubic),
+                width:  Some(WIDTH),
+                height: Some(HEIGHT),
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }];
+        }
         config.condor.encoder.parameters_mut().insert(
             "preset".to_owned(),
             CLIParameter::new_number("--", " ", 10.0),

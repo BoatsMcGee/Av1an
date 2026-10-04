@@ -1,10 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::{
-    models::encoder::{Encoder, EncoderBase, EncoderPasses, photon_noise::PhotonNoise},
+    models::{
+        encoder::{Encoder, EncoderBase, EncoderPasses, photon_noise::PhotonNoise},
+        input::Input as InputModel,
+    },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::Result;
+use tracing::warn;
 
 use crate::{
     commands::{
@@ -85,7 +89,21 @@ pub fn configure_parallel_encoder(
     }
 
     if let Some(filters) = filters {
-        configuration.input_filters = filters.to_vec();
+        let pe_input = configuration
+            .condor
+            .sequence_config
+            .parallel_encoder
+            .input
+            .as_mut()
+            .unwrap_or(&mut configuration.condor.input);
+        let unsupported = InputModel::unsupported_filters(filters);
+        pe_input.set_filters(filters.to_vec());
+        for filter in unsupported {
+            warn!(
+                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
+                 convert bit depth, chroma and resolution"
+            );
+        }
     }
 
     if let Some(workers) = workers {
@@ -303,7 +321,6 @@ mod tests {
         let custom_vs_args = vec!["method=target quality".to_string()];
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
-        expected_config.input_filters = custom_filters.clone();
         expected_config.condor.encoder = Encoder::default_from_base(&EncoderBase::RAV1E, false);
         expected_config.condor.encoder.parameters_mut().insert(
             "speed".to_owned(),
@@ -332,6 +349,7 @@ mod tests {
                     dgindexnv_executable: None,
                 },
                 cache_path:    None,
+                filters:       custom_filters.clone(),
             }),
             workers:          Some(2),
             scenes_directory: temp_abs.join("scenes"),

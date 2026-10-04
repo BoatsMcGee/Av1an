@@ -1,21 +1,25 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::{
-    models::sequence::target_quality::types::{
-        DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-        DEFAULT_CVVDP_TARGET_RANGE,
-        DEFAULT_SSIMULACRA2_TARGET_RANGE,
-        DEFAULT_VMAF_TARGET_RANGE,
-        DEFAULT_XPSNR_TARGET_RANGE,
-        ProbeStatistic,
-        ProbeStrategy,
-        QualityMetric,
-        SubsetProbeLength,
-        SubsetProbePosition,
+    models::{
+        input::Input as InputModel,
+        sequence::target_quality::types::{
+            DEFAULT_BUTTERAUGLI_TARGET_RANGE,
+            DEFAULT_CVVDP_TARGET_RANGE,
+            DEFAULT_SSIMULACRA2_TARGET_RANGE,
+            DEFAULT_VMAF_TARGET_RANGE,
+            DEFAULT_XPSNR_TARGET_RANGE,
+            ProbeStatistic,
+            ProbeStrategy,
+            QualityMetric,
+            SubsetProbeLength,
+            SubsetProbePosition,
+        },
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::Result;
+use tracing::warn;
 
 use crate::{
     commands::{
@@ -97,7 +101,21 @@ pub fn configure_quality_check(
     }
 
     if let Some(filters) = filters {
-        configuration.input_filters = filters.to_vec();
+        let qc_input = configuration
+            .condor
+            .sequence_config
+            .quality_check
+            .as_mut()
+            .and_then(|qc| qc.input.as_mut())
+            .unwrap_or(&mut configuration.condor.input);
+        let unsupported = InputModel::unsupported_filters(filters);
+        qc_input.set_filters(filters.to_vec());
+        for filter in unsupported {
+            warn!(
+                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
+                 convert bit depth, chroma and resolution"
+            );
+        }
     }
 
     if let (Some(metric), Some(quality_check)) = (
@@ -280,6 +298,7 @@ mod tests {
                     index: None
                 },
                 cache_path:    None,
+                filters:       custom_filters.clone(),
             }),
             metric:    QualityMetric::BUTTERAUGLI {
                 target_range:         DEFAULT_BUTTERAUGLI_TARGET_RANGE,
@@ -294,7 +313,6 @@ mod tests {
                 length:   SubsetProbeLength::Frames(11),
             },
         });
-        expected_config.input_filters = custom_filters.clone();
         // immutable shadow
         let expected_config = expected_config;
 

@@ -40,7 +40,10 @@ use andean_condor::{
             },
         },
     },
-    vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
+    vapoursynth::{
+        plugins::{resize::Scaler, standard::select_every::SelectEvery},
+        vapoursynth_filters::VapourSynthFilter,
+    },
 };
 use anyhow::Result;
 
@@ -67,25 +70,28 @@ fn main() -> Result<()> {
             index: None
         },
         cache_path:    None,
-    };
-
-    // Add `ModifyNode` to add VapourSynth filters onto the imported clip.
-    let resize_filter = VapourSynthFilter::Resize {
-        scaler: Some(Scaler::Bicubic),
-        width:  None,
-        height: None,
-        format: Some(FFPixelFormat::YUV420P10LE),
+        filters:       vec![VapourSynthFilter::Resize {
+            scaler: Some(Scaler::Bicubic),
+            width:  None,
+            height: None,
+            format: Some(FFPixelFormat::YUV420P10LE),
+        }],
     };
     let node_modifier: andean_condor::core::input::ModifyNode = Box::new(move |core, node| {
+        let select_every = SelectEvery {
+            cycle:           2,
+            offsets:         vec![1],
+            modify_duration: None,
+        };
         let node = node.expect("node exists");
-        resize_filter.invoke_plugin_function(core, &node).map_err(|e| {
+        select_every.invoke(core, &node).map_err(|e| {
             andean_condor::core::input::DecoderError::VapoursynthScriptError {
                 cause: e.to_string(),
             }
         })
     });
 
-    // Instantiate Input
+    // Instantiate Input. `ModifyNode` is applied first, then the filters.
     let input = Input::from_vapoursynth(&input_model, Some(node_modifier))?;
 
     // Output: output.mkv

@@ -2,24 +2,28 @@ use std::path::{Path, PathBuf};
 
 use andean_condor::{
     core::sequence::target_quality::TargetQuality,
-    models::sequence::target_quality::{
-        TargetQualityConfig,
-        types::{
-            DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-            DEFAULT_CVVDP_TARGET_RANGE,
-            DEFAULT_SSIMULACRA2_TARGET_RANGE,
-            DEFAULT_VMAF_TARGET_RANGE,
-            DEFAULT_XPSNR_TARGET_RANGE,
-            ProbeStatistic,
-            ProbeStrategy,
-            QualityMetric,
-            SubsetProbeLength,
-            SubsetProbePosition,
+    models::{
+        input::Input as InputModel,
+        sequence::target_quality::{
+            TargetQualityConfig,
+            types::{
+                DEFAULT_BUTTERAUGLI_TARGET_RANGE,
+                DEFAULT_CVVDP_TARGET_RANGE,
+                DEFAULT_SSIMULACRA2_TARGET_RANGE,
+                DEFAULT_VMAF_TARGET_RANGE,
+                DEFAULT_XPSNR_TARGET_RANGE,
+                ProbeStatistic,
+                ProbeStrategy,
+                QualityMetric,
+                SubsetProbeLength,
+                SubsetProbePosition,
+            },
         },
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::Result;
+use tracing::warn;
 
 use crate::{
     commands::{
@@ -124,7 +128,21 @@ pub fn configure_target_quality(
     }
 
     if let Some(filters) = filters {
-        configuration.tq_input_filters = filters.to_vec();
+        let tq_input = configuration
+            .condor
+            .sequence_config
+            .target_quality
+            .as_mut()
+            .and_then(|tq| tq.input.as_mut())
+            .unwrap_or(&mut configuration.condor.input);
+        let unsupported = InputModel::unsupported_filters(filters);
+        tq_input.set_filters(filters.to_vec());
+        for filter in unsupported {
+            warn!(
+                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
+                 convert bit depth, chroma and resolution"
+            );
+        }
     }
 
     if let (Some(metric), Some(target_quality)) = (
@@ -349,7 +367,6 @@ mod tests {
         let custom_vs_args = vec!["method=target quality".to_string()];
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
-        expected_config.tq_input_filters = custom_filters.clone();
         let mut tq_encoder_parameters = EncoderBase::SVTAV1.default_parameters();
         tq_encoder_parameters.extend(CLIParameter::new_numbers("--", " ", &[
             ("preset", 6.0),
@@ -372,6 +389,7 @@ mod tests {
                     index: None
                 },
                 cache_path:    None,
+                filters:       custom_filters.clone(),
             }),
             metric_input:    None,
             probing:         TargetQualityProbing {

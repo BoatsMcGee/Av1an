@@ -4,22 +4,439 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
+// Re-exported so callers configuring an input need only this module.
+pub use crate::core::input::ffms2_filter::{ChromaSampling, Ffms2Filter};
+use crate::vapoursynth::vapoursynth_filters::VapourSynthFilter;
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum Input {
     Video {
         path:          PathBuf,
         import_method: ImportMethod,
+        /// Conversion applied to the decoded frames.
+        ///
+        /// Native FFMS2 cannot run arbitrary filters; this is the full set of
+        /// modifications it supports.
+        filters:       Vec<Ffms2Filter>,
     },
     VapourSynth {
         path:          PathBuf,
         import_method: VapourSynthImportMethod,
         cache_path:    Option<PathBuf>,
+        /// Filters chained onto the source node, in order.
+        filters:       Vec<VapourSynthFilter>,
     },
     VapourSynthScript {
         source:    VapourSynthScriptSource,
         variables: HashMap<String, String>,
         index:     u8,
+        /// Filters chained onto the script's output node, in order.
+        filters:   Vec<VapourSynthFilter>,
     },
+}
+
+impl Input {
+    /// This input's VapourSynth filters, or an empty slice for a native input.
+    ///
+    /// Native filters are a different type, so a native input reports none here
+    /// rather than pretending it has VapourSynth filters.
+    #[inline]
+    #[must_use]
+    pub fn vapoursynth_filters(&self) -> &[VapourSynthFilter] {
+        match self {
+            Input::VapourSynth {
+                filters, ..
+            }
+            | Input::VapourSynthScript {
+                filters, ..
+            } => filters,
+            Input::Video {
+                ..
+            } => &[],
+        }
+    }
+
+    /// Copies `other`'s filters onto this input.
+    ///
+    /// Used when an input is rebuilt (a new path or decoder) so its filters are
+    /// not lost. A change of input kind converts what it can: switching to a
+    /// native input keeps only the filters FFMS2 can express, and switching to
+    /// VapourSynth keeps the native ones unchanged, since every native filter
+    /// has a VapourSynth equivalent.
+    #[inline]
+    pub fn adopt_filters(&mut self, other: &Input) {
+        match (self, other) {
+            (
+                Input::Video {
+                    filters, ..
+                },
+                Input::VapourSynth {
+                    filters: from, ..
+                }
+                | Input::VapourSynthScript {
+                    filters: from, ..
+                },
+            ) => {
+                // The source format is not known here, so an unset field in the
+                // native filter means "unchanged" and the decoder resolves it.
+                *filters = from.iter().filter_map(Ffms2Filter::from_vapoursynth_filter).collect();
+            },
+            (
+                Input::Video {
+                    filters, ..
+                },
+                Input::Video {
+                    filters: from, ..
+                },
+            ) => {
+                *filters = from.clone();
+            },
+            (
+                Input::VapourSynth {
+                    filters, ..
+                }
+                | Input::VapourSynthScript {
+                    filters, ..
+                },
+                Input::Video {
+                    filters: from, ..
+                },
+            ) => {
+                // A native filter only ever resizes and converts, which
+                // VapourSynth expresses directly.
+                *filters = from.iter().flat_map(Ffms2Filter::to_vapoursynth).collect();
+            },
+            (
+                Input::VapourSynth {
+                    filters, ..
+                }
+                | Input::VapourSynthScript {
+                    filters, ..
+                },
+                Input::VapourSynth {
+                    filters: from, ..
+                }
+                | Input::VapourSynthScript {
+                    filters: from, ..
+                },
+            ) => *filters = from.clone(),
+        }
+    }
+
+    /// Replaces this input's filters, converting as needed for its decoder.
+    ///
+    /// A native FFMS2 input accepts only what FFMS2 can express, so
+    /// VapourSynth filters it cannot run are converted where possible (a
+    /// `Resize`) and otherwise dropped. [`Input::unsupported_filters`] reports
+    /// what was dropped so callers can warn.
+    #[inline]
+    pub fn set_filters(&mut self, new: Vec<VapourSynthFilter>) {
+        match self {
+            Input::VapourSynth {
+                filters, ..
+            }
+            | Input::VapourSynthScript {
+                filters, ..
+            } => {
+                *filters = new;
+            },
+            Input::Video {
+                filters: native, ..
+            } => {
+                *native = new.iter().filter_map(Ffms2Filter::from_vapoursynth_filter).collect();
+            },
+        }
+    }
+
+    /// The filters in `new` this input's decoder cannot run.
+    ///
+    /// Always empty for a VapourSynth input; for a native input it is every
+    /// filter but `Resize`.
+    #[inline]
+    #[must_use]
+    pub fn unsupported_filters(new: &[VapourSynthFilter]) -> Vec<&VapourSynthFilter> {
+        new.iter()
+            .filter(|filter| Ffms2Filter::from_vapoursynth_filter(filter).is_none())
+            .collect()
+    }
+
+    /// Whether any of this input's filters changes the frame count.
+    #[inline]
+    #[must_use]
+    pub fn has_time_altering_filters(&self) -> bool {
+        match self {
+            Input::Video {
+                ..
+            } => false,
+            Input::VapourSynth {
+                filters, ..
+            }
+            | Input::VapourSynthScript {
+                filters, ..
+            } => filters.iter().any(VapourSynthFilter::can_alter_time),
+        }
+    }
+
+    /// Appends `other`'s time-altering filters to this input's filters.
+    ///
+    /// Used to recover when two inputs of the same source disagree on frame
+    /// count because one is missing a trim or splice. A native input has no
+    /// time-altering filters, so appending from one is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InputFilterError::WrongKind`] if `other` is a VapourSynth
+    /// input but this one is native.
+    #[inline]
+    pub fn append_input_filters(&mut self, other: &Input) -> Result<(), InputFilterError> {
+        let (Input::VapourSynth {
+            filters, ..
+        }
+        | Input::VapourSynthScript {
+            filters, ..
+        }) = other
+        else {
+            return Ok(());
+        };
+        let time_altering = filters
+            .iter()
+            .filter(|filter| filter.can_alter_time())
+            .cloned()
+            .collect::<Vec<_>>();
+        if time_altering.is_empty() {
+            return Ok(());
+        }
+
+        match self {
+            Input::VapourSynth {
+                filters: existing, ..
+            }
+            | Input::VapourSynthScript {
+                filters: existing, ..
+            } => {
+                existing.extend(time_altering);
+                Ok(())
+            },
+            Input::Video {
+                ..
+            } => {
+                // A native input has no time-altering filters to append, and its
+                // own are left untouched.
+                Err(InputFilterError::WrongKind)
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ffmpeg::FFPixelFormat, vapoursynth::plugins::resize::Scaler};
+
+    fn vapoursynth_input(filters: Vec<VapourSynthFilter>) -> Input {
+        Input::VapourSynth {
+            path: "input.mkv".into(),
+            import_method: VapourSynthImportMethod::FFMS2 {
+                index: None
+            },
+            cache_path: None,
+            filters,
+        }
+    }
+
+    fn video_input(filters: Vec<Ffms2Filter>) -> Input {
+        Input::Video {
+            path: "input.mkv".into(),
+            import_method: ImportMethod::FFMS2 {
+                index: None
+            },
+            filters,
+        }
+    }
+
+    fn native_filters(input: &Input) -> &[Ffms2Filter] {
+        let Input::Video {
+            filters, ..
+        } = input
+        else {
+            panic!("expected a Video input");
+        };
+        filters
+    }
+
+    fn crop() -> VapourSynthFilter {
+        VapourSynthFilter::Crop {
+            top:    Some(140),
+            bottom: None,
+            left:   None,
+            right:  None,
+        }
+    }
+
+    fn resize() -> VapourSynthFilter {
+        VapourSynthFilter::Resize {
+            scaler: None,
+            width:  Some(1280),
+            height: Some(720),
+            format: None,
+        }
+    }
+
+    fn trim() -> VapourSynthFilter {
+        VapourSynthFilter::Trim {
+            start: Some(24),
+            end:   None,
+        }
+    }
+
+    /// Reports what a native input cannot run. A VapourSynth input runs
+    /// everything, so a caller only consults this when the input is native.
+    #[test]
+    fn unsupported_filters_names_only_what_a_native_input_cannot_run() {
+        let all = [crop(), resize()];
+        let unsupported = Input::unsupported_filters(&all);
+
+        // FFMS2 can express a resize, but not a crop.
+        assert_eq!(unsupported.len(), 1, "only the crop is unsupported");
+        assert!(matches!(unsupported[0], VapourSynthFilter::Crop { .. }));
+
+        // A trim alters time, which a native input cannot do at all.
+        assert_eq!(Input::unsupported_filters(&[trim()]).len(), 1);
+    }
+
+    /// Appending carries over only the time-altering filters, so a resize on
+    /// the source is not duplicated onto the target.
+    #[test]
+    fn append_carries_over_only_time_altering_filters() {
+        let mut target = vapoursynth_input(Vec::new());
+        target
+            .append_input_filters(&vapoursynth_input(vec![trim(), resize()]))
+            .expect("both inputs are VapourSynth");
+        assert_eq!(target.vapoursynth_filters(), &[trim()]);
+    }
+
+    /// A source whose filters cannot alter time changes nothing.
+    #[test]
+    fn append_is_a_no_op_without_time_altering_filters() {
+        let mut target = vapoursynth_input(Vec::new());
+        target
+            .append_input_filters(&vapoursynth_input(vec![resize()]))
+            .expect("both inputs are VapourSynth");
+        assert!(target.vapoursynth_filters().is_empty());
+    }
+
+    /// A native input cannot run a trim, so this is reported rather than
+    /// guessed at. Its own filters are left untouched.
+    #[test]
+    fn append_to_a_native_input_reports_an_error() {
+        let mut native = video_input(Vec::new());
+        assert!(matches!(
+            native.append_input_filters(&vapoursynth_input(vec![trim()])),
+            Err(InputFilterError::WrongKind)
+        ));
+        assert!(native_filters(&native).is_empty());
+    }
+
+    /// Round-tripping a resize through the native representation and back must
+    /// preserve it, so switching decoders does not quietly change the output.
+    #[test]
+    fn a_resize_survives_a_round_trip_through_the_native_form() {
+        let native = Ffms2Filter::from_vapoursynth_filter(&resize())
+            .expect("a resize maps to a native filter");
+        assert_eq!(native.to_vapoursynth().as_slice(), &[
+            VapourSynthFilter::Resize {
+                scaler: Some(Scaler::Bicubic),
+                width:  Some(1280),
+                height: Some(720),
+                format: None,
+            }
+        ]);
+    }
+
+    /// Switching back to a VapourSynth input converts the native filters, so
+    /// the conversion is not lossy.
+    #[test]
+    fn adopting_filters_from_a_native_input_converts_them() {
+        let ten_bit = Ffms2Filter::OutputFormat {
+            bit_depth: Some(10),
+            chroma:    None,
+            width:     None,
+            height:    None,
+        };
+        let mut target = vapoursynth_input(Vec::new());
+        target.adopt_filters(&video_input(vec![ten_bit]));
+        assert_eq!(target.vapoursynth_filters(), &[VapourSynthFilter::Resize {
+            scaler: Some(Scaler::Bicubic),
+            width:  None,
+            height: None,
+            format: Some(FFPixelFormat::YUV420P10LE),
+        }]);
+    }
+
+    /// Switching to a native input keeps only what FFMS2 can run. Unlike
+    /// `set_filters`, `adopt_filters` does not report what it dropped, so a
+    /// caller honouring an explicit `--filters` must warn via
+    /// `unsupported_filters`.
+    #[test]
+    fn adopting_into_a_native_input_drops_what_ffms2_cannot_run() {
+        let mut native = video_input(Vec::new());
+        native.adopt_filters(&vapoursynth_input(vec![crop(), resize()]));
+
+        assert_eq!(native_filters(&native), &[Ffms2Filter::OutputFormat {
+            bit_depth: None,
+            chroma:    None,
+            width:     Some(1280),
+            height:    Some(720),
+        }]);
+    }
+
+    /// Within the same kind of input, adopting is a plain copy.
+    #[test]
+    fn adopting_within_the_same_kind_keeps_the_filters_verbatim() {
+        let mut target = vapoursynth_input(Vec::new());
+        target.adopt_filters(&vapoursynth_input(vec![crop(), resize()]));
+        assert_eq!(target.vapoursynth_filters(), &[crop(), resize()]);
+    }
+
+    /// `set_filters` replaces rather than appends, and converts for a native
+    /// input.
+    #[test]
+    fn set_filters_replaces_and_converts() {
+        let mut native = video_input(vec![Ffms2Filter::OutputFormat {
+            bit_depth: Some(12),
+            chroma:    None,
+            width:     None,
+            height:    None,
+        }]);
+        native.set_filters(vec![resize()]);
+        assert_eq!(native_filters(&native), &[Ffms2Filter::OutputFormat {
+            bit_depth: None,
+            chroma:    None,
+            width:     Some(1280),
+            height:    Some(720),
+        }]);
+
+        let mut target = vapoursynth_input(vec![crop()]);
+        target.set_filters(vec![trim()]);
+        assert_eq!(target.vapoursynth_filters(), &[trim()]);
+    }
+
+    /// Only a trim alters time, and a native input never does.
+    #[test]
+    fn only_a_trim_alters_time() {
+        assert!(vapoursynth_input(vec![trim()]).has_time_altering_filters());
+        assert!(!vapoursynth_input(vec![resize()]).has_time_altering_filters());
+        assert!(!video_input(Vec::new()).has_time_altering_filters());
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum InputFilterError {
+    #[error(
+        "These filters need VapourSynth; a native FFMS2 input can only convert bit depth, chroma \
+         and resolution"
+    )]
+    WrongKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, EnumString, IntoStaticStr, Display, JsonSchema)]

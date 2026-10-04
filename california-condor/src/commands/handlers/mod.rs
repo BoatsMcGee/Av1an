@@ -101,6 +101,7 @@ pub fn configure_input(
             InputModel::Video {
                 path,
                 import_method,
+                ..
             } => match import_method {
                 ImportMethod::FFMS2 {
                     index,
@@ -128,6 +129,7 @@ pub fn configure_input(
                 source,
                 variables,
                 index,
+                ..
             } => match source {
                 VapourSynthScriptSource::Path(path) => {
                     (path, None, Some(variables.clone()), Some(*index))
@@ -144,13 +146,17 @@ pub fn configure_input(
     let existing_vs_args: Option<Vec<String>> = existing_vs_args
         .map(|args| args.iter().map(|(key, value)| format!("{}={}", key, value)).collect());
 
-    Configuration::new_input_model(
+    let mut input = Configuration::new_input_model(
         path_abs::PathAbs::new(input_path.unwrap_or(existing_input_path))?.as_path(),
         decoder.or(existing_decoder.as_ref()),
         vs_args.or(existing_vs_args.as_deref()),
         index.or(existing_index),
         // cache_path: None, // TODO: Support Cache Path
-    )
+    )?;
+    // The input is rebuilt from its path and decoder, which drops its filters,
+    // so carry them over.
+    input.adopt_filters(existing_input);
+    Ok(input)
 }
 
 #[cfg(test)]

@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     sync::{
         self,
         Arc,
@@ -19,7 +18,6 @@ use crate::{
     },
     models::{
         Condor as CondorModel,
-        input::{Input as InputModel, VapourSynthScriptSource},
         sequence::{
             SequenceConfigHandler,
             SequenceDataHandler,
@@ -36,10 +34,8 @@ use crate::{
         plugins::{
             MetricPluginFunction,
             PluginFunction,
-            ffms2::Source,
             standard::{plane_stats::PlaneStats, splice::Splice, trim::Trim},
         },
-        script_builder::{VapourSynthPluginScript, script::VapourSynthScript},
     },
 };
 static DETAILS: SequenceDetails = SequenceDetails {
@@ -96,34 +92,9 @@ where
         let input_data_copy = condor.input.as_data();
         let input = self.input.as_mut().unwrap_or(&mut condor.input);
 
-        let v_input = match input.as_data() {
-            InputModel::Video {
-                path, ..
-            } => {
-                const SCRIPT_OUTPUT_INDEX: u8 = 0;
-                const SCRIPT_NODE_NAME: &str = "clip";
-                let mut script = VapourSynthScript::default();
-                let script = {
-                    let (dec_import_lines, dec_lines) =
-                        Source::new(&path).generate_script(SCRIPT_NODE_NAME.to_owned())?;
-                    if let Some(dec_import_lines) = dec_import_lines {
-                        script.add_imports(dec_import_lines);
-                    }
-                    script.add_lines(dec_lines);
-
-                    script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
-                    script
-                };
-                let script_input_data = InputModel::VapourSynthScript {
-                    source:    VapourSynthScriptSource::Text(script.to_string()),
-                    variables: HashMap::new(),
-                    index:     SCRIPT_OUTPUT_INDEX,
-                };
-
-                Some(&mut Input::from_vapoursynth(&script_input_data, None)?)
-            },
-            _ => None,
-        };
+        // Owned, so it outlives the `&mut v_input` borrow taken below.
+        let mut v_input_owned = input.as_vapoursynth_script()?;
+        let v_input = v_input_owned.as_mut();
         let decoder = match input {
             Input::VapourSynth {
                 decoder, ..

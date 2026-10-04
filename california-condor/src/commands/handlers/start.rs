@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
 
-use andean_condor::vapoursynth::vapoursynth_filters::VapourSynthFilter;
+use andean_condor::{
+    models::input::Input as InputModel,
+    vapoursynth::vapoursynth_filters::VapourSynthFilter,
+};
 use anyhow::{Result, bail};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use crate::{
     DEFAULT_CONFIG_PATH,
@@ -117,9 +120,6 @@ pub fn start_handler(
         let output = path_abs::PathAbs::new(output)?.as_path().to_path_buf();
         configuration.condor.output.path = output;
     }
-    if let Some(filters) = filters {
-        configuration.input_filters = filters.to_vec();
-    }
 
     let existing_input = configuration.condor.input.clone();
     configuration.condor.input = configure_input(
@@ -130,6 +130,16 @@ pub fn start_handler(
         vs_args,
         None,
     )?;
+    if let Some(filters) = filters {
+        let unsupported = InputModel::unsupported_filters(filters);
+        configuration.condor.input.set_filters(filters.to_vec());
+        for filter in unsupported {
+            warn!(
+                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
+                 convert bit depth, chroma and resolution"
+            );
+        }
+    }
     configure_encoder(
         &mut configuration,
         encoder,
@@ -214,7 +224,7 @@ mod tests {
                 },
             },
         },
-        vapoursynth::plugins::resize::Scaler,
+        vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
     };
     use serial_test::serial;
 
@@ -327,21 +337,6 @@ mod tests {
             "output path is {}",
             output_abs.display()
         );
-        assert_eq!(
-            config.input_filters, expected_config.input_filters,
-            "input filters is {:?}",
-            expected_config.input_filters
-        );
-        assert_eq!(
-            config.scd_input_filters, expected_config.scd_input_filters,
-            "scd_input_filters is {:?}",
-            expected_config.scd_input_filters
-        );
-        assert_eq!(
-            config.tq_input_filters, expected_config.tq_input_filters,
-            "tq_input_filters is {:?}",
-            expected_config.tq_input_filters
-        );
         check_input(
             Some(&config.condor.input),
             Some(&expected_config.condor.input),
@@ -442,14 +437,14 @@ mod tests {
             .insert("crf".to_owned(), CLIParameter::new_number("--", " ", 18.0));
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
-        expected_config.input_filters = custom_filters.clone();
-        expected_config.scd_input_filters = custom_scd_filters.clone();
-        expected_config.tq_input_filters = custom_tq_filters.clone();
         expected_config.condor.input = Input::Video {
             path:          input_abs.clone(),
             import_method: ImportMethod::FFMS2 {
                 index: None
             },
+            // `--filters` replaces the default conversion, and a native FFMS2
+            // input cannot crop, so nothing remains.
+            filters:       Vec::new(),
         };
         expected_config.condor.encoder = Encoder::X265 {
             executable: None,
@@ -462,6 +457,7 @@ mod tests {
                 index: None
             },
             cache_path:    None,
+            filters:       custom_scd_filters.clone(),
         });
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(6);
         let mut tq_encoder_parameters = EncoderBase::X265.default_parameters();
@@ -476,6 +472,7 @@ mod tests {
                     index: None
                 },
                 cache_path:    None,
+                filters:       custom_tq_filters.clone(),
             }),
             metric: QualityMetric::XPSNR {
                 target_range: (39.0, 41.0),
@@ -543,21 +540,6 @@ mod tests {
             expected_config.condor.output.path,
             "output path is {}",
             output_abs.display()
-        );
-        assert_eq!(
-            config.input_filters, expected_config.input_filters,
-            "input filters is {:?}",
-            expected_config.input_filters
-        );
-        assert_eq!(
-            config.scd_input_filters, expected_config.scd_input_filters,
-            "scd_input_filters is {:?}",
-            expected_config.scd_input_filters
-        );
-        assert_eq!(
-            config.tq_input_filters, expected_config.tq_input_filters,
-            "tq_input_filters is {:?}",
-            expected_config.tq_input_filters
         );
         check_input(
             Some(&config.condor.input),
@@ -659,14 +641,14 @@ mod tests {
             .insert("crf".to_owned(), CLIParameter::new_number("--", " ", 18.0));
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
-        expected_config.input_filters = custom_filters.clone();
-        expected_config.scd_input_filters = custom_scd_filters.clone();
-        expected_config.tq_input_filters = custom_tq_filters.clone();
         expected_config.condor.input = Input::Video {
             path:          input_abs.clone(),
             import_method: ImportMethod::FFMS2 {
                 index: None
             },
+            // `--filters` replaces the default conversion, and a native FFMS2
+            // input cannot crop, so nothing remains.
+            filters:       Vec::new(),
         };
         expected_config.condor.encoder = Encoder::X265 {
             executable: None,
@@ -679,6 +661,7 @@ mod tests {
                 index: None
             },
             cache_path:    None,
+            filters:       custom_scd_filters.clone(),
         });
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(6);
         let mut tq_encoder_parameters = EncoderBase::X265.default_parameters();
@@ -693,6 +676,7 @@ mod tests {
                     index: None
                 },
                 cache_path:    None,
+                filters:       custom_tq_filters.clone(),
             }),
             metric: QualityMetric::XPSNR {
                 target_range: (39.0, 41.0),
@@ -761,21 +745,6 @@ mod tests {
             "output path is {}",
             output_abs.display()
         );
-        assert_eq!(
-            config.input_filters, expected_config.input_filters,
-            "input filters is {:?}",
-            expected_config.input_filters
-        );
-        assert_eq!(
-            config.scd_input_filters, expected_config.scd_input_filters,
-            "scd_input_filters is {:?}",
-            expected_config.scd_input_filters
-        );
-        assert_eq!(
-            config.tq_input_filters, expected_config.tq_input_filters,
-            "tq_input_filters is {:?}",
-            expected_config.tq_input_filters
-        );
         check_input(
             Some(&config.condor.input),
             Some(&expected_config.condor.input),
@@ -832,7 +801,7 @@ mod tests {
             .expect("path_abs should succeed")
             .as_path()
             .to_path_buf();
-        let vpy_script = vapoursynth_script(&test_video, Some(&expected_config.input_filters));
+        let vpy_script = vapoursynth_script(&test_video, Some(&custom_filters));
         // Save the VapourSynth script to the temp directory
         fs::write(&script_input, vpy_script).expect("write should succeed");
 
@@ -844,6 +813,7 @@ mod tests {
             source:    VapourSynthScriptSource::Path(script_input_abs),
             variables: custom_variables,
             index:     0,
+            filters:   custom_filters.clone(),
         };
         let mut custom_encoder_parameters = EncoderBase::X264.default_parameters();
         custom_encoder_parameters.insert(
@@ -929,21 +899,6 @@ mod tests {
             expected_config.condor.output.path,
             "output path is {}",
             output_abs.display()
-        );
-        assert_eq!(
-            config.input_filters, expected_config.input_filters,
-            "input filters is {:?}",
-            expected_config.input_filters
-        );
-        assert_eq!(
-            config.scd_input_filters, expected_config.scd_input_filters,
-            "scd_input_filters is {:?}",
-            expected_config.scd_input_filters
-        );
-        assert_eq!(
-            config.tq_input_filters, expected_config.tq_input_filters,
-            "tq_input_filters is {:?}",
-            expected_config.tq_input_filters
         );
         check_input(
             Some(&config.condor.input),

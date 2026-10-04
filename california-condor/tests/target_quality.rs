@@ -63,12 +63,17 @@ mod tests {
         // Mock an existing config file with scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
         // Allow testing with SVT Essential (does not support 8-bit)
-        config.input_filters = vec![VapourSynthFilter::Resize {
-            scaler: None,
-            width:  None,
-            height: None,
-            format: Some(FFPixelFormat::YUV420P10LE),
-        }];
+        if let Input::VapourSynth {
+            filters, ..
+        } = &mut config.condor.input
+        {
+            *filters = vec![VapourSynthFilter::Resize {
+                scaler: None,
+                width:  None,
+                height: None,
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }];
+        }
         config.condor.encoder.parameters_mut().insert(
             "preset".to_owned(),
             CLIParameter::new_number("--", " ", 6.0),
@@ -103,7 +108,6 @@ mod tests {
             .success();
 
         let mut expected_config = config.clone();
-        expected_config.tq_input_filters = expected_config.input_filters.clone();
         expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
             metric: QualityMetric::XPSNR {
                 target_range: (44.0, 46.0),
@@ -116,6 +120,7 @@ mod tests {
                     index: None
                 },
                 cache_path:    None,
+                filters:       config.condor.input.vapoursynth_filters().to_vec(),
             }),
             probing: TargetQualityProbing {
                 encoder_options: Some(tq_encoder_params),

@@ -18,11 +18,15 @@ use common::condor_cmd;
 mod tests {
     use andean_condor::{
         ffmpeg::FFPixelFormat,
-        vapoursynth::vapoursynth_filters::VapourSynthFilter,
+        models::{input::Input, sequence::scene_concatenator::ConcatMethod},
+        vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
     };
     use serial_test::serial;
 
     use super::*;
+
+    const WIDTH: usize = 960;
+    const HEIGHT: usize = 540;
 
     #[serial]
     #[test]
@@ -46,12 +50,17 @@ mod tests {
         // Mock an existing config file without scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
         // Allow testing with SVT Essential (does not support 8-bit)
-        config.input_filters = vec![VapourSynthFilter::Resize {
-            scaler: None,
-            width:  None,
-            height: None,
-            format: Some(FFPixelFormat::YUV420P10LE),
-        }];
+        if let Input::VapourSynth {
+            filters, ..
+        } = &mut config.condor.input
+        {
+            *filters = vec![VapourSynthFilter::Resize {
+                scaler: None,
+                width:  None,
+                height: None,
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }];
+        }
         config.condor.encoder.parameters_mut().insert(
             "preset".to_owned(),
             CLIParameter::new_number("--", " ", 8.0),
@@ -107,12 +116,17 @@ mod tests {
         // Mock an existing config file without scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
         // Allow testing with SVT Essential (does not support 8-bit)
-        config.input_filters = vec![VapourSynthFilter::Resize {
-            scaler: None,
-            width:  None,
-            height: None,
-            format: Some(FFPixelFormat::YUV420P10LE),
-        }];
+        if let Input::VapourSynth {
+            filters, ..
+        } = &mut config.condor.input
+        {
+            *filters = vec![VapourSynthFilter::Resize {
+                scaler: None,
+                width:  None,
+                height: None,
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }];
+        }
         config.save(&config_path).expect("configuration save should succeed");
 
         condor_cmd(&temp)
@@ -187,12 +201,17 @@ mod tests {
         // Mock an existing config file with scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
         // Allow testing with SVT Essential (does not support 8-bit)
-        config.input_filters = vec![VapourSynthFilter::Resize {
-            scaler: None,
-            width:  None,
-            height: None,
-            format: Some(FFPixelFormat::YUV420P10LE),
-        }];
+        if let Input::VapourSynth {
+            filters, ..
+        } = &mut config.condor.input
+        {
+            *filters = vec![VapourSynthFilter::Resize {
+                scaler: None,
+                width:  Some(WIDTH),
+                height: Some(HEIGHT),
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }];
+        }
         config.condor.encoder.parameters_mut().insert(
             "preset".to_owned(),
             CLIParameter::new_number("--", " ", 8.0),
@@ -202,18 +221,29 @@ mod tests {
 
         condor_cmd(&temp)
             .env("CONDOR_TEST_MODE", "1")
-            .args(["encode", "--workers", "2", "--filters", "resize:format=yuv420p10le;"])
+            .args([
+                "encode",
+                "--workers",
+                "2",
+                "--filters",
+                &format!("resize:scaler=bicubic;width={WIDTH};height={HEIGHT};format=yuv420p10le;"),
+            ])
             .assert()
             .success();
 
         let mut expected_config = config;
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(2);
-        expected_config.input_filters = vec![VapourSynthFilter::Resize {
-            scaler: None,
-            width:  None,
-            height: None,
-            format: Some(FFPixelFormat::YUV420P10LE),
-        }];
+        if let Input::VapourSynth {
+            filters, ..
+        } = &mut expected_config.condor.input
+        {
+            *filters = vec![VapourSynthFilter::Resize {
+                scaler: Some(Scaler::Bicubic),
+                width:  Some(WIDTH),
+                height: Some(HEIGHT),
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }];
+        }
         // immutable shadow
         let expected_config = expected_config;
 
@@ -234,5 +264,42 @@ mod tests {
             "scenes directory contains {} encoded scenes",
             config.condor.scenes.len()
         );
+
+        // The encoded scenes are now on disk, so both concatenation methods can
+        // be exercised against them. Concatenating is far cheaper than encoding,
+        // and it leaves the scene files in place, so this needs no second encode.
+        for (method, label) in
+            [(ConcatMethod::MKVMerge, "mkvmerge"), (ConcatMethod::FFmpeg, "ffmpeg")]
+        {
+            // Clear the previous run's output so each method starts clean. The
+            // first iteration has none yet, since encoding only writes chunks.
+            if output.exists() {
+                std::fs::remove_file(&output).expect("concatenated output should be removable");
+            }
+
+            condor_cmd(&temp)
+                .env("CONDOR_TEST_MODE", "1")
+                .args(["concatenate", "--method", label])
+                .assert()
+                .success();
+
+            let mut expected = expected_config.clone();
+            expected.condor.sequence_config.scene_concatenator.method = method;
+
+            let (config, _) =
+                load_configuration(Some(&config_path)).expect("load_configuration should succeed");
+
+            check_basic_config(&config, &expected);
+            assert!(
+                config
+                    .condor
+                    .sequence_config
+                    .scene_concatenator
+                    .output
+                    .unwrap_or(config.condor.output.path)
+                    .exists(),
+                "{label} output exists"
+            );
+        }
     }
 }

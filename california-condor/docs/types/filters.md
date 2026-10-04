@@ -1,6 +1,9 @@
 # Filters
 
-VapourSynth filter chains applied to inputs. Used by `--filters`, `--scd-filters`, `--tq-filters`, `--reference-filters`, `--denoised-filters` (see [init]\(../commands/init.md\), [encode]\(../commands/encode.md\), [pipeline](../commands/condor.md), [detect-scenes]\(../commands/detect-scenes.md\), [detect-noise]\(../commands/detect-noise.md\), [target-quality]\(../commands/target-quality.md\), [quality-check]\(../commands/quality-check.md\)).
+VapourSynth filter chains applied to inputs, stored on each input in `condor.json`. Used by `--filters`, `--scd-filters`, `--tq-filters`, `--reference-filters`, `--denoised-filters` (see [init]\(../commands/init.md\), [encode]\(../commands/encode.md\), [pipeline](../commands/condor.md), [detect-scenes]\(../commands/detect-scenes.md\), [detect-noise]\(../commands/detect-noise.md\), [target-quality]\(../commands/target-quality.md\), [quality-check]\(../commands/quality-check.md\)).
+
+Every filter below is a VapourSynth filter, so every one of them needs a VapourSynth input. A
+native `--decoder ffms2` input cannot run them; see [FFMS2 Filters](#ffms2-filters).
 
 ## Syntax
 
@@ -81,13 +84,40 @@ Default encode filter is `resize:scaler=bicubic;format=yuv420p10le`.
 | `ArtCNN`  | `C4F32`, `C4F32_DS`, `C16F64`, `C16F64_DS`, `R16F96`, `R8F64` (default), `R8F64_DS`, `R8F64_Chroma`, `C4F16`, `C4F16_DS`, `R16F96_Chroma` |
 | `Waifu2x` | `AnimeStyleArt`, `AnimeStyleArtRGB`, `Photo`, `UpConv7AnimeStyleArt`, `UpConv7Photo`, `UpResNet10`, `Cunet` (default), `SwinUnetArt` |
 
+## FFMS2 Filters
+
+A native `--decoder ffms2` input cannot run VapourSynth filters. FFMS2 can only convert the
+frames it decodes, so that input takes a single filter, `output-format`, applied by the
+decoder itself. Because it happens during decode, it is cheaper than resizing afterwards.
+
+| Field      | Type                | Required | Default | Description |
+| ---------- | ------------------- | -------- | ------- | ----------- |
+| `bit_depth` | Integer (8, 10, 12) | No | unchanged | Target bits per component |
+| `chroma`    | String              | No | unchanged | `Yuv420`, `Yuv422`, `Yuv444`, `Monochrome` |
+| `width`     | Integer             | No | unchanged | Target width in pixels |
+| `height`    | Integer             | No | unchanged | Target height in pixels |
+
+Scaling always uses bicubic, which is all FFMS2 offers. 8/10/12-bit are supported across
+YUV420/422/444 and monochrome; any other combination is an error rather than a silent
+substitution.
+
+```json
+[
+    { "OutputFormat": { "bit_depth": 10, "chroma": null, "width": null, "height": null } }
+]
+```
+
+A `--filters resize:...` string given to a native input is translated to this where it maps
+(a resize to a different bit depth, chroma or resolution), and dropped with a warning where
+it does not (a crop, a trim, or any denoiser). Use `--decoder vs-ffms2` to run those.
+
 ## Defaults
 
 | Flag                  | Default                               |
 | --------------------- | ------------------------------------- |
 | `--filters`           | `resize:scaler=bicubic;format=yuv420p10le` |
-| `--scd-filters`       | none                                  |
-| `--tq-filters`        | none                                  |
+| `--scd-filters`       | inherits `--filters`                  |
+| `--tq-filters`        | inherits `--filters`                  |
 | `--reference-filters` | `wnnm:sigma=3.0,0.0,0.0;`             |
 | `--denoised-filters`  | `wnnm:sigma=6.0,0.0,0.0;`             |
 
@@ -97,10 +127,15 @@ Default encode filter is `resize:scaler=bicubic;format=yuv420p10le`.
 - `> condor encode --filters "crop:top=140;bottom=140;"` — Crop 140px top and bottom
 - `> condor encode --filters "trim:start=24;end=240;"` — Trim to frames 24-240
 - `> condor encode --filters "rescale:kernel=Mitchell;width=720;height=1280;doubler=ArtCNN;"` — VSJET rescale with ArtCNN
+- `> condor encode --decoder ffms2 --filters "resize:format=yuv420p10le;"` — 10-bit output on a native FFMS2 input
 
 ## JSON Shape
 
-In `condor.json` (`input_filters`, `scd_input_filters`, `tq_input_filters`, `reference_filters`, `denoised_filters`) each CLI string is stored as one externally-tagged object. Exactly one key per object. `scaler` uses PascalCase (`Bicubic`), `format` uses UPPER (`YUV420P10LE`).
+Filters are stored on the input they modify, in `condor.input.filters` and each
+`condor.sequence_config.*.input.filters`. `reference_filters` and `denoised_filters` stay
+on the noise detector config. Each CLI string is stored as one externally-tagged object.
+Exactly one key per object. `scaler` uses PascalCase (`Bicubic`), `format` uses UPPER
+(`YUV420P10LE`).
 
 ```json
 [

@@ -29,7 +29,7 @@ use crate::{
     metrics::{self, OutputIndexing},
     models::{
         encoder::{Encoder, EncoderBase, cli_parameter::CLIParameter},
-        input::{ImportMethod, Input as InputModel, VapourSynthScriptSource},
+        input::{ImportMethod, Input as InputModel},
         sequence::{
             SequenceConfigHandler,
             SequenceDataHandler,
@@ -60,7 +60,6 @@ use crate::{
             },
             vszip::{ssimulacra2::SSIMULACRA2, xpsnr::XPSNR},
         },
-        script_builder::{VapourSynthPluginScript, script::VapourSynthScript},
     },
 };
 
@@ -896,34 +895,9 @@ impl TargetQuality {
         }
 
         let metric_input = metric_input.unwrap_or(input);
-        let v_input = match metric_input.as_data() {
-            InputModel::Video {
-                path, ..
-            } => {
-                const SCRIPT_OUTPUT_INDEX: u8 = 0;
-                const SCRIPT_NODE_NAME: &str = "clip";
-                let mut script = VapourSynthScript::default();
-                let script = {
-                    let (dec_import_lines, dec_lines) =
-                        Source::new(&path).generate_script(SCRIPT_NODE_NAME.to_owned())?;
-                    if let Some(dec_import_lines) = dec_import_lines {
-                        script.add_imports(dec_import_lines);
-                    }
-                    script.add_lines(dec_lines);
-
-                    script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
-                    script
-                };
-                let script_input_data = InputModel::VapourSynthScript {
-                    source:    VapourSynthScriptSource::Text(script.to_string()),
-                    variables: HashMap::new(),
-                    index:     SCRIPT_OUTPUT_INDEX,
-                };
-
-                Some(&mut Input::from_vapoursynth(&script_input_data, None)?)
-            },
-            _ => None,
-        };
+        // Owned, so it outlives the `&mut v_input` borrow taken below.
+        let mut v_input_owned = metric_input.as_vapoursynth_script()?;
+        let v_input = v_input_owned.as_mut();
         // VMAF is scored by libvmaf over decoded frames, and its decoder borrow
         // would conflict with the one the node graph below needs. Score it first,
         // while `metric_input` is still free.
@@ -998,6 +972,9 @@ impl TargetQuality {
                 import_method: ImportMethod::FFMS2 {
                     index: None
                 },
+                // The probe output is already in the metric input's format, so
+                // it must not be converted again.
+                filters:       Vec::new(),
             })?;
 
             // The probe encode contains only the frames this pass selected, so it

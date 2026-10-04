@@ -294,9 +294,13 @@ pub const HELP_NOISE_GENERATOR_MAXIMUM_PASSES_SHORT: &str =
     short_help(HELP_NOISE_GENERATOR_MAXIMUM_PASSES);
 
 pub const HELP_FILTERS: &str = concat!(
-    r#"VapourSynth filters to apply to the input.
+    r#"Filters to apply to the input.
 
 Defaults to `resize:scaler=bicubic;format=yuv420p10le` (YUV 4:2:0 10-bit).
+
+A native `--decoder ffms2` input cannot run VapourSynth filters. It converts the frames it
+decodes instead, so only a resize to another bit depth, chroma or resolution applies; any
+other filter is dropped with a warning. Use `--decoder vs-ffms2` for the full set.
 
 Available filters:"#,
     available_filters!(),
@@ -306,7 +310,9 @@ Available filters:"#,
 pub const HELP_FILTERS_SHORT: &str = short_help(HELP_FILTERS);
 
 pub const HELP_SCD_FILTERS: &str = concat!(
-    r#"VapourSynth filters to apply to the Scene Detector input.
+    r#"Filters to apply to the Scene Detector input.
+
+Defaults to the input's own filters.
 
 Available filters:"#,
     available_filters!(),
@@ -343,7 +349,9 @@ Available filters:"#,
 pub const HELP_DENOISED_FILTERS_SHORT: &str = short_help(HELP_DENOISED_FILTERS);
 
 pub const HELP_TQ_FILTERS: &str = concat!(
-    r#"VapourSynth filters to apply to the Target Quality input.
+    r#"Filters to apply to the Target Quality input.
+
+Defaults to the input's own filters.
 
 Available filters:"#,
     available_filters!(),

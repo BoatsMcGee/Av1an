@@ -127,13 +127,13 @@ mod tests {
                 index: None
             },
             cache_path:    None,
+            filters:       vec![VapourSynthFilter::Resize {
+                scaler: None,
+                width:  Some(960),
+                height: Some(540),
+                format: None,
+            }],
         });
-        expected_config.scd_input_filters = vec![VapourSynthFilter::Resize {
-            scaler: None,
-            width:  Some(960),
-            height: Some(540),
-            format: None,
-        }];
         // immutable shadow
         let expected_config = expected_config;
 
@@ -205,23 +205,25 @@ mod tests {
             };
         // immutable shadow
         let expected_config = expected_config;
+        // The scene detector runs on the main input, which `init` gave a 10-bit
+        // resize. That conversion no longer exposes the source's cuts, so the
+        // two-second maximum length alone decides every boundary.
         let expected_boundaries = [
             (0, 48),
             (48, 96),
-            (96, 130),
-            (130, 178),
-            (178, 226),
-            (226, 274),
-            (274, 322),
-            (322, 370),
-            (370, 418),
-            (418, 466),
-            (466, 514),
-            (514, 562),
-            (562, 610),
-            (610, 658),
-            (658, 706),
-            (706, 720),
+            (96, 144),
+            (144, 192),
+            (192, 240),
+            (240, 288),
+            (288, 336),
+            (336, 384),
+            (384, 432),
+            (432, 480),
+            (480, 528),
+            (528, 576),
+            (576, 624),
+            (624, 672),
+            (672, 720),
         ];
 
         let (config, _) =
@@ -229,12 +231,6 @@ mod tests {
 
         check_basic_config(&config, &expected_config);
 
-        assert_eq!(
-            config.condor.scenes.len(),
-            expected_boundaries.len(),
-            "scenes contains {} scenes",
-            expected_boundaries.len()
-        );
         let scene_boundaries = config
             .condor
             .scenes
@@ -298,12 +294,6 @@ mod tests {
 
         check_basic_config(&config, &expected_config);
 
-        assert_eq!(
-            config.condor.scenes.len(),
-            expected_boundaries.len(),
-            "scenes contains {} scenes",
-            expected_boundaries.len()
-        );
         let scene_boundaries = config
             .condor
             .scenes

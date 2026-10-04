@@ -11,7 +11,7 @@ use andean_condor::{
         SaveCallback,
         SequenceProgressEvent,
         SequenceType,
-        input::{DecoderError, Input, ModifyNode},
+        input::Input,
         output::Output,
         sequence::{
             Sequence,
@@ -114,6 +114,7 @@ fn main() -> Result<()> {
             index: None
         },
         cache_path:    None,
+        filters:       Vec::new(),
     };
     let mut input = Input::from_vapoursynth(&input_model, None)?;
 
@@ -150,37 +151,23 @@ fn main() -> Result<()> {
         source:    VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
         variables: HashMap::from([("mode".to_owned(), "scene detection".to_owned())]),
         index:     0,
+        filters:   resize_filters(Some(960), Some(540), None),
     };
     let tq_input_model = InputModel::VapourSynthScript {
         source:    VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
         variables: HashMap::from([("mode".to_owned(), "target quality".to_owned())]),
         index:     0,
+        filters:   resize_filters(Some(1280), Some(720), Some(FFPixelFormat::YUV420P10LE)),
     };
     let pe_input_model = InputModel::VapourSynthScript {
         source:    VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
         variables: HashMap::new(),
         index:     0,
+        filters:   resize_filters(Some(1280), Some(720), Some(FFPixelFormat::YUV420P10LE)),
     };
-    let scd_input = Input::from_vapoursynth(
-        &scd_input_model,
-        Some(resize_modifier(Some(960), Some(540), None)),
-    )?;
-    let tq_input = Input::from_vapoursynth(
-        &tq_input_model,
-        Some(resize_modifier(
-            Some(1280),
-            Some(720),
-            Some(FFPixelFormat::YUV420P10LE),
-        )),
-    )?;
-    let pe_input = Input::from_vapoursynth(
-        &pe_input_model,
-        Some(resize_modifier(
-            Some(1280),
-            Some(720),
-            Some(FFPixelFormat::YUV420P10LE),
-        )),
-    )?;
+    let scd_input = Input::from_vapoursynth(&scd_input_model, None)?;
+    let tq_input = Input::from_vapoursynth(&tq_input_model, None)?;
+    let pe_input = Input::from_vapoursynth(&pe_input_model, None)?;
 
     // Configure sequences.
     let scenes_directory = PathBuf::from("scenes");
@@ -599,24 +586,16 @@ impl ParallelEncoderDataHandler for ExampleSequenceData {
     }
 }
 
-/// Build a `ModifyNode` that applies a single resize filter.
-fn resize_modifier(
+/// Build the filter list that resizes a clip.
+fn resize_filters(
     width: Option<usize>,
     height: Option<usize>,
     format: Option<FFPixelFormat>,
-) -> ModifyNode {
-    let filter = VapourSynthFilter::Resize {
+) -> Vec<VapourSynthFilter> {
+    vec![VapourSynthFilter::Resize {
         scaler: Some(Scaler::Bicubic),
         width,
         height,
         format,
-    };
-    Box::new(move |core, node| {
-        let node = node.expect("node exists");
-        filter.invoke_plugin_function(core, &node).map_err(|e| {
-            DecoderError::VapoursynthScriptError {
-                cause: e.to_string(),
-            }
-        })
-    })
+    }]
 }

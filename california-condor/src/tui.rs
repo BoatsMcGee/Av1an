@@ -6,24 +6,22 @@ use std::{
     time::{Duration, Instant},
 };
 
-use andean_condor::{
-    core::{
-        Condor,
-        sequence::{
-            Sequence,
-            benchmarker::Benchmarker,
-            bitrate_optimizer::BitrateOptimizer,
-            noise_detector::NoiseDetector,
-            noise_scaler::NoiseScaler,
-            parallel_encoder::ParallelEncoder,
-            quality_check::QualityCheck,
-            scene_concatenator::SceneConcatenator,
-            scene_detector::SceneDetector,
-            speed_scaler::SpeedScaler,
-            target_quality::TargetQuality,
-        },
+use andean_condor::core::{
+    Condor,
+    input::Input,
+    sequence::{
+        Sequence,
+        benchmarker::Benchmarker,
+        bitrate_optimizer::BitrateOptimizer,
+        noise_detector::NoiseDetector,
+        noise_scaler::NoiseScaler,
+        parallel_encoder::ParallelEncoder,
+        quality_check::QualityCheck,
+        scene_concatenator::SceneConcatenator,
+        scene_detector::SceneDetector,
+        speed_scaler::SpeedScaler,
+        target_quality::TargetQuality,
     },
-    vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::{Result, bail};
 use thiserror::Error as ThisError;
@@ -40,14 +38,12 @@ use crate::{
         scene_detection::SceneDetectionApp,
         target_quality::TargetQualityApp,
     },
-    configuration::{CliSequenceConfig, CliSequenceData, Configuration},
+    configuration::{CliSequenceConfig, CliSequenceData},
 };
 
 #[tracing::instrument(skip_all)]
 pub fn run_scene_detector_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    input_filters: &[VapourSynthFilter],
-    scd_input_filters: &[VapourSynthFilter],
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
     let initial_frames = condor.scenes.iter().fold(0, |acc, scene| {
@@ -61,15 +57,11 @@ pub fn run_scene_detector_tui(
 
     debug!("Instantiating Scene Detector Input");
     let (input, clip_info) = if let Some(input) = &condor.sequence_config.scene_detector.input {
-        let mut scd_input =
-            Configuration::instantiate_input_with_filters(input, scd_input_filters)?;
+        let mut scd_input = Input::from_data(input)?;
         let clip_info = scd_input.clip_info()?;
         (Some(scd_input), clip_info)
     } else {
-        let mut scd_input = Configuration::instantiate_input_with_filters(
-            &condor.input.as_data(),
-            scd_input_filters,
-        )?;
+        let mut scd_input = Input::from_data(&condor.input.as_data())?;
         let clip_info = scd_input.clip_info()?;
         (Some(scd_input), clip_info)
     };
@@ -83,22 +75,16 @@ pub fn run_scene_detector_tui(
     } else {
         let input_frames = condor.input.clip_info()?.num_frames;
         let scd_input_frames = clip_info.num_frames;
-        if input_filters.is_empty() && scd_input_filters.is_empty() {
-            bail!(TUIError::FramesMismatch(
-                input_frames as u64,
-                scd_input_frames as u64
-            ));
-        }
-        let input_time_altering_filters = input_filters
-            .iter()
-            .filter(|vs_filter| vs_filter.can_alter_time())
-            .collect::<Vec<_>>();
-        let scd_input_time_altering_filters = scd_input_filters
-            .iter()
-            .filter(|vs_filter| vs_filter.can_alter_time())
-            .collect::<Vec<_>>();
-        if input_time_altering_filters.is_empty() && scd_input_time_altering_filters.is_empty()
-            || !scd_input_time_altering_filters.is_empty()
+        let main_input_data = condor.input.as_data();
+        let scd_input_data = condor
+            .sequence_config
+            .scene_detector
+            .input
+            .clone()
+            .unwrap_or_else(|| main_input_data.clone());
+
+        if scd_input_data.has_time_altering_filters()
+            || !main_input_data.has_time_altering_filters()
         {
             bail!(TUIError::FramesMismatchWithInputFilters(
                 input_frames as u64,
@@ -128,15 +114,10 @@ pub fn run_scene_detector_tui(
             }
             thread::sleep(Duration::from_secs(1));
         }
-        let combined_filters = scd_input_filters
-            .iter()
-            .cloned()
-            .chain(input_time_altering_filters.into_iter().cloned())
-            .collect::<Vec<_>>();
-        let mut scd_input = Configuration::instantiate_input_with_filters(
-            &condor.input.as_data(),
-            &combined_filters,
-        )?;
+
+        let mut combined = scd_input_data;
+        combined.append_input_filters(&main_input_data)?;
+        let mut scd_input = Input::from_data(&combined)?;
         let clip_info = scd_input.clip_info()?;
 
         // Double check that the frames match
@@ -208,13 +189,10 @@ pub fn run_noise_detector_tui(
     };
 
     let (input, clip_info) = if let Some(input) = &noise_detector_config.input {
-        let mut nd_input = Configuration::instantiate_input_with_filters(input, &[])?;
+        let mut nd_input = Input::from_data(input)?;
         let clip_info = nd_input.clip_info()?;
         (Some(nd_input), clip_info)
     } else {
-        // let mut pe_input =
-        //     Configuration::instantiate_input_with_filters(&condor.input.as_data(),
-        // input_filters)?; let clip_info = pe_input.clip_info()?;
         (None, condor.input.clip_info()?)
     };
 
@@ -347,36 +325,32 @@ pub fn run_benchmarker_tui(
 #[tracing::instrument(skip_all)]
 pub fn run_target_quality_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    tq_input_filters: &[VapourSynthFilter],
-    input_filters: &[VapourSynthFilter],
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
     debug!("Instantiating Target Quality Input");
     let (target_quality_input, clip_info) = if let Some(Some(input)) =
         &condor.sequence_config.target_quality.as_ref().map(|tq| tq.input.clone())
     {
-        let mut tq_input = Configuration::instantiate_input_with_filters(input, tq_input_filters)?;
+        let mut tq_input = Input::from_data(input)?;
         let clip_info = tq_input.clip_info()?;
         (Some(tq_input), clip_info)
     } else if let Some(pe_input) = &condor.sequence_config.parallel_encoder.input {
         debug!("Falling back to Parallel Encoder input");
-        let mut tq_input = Configuration::instantiate_input_with_filters(pe_input, input_filters)?;
+        let mut tq_input = Input::from_data(pe_input)?;
         let clip_info = tq_input.clip_info()?;
         (Some(tq_input), clip_info)
     } else {
         (None, condor.input.clip_info()?)
     };
-    let target_quality_metric_input = condor
+    let target_quality_metric_input = match condor
         .sequence_config
         .target_quality
         .as_ref()
-        .map(|tq| tq.metric_input.clone())
-        .and_then(|input| {
-            input.map(|input| {
-                Configuration::instantiate_input_with_filters(&input, tq_input_filters).ok()
-            })
-        })
-        .flatten();
+        .and_then(|tq| tq.metric_input.clone())
+    {
+        Some(input) => Some(Input::from_data(&input)?),
+        None => None,
+    };
 
     let mut target_quality = TargetQuality::new(target_quality_input, target_quality_metric_input);
 
@@ -438,20 +412,18 @@ pub fn run_target_quality_tui(
 #[tracing::instrument(skip_all)]
 pub fn run_quality_check_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    qc_input_filters: &[VapourSynthFilter],
-    input_filters: &[VapourSynthFilter],
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
     debug!("Instantiating Quality Check Input");
     let (quality_check_input, clip_info) = if let Some(Some(input)) =
         &condor.sequence_config.quality_check.as_ref().map(|qc| qc.input.clone())
     {
-        let mut qc_input = Configuration::instantiate_input_with_filters(input, qc_input_filters)?;
+        let mut qc_input = Input::from_data(input)?;
         let clip_info = qc_input.clip_info()?;
         (Some(qc_input), clip_info)
     } else if let Some(pe_input) = &condor.sequence_config.parallel_encoder.input {
         debug!("Falling back to Parallel Encoder input");
-        let mut qc_input = Configuration::instantiate_input_with_filters(pe_input, input_filters)?;
+        let mut qc_input = Input::from_data(pe_input)?;
         let clip_info = qc_input.clip_info()?;
         (Some(qc_input), clip_info)
     } else {
@@ -571,13 +543,12 @@ pub fn run_speed_scaler_tui(
 #[tracing::instrument(skip_all)]
 pub fn run_parallel_encoder_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    input_filters: &[VapourSynthFilter],
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
     debug!("Instantiating Parallel Encoder Input");
     let (parallel_encoder_input, clip_info) =
         if let Some(input) = &condor.sequence_config.parallel_encoder.input {
-            let mut pe_input = Configuration::instantiate_input_with_filters(input, input_filters)?;
+            let mut pe_input = Input::from_data(input)?;
             let clip_info = pe_input.clip_info()?;
             (Some(pe_input), clip_info)
         } else {

@@ -25,15 +25,27 @@ mod tests {
                 SubsetProbePosition,
             },
         },
-        vapoursynth::vapoursynth_filters::VapourSynthFilter,
+        vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
     };
     use serial_test::serial;
 
     use super::*;
 
+    /// Downscaling the clip to 540p cuts the encode and metric cost roughly
+    /// fourfold, and nothing here depends on the source resolution.
+    const WIDTH: usize = 960;
+    const HEIGHT: usize = 540;
+    /// The subset profile scores this many frames per scene.
+    const SCORED_FRAMES: u32 = 11;
+
+    /// One encode, then both quality-check paths run against it.
+    ///
+    /// Encoding dominates this file's runtime, so the full run and the resume
+    /// run share a single encode. The resume case rewrites the config to look
+    /// partially scored and re-runs the same command.
     #[serial]
     #[test]
-    fn with_custom_options() {
+    fn scores_every_scene_and_resumes_partial_scenes() {
         if !ffmpeg_is_available() {
             return;
         }
@@ -52,13 +64,17 @@ mod tests {
 
         // Mock an existing config file with scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
-        // Allow testing with SVT Essential (does not support 8-bit)
-        config.input_filters = vec![VapourSynthFilter::Resize {
-            scaler: None,
-            width:  None,
-            height: None,
-            format: Some(FFPixelFormat::YUV420P10LE),
-        }];
+        if let Input::VapourSynth {
+            filters, ..
+        } = &mut config.condor.input
+        {
+            *filters = vec![VapourSynthFilter::Resize {
+                scaler: None,
+                width:  Some(WIDTH),
+                height: Some(HEIGHT),
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }];
+        }
         config.condor.encoder.parameters_mut().insert(
             "preset".to_owned(),
             CLIParameter::new_number("--", " ", 10.0),
@@ -89,7 +105,7 @@ mod tests {
                 "--decoder",
                 "vs-ffms2",
                 "--filters",
-                "resize:format=yuv420p10le;",
+                &format!("resize:scaler=bicubic;width={WIDTH};height={HEIGHT};format=yuv420p10le;"),
                 "--metric",
                 "xpsnr",
                 "--profile",
@@ -99,7 +115,6 @@ mod tests {
             .success();
 
         let mut expected_config = config;
-        let expected_frames = 11;
         expected_config.condor.sequence_config.quality_check = Some(QualityCheckConfig {
             metric:    QualityMetric::XPSNR {
                 target_range: DEFAULT_XPSNR_TARGET_RANGE,
@@ -107,15 +122,22 @@ mod tests {
             },
             strategy:  ProbeStrategy::Subset {
                 position: SubsetProbePosition::Middle,
-                length:   SubsetProbeLength::Frames(expected_frames),
+                length:   SubsetProbeLength::Frames(SCORED_FRAMES),
             },
             statistic: ProbeStatistic::Mean,
+            // The metric input records the filters it was given, scaler included.
             input:     Some(Input::VapourSynth {
                 path:          input_abs,
                 import_method: VapourSynthImportMethod::FFMS2 {
                     index: None
                 },
                 cache_path:    None,
+                filters:       vec![VapourSynthFilter::Resize {
+                    scaler: Some(Scaler::Bicubic),
+                    width:  Some(WIDTH),
+                    height: Some(HEIGHT),
+                    format: Some(FFPixelFormat::YUV420P10LE),
+                }],
             }),
         });
         // immutable shadow
@@ -134,68 +156,21 @@ mod tests {
         config.condor.scenes.iter().enumerate().for_each(|(index, scene)| {
             assert_eq!(
                 scene.sequence_data.quality_check.quality.scores.len(),
-                expected_frames as usize,
-                "scene {} should have {} quality check scores",
+                SCORED_FRAMES as usize,
+                "scene {} should have {SCORED_FRAMES} quality check scores",
                 index,
-                expected_frames
             );
         });
-    }
 
-    #[serial]
-    #[test]
-    fn resumes_partial_scenes() {
-        if !ffmpeg_is_available() {
-            return;
-        }
-        let test_video = get_test_video();
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
-        let output = temp.path().join("out.mkv");
-        let input_abs = path_abs::PathAbs::new(test_video.path.clone())
-            .expect("path_abs should succeed")
-            .as_path()
-            .to_path_buf();
-        let temp_abs = path_abs::PathAbs::new(temp.path().join(hash_path(&input_abs)))
-            .expect("path_abs should succeed")
-            .as_path()
-            .to_path_buf();
-        let config_path = temp.path().join("condor.json");
-
-        // Mock an existing config file with scenes
-        let mut config = default_config(&test_video, &output, &temp_abs);
-        config.input_filters = vec![VapourSynthFilter::Resize {
-            scaler: None,
-            width:  None,
-            height: None,
-            format: Some(FFPixelFormat::YUV420P10LE),
-        }];
-        config.condor.encoder.parameters_mut().insert(
-            "preset".to_owned(),
-            CLIParameter::new_number("--", " ", 10.0),
-        );
-        config.condor.sequence_config.parallel_encoder.workers = Some(2);
-        config.condor.scenes = test_video.mock_scenes(&config.condor.encoder);
-        config.save(&config_path).expect("configuration save should succeed");
-
-        // Encode and concatenate first so the output file exists
-        condor_cmd(&temp)
-            .env("CONDOR_TEST_MODE", "1")
-            .args(["encode"])
-            .assert()
-            .success();
-
-        condor_cmd(&temp)
-            .env("CONDOR_TEST_MODE", "1")
-            .args(["concatenate", "--method", "mkvmerge"])
-            .assert()
-            .success();
-
-        // Simulate 2 scenes already with scores
+        // Now the resume path: mark two scenes as already scored and re-run the
+        // same command. Those scenes keep their existing scores, so this also
+        // covers that a partial run is not redone from scratch.
         let mut config = load_configuration(Some(&config_path))
             .expect("load_configuration should succeed")
             .0;
-        config.condor.scenes[0].sequence_data.quality_check.quality.scores = vec![45.0; 11];
-        config.condor.scenes[1].sequence_data.quality_check.quality.scores = vec![45.0; 11];
+        let already_scored = vec![45.0; SCORED_FRAMES as usize];
+        config.condor.scenes[0].sequence_data.quality_check.quality.scores = already_scored.clone();
+        config.condor.scenes[1].sequence_data.quality_check.quality.scores = already_scored;
         config.save(&config_path).expect("configuration save should succeed");
 
         condor_cmd(&temp)
@@ -207,7 +182,7 @@ mod tests {
                 "--decoder",
                 "vs-ffms2",
                 "--filters",
-                "resize:format=yuv420p10le;",
+                &format!("resize:scaler=bicubic;width={WIDTH};height={HEIGHT};format=yuv420p10le;"),
                 "--metric",
                 "xpsnr",
                 "--profile",
@@ -220,13 +195,11 @@ mod tests {
             load_configuration(Some(&config_path)).expect("load_configuration should succeed");
 
         config.condor.scenes.iter().enumerate().for_each(|(index, scene)| {
-            let expected_frames = 11;
             assert_eq!(
                 scene.sequence_data.quality_check.quality.scores.len(),
-                expected_frames,
-                "scene {} should have {} quality check scores",
+                SCORED_FRAMES as usize,
+                "scene {} should have {SCORED_FRAMES} quality check scores after resuming",
                 index,
-                expected_frames
             );
         });
     }

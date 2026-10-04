@@ -1,7 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use andean_condor::{core::input::Input, vapoursynth::vapoursynth_filters::VapourSynthFilter};
+use andean_condor::{
+    core::input::Input,
+    models::input::Input as InputModel,
+    vapoursynth::vapoursynth_filters::VapourSynthFilter,
+};
 use anyhow::Result;
+use tracing::warn;
 
 use crate::{
     commands::{
@@ -112,7 +117,21 @@ pub fn configure_scene_detector(
         .method
         .set_maximum_length(max_scene_frames)?;
     if let Some(filters) = filters {
-        configuration.scd_input_filters = filters.to_vec();
+        let scd_input = configuration
+            .condor
+            .sequence_config
+            .scene_detector
+            .input
+            .as_mut()
+            .unwrap_or(&mut configuration.condor.input);
+        let unsupported = InputModel::unsupported_filters(filters);
+        scd_input.set_filters(filters.to_vec());
+        for filter in unsupported {
+            warn!(
+                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
+                 convert bit depth, chroma and resolution"
+            );
+        }
     }
 
     Ok(())
@@ -231,13 +250,13 @@ mod tests {
         let expected_max = (test_video.fps() * max_scene_seconds as f64).round() as usize;
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
-        expected_config.scd_input_filters = custom_filters.clone();
         expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
             path:          input_abs.clone(),
             import_method: VapourSynthImportMethod::FFMS2 {
                 index: None
             },
             cache_path:    None,
+            filters:       custom_filters.clone(),
         });
         expected_config.condor.sequence_config.scene_detector.method =
             SceneDetectionMethodModel::AVSceneChange {

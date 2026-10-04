@@ -4,9 +4,9 @@ Complete `condor.json` reference. A user should be able to build a valid config 
 
 | Document                                        | Contents                                                        |
 | ----------------------------------------------- | --------------------------------------------------------------- |
-| [Top level](./index.md)                         | `$schema`, `input`, `temp`, `input_filters`, `scd_input_filters`, `tq_input_filters`, `condor` |
+| [Top level](./index.md)                         | `$schema`, `input`, `temp`, `condor`, input filters              |
 | [condor](./condor/index.md)                     | `input`, `output`, `encoder`, `scenes`, `sequence_config`       |
-| [condor/input](./condor/input.md)               | `Video`, `VapourSynth`, `VapourSynthScript` variants            |
+| [condor/input](./condor/input.md)               | `Video`, `VapourSynth`, `VapourSynthScript` variants and their `filters` |
 | [condor/output](./condor/output.md)             | `path`, `tags`, `video_tags`                                    |
 | [condor/encoder](./condor/encoder.md)           | Per-encoder variants, `pass`, `options`, `photon_noise`         |
 | [condor/scene](./condor/scene.md)               | `start_frame`, `end_frame`, `sub_scenes`, per-scene `encoder`, `sequence_data` |

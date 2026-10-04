@@ -222,6 +222,7 @@ mod tests {
         }];
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
+        let input_filters = expected_config.condor.input.vapoursynth_filters().to_vec();
         expected_config.condor.sequence_config.noise_detector = Some(NoiseDetectorConfig {
             input:             Some(InputModel::VapourSynth {
                 path:          input_abs.clone(),
@@ -229,6 +230,7 @@ mod tests {
                     index: None
                 },
                 cache_path:    None,
+                filters:       input_filters,
             }),
             reference_filters: custom_reference_filters.clone(),
             denoised_filters:  custom_denoised_filters.clone(),
