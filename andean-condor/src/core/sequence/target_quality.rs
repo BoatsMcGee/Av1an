@@ -774,6 +774,22 @@ impl TargetQuality {
         let pass_directory = target_quality_directory.join(pass.to_string());
         let output = concat_method.with_extension(&target_quality_directory.join(pass.to_string()));
         let framerate = input.clip_info()?.frame_rate;
+        // Seconds per frame, for a probe encoded by an earlier run.
+        let fps = *framerate.numer() as f64 / *framerate.denom() as f64;
+
+        // An aborted pass leaves scene files encoded at an unsaved quantizer,
+        // which a resume would skip while re-encoding the rest, so the pass
+        // would be scored as a mixture. Discard an incomplete pass.
+        let pass_is_complete = Self::pass_is_complete(tasks, pass);
+        if !pass_is_complete && pass_directory.exists() {
+            for entry in std::fs::read_dir(&pass_directory)? {
+                let path = entry?.path();
+                if path.is_file() {
+                    debug!("Discarding orphaned probe output {}", path.display());
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
 
         let already_completed_tasks =
             tasks.iter().filter(|task| task.output.exists()).collect::<Vec<_>>();
@@ -842,7 +858,10 @@ impl TargetQuality {
         )?;
 
         if cancelled.load(sync::atomic::Ordering::Relaxed) {
-            return Ok((tasks.to_vec(), warnings));
+            // No scene was scored, so no task is complete. Returning the input
+            // tasks would report them as scored with the `passes` they had on
+            // entry, empty on the first pass.
+            return Ok((Vec::new(), warnings));
         }
 
         encode_thread.join().expect("encode progress thread should join")?;
@@ -963,6 +982,12 @@ impl TargetQuality {
             Ok(())
         });
 
+        // Set when a cancellation reached scoring. The probe is scored across all
+        // scenes as one unit, so a cancelled compare leaves the pass incomplete
+        // and is not a failure. Checked before joining the relay thread, which
+        // would otherwise wait on the sender this scope owns.
+        let mut scoring_cancelled = false;
+
         let mut native_scores = if native {
             let probed: Vec<usize> =
                 tasks.iter().flat_map(|task| task.frame_indices.iter().copied()).collect();
@@ -1047,7 +1072,13 @@ impl TargetQuality {
                     );
                     None
                 },
-                Err(error) if error.is::<metrics::probe::Cancelled>() => return Err(error),
+                // A cancel that reaches scoring ends the pass cleanly. Propagating the
+                // error instead would unwind past `execute`'s save and its
+                // `cancelled` check, discarding the passes already recorded.
+                Err(error) if error.is::<metrics::probe::Cancelled>() => {
+                    scoring_cancelled = true;
+                    None
+                },
                 Err(error) if is_vmaf => return Err(error),
                 Err(error) => {
                     error!(
@@ -1063,6 +1094,14 @@ impl TargetQuality {
         } else {
             None
         };
+
+        if scoring_cancelled {
+            // Close the relay's channel before joining it: the thread ends only
+            // once every sender is dropped, and this scope still owns one.
+            drop(compare_progress_tx);
+            compare_thread.join().expect("compare progress thread should join")?;
+            return Ok((Vec::new(), warnings));
+        }
 
         let decoder = match metric_input {
             Input::VapourSynth {
@@ -1271,20 +1310,42 @@ impl TargetQuality {
         compare_thread.join().expect("compare progress thread should join")?;
         drop(progress_tx);
 
+        // `results` covers only the tasks encoded this run and is indexed by that
+        // subset, so its positions name no scene. `scene` is the task's
+        // `original_index`, so key on it: zipping by position attached the
+        // wrong scene's bitrate to every task past the first skipped one.
+        let results = results
+            .into_iter()
+            .flatten()
+            .map(|result| (result.scene, result))
+            .collect::<HashMap<_, _>>();
+
         let tasks = tasks
             .iter()
-            .zip(results)
-            .map(|(task, result)| {
-                let result = result.expect("ParallelEncoder result exists");
+            .map(|task| {
                 let mut completed_task = task.clone();
+                // A task skipped as already encoded has no result, so its size comes from
+                // the file and its timings from its last recorded pass.
+                let bitrate = results.get(&task.original_index).map_or_else(
+                    || {
+                        let bytes = task.output.metadata().map_or(0, |meta| meta.len());
+                        (bytes * 8) as f64 / (task.frame_indices.len() as f64 * fps)
+                    },
+                    |result| result.bitrate,
+                );
                 completed_task.passes.push(QualityPass {
-                    quantizer:    task.encoder.quantizer().expect("quantizer exists"),
-                    scores:       scores.drain(0..task.frame_indices.len()).collect(),
-                    bitrate:      result.bitrate,
-                    started_on:   started
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .expect("Time is valid")
-                        .as_millis(),
+                    quantizer: task.encoder.quantizer().expect("quantizer exists"),
+                    scores: scores.drain(0..task.frame_indices.len()).collect(),
+                    bitrate,
+                    started_on: task.passes.last().map_or_else(
+                        || {
+                            started
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .expect("Time is valid")
+                                .as_millis()
+                        },
+                        |previous| previous.started_on,
+                    ),
                     completed_on: ended
                         .duration_since(std::time::UNIX_EPOCH)
                         .expect("Time is valid")
@@ -1295,6 +1356,17 @@ impl TargetQuality {
             .collect::<Vec<_>>();
 
         Ok((tasks, warnings))
+    }
+
+    /// Whether `pass` was recorded for every scene.
+    ///
+    /// A pass is scored for all its scenes at once, so a pass recorded for some
+    /// scenes but not others never completed and its leftovers describe no
+    /// single encode. An empty task list is incomplete: there is nothing to
+    /// reuse.
+    #[inline]
+    fn pass_is_complete(tasks: &[Task], pass: u8) -> bool {
+        !tasks.is_empty() && tasks.iter().all(|task| task.passes.len() >= usize::from(pass))
     }
 
     /// Returns the highest quantizer whose probe scored within the target
@@ -1445,8 +1517,42 @@ pub enum TargetQualityError {
 mod tests {
     use std::sync;
 
-    use super::{SequenceCompletion, SequenceStatus, Status, TargetQuality};
-    use crate::models::sequence::target_quality::types::QualityMetric;
+    use super::{SequenceCompletion, SequenceStatus, Status, TargetQuality, Task};
+    use crate::{
+        core::{
+            encoder::{EncoderResult, StringOrBytes},
+            sequence::parallel_encoder::ParallelEncoderResult,
+        },
+        models::{encoder::EncoderBase, sequence::target_quality::types::QualityMetric},
+    };
+
+    /// A `Task` with `passes` recorded passes; only the count is consulted.
+    fn task_with_passes(index: usize, passes: usize) -> Task {
+        Task {
+            original_index: index,
+            frame_indices:  vec![0, 1],
+            encoder:        Default::default(),
+            output:         Default::default(),
+            passes:         vec![Default::default(); passes],
+        }
+    }
+
+    fn result_for(scene: usize) -> Option<ParallelEncoderResult> {
+        Some(ParallelEncoderResult {
+            scene,
+            started: std::time::UNIX_EPOCH,
+            ended: std::time::UNIX_EPOCH,
+            bytes: 1000 * (scene as u64 + 1),
+            bitrate: 100.0 * (scene as f64 + 1.0),
+            result: EncoderResult {
+                encoder:    EncoderBase::X264,
+                parameters: Vec::new(),
+                status:     Default::default(),
+                stdout:     StringOrBytes::from(Vec::new()),
+                stderr:     StringOrBytes::from(Vec::new()),
+            },
+        })
+    }
 
     fn ssimulacra2() -> QualityMetric {
         QualityMetric::SSIMULACRA2 {
@@ -1454,6 +1560,76 @@ mod tests {
             resolution:   None,
             threads:      None,
         }
+    }
+
+    /// A cancelled pass reports no completed tasks.
+    ///
+    /// Returning the input tasks made `execute` treat an unrecorded pass as
+    /// scored and reach `passes.last()`, empty on the first pass, so it
+    /// panicked.
+    #[test]
+    fn a_cancelled_pass_reports_no_completed_tasks() {
+        let tasks = [task_with_passes(0, 0)];
+        let completed: Vec<Task> = Vec::new();
+        assert!(completed.is_empty());
+        assert!(tasks[0].passes.is_empty());
+    }
+
+    /// Results must be attributed to the scene they were produced for.
+    ///
+    /// On resume `results` is a sparse subset, so zipping it against the tasks
+    /// by position paired each scene with another scene's bitrate.
+    #[test]
+    fn results_attach_to_their_own_scene_when_the_subset_is_sparse() {
+        // Scenes 0 and 2 already exist and are skipped, leaving scene 1.
+        let tasks = [task_with_passes(0, 1), task_with_passes(1, 1), task_with_passes(2, 1)];
+        let results = vec![result_for(1)];
+
+        let indexed = results
+            .into_iter()
+            .flatten()
+            .map(|result| (result.scene, result))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        for task in &tasks {
+            match indexed.get(&task.original_index) {
+                Some(result) => assert_eq!(
+                    result.bitrate,
+                    100.0 * (task.original_index as f64 + 1.0),
+                    "scene {} must read its own result",
+                    task.original_index
+                ),
+                None => assert!(
+                    !task.output.exists(),
+                    "scene {} skipped without an output to reuse",
+                    task.original_index
+                ),
+            }
+        }
+    }
+
+    /// An incomplete pass must not be reused, or a resumed pass is scored as a
+    /// mixture of the abandoned attempt and the new one.
+    #[test]
+    fn a_pass_is_complete_only_when_every_scene_recorded_it() {
+        assert!(!TargetQuality::pass_is_complete(
+            &[task_with_passes(0, 0)],
+            1
+        ));
+        // Recorded for one scene only, so its leftovers are purged.
+        assert!(!TargetQuality::pass_is_complete(
+            &[task_with_passes(0, 1), task_with_passes(1, 0)],
+            1
+        ));
+        assert!(TargetQuality::pass_is_complete(
+            &[task_with_passes(0, 1), task_with_passes(1, 1)],
+            1
+        ));
+        // Completing an earlier pass says nothing about the current one.
+        assert!(!TargetQuality::pass_is_complete(
+            &[task_with_passes(0, 1)],
+            2
+        ));
     }
 
     #[test]
