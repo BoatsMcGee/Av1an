@@ -51,10 +51,10 @@ jobs:
           7z x ffms2.7z
           Move-Item -Path "ffms2-5.0-msvc" -Destination "C:\ffms2"
 
-      # condor.exe opens libvmaf and libvship with `dlopen`, so the libraries it
-      # does use have to be staged beside the executable. The script owns that,
-      # along with the reasoning for each library and the assertions that catch a
-      # half-staged release.
+      # rust-cache restores and prunes `target/`, so it runs before anything is
+      # staged there rather than after.
+      - uses: Swatinem/rust-cache@v2
+
       - name: Stage native libraries
         shell: pwsh
         run: ./.github/scripts/stage-native-libs.ps1 -StageDir target/release
@@ -66,8 +66,6 @@ jobs:
         run: |
           "VSHIP_PLUGIN_PATH=$env:GITHUB_WORKSPACE\target\release" >> "$env:GITHUB_ENV"
           "VMAF_MODEL_PATH=$env:GITHUB_WORKSPACE\target\release\model" >> "$env:GITHUB_ENV"
-
-      - uses: Swatinem/rust-cache@v2
 
       - name: Get latest commit
         id: get_commit
