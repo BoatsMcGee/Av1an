@@ -139,6 +139,17 @@ fn stock_model(features: &[VmafFeature]) -> VmafModel {
 ///
 /// `selected` need not be sorted; frames are scored in the order given.
 ///
+/// # Progress
+///
+/// `on_score` is called with `(position in the selection, score)` for each
+/// scored frame, in the order the frames were visited.
+///
+/// libvmaf extracts on its own threads, so a score becomes readable only once
+/// its features exist, which lags the submission by a few frames. Scores are
+/// reported as they land rather than all at the end, so a caller sees them
+/// progressively; the final few are reported after [`VmafScorer::finish`]
+/// flushes.
+///
 /// # Errors
 ///
 /// Returns an error when the two clips disagree on resolution or bit depth,
@@ -152,6 +163,7 @@ pub fn score_probed_frames(
     selected: &[usize],
     indexing: OutputIndexing,
     cancelled: Option<&AtomicBool>,
+    mut on_score: impl FnMut(usize, f64),
 ) -> Result<Vec<f64>> {
     if selected.is_empty() {
         return Ok(Vec::new());
@@ -175,6 +187,10 @@ pub fn score_probed_frames(
     // probe pass, `submitted` only the libvmaf call, so the fetch cost is
     // roughly their difference.
     let mut submitted = Duration::ZERO;
+    // The lowest index whose score has not been reported yet. libvmaf scores
+    // indices in order as its extractors complete, so advancing this by however
+    // many scores each drain returned reports each one exactly once.
+    let mut reported = 0_usize;
 
     // libvmaf's temporal extractors depend on the *index sequence* given to
     // `vmaf_read_pictures`, not on frames arriving in one batch, so
@@ -201,7 +217,15 @@ pub fn score_probed_frames(
                 .map(|_| ())
                 .map_err(describe_error);
             submitted += submitted_at.elapsed();
-            result
+            // Scores are drained only once a pair has been submitted, so a frame
+            // is never reported before libvmaf has seen its reference.
+            result?;
+
+            for score in scorer.drain_scores(reported).map_err(describe_error)? {
+                on_score(reported, score);
+                reported += 1;
+            }
+            Ok(())
         },
     )?;
     let exchanged = pass.elapsed();
@@ -209,6 +233,12 @@ pub fn score_probed_frames(
     let finished = Instant::now();
     let scores = scorer.finish().map_err(describe_error)?;
     let finished = finished.elapsed();
+
+    // Whatever the sliding window had not finished is only available now.
+    for score in scores.iter().skip(reported) {
+        on_score(reported, *score);
+        reported += 1;
+    }
 
     tracing::debug!(
         frames = selected.len(),

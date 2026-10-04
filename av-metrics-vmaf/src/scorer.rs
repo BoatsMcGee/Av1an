@@ -965,6 +965,42 @@ impl VmafScorer {
         Ok(scores)
     }
 
+    /// Collect every score libvmaf has finished computing, without flushing.
+    ///
+    /// libvmaf extracts on its own threads and scores an index once the
+    /// features for it exist, so after a few submissions some scores are
+    /// readable while others are not yet. This reports whichever have
+    /// landed, in index order, starting from `from`. Each index is returned
+    /// at most once: indices below `from` are not revisited, so repeatedly
+    /// draining from the position the last call returned keeps every score
+    /// and reports each exactly once.
+    ///
+    /// Scores that have not been computed yet are simply absent from the
+    /// result. Use [`Self::finish`] once the last pair is submitted, which
+    /// flushes and then requires a score for every index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VmafError::CallFailed`] if libvmaf rejects the read.
+    #[inline]
+    pub fn drain_scores(&mut self, from: usize) -> Result<Vec<f64>, VmafError> {
+        let total = u32::try_from(self.scored).map_err(|_| VmafError::InvalidConfiguration {
+            reason: "too many frame pairs to index".to_owned(),
+        })?;
+
+        let mut scores = Vec::new();
+        for index in u32::try_from(from).unwrap_or(u32::MAX)..total {
+            // A score that is not ready is the normal case while extraction is
+            // still in flight, so it ends the run rather than failing.
+            let Some(frame) = self.score_at(index)? else {
+                break;
+            };
+            scores.push(frame.score);
+        }
+
+        Ok(scores)
+    }
+
     /// Submit one frame pair from raw plane sources.
     ///
     /// The entry point for callers whose frames are not `v_frame::Frame`s. A

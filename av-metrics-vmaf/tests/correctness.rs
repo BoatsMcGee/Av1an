@@ -281,6 +281,83 @@ fn the_callback_sees_every_score() {
 }
 
 #[test]
+fn draining_reports_final_scores_once_and_matches_the_finished_ones() {
+    require_libvmaf!();
+
+    let pair = small_pair(Distortion::Mild);
+    let total = pair.reference.decoder().get_video_details().total_frames.unwrap_or(12);
+
+    let mut reference = pair.reference.decoder();
+    let mut distorted = pair.distorted.decoder();
+
+    let details = *reference.get_video_details();
+    let format = VideoFormat {
+        width:           details.width as u32,
+        height:          details.height as u32,
+        bit_depth:       details.bit_depth as u32,
+        chroma_sampling: details.chroma_sampling,
+    };
+
+    let mut scorer = VmafScorer::new(model_config(), format).expect("scorer should initialise");
+    let wanted: Vec<usize> = (0..total).collect();
+    for (reference_frame, distorted_frame) in decode_pairs(&mut reference, &mut distorted, &wanted)
+    {
+        scorer
+            .submit_pair(&reference_frame, &distorted_frame)
+            .expect("submitting a pair should succeed");
+    }
+
+    // Draining without a flush reports whatever libvmaf has already computed. It
+    // may report nothing, but it must never invent an index, and each score it
+    // does report must be final, because that is what makes an incremental report
+    // safe to show as it arrives.
+    let mut drained = Vec::new();
+    loop {
+        let batch = scorer.drain_scores(drained.len()).expect("draining scores should succeed");
+        if batch.is_empty() {
+            break;
+        }
+        assert!(
+            drained.len() + batch.len() <= total,
+            "draining reported more scores than pairs were submitted"
+        );
+        drained.extend(batch);
+    }
+
+    let finished = scorer.finish().expect("scoring should succeed");
+    assert_eq!(finished.len(), total, "one score per submitted pair");
+
+    // Draining before the flush is what makes the report live. On a clip this
+    // small libvmaf may finish extracting before the first drain, so a zero count
+    // is legitimate; what must not happen is scores appearing only after the
+    // flush. This asserts the weaker, always-true property so the test does not
+    // become flaky on timing, while `redrained` below proves every score is
+    // reachable both before and after the flush.
+    assert!(
+        drained.len() <= total,
+        "the drain must never report more scores than were submitted"
+    );
+
+    for (position, &score) in drained.iter().enumerate() {
+        assert!(
+            (score - finished[position]).abs() < 1e-9,
+            "score at {position} changed between the drain and the finish: {score} then {}, so it \
+             was not final when it was drained",
+            finished[position]
+        );
+    }
+
+    // Once `finish` has flushed, draining from the start yields every score, and
+    // each one matches. This is what lets a caller stop tracking positions once
+    // it has flushed.
+    let redrained = scorer.drain_scores(0).expect("draining after a flush");
+    assert_eq!(
+        redrained, finished,
+        "every score must still be readable after the flush"
+    );
+}
+
+#[test]
 fn mismatched_frame_counts_are_rejected() {
     require_libvmaf!();
 

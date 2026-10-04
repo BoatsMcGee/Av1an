@@ -263,6 +263,8 @@ impl QualityCheck {
             },
         })?;
 
+        // Each score is reported as the metric produces it, mapped back to its global
+        // frame number so the UI's per-frame report lines up with the clip.
         let scores = metrics::score_vmaf_frames(
             reference,
             distorted.decoder(),
@@ -270,16 +272,87 @@ impl QualityCheck {
             &selected,
             OutputIndexing::Aligned,
             Some(cancelled),
+            |position, score| {
+                Self::report_frame_score(&selected, total_frames, position, score, progress_tx);
+            },
         )?;
 
-        Self::report_native_scores(
-            &config.metric,
-            &scores,
-            &selected,
-            total_frames,
-            scene_frame_indices,
-            progress_tx,
-        )
+        Self::group_native_scores(&scores, total_frames, scene_frame_indices)
+    }
+
+    /// Report one frame's score as it is produced.
+    ///
+    /// `position` indexes the selection, which is what the metric reports; the
+    /// global frame number is what the UI displays.
+    #[inline]
+    fn report_frame_score(
+        selected: &[usize],
+        total_frames: usize,
+        position: usize,
+        score: f64,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+    ) {
+        // Progress is advisory: a closed receiver means the UI went away, which
+        // is not a scoring failure.
+        let _ = progress_tx.send(SequenceStatus::Subprocess {
+            parent: Status::Processing {
+                id:         DETAILS.name.to_owned(),
+                completion: SequenceCompletion::Custom {
+                    name:      DETAILS.name.to_owned(),
+                    completed: (position + 1) as f64,
+                    total:     total_frames as f64,
+                },
+            },
+            child:  Status::Processing {
+                id:         "Quality".to_owned(),
+                completion: SequenceCompletion::FrameScore {
+                    frame: selected[position] as u64,
+                    score,
+                },
+            },
+        });
+    }
+
+    /// Group the per-frame scores back into scenes, recording when each span
+    /// was measured so the UI can show per-scene progress.
+    #[inline]
+    fn group_native_scores(
+        scores: &[f64],
+        total_frames: usize,
+        scene_frame_indices: &[(usize, Vec<usize>)],
+    ) -> Result<Vec<SceneMeasurement>> {
+        if scores.len() < total_frames {
+            error!(
+                expected = total_frames,
+                actual = scores.len(),
+                "produced fewer scores than selected frames"
+            );
+            bail!(QualityCheckError::QualityMeasurementFailed);
+        }
+
+        let now = || {
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("Time is valid")
+                .as_millis()
+        };
+
+        let mut measurements = Vec::with_capacity(scene_frame_indices.len());
+        let mut consumed = 0;
+        let mut previous_end = now();
+        for (_, indices) in scene_frame_indices {
+            let end = consumed + indices.len();
+            let completed_on = now();
+            measurements.push(SceneMeasurement {
+                scores: scores[consumed..end].to_vec(),
+                started_on: previous_end,
+                completed_on,
+            });
+            previous_end = completed_on;
+            consumed = end;
+        }
+
+        Ok(measurements)
     }
 
     /// Score the selection with libvship, or report that the native path does
@@ -313,6 +386,7 @@ impl QualityCheck {
             },
         })?;
 
+        // As in `measure_vmaf`, each score is reported as libvship produces it.
         let scores = match metrics::score_vship_frames(
             reference,
             distorted.decoder(),
@@ -320,6 +394,9 @@ impl QualityCheck {
             &selected,
             OutputIndexing::Aligned,
             Some(cancelled),
+            |position, score| {
+                Self::report_frame_score(&selected, total_frames, position, score, progress_tx);
+            },
         ) {
             Ok(scores) => scores,
             // A cancelled pass must not be retried through the plugin, which
@@ -337,15 +414,7 @@ impl QualityCheck {
             },
         };
 
-        Self::report_native_scores(
-            &config.metric,
-            &scores,
-            &selected,
-            total_frames,
-            scene_frame_indices,
-            progress_tx,
-        )
-        .map(Some)
+        Self::group_native_scores(&scores, total_frames, scene_frame_indices).map(Some)
     }
 
     /// The frames a native pass scores, and how many that is.
@@ -361,89 +430,6 @@ impl QualityCheck {
             .collect();
 
         (total_frames, selected)
-    }
-
-    /// Emit progress for a finished native pass and regroup its scores by
-    /// scene.
-    ///
-    /// Shared by the native metrics because scoring happens synchronously here
-    /// rather than through the comparison channel the VapourSynth path uses, so
-    /// both need the same reporting and the same per-scene timestamps.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`QualityCheckError::QualityMeasurementFailed`] when fewer
-    /// scores came back than frames were selected, since the scenes could not
-    /// then be filled.
-    fn report_native_scores(
-        metric: &QualityMetric,
-        scores: &[f64],
-        selected: &[usize],
-        total_frames: usize,
-        scene_frame_indices: &[(usize, Vec<usize>)],
-        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
-    ) -> Result<Vec<SceneMeasurement>> {
-        // Scores come back synchronously, so progress is emitted here rather than
-        // through a callback.
-        for (local_index, &score) in scores.iter().enumerate() {
-            let global_frame = selected[local_index];
-
-            // Progress is advisory: a closed receiver means the UI went away, which
-            // is not a scoring failure.
-            let _ = progress_tx.send(SequenceStatus::Subprocess {
-                parent: Status::Processing {
-                    id:         DETAILS.name.to_owned(),
-                    completion: SequenceCompletion::Custom {
-                        name:      DETAILS.name.to_owned(),
-                        completed: (local_index + 1) as f64,
-                        total:     total_frames as f64,
-                    },
-                },
-                child:  Status::Processing {
-                    id:         "Quality".to_owned(),
-                    completion: SequenceCompletion::FrameScore {
-                        frame: global_frame as u64,
-                        score,
-                    },
-                },
-            });
-        }
-
-        if scores.len() < total_frames {
-            error!(
-                expected = total_frames,
-                actual = scores.len(),
-                metric = metric.friendly_name(),
-                "produced fewer scores than selected frames"
-            );
-            bail!(QualityCheckError::QualityMeasurementFailed);
-        }
-
-        // Group the per-frame scores back into scenes, recording when each span was
-        // measured so the UI can show per-scene progress.
-        let now = || {
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("Time is valid")
-                .as_millis()
-        };
-
-        let mut measurements = Vec::with_capacity(scene_frame_indices.len());
-        let mut consumed = 0;
-        let mut previous_end = now();
-        for (_, indices) in scene_frame_indices {
-            let end = consumed + indices.len();
-            let completed_on = now();
-            measurements.push(SceneMeasurement {
-                scores: scores[consumed..end].to_vec(),
-                started_on: previous_end,
-                completed_on,
-            });
-            previous_end = completed_on;
-            consumed = end;
-        }
-
-        Ok(measurements)
     }
 
     #[inline]

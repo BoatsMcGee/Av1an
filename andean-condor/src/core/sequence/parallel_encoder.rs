@@ -435,7 +435,7 @@ impl ParallelEncoder {
                         for progress in encode_progress_rx {
                             if progress.pass.0 == total_passes && progress.frame > 0 {
                                 let total_final_encoded =
-                                    total_final_pass_frames_encoded.fetch_add(1, Ordering::Relaxed);
+                                    count_frame(&total_final_pass_frames_encoded);
                                 // Scene's final-pass frame completed
                                 task_progress_tx.send(SequenceStatus::Subprocess {
                                     parent: Status::Processing {
@@ -695,6 +695,16 @@ pub enum ParallelEncoderError {
 // 2 * window * workers regardless of scene length.
 // ============================================================================
 
+/// Record one finished final-pass frame and return the running total.
+///
+/// `fetch_add` returns the value from *before* the increment, so reporting it
+/// directly leaves the progress bar one frame short of its total at the end of
+/// an encode. The count returned here includes the frame just recorded.
+#[inline]
+fn count_frame(count: &AtomicUsize) -> usize {
+    count.fetch_add(1, Ordering::Relaxed) + 1
+}
+
 #[allow(clippy::too_many_arguments)]
 fn relay_progress(
     encode_progress_rx: sync::mpsc::Receiver<EncodeProgress>,
@@ -707,8 +717,7 @@ fn relay_progress(
 ) -> Result<()> {
     for progress in encode_progress_rx {
         if progress.pass.0 == total_passes && progress.frame > 0 {
-            let total_final_encoded =
-                total_final_pass_frames_encoded.fetch_add(1, Ordering::Relaxed);
+            let total_final_encoded = count_frame(total_final_pass_frames_encoded);
             task_progress_tx.send(SequenceStatus::Whole(Status::Processing {
                 id:         DETAILS.name.to_string(),
                 completion: SequenceCompletion::Frames {
@@ -900,5 +909,62 @@ impl ParallelEncoder {
             bail!(err);
         }
         Ok(ordered)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+
+    use super::count_frame;
+
+    /// The bar must reach its total, not stop one frame short.
+    ///
+    /// `fetch_add` returns the pre-increment value, so using it directly made
+    /// the last frame report `total - 1` and the bar never looked complete.
+    #[test]
+    fn the_frame_count_includes_the_frame_just_recorded() {
+        let count = AtomicUsize::new(0);
+        for expected in 1..=44_usize {
+            assert_eq!(
+                count_frame(&count),
+                expected,
+                "frame {expected} should count itself"
+            );
+        }
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 44);
+    }
+
+    /// Concurrent workers must not lose a count.
+    #[test]
+    fn concurrent_counts_do_not_lose_frames() {
+        let workers = 8_usize;
+        let per_worker = 500_usize;
+        let total = workers * per_worker;
+        let count = AtomicUsize::new(0);
+
+        let counts: Vec<Vec<usize>> = std::thread::scope(|scope| {
+            let mut handles = Vec::with_capacity(workers);
+            for _ in 0..workers {
+                handles.push(scope.spawn(|| {
+                    let mut seen = Vec::with_capacity(per_worker);
+                    for _ in 0..per_worker {
+                        seen.push(count_frame(&count));
+                    }
+                    seen
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| handle.join().expect("worker should not panic"))
+                .collect()
+        });
+
+        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), total);
+
+        // Every value from 1 to the total is handed out exactly once.
+        let mut all: Vec<usize> = counts.into_iter().flatten().collect();
+        all.sort_unstable();
+        assert_eq!(all, (1..=total).collect::<Vec<usize>>());
     }
 }

@@ -923,6 +923,46 @@ impl TargetQuality {
         let is_vmaf = matches!(config.metric, QualityMetric::VMAF { .. });
         let native = is_vmaf || metrics::vship::native_supported(&config.metric);
 
+        // Created and relayed here, before scoring, so the native path reports compare
+        // progress through the same relay the plugin branches use and the UI shows
+        // the same shape whichever path ran.
+        let (compare_progress_tx, compare_progress_rx) = sync::mpsc::channel();
+        let progress_tx_clone = progress_tx.clone();
+        let compare_thread = thread::spawn(move || -> Result<()> {
+            for progress in compare_progress_rx {
+                match progress {
+                    SequenceStatus::Whole(Status::Processing {
+                        id: _fn_name,
+                        completion,
+                    }) => {
+                        #[allow(clippy::collapsible_match)]
+                        if let SequenceCompletion::Frames {
+                            completed,
+                            total,
+                        } = completion
+                        {
+                            progress_tx_clone.send(SequenceStatus::Whole(Status::Processing {
+                                id:         "Compare".to_owned(),
+                                completion: SequenceCompletion::Frames {
+                                    completed,
+                                    total,
+                                },
+                            }))?;
+                        }
+                    },
+                    SequenceStatus::Whole(Status::Completed {
+                        id: _,
+                    }) => {
+                        progress_tx_clone.send(SequenceStatus::Whole(Status::Completed {
+                            id: "Compare".to_owned(),
+                        }))?;
+                    },
+                    _ => (),
+                }
+            }
+            Ok(())
+        });
+
         let mut native_scores = if native {
             let probed: Vec<usize> =
                 tasks.iter().flat_map(|task| task.frame_indices.iter().copied()).collect();
@@ -937,6 +977,42 @@ impl TargetQuality {
 
             // The probe encode contains only the frames this pass selected, so it
             // is compacted and is read by position within the selection.
+            // The metric reports each frame's score as it is produced. Target Quality
+            // reduces those to a per-scene statistic and has no per-frame
+            // view, so only the position is used: it drives the progress bar
+            // through the same relay the plugin branches report through.
+            //
+            // The UI decides between the encode and compare bars by comparing
+            // `frames_encoded` against `total_frames`, and only learns that
+            // comparing has begun from a report whose `completed` is 0. The
+            // plugin branches get that from the frame the compare node emits
+            // before any score. A metric that reports strictly after scoring
+            // each pair never sends a 0, so the bar would stay on the last
+            // encode count and then jump straight to the next pass. Sending
+            // the zero-count report once up front declares the phase.
+            let mut declare_compare = true;
+            let report = |position: usize, _score: f64| {
+                // A failed send only means the UI stopped listening, which is
+                // not a scoring error, so it is deliberately ignored.
+                if declare_compare {
+                    declare_compare = false;
+                    let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                        id:         "Compare".to_owned(),
+                        completion: SequenceCompletion::Frames {
+                            completed: 0,
+                            total:     probed.len() as u64,
+                        },
+                    }));
+                }
+                let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                    id:         "Compare".to_owned(),
+                    completion: SequenceCompletion::Frames {
+                        completed: (position + 1) as u64,
+                        total:     probed.len() as u64,
+                    },
+                }));
+            };
+
             let scored = if is_vmaf {
                 metrics::score_vmaf_frames(
                     reference,
@@ -945,6 +1021,7 @@ impl TargetQuality {
                     &probed,
                     OutputIndexing::Compacted,
                     Some(cancelled),
+                    report,
                 )
             } else {
                 metrics::score_vship_frames(
@@ -954,6 +1031,7 @@ impl TargetQuality {
                     &probed,
                     OutputIndexing::Compacted,
                     Some(cancelled),
+                    report,
                 )
             };
 
@@ -1034,48 +1112,21 @@ impl TargetQuality {
         }
         .invoke(core)?;
 
-        let progress_tx_clone = progress_tx.clone();
-        let (compare_progress_tx, compare_progress_rx) = sync::mpsc::channel();
-        let compare_thread = thread::spawn(move || -> Result<()> {
-            for progress in compare_progress_rx {
-                match progress {
-                    SequenceStatus::Whole(Status::Processing {
-                        id: _fn_name,
-                        completion,
-                    }) => {
-                        #[allow(clippy::collapsible_match)]
-                        if let SequenceCompletion::Frames {
-                            completed,
-                            total,
-                        } = completion
-                        {
-                            progress_tx_clone.send(SequenceStatus::Whole(Status::Processing {
-                                id:         "Compare".to_owned(),
-                                completion: SequenceCompletion::Frames {
-                                    completed,
-                                    total,
-                                },
-                            }))?;
-                        }
-                    },
-                    SequenceStatus::Whole(Status::Completed {
-                        id: _,
-                    }) => {
-                        progress_tx_clone.send(SequenceStatus::Whole(Status::Completed {
-                            id: "Compare".to_owned(),
-                        }))?;
-                    },
-                    _ => (),
-                }
-            }
-            Ok(())
-        });
-
+        // The relay thread spawned above ends only once every sender is dropped. Each
+        // plugin branch moves its sender into `get_scores`, so the channel
+        // disconnects as soon as that call returns. The branch that reuses the
+        // native scores sends a final completion and drops its sender instead;
+        // holding it across the `join` below would leave the relay thread waiting
+        // forever.
         let started = SystemTime::now();
         // A metric scored natively above reuses those scores; otherwise the plugin
         // branches below run. For the vship metrics the plugin branch is reached
         // only when libvship was unavailable or failed.
         let mut scores = if native_scores.is_some() {
+            let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                id: "Compare".to_owned(),
+            }));
+            drop(compare_progress_tx);
             native_scores.take().expect("native scores were just taken")
         } else {
             match &config.metric {
@@ -1392,7 +1443,9 @@ pub enum TargetQualityError {
 
 #[cfg(test)]
 mod tests {
-    use super::TargetQuality;
+    use std::sync;
+
+    use super::{SequenceCompletion, SequenceStatus, Status, TargetQuality};
     use crate::models::sequence::target_quality::types::QualityMetric;
 
     fn ssimulacra2() -> QualityMetric {
@@ -1445,6 +1498,79 @@ mod tests {
         assert_eq!(
             TargetQuality::verified_quantizer(&butteraugli, &history),
             Some(32.0)
+        );
+    }
+
+    /// A native pass must declare that comparing has begun.
+    ///
+    /// The UI picks the compare bar over the encode bar from a report whose
+    /// `completed` is 0. A metric that only reports after scoring each pair
+    /// never sends one, so the bar stayed on the encode count and then
+    /// jumped to the next pass.
+    #[test]
+    fn a_native_pass_declares_the_compare_phase_before_reporting_scores() {
+        let (tx, rx) = sync::mpsc::channel();
+        let total = 44_usize;
+
+        let mut declared = true;
+        let mut report = |position: usize, _score: f64| {
+            if declared {
+                declared = false;
+                tx.send(SequenceStatus::Whole(Status::Processing {
+                    id:         "Compare".to_owned(),
+                    completion: SequenceCompletion::Frames {
+                        completed: 0,
+                        total:     total as u64,
+                    },
+                }))
+                .expect("send the phase declaration");
+            }
+            tx.send(SequenceStatus::Whole(Status::Processing {
+                id:         "Compare".to_owned(),
+                completion: SequenceCompletion::Frames {
+                    completed: (position + 1) as u64,
+                    total:     total as u64,
+                },
+            }))
+            .expect("send progress");
+        };
+
+        for position in 0..total {
+            report(position, 90.0);
+        }
+        drop(tx);
+
+        let reports: Vec<(u64, u64)> = rx
+            .iter()
+            .filter_map(|status| match status {
+                SequenceStatus::Whole(Status::Processing {
+                    completion:
+                        SequenceCompletion::Frames {
+                            completed,
+                            total,
+                        },
+                    ..
+                }) => Some((completed, total)),
+                _ => None,
+            })
+            .collect();
+
+        // The first report is the zero-count declaration, then one report per
+        // frame, and the last reaches the total.
+        assert_eq!(
+            reports.first().map(|(completed, _)| *completed),
+            Some(0),
+            "the phase must be declared before any score is reported"
+        );
+        assert_eq!(
+            reports.len(),
+            total + 1,
+            "one declaration plus one report per frame"
+        );
+        assert_eq!(
+            reports.last(),
+            Some(&(total as u64, total as u64)),
+            "the last report must reach the total"
         );
     }
 }

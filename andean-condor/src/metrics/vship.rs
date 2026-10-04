@@ -246,6 +246,14 @@ fn handler_threads(threads: Option<u8>) -> u32 {
 /// scene break, or the start of a non-contiguous selection -- rather than
 /// carrying history across frames it never saw.
 ///
+/// # Progress
+///
+/// `on_score` is called with `(position in the selection, score)` after each
+/// pair is scored, in the order the pairs were visited. Scores are reported
+/// here rather than only returned because the caller needs them as they arrive
+/// to drive its own progress reporting; libvship yields each pair's score as
+/// soon as that pair is computed, so nothing is withheld until the end.
+///
 /// # Errors
 ///
 /// Returns an error when the two clips disagree on resolution or bit depth,
@@ -259,6 +267,7 @@ pub fn score_probed_frames(
     selected: &[usize],
     indexing: OutputIndexing,
     cancelled: Option<&AtomicBool>,
+    mut on_score: impl FnMut(usize, f64),
 ) -> Result<Vec<f64>> {
     if selected.is_empty() {
         return Ok(Vec::new());
@@ -307,7 +316,8 @@ pub fn score_probed_frames(
     .map_err(describe_error)?;
     let setup = opened.elapsed();
 
-    let mut scores = Vec::with_capacity(selected.len());
+    let total = selected.len();
+    let mut scores = Vec::with_capacity(total);
     // `previous` tracks the source index the temporal handler last saw, so the
     // next submission can be classified as contiguous or a discontinuity.
     let mut previous: Option<usize> = None;
@@ -353,6 +363,7 @@ pub fn score_probed_frames(
             };
 
             previous = Some(source_index);
+            on_score(position, value);
             scores.push(value);
             Ok(())
         },
@@ -670,6 +681,7 @@ mod tests {
             &selected,
             OutputIndexing::Aligned,
             None,
+            |_position, _score| {},
         )
         .expect("libvship should score the pair");
 
@@ -729,6 +741,7 @@ mod tests {
                     &selected,
                     OutputIndexing::Aligned,
                     None,
+                    |_position, _score| {},
                 )
                 .expect("libvship should score butteraugli"),
             );
@@ -755,6 +768,7 @@ mod tests {
             &[0usize, 1, 3],
             OutputIndexing::Aligned,
             None,
+            |_position, _score| {},
         )
         .expect("libvship should score cvvdp across a discontinuity");
         assert_eq!(scores.len(), 3, "one score per selected frame");
