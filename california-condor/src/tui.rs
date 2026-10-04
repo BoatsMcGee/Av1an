@@ -642,15 +642,22 @@ pub fn run_parallel_encoder_tui(
         pe_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let (_, processing_warnings) = parallel_encoder.execute(condor, progress_tx, cancelled)?;
+    // Joined before propagating either result: a TUI thread still running owns raw
+    // mode and the panic hook, so letting one escape into the next sequence would
+    // hand both to two apps at once.
+    let executed = parallel_encoder.execute(condor, progress_tx, cancelled);
+
+    let tui_result = tui_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Parallel Encoder TUI thread panicked"))?;
+
+    let (_, processing_warnings) = executed?;
 
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
     }
 
-    tui_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Parallel Encoder TUI thread panicked"))??;
+    tui_result?;
 
     Ok(())
 }

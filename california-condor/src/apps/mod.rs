@@ -196,6 +196,13 @@ pub trait TuiApp: Send + Sync + 'static {
     }
 
     fn restore(&mut self, mut terminal: StdOutOrErrTerminal) -> Result<()> {
+        // Guarding on the stored hook also makes a repeat restore a no-op: a
+        // second call would otherwise install this app's own hook as the
+        // "original", losing the process-wide one.
+        if self.original_panic_hook().is_none() {
+            return Ok(());
+        }
+
         if !is_test_mode() {
             disable_raw_mode()?;
             execute!(io::stdout(), LeaveAlternateScreen)
@@ -217,6 +224,18 @@ pub trait TuiApp: Send + Sync + 'static {
         }
 
         Ok(())
+    }
+
+    /// End the process after a force quit.
+    ///
+    /// Exiting the process rather than just the UI loop is what makes the
+    /// second Ctrl-C prompt: the sequence driving this app is blocked on
+    /// encoders that cannot be interrupted. Called only after the terminal
+    /// is restored, since exiting first would strand raw mode and the
+    /// alternate screen.
+    fn force_quit() -> ! {
+        debug!("Exiting immediately");
+        std::process::exit(0);
     }
 
     /// Handle a single Ctrl-C key press, returning `true` when the app should
@@ -252,10 +271,19 @@ pub trait TuiApp: Send + Sync + 'static {
     ) -> Result<()> {
         let (event_tx, event_rx) = mpsc::channel();
 
+        // The input and tick threads outlive the event loop unless stopped. Without
+        // this the input thread keeps consuming the real terminal into a dropped
+        // receiver, so later keypresses never reach the next app.
+        let threads_stopped = Arc::new(AtomicBool::new(false));
+
         if !is_test_mode() {
             let input_tx = event_tx.clone();
+            let input_stopped = Arc::clone(&threads_stopped);
             thread::spawn(move || {
                 loop {
+                    if input_stopped.load(Ordering::Relaxed) {
+                        break;
+                    }
                     if let Ok(TermEvent::Key(key)) = event::read()
                         && input_tx.send(AppEvent::Input(key)).is_err()
                     {
@@ -267,9 +295,11 @@ pub trait TuiApp: Send + Sync + 'static {
 
         if !is_test_mode() {
             let tick_tx = event_tx.clone();
+            let tick_stopped = Arc::clone(&threads_stopped);
             thread::spawn(move || {
                 loop {
-                    if tick_tx.send(AppEvent::Tick).is_err() {
+                    if tick_stopped.load(Ordering::Relaxed) || tick_tx.send(AppEvent::Tick).is_err()
+                    {
                         break;
                     }
                     thread::sleep(Duration::from_millis(33)); // ~30 FPS
@@ -305,7 +335,7 @@ pub trait TuiApp: Send + Sync + 'static {
 
         let mut terminal = self.init()?;
         let stdout_is_terminal = stdout().is_terminal();
-        'event_loop: loop {
+        loop {
             while let Ok(AppEvent::Input(key)) = event_rx.try_recv() {
                 if self.handle_ctrl_c(key, &cancelled, stdout_is_terminal) {
                     if let Some(snapshot) = self.shared_progress().read_if_dirty() {
@@ -313,7 +343,7 @@ pub trait TuiApp: Send + Sync + 'static {
                     }
                     terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
-                    break 'event_loop;
+                    Self::force_quit();
                 }
             }
 
@@ -326,6 +356,7 @@ pub trait TuiApp: Send + Sync + 'static {
                 self.on_snapshot(snapshot);
                 terminal.draw(|f| self.render(f))?;
                 self.restore(terminal)?;
+                threads_stopped.store(true, Ordering::Release);
                 break;
             }
 
@@ -340,7 +371,7 @@ pub trait TuiApp: Send + Sync + 'static {
                         }
                         terminal.draw(|f| self.render(f))?;
                         self.restore(terminal)?;
-                        break 'event_loop;
+                        Self::force_quit();
                     }
                 },
                 Ok(AppEvent::Quit) => {
@@ -349,6 +380,7 @@ pub trait TuiApp: Send + Sync + 'static {
                     }
                     terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
+                    threads_stopped.store(true, Ordering::Release);
                     break;
                 },
                 Err(RecvTimeoutError::Timeout) => {
@@ -360,6 +392,7 @@ pub trait TuiApp: Send + Sync + 'static {
                     }
                     terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
+                    threads_stopped.store(true, Ordering::Release);
                     break;
                 },
             }
