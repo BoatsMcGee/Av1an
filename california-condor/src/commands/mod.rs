@@ -531,7 +531,10 @@ pub enum ConcatenationMethod {
 pub enum QualityMetric {
     /// Video Multi-Method Assessment Fusion
     ///
-    /// (unimplemented)
+    /// Requires libvmaf at runtime. Set `VMAF_LIB_DIR` if it is installed
+    /// somewhere non-standard. GPU acceleration is used when libvmaf was
+    /// built with CUDA; otherwise the CPU backend is selected
+    /// automatically.
     #[strum(serialize = "vmaf")]
     #[value(name = "vmaf")]
     VMAF,

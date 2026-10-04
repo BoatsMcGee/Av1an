@@ -162,7 +162,7 @@ The quality metric used for Target Quality. Defaults to `ssimulacra2`. See [Qual
 - `butteraugli-3`
 - `xpsnr`
 - `cvvdp`
-- `vmaf` (unimplemented)
+- `vmaf` (requires `libvmaf`)
 
 ## Target `--target`
 

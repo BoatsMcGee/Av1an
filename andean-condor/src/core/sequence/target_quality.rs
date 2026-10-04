@@ -26,9 +26,10 @@ use crate::{
             scene_concatenator::SceneConcatenator,
         },
     },
+    metrics::{self, OutputIndexing},
     models::{
         encoder::{Encoder, EncoderBase, cli_parameter::CLIParameter},
-        input::{Input as InputModel, VapourSynthScriptSource},
+        input::{ImportMethod, Input as InputModel, VapourSynthScriptSource},
         sequence::{
             SequenceConfigHandler,
             SequenceDataHandler,
@@ -904,6 +905,87 @@ impl TargetQuality {
             },
             _ => None,
         };
+        // VMAF is scored by libvmaf over decoded frames, and its decoder borrow
+        // would conflict with the one the node graph below needs. Score it first,
+        // while `metric_input` is still free.
+        //
+        // The VapourSynth VMAF plugin cannot be used here at all: it emits no
+        // per-frame scores and requires writing to and reading back a log file.
+        //
+        // Only the frames this pass actually probes are decoded and scored, matching
+        // the plugin path, which trims each frame out of the graph so VapourSynth
+        // never decodes the skipped ones.
+        //
+        // libvship scores SSIMULACRA2, Butteraugli and CVVDP the same way, for
+        // the same reason. Those three have working plugin branches below, so a
+        // native failure yields `None` and falls through to them; VMAF has no
+        // such branch and propagates its error.
+        let is_vmaf = matches!(config.metric, QualityMetric::VMAF { .. });
+        let native = is_vmaf || metrics::vship::native_supported(&config.metric);
+
+        let mut native_scores = if native {
+            let probed: Vec<usize> =
+                tasks.iter().flat_map(|task| task.frame_indices.iter().copied()).collect();
+
+            let reference = metric_input.decoder();
+            let mut distorted = Input::from_video(&InputModel::Video {
+                path:          output.clone(),
+                import_method: ImportMethod::FFMS2 {
+                    index: None
+                },
+            })?;
+
+            // The probe encode contains only the frames this pass selected, so it
+            // is compacted and is read by position within the selection.
+            let scored = if is_vmaf {
+                metrics::score_vmaf_frames(
+                    reference,
+                    distorted.decoder(),
+                    &config.metric,
+                    &probed,
+                    OutputIndexing::Compacted,
+                    Some(cancelled),
+                )
+            } else {
+                metrics::score_vship_frames(
+                    reference,
+                    distorted.decoder(),
+                    &config.metric,
+                    &probed,
+                    OutputIndexing::Compacted,
+                    Some(cancelled),
+                )
+            };
+
+            match scored {
+                Ok(scores) if !scores.is_empty() => Some(scores),
+                Ok(_) => {
+                    if is_vmaf {
+                        bail!(TargetQualityError::QualityMeasurementFailed);
+                    }
+                    error!(
+                        metric = config.metric.friendly_name(),
+                        "libvship produced no scores, falling back to the VapourSynth plugin"
+                    );
+                    None
+                },
+                Err(error) if error.is::<metrics::probe::Cancelled>() => return Err(error),
+                Err(error) if is_vmaf => return Err(error),
+                Err(error) => {
+                    error!(
+                        %error,
+                        version = ?av_metrics_vship::libvship_version(),
+                        device = ?av_metrics_vship::device_name(),
+                        metric = config.metric.friendly_name(),
+                        "libvship scoring failed, falling back to the VapourSynth plugin"
+                    );
+                    None
+                },
+            }
+        } else {
+            None
+        };
+
         let decoder = match metric_input {
             Input::VapourSynth {
                 decoder, ..
@@ -990,153 +1072,148 @@ impl TargetQuality {
         });
 
         let started = SystemTime::now();
-        let mut scores = match &config.metric {
-            QualityMetric::VMAF {
-                ..
-            } => {
-                // let (reference_node, distorted_node) = if let Some((width, height)) =
-                // *resolution {     let resize = Bicubic {
-                //         width: Some(width),
-                //         height: Some(height),
-                //         ..Default::default()
-                //     };
-                //     (
-                //         resize.invoke(core, &reference_node)?,
-                //         resize.invoke(core, &distorted_node)?,
-                //     )
-                // } else {
-                //     (reference_node, distorted_node)
-                // };
-                // The VapourSynth VMAF plugin does not provide real time scores and requires
-                // writing to and reading from a file. Consider
-                unimplemented!()
-            },
-            QualityMetric::SSIMULACRA2 {
-                resolution,
-                threads,
-                ..
-            } => {
-                let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
-                    let resize = Bicubic {
-                        width: Some(width),
-                        height: Some(height),
-                        ..Default::default()
-                    };
-                    (
-                        resize.invoke(core, &reference_node)?,
-                        resize.invoke(core, &distorted_node)?,
-                    )
-                } else {
-                    (reference_node, distorted_node)
-                };
-                if VSHIPSSIMULACRA2::plugin_is_installed(core) {
-                    let plugin = VSHIPSSIMULACRA2 {
+        // A metric scored natively above reuses those scores; otherwise the plugin
+        // branches below run. For the vship metrics the plugin branch is reached
+        // only when libvship was unavailable or failed.
+        let mut scores = if native_scores.is_some() {
+            native_scores.take().expect("native scores were just taken")
+        } else {
+            match &config.metric {
+                // Always scored above, since VMAF has no plugin branch here.
+                QualityMetric::VMAF {
+                    ..
+                } => unreachable!("VMAF is scored natively above, not here"),
+                QualityMetric::SSIMULACRA2 {
+                    resolution,
+                    threads,
+                    ..
+                } => {
+                    let (reference_node, distorted_node) =
+                        if let Some((width, height)) = *resolution {
+                            let resize = Bicubic {
+                                width: Some(width),
+                                height: Some(height),
+                                ..Default::default()
+                            };
+                            (
+                                resize.invoke(core, &reference_node)?,
+                                resize.invoke(core, &distorted_node)?,
+                            )
+                        } else {
+                            (reference_node, distorted_node)
+                        };
+                    if VSHIPSSIMULACRA2::plugin_is_installed(core) {
+                        let plugin = VSHIPSSIMULACRA2 {
+                            num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
+                            ..Default::default()
+                        };
+                        let node = plugin.invoke(core, &reference_node, &distorted_node)?;
+                        VSHIPSSIMULACRA2::get_scores(&node, None, compare_progress_tx)?
+                    } else if SSIMULACRA2::plugin_is_installed(core) {
+                        let node = SSIMULACRA2::invoke(core, &reference_node, &distorted_node)?;
+                        SSIMULACRA2::get_scores(&node, None, compare_progress_tx)?
+                    } else {
+                        error!("No VapourSynth SSIMULACRA2 plugin found");
+                        bail!(TargetQualityError::QualityMeasurementFailed);
+                    }
+                },
+                QualityMetric::BUTTERAUGLI {
+                    resolution,
+                    threads,
+                    intensity_multiplier,
+                    norm,
+                    ..
+                } => {
+                    let (reference_node, distorted_node) =
+                        if let Some((width, height)) = *resolution {
+                            let resize = Bicubic {
+                                width: Some(width),
+                                height: Some(height),
+                                ..Default::default()
+                            };
+                            (
+                                resize.invoke(core, &reference_node)?,
+                                resize.invoke(core, &distorted_node)?,
+                            )
+                        } else {
+                            (reference_node, distorted_node)
+                        };
+                    let plugin = BUTTERAUGLI {
                         num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
+                        intensity_multiplier: *intensity_multiplier,
+                        q_norm: norm.map(|norm| norm as u32),
                         ..Default::default()
                     };
                     let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                    VSHIPSSIMULACRA2::get_scores(&node, None, compare_progress_tx)?
-                } else if SSIMULACRA2::plugin_is_installed(core) {
-                    let node = SSIMULACRA2::invoke(core, &reference_node, &distorted_node)?;
-                    SSIMULACRA2::get_scores(&node, None, compare_progress_tx)?
-                } else {
-                    error!("No VapourSynth SSIMULACRA2 plugin found");
-                    bail!(TargetQualityError::QualityMeasurementFailed);
-                }
-            },
-            QualityMetric::BUTTERAUGLI {
-                resolution,
-                threads,
-                intensity_multiplier,
-                norm,
-                ..
-            } => {
-                let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
-                    let resize = Bicubic {
-                        width: Some(width),
-                        height: Some(height),
+                    BUTTERAUGLI::get_scores(
+                        &node,
+                        norm.and_then(|_| Some(BUTTERAUGLI::QNORM_PROPERTY_NAMES)),
+                        compare_progress_tx,
+                    )?
+                },
+                QualityMetric::XPSNR {
+                    resolution, ..
+                } => {
+                    let (reference_node, distorted_node) =
+                        if let Some((width, height)) = *resolution {
+                            let resize = Bicubic {
+                                width: Some(width),
+                                height: Some(height),
+                                ..Default::default()
+                            };
+                            (
+                                resize.invoke(core, &reference_node)?,
+                                resize.invoke(core, &distorted_node)?,
+                            )
+                        } else {
+                            (reference_node, distorted_node)
+                        };
+                    let plugin = XPSNR {
+                        temporal: Some(false),
+                        verbose: Some(false),
                         ..Default::default()
                     };
-                    (
-                        resize.invoke(core, &reference_node)?,
-                        resize.invoke(core, &distorted_node)?,
-                    )
-                } else {
-                    (reference_node, distorted_node)
-                };
-                let plugin = BUTTERAUGLI {
-                    num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
-                    intensity_multiplier: *intensity_multiplier,
-                    q_norm: norm.map(|norm| norm as u32),
-                    ..Default::default()
-                };
-                let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                BUTTERAUGLI::get_scores(
-                    &node,
-                    norm.and_then(|_| Some(BUTTERAUGLI::QNORM_PROPERTY_NAMES)),
-                    compare_progress_tx,
-                )?
-            },
-            QualityMetric::XPSNR {
-                resolution, ..
-            } => {
-                let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
-                    let resize = Bicubic {
-                        width: Some(width),
-                        height: Some(height),
+                    let node = plugin.invoke(core, &reference_node, &distorted_node)?;
+                    // XPSNR returns a score per plane, combine them into the weighted XPSNR score.
+                    XPSNR::get_multiple_scores(&node, XPSNR::PROPERTY_NAMES, compare_progress_tx)?
+                        .into_iter()
+                        .map(|plane_scores| match plane_scores.as_slice() {
+                            [y, u, v] => Ok(XPSNR::weight_xpsnr(*y, *u, *v)),
+                            _ => Err(TargetQualityError::QualityMeasurementFailed),
+                        })
+                        .collect::<Result<Vec<f64>, _>>()?
+                },
+                QualityMetric::CVVDP {
+                    resolution,
+                    display_model,
+                    resize_to_display,
+                    disable_temporal,
+                    ..
+                } => {
+                    let (reference_node, distorted_node) =
+                        if let Some((width, height)) = *resolution {
+                            let resize = Bicubic {
+                                width: Some(width),
+                                height: Some(height),
+                                ..Default::default()
+                            };
+                            (
+                                resize.invoke(core, &reference_node)?,
+                                resize.invoke(core, &distorted_node)?,
+                            )
+                        } else {
+                            (reference_node, distorted_node)
+                        };
+                    let plugin = CVVDP {
+                        model_name: *display_model,
+                        resize_to_display: *resize_to_display,
+                        disable_temporal: *disable_temporal,
                         ..Default::default()
                     };
-                    (
-                        resize.invoke(core, &reference_node)?,
-                        resize.invoke(core, &distorted_node)?,
-                    )
-                } else {
-                    (reference_node, distorted_node)
-                };
-                let plugin = XPSNR {
-                    temporal: Some(false),
-                    verbose: Some(false),
-                    ..Default::default()
-                };
-                let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                // XPSNR returns a score per plane, combine them into the weighted XPSNR score.
-                XPSNR::get_multiple_scores(&node, XPSNR::PROPERTY_NAMES, compare_progress_tx)?
-                    .into_iter()
-                    .map(|plane_scores| match plane_scores.as_slice() {
-                        [y, u, v] => Ok(XPSNR::weight_xpsnr(*y, *u, *v)),
-                        _ => Err(TargetQualityError::QualityMeasurementFailed),
-                    })
-                    .collect::<Result<Vec<f64>, _>>()?
-            },
-            QualityMetric::CVVDP {
-                resolution,
-                display_model,
-                resize_to_display,
-                disable_temporal,
-                ..
-            } => {
-                let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
-                    let resize = Bicubic {
-                        width: Some(width),
-                        height: Some(height),
-                        ..Default::default()
-                    };
-                    (
-                        resize.invoke(core, &reference_node)?,
-                        resize.invoke(core, &distorted_node)?,
-                    )
-                } else {
-                    (reference_node, distorted_node)
-                };
-                let plugin = CVVDP {
-                    model_name: *display_model,
-                    resize_to_display: *resize_to_display,
-                    disable_temporal: *disable_temporal,
-                    ..Default::default()
-                };
-                let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                CVVDP::get_scores(&node, None, compare_progress_tx)?
-            },
+                    let node = plugin.invoke(core, &reference_node, &distorted_node)?;
+                    CVVDP::get_scores(&node, None, compare_progress_tx)?
+                },
+            }
         };
         let ended = SystemTime::now();
 

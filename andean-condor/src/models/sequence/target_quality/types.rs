@@ -78,7 +78,6 @@ pub enum QualityMetric {
         target_range: (f64, f64),
         resolution:   Option<(u32, u32)>,
         scaler:       String,
-        filter:       Option<String>,
         threads:      usize,
         model:        Option<PathBuf>,
         features:     Vec<VmafFeature>,

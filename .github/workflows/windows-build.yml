@@ -20,6 +20,10 @@ jobs:
       FFMS_INCLUDE_DIR: C:\ffms2\include
 
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: NASM setup
         uses: ilammy/setup-nasm@v1
         with:
@@ -38,15 +42,30 @@ jobs:
           vapoursynth config
           "VSSCRIPT_PATH=$(vapoursynth get-vsscript)" >> "$env:GITHUB_ENV"
 
+      # FFMS2 is a build input only: ffms2-sys needs its headers and import library
+      # to compile. Nothing from it is staged, because the code is linked into
+      # condor.exe and decoding never loads a separate ffms2.dll.
       - name: FFMS2 installation
         run: |
           curl -L -o ffms2.7z "https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z"
           7z x ffms2.7z
           Move-Item -Path "ffms2-5.0-msvc" -Destination "C:\ffms2"
 
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
+      # condor.exe opens libvmaf and libvship with `dlopen`, so the libraries it
+      # does use have to be staged beside the executable. The script owns that,
+      # along with the reasoning for each library and the assertions that catch a
+      # half-staged release.
+      - name: Stage native libraries
+        shell: pwsh
+        run: ./.github/scripts/stage-native-libs.ps1 -StageDir target/release
+
+      # The crates find their libraries relative to the staged copies, so point
+      # them at the release directory rather than at a system install.
+      - name: Record the native library search paths
+        shell: pwsh
+        run: |
+          "VSHIP_PLUGIN_PATH=$env:GITHUB_WORKSPACE\target\release" >> "$env:GITHUB_ENV"
+          "VMAF_MODEL_PATH=$env:GITHUB_WORKSPACE\target\release\model" >> "$env:GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
 
@@ -63,6 +82,13 @@ jobs:
       - name: Generate configuration schema
         shell: pwsh
         run: cargo run --release --bin generate-schema > california-condor/configuration.schema.json
+
+      # The assets only work as a directory: the VMAF models have to sit in model/
+            # beside the executable or they are not found, and libvmaf.dll needs its
+            # MinGW runtime beside it to load. The archive is what a user downloads.
+      - name: Package the release archive
+        shell: pwsh
+        run: ./.github/scripts/package-release.ps1
 
       - name: Generate changelog
         id: changelog
@@ -105,7 +131,14 @@ jobs:
           tag_name: latest
           body: ${{ steps.changelog.outputs.body }}
           files: |
+            target/condor-windows-x64.zip
             target/release/condor.exe
+            target/release/libvmaf.dll
+            target/release/libvship.dll
+            target/release/libgcc_s_seh-1.dll
+            target/release/libstdc++-6.dll
+            target/release/libwinpthread-1.dll
+            target/release/model/*.json
             california-condor/configuration.schema.json
           fail_on_unmatched_files: true
 
@@ -117,6 +150,13 @@ jobs:
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.changelog.outputs.body }}
           files: |
+            target/condor-windows-x64.zip
             target/release/condor.exe
+            target/release/libvmaf.dll
+            target/release/libvship.dll
+            target/release/libgcc_s_seh-1.dll
+            target/release/libstdc++-6.dll
+            target/release/libwinpthread-1.dll
+            target/release/model/*.json
             california-condor/configuration.schema.json
           fail_on_unmatched_files: true

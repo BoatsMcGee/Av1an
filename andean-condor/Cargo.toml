@@ -20,6 +20,8 @@ av-decoders = { git = "https://github.com/BoatsMcGee/av-decoders", branch = "vap
     "ffms2",
     "vapoursynth",
 ] }
+av-metrics-vmaf = { path = "../av-metrics-vmaf", version = "0.1" }
+av-metrics-vship = { path = "../av-metrics-vship", version = "0.1" }
 av-format = "0.7"
 av-ivf = "0.5.0"
 av-scenechange = { git = "https://github.com/BoatsMcGee/av-scenechange", branch = "av-decoders-0.11.0", version = "0.25", default-features = false, features = [
@@ -46,6 +48,9 @@ thiserror = "2.0.17"
 tracing = { workspace = true }
 vapoursynth = "0.5"
 which = "8.0.0"
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [features]
 default = []

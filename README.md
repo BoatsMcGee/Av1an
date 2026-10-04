@@ -66,13 +66,46 @@ $ cargo install condor # crates.io
 $ docker pull boatsmcgee/condor:latest # Docker Hub
 ```
 
+#### Windows releases
+
+Download **`condor-windows-x64.zip`** from [Releases](https://github.com/rust-av/Av1an/releases)
+and extract it into one directory. The layout matters, because Condor finds parts of
+itself by relative path:
+
+```text
+condor/
+├── condor.exe
+├── libvmaf.dll            VMAF
+├── libvship.dll           SSIMULACRA2, Butteraugli and CVVDP on the GPU
+├── libgcc_s_seh-1.dll     \  runtime dependencies of libvmaf
+├── libstdc++-6.dll        |
+├── libwinpthread-1.dll   /
+├── model/                 VMAF models, required for VMAF
+└── configuration.schema.json
+```
+
+Two mistakes produce confusing failures rather than an error:
+
+- **Leaving `model/` out or flattening it.** The VMAF models must be in a `model`
+  subdirectory beside `condor.exe`. Without them VMAF reports itself unavailable
+  with no other symptom.
+- **Downloading the individual files instead of the archive.** They only work when
+  kept together in one directory as laid out above. The loose files are attached
+  for reference and for partial updates, not as an install method.
+
+Every DLL here is optional: each one only disables the metric it belongs to, and
+`condor.exe` starts and runs without any of them. FFMS2 is linked statically into the
+executable, so decoding never depends on a separate `ffms2.dll` — only the
+VapourSynth plugin path and the FFVship CLI use one.
+
 For the Rust library, [Andean Condor][andean-condor], add it as a dependency to your project `Cargo.toml` with `cargo add andean-condor`.
 
-Av1an uses several external tools for decoding, filtering, and encoding video. For a complete list of dependencies, see the [Dependencies](#dependencies) page. For a quick start, install the following:
+Av1an uses several external tools for decoding, filtering, and encoding video. For a quick start, install the following:
 
 * [Python][python-download] - Recommended for [VapourSynth][vapoursynth-download]
 * [vs-jetpack][vsjetpack] - Installs [VapourSynth][vapoursynth] and a convenient collection of VapourSynth plugins and Python modules for scaling, denoising, debanding, deinterlacing, metrics, etc.
-* [Vship][vship] - GPU-accelerated metrics for [SSIMULACRA 2][ssimulacra2], [butteraugli][butteraugli], and [ColorVideoVDP][cvvdp]
+* [Vship][vship] - GPU-accelerated metrics for [SSIMULACRA 2][ssimulacra2], [butteraugli][butteraugli], and [ColorVideoVDP][cvvdp]. These run through the native `libvship` library whenever it is installed and has a usable GPU, and fall back to the VapourSynth plugin otherwise. The Windows release already ships `libvship.dll`; elsewhere see [`av-metrics-vship`](av-metrics-vship/README.md) for how to install it
+* [libvmaf][libvmaf] - Required only for the `vmaf` metric. The Windows release ships `libvmaf.dll` and its models; see the [`av-metrics-vmaf` README](av-metrics-vmaf/README.md) for other platforms
 * At least one of the following encoder binaries: [aomenc][aom], [SvtAv1EncApp][svt-av1], [rav1e][rav1e], [avmenc][avm], [x264][x264], [x265][x265], [vvenc][vvenc], [FFmpeg][ffmpeg]
 * Either [FFmpeg][ffmpeg] or [MKVToolNix][mkvtoolnix] for concatenating the encoded scenes
 
@@ -118,6 +151,7 @@ See [Developing and Contributing](https://rust-av.github.io/Av1an/contributing) 
 
 [crates]: https://crates.io "The Rust community’s crate registry"
 [aur]: https://aur.archlinux.org "archlinux user repository"
+[andean-condor]: ./andean-condor/README.md "Andean Condor - The Av1an Rust library"
 
 [ffms2]: https://github.com/ffms/ffms2 "FFmpegSource"
 
@@ -151,5 +185,6 @@ See [Developing and Contributing](https://rust-av.github.io/Av1an/contributing) 
 
 [vszip]: https://github.com/dnjulek/vapoursynth-zip "VapourSynth Zig Image Process"
 [vship]: https://codeberg.org/Line-fr/Vship "Vship : Fast Metric Computation on GPU"
+[libvmaf]: https://github.com/Netflix/vmaf "libvmaf - VMAF (Video Multi-Method Assessment Fusion)"
 
-[mkvtoolnix]: https://mkvtoolnix.download "MKVToolNix" 
+[mkvtoolnix]: https://mkvtoolnix.download "MKVToolNix"

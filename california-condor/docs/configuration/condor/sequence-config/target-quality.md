@@ -14,7 +14,7 @@
 
 `metric` variants (all carry `target_range: [f64, f64]`):
 
-- `VMAF`: `{ "target_range": [94.0, 96.0], "resolution": [w, h] or null, "scaler": <string>, "filter": <string> or null, "threads": <usize>, "model": <path> or null, "features": ["default"|"weighted"|"neg"|"motionless"|"uhd"] }`
+- `VMAF`: `{ "target_range": [94.0, 96.0], "resolution": [w, h] or null, "scaler": <string>, "threads": <usize>, "model": <path> or null, "features": ["default"|"weighted"|"neg"|"motionless"|"uhd"] }`
 - `SSIMULACRA2`: `{ "target_range": [74.0, 76.0], "resolution": [w, h] or null, "threads": <u8> or null }` (default)
 - `BUTTERAUGLI`: `{ "target_range": [0.8, 1.2], "resolution": [w, h] or null, "threads": <u8> or null, "intensity_multiplier": <f64> or null, "norm": <u8> or null }`
 - `XPSNR`: `{ "target_range": [44.0, 46.0], "resolution": [w, h] or null }`
@@ -29,6 +29,15 @@
 `probing.statistic` variants: `"Mean"`, `"Median"`, `"Harmonic"`, `{ "Percentile": <f64> }`, `{ "StandardDeviationDistance": { "sigma": <f64> } }`, `"Mode"`, `"Minimum"`, `"Maximum"`, `"RootMeanSquare"`.
 
 CLI `--profile` presets: `fast` (mean of middle 11 frames), `standard` (RMS of middle 25%), `slow` (10th percentile of all frames).
+
+### Frame selection and `vmaf`
+
+For `vmaf`, only the frames a strategy selects are decoded and scored, so a sparse selection costs proportionally less work, as it does for the plugin-based metrics. This requires libvmaf at runtime; see the prerequisites list in the [repository README](../../../../README.md).
+
+`Subset` selects a contiguous run, so VMAF's temporal features see consecutive frames exactly as they would in a normal pass. `Skip` does not: libvmaf's motion and temporal extractors compare against the previous *selected* frame rather than the true predecessor, so absolute scores shift slightly. They stay directly comparable across encodes of the same frames, which is what probing needs, but they are not the numbers a continuous pass would produce. Use `Whole` or `Subset` when the absolute value matters and `Skip` when only relative ordering does.
+
+> [!NOTE]
+> `CVVDP`'s `disable_temporal` option addresses something related but distinct: it turns the temporal model off inside the metric, rather than changing which frames are compared.
 
 Example:
 

@@ -9,7 +9,7 @@
 | `butteraugli-3` | butteraugli 3-Norm                                            | Vship (GPU, recommended) or julek plugin (CPU)      |
 | `xpsnr`         | Extended Perceptually Weighted PSNR (min of Y, U, V)          | vszip (CPU)                                         |
 | `cvvdp`         | ColorVideoVDP                                                 | Vship (GPU required)                                |
-| `vmaf`          | Video Multi-Method Assessment Fusion                          | Unimplemented                                       |
+| `vmaf`          | Video Multi-Method Assessment Fusion                          | libvmaf (built with CUDA for GPU, optional)      |
 
 ## Default
 

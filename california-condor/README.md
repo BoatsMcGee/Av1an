@@ -23,7 +23,7 @@ California Condor is the command-line interface and Terminal User Interface (TUI
 * Supported decoders: `bestsource`, `vs-ffms2`, `lsmash`, `dgdecnv`, `ffms2`
 * Supported encoders: `aom`, `rav1e`, `vpx`, `svt-av1`, `avm`, `x264`, `x265`, `vvenc`, `ffmpeg`
 * Supported concatenation methods: `mkvmerge`, `ffmpeg`, `ivf`
-* Supported quality metrics: `ssimulacra2`, `butteraugli`, `butteraugli-3`, `xpsnr`, `cvvdp`
+* Supported quality metrics: `ssimulacra2`, `butteraugli`, `butteraugli-3`, `xpsnr`, `cvvdp`, `vmaf`
 
 > [!NOTE]
 > Per-command captures (`media/detect-scenes.avif`, `media/detect-noise.avif`, `media/benchmark.avif`, `media/target-quality.avif`, `media/encode.avif`, `media/concatenate.avif`, `media/quality-check.avif`) will replace the placeholders above when available. Non-TUI commands (`init`, `scale-noise`, `optimize-bitrate`, `scale-speed`, `clean`) have no gallery entry.
@@ -42,11 +42,19 @@ $ cargo install condor # crates.io
 $ docker pull boatsmcgee/condor:latest # Docker Hub
 ```
 
+On Windows, download **`condor-windows-x64.zip`** from
+[Releases](https://github.com/rust-av/Av1an/releases) and extract it into one
+directory. The layout matters: the VMAF models have to stay in a `model`
+subdirectory beside `condor.exe`, or VMAF silently reports itself unavailable, and
+`libvmaf.dll` needs its MinGW runtime DLLs beside it to load. See the
+[project README](../README.md#windows-releases) for the full layout.
+
 External tools required for decoding, filtering, encoding, metrics, and concatenation:
 
 * [Python][python-download] - Recommended for [VapourSynth][vapoursynth-download]
 * [vs-jetpack][vsjetpack] - Installs [VapourSynth][vapoursynth] and plugins for scaling, denoising, debanding, deinterlacing, etc.
-* [Vship][vship] - GPU-accelerated metrics for [SSIMULACRA 2][ssimulacra2], [butteraugli][butteraugli], and [ColorVideoVDP][cvvdp]
+* [Vship][vship] - GPU-accelerated metrics for [SSIMULACRA 2][ssimulacra2], [butteraugli][butteraugli], and [ColorVideoVDP][cvvdp]. The metrics run through the native `libvship` library whenever it is installed and has a usable GPU, and fall back to the VapourSynth plugin otherwise
+* [libvmaf][libvmaf] - Required only for the `vmaf` metric. pacman -S vmaf on Arch, `apt install libvmaf-dev` on Debian/Ubuntu unstable, or build from source; on Windows use the MSYS2 `mingw-w64-x86_64-vmaf` package
 * At least one encoder: [aomenc][aom], [SvtAv1EncApp][svt-av1], [rav1e][rav1e], [avmenc][avm], [vpxenc][vpx], [x264][x264], [x265][x265], [vvenc][vvenc], [FFmpeg][ffmpeg]
 * Either [FFmpeg][ffmpeg] or [MKVToolNix][mkvtoolnix] for concatenating encoded scenes
 
@@ -126,5 +134,6 @@ See [condor](./docs/commands/condor.md) for all full-run flags, [configuration](
 
 [vszip]: https://github.com/dnjulek/vapoursynth-zip "VapourSynth Zig Image Process"
 [vship]: https://codeberg.org/Line-fr/Vship "Vship : Fast Metric Computation on GPU"
+[libvmaf]: https://github.com/Netflix/vmaf "libvmaf - VMAF (Video Multi-Method Assessment Fusion)"
 
 [mkvtoolnix]: https://mkvtoolnix.download "MKVToolNix"

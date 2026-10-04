@@ -1140,7 +1140,6 @@ pub fn check_quality_metric(
             target_range: expected_target_range,
             resolution: expected_resolution,
             scaler: expected_scaler,
-            filter: expected_filter,
             threads: expected_threads,
             model: expected_model,
             features: expected_features,
@@ -1155,7 +1154,6 @@ pub fn check_quality_metric(
                     target_range,
                     resolution,
                     scaler,
-                    filter,
                     threads,
                     model,
                     features,
@@ -1172,10 +1170,6 @@ pub fn check_quality_metric(
                     assert_eq!(
                         scaler, expected_scaler,
                         "{name} VMAF scaler is {expected_scaler}"
-                    );
-                    assert_eq!(
-                        filter, expected_filter,
-                        "{name} VMAF filter is {expected_filter:?}"
                     );
                     assert_eq!(
                         threads, expected_threads,

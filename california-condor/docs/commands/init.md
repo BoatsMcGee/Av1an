@@ -147,7 +147,7 @@ The quality metric used for Target Quality. See [Quality Metric](../types/qualit
 - `butteraugli-3` - butteraugli 3-Norm
 - `xpsnr` - Extended Perceptually Weighted PSNR (min of Y, U, V)
 - `cvvdp` - ColorVideoVDP
-- `vmaf` - Video Multi-Method Assessment Fusion (unimplemented)
+- `vmaf` - Video Multi-Method Assessment Fusion (requires `libvmaf`)
 
 ### Default
 

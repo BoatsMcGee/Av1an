@@ -3,12 +3,19 @@ FROM archlinux:base-devel AS base
 RUN pacman -Syu --noconfirm
 
 # Install dependencies needed by all steps including runtime step
-RUN pacman -S --noconfirm --needed python python-pip ffms2 ffmpeg mkvtoolnix-cli aom svt-av1 rav1e libvpx
+RUN pacman -S --noconfirm --needed python python-pip ffms2 ffmpeg mkvtoolnix-cli aom svt-av1 rav1e libvpx vmaf
 # Install Python runtime dependencies system-wide so they are available to the app
 RUN python -m pip install --no-cache-dir --break-system-packages vsjetpack[full]==2.2.4 vsfgs==0.7.0 --extra-index-url https://jaded-encoding-thaumaturgy.github.io/vs-wheels/simple
 
 # Add extra plugins to ENV to cover VS R74 packaging changes
 ENV VAPOURSYNTH_EXTRA_PLUGIN_PATH="/usr/lib/vapoursynth"
+# Upstream ships no Linux libvship, so none is installed here. These two let a
+# user drop a self-built (or AUR-sourced) libvship.so into /usr/lib/vapoursynth
+# and have the native metric path activate without editing the image.
+ENV VSHIP_LIB_DIR="/usr/lib/vapoursynth"
+ENV VSHIP_PLUGIN_PATH="/usr/lib/vapoursynth"
+# Where libvmaf looks for the VMAF model files
+ENV VMAF_MODEL_PATH="/usr/share/model"
 
 # Install ZooMVTools with generic linux binary
 RUN ZOOMVTOOLS_VERSION="v2.0.2" && \

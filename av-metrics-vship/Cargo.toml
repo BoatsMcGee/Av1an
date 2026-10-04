@@ -1,0 +1,121 @@
+[package]
+name = "av-metrics-vship"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+description = """
+Native vship perceptual quality scoring (SSIMULACRA2, Butteraugli, CVVDP) via the libvship C API
+"""
+repository = "https://github.com/rust-av/Av1an"
+keywords = ["video", "quality", "metric", "vship", "butteraugli", "cvvdp"]
+categories = ["multimedia", "science"]
+license = "BSD-2-Clause-Patent"
+readme = "README.md"
+
+[dependencies]
+av-decoders = { git = "https://github.com/BoatsMcGee/av-decoders", branch = "vapoursynth-get-output", version = "0.11", features = [
+    "ffms2",
+    "vapoursynth",
+] }
+libloading = "0.8"
+thiserror = "2.0.17"
+tracing = { workspace = true }
+v_frame = { version = "0.7", features = ["padding_api"] }
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+tempfile = { workspace = true }
+y4m = "0.8"
+
+[lib]
+bench = false
+
+[[bench]]
+name = "scoring"
+harness = false
+
+[lints.clippy]
+# Performance
+clear_with_drain = "warn"
+format_collect = "warn"
+format_push_string = "warn"
+imprecise_flops = "warn"
+inefficient_to_string = "warn"
+inline_always = "warn"
+iter_with_drain = "warn"
+large_include_file = "warn"
+large_types_passed_by_value = "warn"
+linkedlist = "deny"
+mutex_atomic = "warn"
+mutex_integer = "warn"
+naive_bytecount = "warn"
+needless_bitwise_bool = "warn"
+needless_collect = "warn"
+needless_pass_by_value = "warn"
+non_std_lazy_statics = "warn"
+non_zero_suggestions = "warn"
+or_fun_call = "warn"
+rc_buffer = "warn"
+redundant_clone = "warn"
+ref_option = "warn"
+set_contains_or_insert = "warn"
+string_lit_chars_any = "warn"
+suboptimal_flops = "warn"
+trivial_regex = "warn"
+trivially_copy_pass_by_ref = "warn"
+unnecessary_box_returns = "warn"
+unnecessary_join = "warn"
+unused_async = "warn"
+verbose_file_reads = "warn"
+# Readability/Code Intention
+checked_conversions = "warn"
+clone_on_ref_ptr = "warn"
+cloned_instead_of_copied = "warn"
+enum_glob_use = "warn"
+equatable_if_let = "warn"
+if_then_some_else_none = "warn"
+implicit_clone = "warn"
+inconsistent_struct_constructor = "warn"
+iter_filter_is_ok = "warn"
+manual_assert = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+missing_inline_in_public_items = "warn"
+must_use_candidate = "warn"
+option_if_let_else = "warn"
+single_match_else = "warn"
+struct_field_names = "warn"
+while_let_on_iterator = "warn"
+# Correctness/Safety
+case_sensitive_file_extension_comparisons = "warn"
+cfg_not_test = "deny"
+collection_is_never_read = "warn"
+create_dir = "warn"
+dbg_macro = "warn"
+debug_assert_with_mut_call = "deny"
+expl_impl_clone_on_copy = "deny"
+filetype_is_file = "warn"
+large_futures = "warn"
+large_stack_arrays = "warn"
+large_stack_frames = "warn"
+missing_assert_message = "warn"
+mixed_read_write_in_expression = "warn"
+mut_mut = "warn"
+needless_lifetimes = "warn"
+non_send_fields_in_send_ty = "deny"
+path_buf_push_overwrite = "warn"
+rc_mutex = "warn"
+read_zero_byte_vec = "warn"
+significant_drop_in_scrutinee = "deny"
+suspicious_operation_groupings = "warn"
+suspicious_xor_used_as_pow = "warn"
+transmute_ptr_to_ptr = "warn"
+undocumented_unsafe_blocks = "warn"
+unnecessary_debug_formatting = "warn"
+unnecessary_literal_unwrap = "warn"
+unwrap_used = "warn"
+# Annoyances
+uninlined_format_args = "allow"
+
+[lints.rust]
+missing_docs = "warn"

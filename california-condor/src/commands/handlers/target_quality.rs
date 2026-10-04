@@ -136,8 +136,8 @@ pub fn configure_target_quality(
                 target_range: DEFAULT_VMAF_TARGET_RANGE,
                 resolution:   None,
                 scaler:       String::new(),
-                filter:       None,
-                threads:      1,
+                // 0 means one libvmaf worker per available core.
+                threads:      0,
                 model:        None,
                 features:     vec![],
             },

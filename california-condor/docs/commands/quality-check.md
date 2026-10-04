@@ -51,7 +51,7 @@ The quality metric used for Quality Check. See [Quality Metric](../types/quality
 - `butteraugli-3` - butteraugli 3-Norm
 - `xpsnr` - Extended Perceptually Weighted PSNR (min of Y, U, V)
 - `cvvdp` - ColorVideoVDP
-- `vmaf` - Video Multi-Method Assessment Fusion (unimplemented)
+- `vmaf` - Video Multi-Method Assessment Fusion (requires `libvmaf`)
 
 ### Default
 

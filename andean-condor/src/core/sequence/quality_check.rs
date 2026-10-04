@@ -15,8 +15,9 @@ use crate::{
         input::Input,
         sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
     },
+    metrics::{self, OutputIndexing},
     models::{
-        input::{Input as InputModel, VapourSynthScriptSource},
+        input::{ImportMethod, Input as InputModel, VapourSynthScriptSource},
         sequence::{
             SequenceConfigHandler,
             SequenceDataHandler,
@@ -181,14 +182,39 @@ where
             return Ok(((), warnings));
         }
 
-        let measurements = Self::measure(
+        // VMAF scores decoded frames through libvmaf rather than a VapourSynth
+        // filter graph, so it takes a separate path. Every other metric runs as a
+        // plugin over the nodes built by `measure` -- except SSIMULACRA2,
+        // Butteraugli and CVVDP, which libvship also implements and which are
+        // preferred natively whenever that library is usable.
+        let measurements = if matches!(config.metric, QualityMetric::VMAF { .. }) {
+            Self::measure_vmaf(
+                input,
+                &condor.output.path,
+                config,
+                &scene_frame_indices,
+                &progress_tx,
+                &cancelled,
+            )?
+        } else if let Some(scores) = Self::measure_vship(
             input,
             &condor.output.path,
             config,
             &scene_frame_indices,
-            progress_tx,
+            &progress_tx,
             &cancelled,
-        )?;
+        )? {
+            scores
+        } else {
+            Self::measure(
+                input,
+                &condor.output.path,
+                config,
+                &scene_frame_indices,
+                progress_tx,
+                &cancelled,
+            )?
+        };
 
         for ((index, _), measurement) in scene_frame_indices.iter().zip(measurements) {
             let quality_pass = QualityPass {
@@ -217,6 +243,207 @@ impl QualityCheck {
         Self {
             input,
         }
+    }
+
+    fn measure_vmaf(
+        input: &mut Input,
+        output_path: &std::path::Path,
+        config: &QualityCheckConfig,
+        scene_frame_indices: &[(usize, Vec<usize>)],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<SceneMeasurement>> {
+        let (total_frames, selected) = Self::native_selection(scene_frame_indices);
+
+        let reference = input.decoder();
+        let mut distorted = Input::from_video(&InputModel::Video {
+            path:          output_path.to_path_buf(),
+            import_method: ImportMethod::FFMS2 {
+                index: None
+            },
+        })?;
+
+        let scores = metrics::score_vmaf_frames(
+            reference,
+            distorted.decoder(),
+            &config.metric,
+            &selected,
+            OutputIndexing::Aligned,
+            Some(cancelled),
+        )?;
+
+        Self::report_native_scores(
+            &config.metric,
+            &scores,
+            &selected,
+            total_frames,
+            scene_frame_indices,
+            progress_tx,
+        )
+    }
+
+    /// Score the selection with libvship, or report that the native path does
+    /// not apply.
+    ///
+    /// Returns `Ok(None)` when the caller should fall back to the VapourSynth
+    /// plugin branches: either the metric is one libvship does not implement,
+    /// or the library and a device are unusable, or scoring failed. Every
+    /// such case is logged rather than propagated, because the plugin
+    /// branches remain a complete implementation of these metrics; falling
+    /// back preserves the behaviour of a machine without libvship.
+    fn measure_vship(
+        input: &mut Input,
+        output_path: &std::path::Path,
+        config: &QualityCheckConfig,
+        scene_frame_indices: &[(usize, Vec<usize>)],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<Vec<SceneMeasurement>>> {
+        if !metrics::vship::native_supported(&config.metric) {
+            return Ok(None);
+        }
+
+        let (total_frames, selected) = Self::native_selection(scene_frame_indices);
+
+        let reference = input.decoder();
+        let mut distorted = Input::from_video(&InputModel::Video {
+            path:          output_path.to_path_buf(),
+            import_method: ImportMethod::FFMS2 {
+                index: None
+            },
+        })?;
+
+        let scores = match metrics::score_vship_frames(
+            reference,
+            distorted.decoder(),
+            &config.metric,
+            &selected,
+            OutputIndexing::Aligned,
+            Some(cancelled),
+        ) {
+            Ok(scores) => scores,
+            // A cancelled pass must not be retried through the plugin, which
+            // would ignore the abort and score the whole selection again.
+            Err(error) if error.is::<metrics::probe::Cancelled>() => return Err(error),
+            Err(error) => {
+                error!(
+                    %error,
+                    version = ?av_metrics_vship::libvship_version(),
+                    device = ?av_metrics_vship::device_name(),
+                    metric = config.metric.friendly_name(),
+                    "libvship scoring failed, falling back to the VapourSynth plugin"
+                );
+                return Ok(None);
+            },
+        };
+
+        Self::report_native_scores(
+            &config.metric,
+            &scores,
+            &selected,
+            total_frames,
+            scene_frame_indices,
+            progress_tx,
+        )
+        .map(Some)
+    }
+
+    /// The frames a native pass scores, and how many that is.
+    ///
+    /// The selection is flattened across scenes in ascending order, which is
+    /// the order both the native driver and the VapourSynth trimming walk.
+    #[inline]
+    fn native_selection(scene_frame_indices: &[(usize, Vec<usize>)]) -> (usize, Vec<usize>) {
+        let total_frames = scene_frame_indices.iter().map(|(_, indices)| indices.len()).sum();
+        let selected = scene_frame_indices
+            .iter()
+            .flat_map(|(_, indices)| indices.iter().copied())
+            .collect();
+
+        (total_frames, selected)
+    }
+
+    /// Emit progress for a finished native pass and regroup its scores by
+    /// scene.
+    ///
+    /// Shared by the native metrics because scoring happens synchronously here
+    /// rather than through the comparison channel the VapourSynth path uses, so
+    /// both need the same reporting and the same per-scene timestamps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QualityCheckError::QualityMeasurementFailed`] when fewer
+    /// scores came back than frames were selected, since the scenes could not
+    /// then be filled.
+    fn report_native_scores(
+        metric: &QualityMetric,
+        scores: &[f64],
+        selected: &[usize],
+        total_frames: usize,
+        scene_frame_indices: &[(usize, Vec<usize>)],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+    ) -> Result<Vec<SceneMeasurement>> {
+        // Scores come back synchronously, so progress is emitted here rather than
+        // through a callback.
+        for (local_index, &score) in scores.iter().enumerate() {
+            let global_frame = selected[local_index];
+
+            // Progress is advisory: a closed receiver means the UI went away, which
+            // is not a scoring failure.
+            let _ = progress_tx.send(SequenceStatus::Subprocess {
+                parent: Status::Processing {
+                    id:         DETAILS.name.to_owned(),
+                    completion: SequenceCompletion::Custom {
+                        name:      DETAILS.name.to_owned(),
+                        completed: (local_index + 1) as f64,
+                        total:     total_frames as f64,
+                    },
+                },
+                child:  Status::Processing {
+                    id:         "Quality".to_owned(),
+                    completion: SequenceCompletion::FrameScore {
+                        frame: global_frame as u64,
+                        score,
+                    },
+                },
+            });
+        }
+
+        if scores.len() < total_frames {
+            error!(
+                expected = total_frames,
+                actual = scores.len(),
+                metric = metric.friendly_name(),
+                "produced fewer scores than selected frames"
+            );
+            bail!(QualityCheckError::QualityMeasurementFailed);
+        }
+
+        // Group the per-frame scores back into scenes, recording when each span was
+        // measured so the UI can show per-scene progress.
+        let now = || {
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("Time is valid")
+                .as_millis()
+        };
+
+        let mut measurements = Vec::with_capacity(scene_frame_indices.len());
+        let mut consumed = 0;
+        let mut previous_end = now();
+        for (_, indices) in scene_frame_indices {
+            let end = consumed + indices.len();
+            let completed_on = now();
+            measurements.push(SceneMeasurement {
+                scores: scores[consumed..end].to_vec(),
+                started_on: previous_end,
+                completed_on,
+            });
+            previous_end = completed_on;
+            consumed = end;
+        }
+
+        Ok(measurements)
     }
 
     #[inline]
@@ -465,11 +692,16 @@ impl QualityCheck {
             }
         };
 
+        // The SSIMULACRA2, Butteraugli and CVVDP branches are the fallback for
+        // the metrics libvship also implements: they are reached only when
+        // `measure_vship` found no usable libvship, or its scoring failed.
         match &config.metric {
+            // Handled by `measure_vmaf` before this graph is built: VMAF reads
+            // decoded frames through libvmaf instead of a VapourSynth filter.
             QualityMetric::VMAF {
                 ..
             } => {
-                unimplemented!()
+                unreachable!("VMAF is measured by `measure_vmaf`, not here");
             },
             QualityMetric::SSIMULACRA2 {
                 resolution,

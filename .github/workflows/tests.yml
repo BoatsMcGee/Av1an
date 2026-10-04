@@ -43,9 +43,21 @@ jobs:
         - name: Install Rust stable
           uses: dtolnay/rust-toolchain@stable
 
-        - name: Setup Clang, NASM, and VapourSynth
+        - name: Setup Clang, NASM, VapourSynth, and libvmaf
           run: |
-            pacman -S --noconfirm --needed clang nasm vapoursynth
+            pacman -S --noconfirm --needed clang nasm vapoursynth vmaf ffmpeg
+
+            # Arch's `vmaf` package installs the models to /usr/share/model rather
+            # than compiling them in. All nine upstream models are there, so point
+            # VMAF_MODEL_PATH at them and skip a download entirely.
+            echo "VMAF_MODEL_PATH=/usr/share/model" >> "$GITHUB_ENV"
+
+            # A short real clip for the tests that compare against libvmaf's own CLI
+            # and FFmpeg's libvmaf filter. Generated rather than committed, so no
+            # media enters the repository.
+            ffmpeg -v error -f lavfi -i "testsrc2=size=320x240:rate=24:duration=2" \
+              -pix_fmt yuv420p -y /tmp/vmaf-test.y4m
+            echo "VMAF_TEST_Y4M=/tmp/vmaf-test.y4m" >> "$GITHUB_ENV"
 
         - name: Install cargo-msrv
           uses: taiki-e/install-action@v2
@@ -72,8 +84,28 @@ jobs:
 
       - name: Validate minimum Rust version
         run: |
+          cargo msrv verify --path av-metrics-vmaf
+          cargo msrv verify --path av-metrics-vship
           cargo msrv verify --path andean-condor
           cargo msrv verify --path california-condor
+
+      - name: Testing av-metrics-vmaf
+        working-directory: ./av-metrics-vmaf
+        run: |
+          cargo test --profile ci
+
+          # Report which models this libvmaf build actually accepts. A build
+          # without -Denable_float=true rejects the float and BOUND models, and
+          # that is otherwise only visible by reading the test output.
+          cargo test --profile ci --test correctness \
+            every_model_in_the_search_path_loads -- --nocapture
+
+      # The runner has no GPU and no vship binary is installed, so the crate's
+      # GPU-gated tests skip themselves; its non-GPU tests still run.
+      - name: Testing av-metrics-vship
+        working-directory: ./av-metrics-vship
+        run: |
+          cargo test --profile ci
 
       - name: Testing Andean Condor
         working-directory: ./andean-condor
@@ -98,9 +130,17 @@ jobs:
         - name: Install Rust stable
           uses: dtolnay/rust-toolchain@stable
 
-        - name: Setup Git, Clang, NASM, and VapourSynth
+        - name: Setup Git, Clang, NASM, VapourSynth, and libvmaf
           run: |
-            pacman -S --noconfirm --needed git clang nasm vapoursynth
+            # `vmaf` is needed for coverage, not just for tests. Without it the
+            # crate still compiles but reports scoring as unavailable, so every
+            # line in the scorer and the libvmaf FFI would be reported uncovered.
+            pacman -S --noconfirm --needed git clang nasm vapoursynth vmaf
+
+            # Arch's package installs the models to /usr/share/model, which the
+            # crate searches on its own. Set this anyway so coverage does not
+            # depend on that search-path ordering.
+            echo "VMAF_MODEL_PATH=/usr/share/model" >> "$GITHUB_ENV"
 
         - name: Validate executables
           run: |
