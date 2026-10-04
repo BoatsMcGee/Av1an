@@ -114,37 +114,6 @@ function Invoke-Download {
     Write-Host ("    {0}  {1:N0} bytes" -f (Split-Path $OutFile -Leaf), $size)
 }
 
-function Test-DllLoadable {
-    <#
-    .SYNOPSIS
-        Tries to load a DLL, returning the Win32 error on failure.
-
-    .DESCRIPTION
-        Presence is not integrity: a truncated download satisfies a file check
-        and then fails to load. LoadLibrary is the only honest test.
-    #>
-    param([Parameter(Mandatory)][string] $Path)
-
-    Add-Type -Namespace Native -Name DllProbe -MemberDefinition @'
-        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true,
-            CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-        private static extern System.IntPtr LoadLibrary(string path);
-
-        [System.Runtime.InteropServices.DllImport("kernel32.dll")]
-        private static extern bool FreeLibrary(System.IntPtr handle);
-
-        public static string TryLoad(string path) {
-            System.IntPtr handle = LoadLibrary(path);
-            if (handle == System.IntPtr.Zero) {
-                return "Win32 error " + System.Runtime.InteropServices.Marshal.GetLastWin32Error();
-            }
-            FreeLibrary(handle);
-            return null;
-        }
-'@
-
-    return [Native.DllProbe]::TryLoad((Resolve-Path $Path).Path)
-}
 
 function Assert-Staged {
     <#
@@ -216,15 +185,6 @@ Write-Step 'Fetching libvship (Vulkan build)'
 $vshipStaging = Join-Path $StageDir 'libvship.dll'
 Invoke-Download -Uri $VshipUrl -OutFile $vshipStaging
 
-# A runner has no Vulkan ICD, so this is expected to fail there and is reported
-# rather than treated as fatal. A missing file above is still fatal.
-$failure = Test-DllLoadable -Path $vshipStaging
-if ($failure) {
-    Write-Warning "libvship.dll did not load ($failure). Expected without a Vulkan ICD; the VapourSynth plugin still provides the metrics."
-} else {
-    Write-Host '    libvship.dll loads' -ForegroundColor DarkGray
-}
-
 if (-not $SkipModels) {
     Write-Step 'Fetching VMAF models'
 
@@ -238,12 +198,14 @@ if (-not $SkipModels) {
 
 Write-Step 'Verifying the staged release'
 
-Assert-Staged -Names @(
-    'libvmaf.dll'
-    'libgcc_s_seh-1.dll'
-    'libstdc++-6.dll'
-    'libwinpthread-1.dll'
-    'libvship.dll'
-) -Directory $StageDir
+# Only what this run was asked to produce: `-SkipVmaf` exists so the vship stage
+# can be exercised alone, and asserting on libvmaf regardless made that switch
+# always throw.
+$required = @('libvship.dll')
+if (-not $SkipVmaf) {
+    $required += @('libvmaf.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')
+}
+
+Assert-Staged -Names $required -Directory $StageDir
 
 Write-Host 'All native dependencies staged.' -ForegroundColor Green
