@@ -8,16 +8,17 @@
     headers and no compiler. `tar` and `curl.exe` both ship with Windows, so
     this script is self-contained.
 
-    The three DLLs come from ordinary MSYS2 binary packages. `libvmaf.dll`
-    imports the other two directly, so they must sit beside it or the library
+    The four DLLs come from ordinary MSYS2 binary packages. `libvmaf.dll`
+        imports the other three directly, so they must sit beside it or the library
     will not load:
 
         libvmaf.dll          <- mingw-w64-x86_64-vmaf
         libgcc_s_seh-1.dll   <- mingw-w64-x86_64-libgcc       (GCC unwinder)
-        libwinpthread-1.dll  <- mingw-w64-x86_64-libwinpthread-git
+            libstdc++-6.dll      <- mingw-w64-x86_64-libstdc++     (C++ runtime)
+            libwinpthread-1.dll  <- mingw-w64-x86_64-libwinpthread-git
 
-    libvmaf's only other imports are kernel32.dll and msvcrt.dll, which every
-    Windows install already provides.
+        libvmaf's only other imports are kernel32.dll and msvcrt.dll, which every
+        Windows install already provides.
 
     All nine upstream VMAF models are downloaded. Four are selectable by name
     through Av1an's `features` option; the rest can be passed with `model`.
@@ -76,6 +77,9 @@ $ModelBase = "https://raw.githubusercontent.com/Netflix/vmaf/v$LibvmafVersion/mo
 $LibvmafPackage = "mingw-w64-x86_64-vmaf-$LibvmafVersion-1-any.pkg.tar.zst"
 $RuntimePackages = @(
     'mingw-w64-x86_64-libgcc-16.2.0-4-any.pkg.tar.zst',
+    # The `+` is percent-encoded: MSYS2 lists the file with an encoded name, and
+    # the literal character 404s.
+    'mingw-w64-x86_64-libstdc%2B%2B-16.2.0-4-any.pkg.tar.zst',
     'mingw-w64-x86_64-libwinpthread-git-12.0.0.r747.g1a99f8514-1-any.pkg.tar.zst'
 )
 
@@ -208,11 +212,11 @@ if (-not $ModelsOnly) {
         throw "No DLLs were extracted from any of: $($usedRepos -join ', ')"
     }
 
-    # libgcc_s_seh-1.dll and libwinpthread-1.dll must land beside libvmaf.dll or
-    # the loader cannot resolve libvmaf's own imports.
+    # libgcc_s_seh-1.dll, libstdc++-6.dll and libwinpthread-1.dll must land beside
+        # libvmaf.dll or the loader cannot resolve libvmaf's own imports.
     Copy-Item (Join-Path $staged '*.dll') $BinDir -Force
 
-    $expected = @('libvmaf.dll', 'libgcc_s_seh-1.dll', 'libwinpthread-1.dll')
+        $expected = @('libvmaf.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')
     $missing = $expected | Where-Object { -not (Test-Path (Join-Path $BinDir $_)) }
     if ($missing) {
         throw "Missing after extraction: $($missing -join ', '). These are required."

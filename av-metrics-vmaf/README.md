@@ -152,16 +152,23 @@ Then point `VMAF_LIB_DIR` at the directory containing `libvmaf.dll`.
 
 This crate loads libvmaf **at runtime** with `libloading`, so you need only the
 `.dll` files — not MSYS2's toolchain, not the import library, and not a compiler.
-Three DLLs are enough, and all three come from MSYS2's ordinary binary packages:
+Four DLLs are enough, and all four come from MSYS2's ordinary binary packages:
 
 | File | Provided by | Why it is needed |
 | --- | --- | --- |
 | `libvmaf.dll` | `mingw-w64-x86_64-vmaf` | the library itself |
 | `libgcc_s_seh-1.dll` | `mingw-w64-x86_64-libgcc` | GCC unwinder, imported by `libvmaf.dll` |
+| `libstdc++-6.dll` | `mingw-w64-x86_64-libstdc++` | C++ runtime, imported by `libvmaf.dll` |
 | `libwinpthread-1.dll` | `mingw-w64-x86_64-libwinpthread-git` | pthreads, imported by `libvmaf.dll` |
 
-The last two are transitive dependencies of `libvmaf.dll` itself — its only other
-imports are `kernel32.dll` and `msvcrt.dll`, which every Windows install already has.
+The last three are hard imports of `libvmaf.dll`: without any one of them the
+loader fails the module with Win32 error 126, so a partial install leaves VMAF silently
+unavailable rather than reporting a missing library. The library's only other imports
+are `kernel32.dll` and `msvcrt.dll`, which every Windows install already has.
+
+MSYS2 lists the libstdc++ package with its `+` characters percent-encoded, so the
+archive is `mingw-w64-x86_64-libstdc%2B%2B-<version>-<rel>-any.pkg.tar.zst`; the
+literal `+` returns 404.
 
 `tar` and `curl` are both in the base Windows install, so nothing else is required.
 [`scripts/install-libvmaf-windows.ps1`](scripts/install-libvmaf-windows.ps1) does
