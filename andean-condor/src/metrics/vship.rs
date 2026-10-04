@@ -201,6 +201,22 @@ const fn resolution(metric: &QualityMetric) -> Option<(u32, u32)> {
     }
 }
 
+/// Whether Butteraugli should report the Q-norm rather than the infinity norm.
+///
+/// The VapourSynth branch this replaces selects the property to read as
+/// `norm.and_then(|_| QNORM).unwrap_or(INF)`, so a requested norm means the
+/// Q-norm and no norm means the infinity norm. `butteraugli-3` is the case that
+/// distinguishes them: the plugin reads `_BUTTERAUGLI_QNorm` there, not the
+/// distortion map's L3 norm, so this must not be inferred from the exponent.
+#[inline]
+#[must_use]
+fn butteraugli_uses_q_norm(metric: &QualityMetric) -> bool {
+    matches!(metric, QualityMetric::BUTTERAUGLI {
+        norm: Some(_),
+        ..
+    })
+}
+
 /// libvship handler count for a configured `threads` value.
 ///
 /// `None` takes the plugin path's default of four handlers, so the two paths
@@ -262,15 +278,18 @@ pub fn score_probed_frames(
     let metric = vship_config.metric();
 
     // Which Butteraugli norm is the headline depends on the configuration, not on
-    // the metric. The VapourSynth plugin reads `BUTTERAUGLI_INFNorm` unless a
-    // norm is requested and `BUTTERAUGLI_QNorm` when one is, so the native path
-    // has to follow the same rule or the two report different quantities for the
-    // same frames -- and `target_range` is calibrated against whichever the plugin
+    // the metric. The VapourSynth plugin reads `BUTTERAUGLI_INFNorm` unless a norm
+    // is requested and `BUTTERAUGLI_QNorm` when one is, so the native path has to
+    // follow the same rule or the two report different quantities for the same
+    // frames -- and `target_range` is calibrated against whichever the plugin
     // reported.
-    let butteraugli_uses_q_norm = !matches!(config, QualityMetric::BUTTERAUGLI {
-        norm: Some(_),
-        ..
-    });
+    let butteraugli_uses_q_norm = butteraugli_uses_q_norm(config);
+
+    // The driver resets temporal history at a discontinuity itself, so the
+    // configured `disable_temporal` has to gate that reset. Left ungated, the
+    // option would be set on the config and then overridden by the very pass that
+    // is supposed to honour it.
+    let reset_on_discontinuity = vship_config.cvvdp().reset_on_discontinuity;
 
     let reference_format = VideoFormat::from_details(&reference_details);
     let distorted_format = VideoFormat::from_details(&distorted_details);
@@ -309,6 +328,7 @@ pub fn score_probed_frames(
             // scene boundary -- the handler would otherwise fold a discontinuity
             // into its motion history, so its history is cleared first.
             if metric.is_temporal()
+                && reset_on_discontinuity
                 && previous.is_some_and(|previous| previous.checked_add(1) != Some(source_index))
             {
                 scorer.reset_temporal().map_err(describe_error)?;
@@ -511,6 +531,39 @@ mod tests {
         assert_eq!(config.handler_threads(), 3);
         assert_eq!(config.butteraugli().q_norm, 3);
         assert!((config.butteraugli().intensity_multiplier - 250.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn butteraugli_reports_the_norm_the_plugin_would() {
+        // No norm requested: the plugin reads `BUTTERAUGLI_INFNorm`.
+        let default = QualityMetric::BUTTERAUGLI {
+            target_range:         (0.8, 1.2),
+            resolution:           None,
+            threads:              None,
+            intensity_multiplier: None,
+            norm:                 None,
+        };
+        assert!(
+            !butteraugli_uses_q_norm(&default),
+            "with no norm the plugin reports the infinity norm, so the native path must too"
+        );
+
+        // A norm requested: the plugin reads `BUTTERAUGLI_QNorm`. Note this is the
+        // configured-norm value, not the distortion map's L3 norm, so `butteraugli-3`
+        // selects `norm_q` rather than `norm_3`.
+        for norm in [2, 3, 5] {
+            let configured = QualityMetric::BUTTERAUGLI {
+                target_range:         default.target_range(),
+                resolution:           None,
+                threads:              None,
+                intensity_multiplier: None,
+                norm:                 Some(norm),
+            };
+            assert!(
+                butteraugli_uses_q_norm(&configured),
+                "with norm {norm} the plugin reports the Q-norm, so the native path must too"
+            );
+        }
     }
 
     #[test]
