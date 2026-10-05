@@ -78,3 +78,15 @@ pub fn libvmaf_version() -> Option<&'static str> {
 pub fn is_available() -> bool {
     VmafScorer::is_available()
 }
+
+/// Whether the loaded libvmaf exposes a usable CUDA interface.
+///
+/// True only when every entry point the CUDA path needs resolved, which a
+/// libvmaf built without `-Denable_cuda=true` exports none of. Whether a given
+/// *model* can then initialise is a separate question — see
+/// [`VmafModel::cuda_supported`].
+#[inline]
+#[must_use]
+pub fn cuda_available() -> bool {
+    ffi::VmafApi::load().is_ok_and(ffi::VmafApi::cuda_available)
+}

@@ -58,7 +58,58 @@ Enable verbose output and logging.
 
 ## Version `-v`, `--version`
 
-Display encoder and VapourSynth installation information. With `--verbose`, prints extended details.
+Display encoder, VapourSynth plugin, and quality metric library installation
+information. With `--verbose`, prints extended details.
+
+### Quality Metric Libraries
+
+The `Quality Metric Libraries` section reports `libvship`, `fmetrics` and
+`libvmaf`, which are loaded at runtime and may be absent. It is listed
+separately from the VapourSynth plugins because the two are independent:
+libvship ships as the `libvship` VapourSynth plugin, so that plugin can be
+marked installed while the native C API is still unloadable — and it is the
+native library, not the plugin, that decides whether these metrics score on
+the GPU.
+
+Under `--verbose`, a loaded library also reports its version. libvship adds
+its compute backend and device name, and libvmaf adds whether it was built
+with CUDA support plus the presence of each stock VMAF model, since a libvmaf
+without its models compiled in loads but cannot score.
+
+### Compute Devices
+
+When `--verbose` is used and libvship enumerated any devices, each is listed
+under the library with the index that selects it:
+
+```
+✓ libvship: 5.1.0 (backend: Vulkan, device: NVIDIA GeForce RTX 4090)
+  Compute Devices
+  ----------------------------------------------
+  [0] AMD Radeon Graphics (integrated)
+  [1] NVIDIA GeForce RTX 4090, 24 GiB VRAM (default)
+```
+
+The index in brackets is the `gpu_id` to supply when the default is not the
+device you want — a discrete GPU is normally preferred, but the default cannot
+know that your machine has a better part for the job. `(default)` marks the
+device used when none is configured.
+
+Set it on the metric itself in `condor.json`, for any of the GPU metrics:
+
+```json
+"metric": {
+  "SSIMULACRA2": {
+    "target_range": [74.0, 76.0],
+    "resolution": null,
+    "threads": null,
+    "gpu_id": 1
+  }
+}
+```
+
+Leaving `gpu_id` unset lets libvship choose, which is what it prefers. Note
+that a VapourSynth `gpu_id` and the index above refer to the same libvship
+device ordering.
 
 ## condor.json
 

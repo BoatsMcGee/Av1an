@@ -195,6 +195,7 @@ mod tests {
                 display_model:     None,
                 resize_to_display: None,
                 disable_temporal:  None,
+                gpu_id:            None,
             },
             quantizer_range: TargetQuality::default_quantizer_range(&EncoderBase::AOM),
             ..Default::default()

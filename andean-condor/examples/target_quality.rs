@@ -195,6 +195,7 @@ fn main() -> Result<()> {
                 target_range: (79.5, 80.5),
                 resolution:   None,
                 threads:      None,
+                gpu_id:       None,
             },
             maximum_probes:  DEFAULT_MAXIMUM_PROBES,
             quantizer_range: TargetQuality::default_quantizer_range(&EncoderBase::X264),

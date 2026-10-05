@@ -11,8 +11,9 @@
         and VMAF is reported unavailable with no other symptom.
       * The native libraries must sit beside the executable, because libvmaf.dll
         imports its MinGW runtime DLLs and neither it nor libvship.dll can be
-        found anywhere else. FFMS2 needs nothing here: it is linked into the
-        executable.
+        found anywhere else. fmetrics.dll has no dependencies of its own but is
+        still found by relative path. FFMS2 needs nothing here: it is linked
+        into the executable.
 
     Shipping one archive is therefore the only way a download can reconstruct the
     layout. Individual files are also attached for anyone who needs them, but the
@@ -52,6 +53,7 @@ $Contents = @(
     'condor.exe'
     'libvmaf.dll'
     'libvship.dll'
+    'fmetrics.dll'
     'libgcc_s_seh-1.dll'
     'libstdc++-6.dll'
     'libwinpthread-1.dll'
@@ -155,6 +157,7 @@ $expected = @(
     'condor.exe'
     'libvmaf.dll'
     'libvship.dll'
+    'fmetrics.dll'
     'model/vmaf_v0.6.1.json'
 )
 foreach ($name in $expected) {

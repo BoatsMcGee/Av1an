@@ -27,7 +27,7 @@ use crate::{
             zone_encoder::{ZoneEncoder, ZonePlan},
         },
     },
-    metrics::{self, OutputIndexing},
+    metrics::{self, Engine, OutputIndexing},
     models::{
         encoder::{Encoder, EncoderBase, cli_parameter::CLIParameter},
         input::{ImportMethod, Input as InputModel},
@@ -929,12 +929,11 @@ impl TargetQuality {
         // the plugin path, which trims each frame out of the graph so VapourSynth
         // never decodes the skipped ones.
         //
-        // libvship scores SSIMULACRA2, Butteraugli and CVVDP the same way, for
-        // the same reason. Those three have working plugin branches below, so a
-        // native failure yields `None` and falls through to them; VMAF has no
-        // such branch and propagates its error.
+        // A native failure yields `None` and falls through to the plugin branches;
+        // VMAF has no such branch and propagates its error.
         let is_vmaf = matches!(config.metric, QualityMetric::VMAF { .. });
-        let native = is_vmaf || metrics::vship::native_supported(&config.metric);
+        let engine = metrics::engine(&config.metric, !matches!(metric_input, Input::Video { .. }));
+        let native = is_vmaf || engine.is_some();
 
         // Created and relayed here, before scoring, so the native path reports compare
         // progress through the same relay the plugin branches use and the UI shows
@@ -1046,15 +1045,37 @@ impl TargetQuality {
                     report,
                 )
             } else {
-                metrics::score_vship_frames(
-                    reference,
-                    distorted.decoder(),
-                    &config.metric,
-                    &probed,
-                    OutputIndexing::Compacted,
-                    Some(cancelled),
-                    report,
-                )
+                // A name with no entry point here yields an error rather than a `return`, so it
+                // takes the same path as any other native failure and the progress
+                // relay is joined on the way out.
+                match engine {
+                    Some(Engine::Vship) => metrics::score_vship_frames(
+                        reference,
+                        distorted.decoder(),
+                        &config.metric,
+                        &probed,
+                        OutputIndexing::Compacted,
+                        Some(cancelled),
+                        report,
+                    ),
+                    Some(Engine::Fmetrics) => metrics::fmetrics::score_probed_frames(
+                        reference,
+                        distorted.decoder(),
+                        &config.metric,
+                        &probed,
+                        OutputIndexing::Compacted,
+                        Some(cancelled),
+                        report,
+                    ),
+                    // Unreachable: `engine` names only engines that score natively. A
+                    // failure rather than a `return` so adding a fourth engine
+                    // cannot quietly discard the pass.
+                    Some(Engine::VapourSynth | Engine::Vmaf) | None => Err(anyhow::anyhow!(
+                        "no native engine can score {}; it was chosen as {}",
+                        config.metric.friendly_name(),
+                        engine.map_or("none", Engine::as_str),
+                    )),
+                }
             };
 
             match scored {
@@ -1064,26 +1085,28 @@ impl TargetQuality {
                         bail!(TargetQualityError::QualityMeasurementFailed);
                     }
                     error!(
+                        engine = ?engine.map(Engine::as_str),
                         metric = config.metric.friendly_name(),
-                        "libvship produced no scores, falling back to the VapourSynth plugin"
+                        "native scoring produced no scores, falling back to the VapourSynth plugin"
                     );
                     None
                 },
-                // A cancel that reaches scoring ends the pass cleanly. Propagating the
-                // error instead would unwind past `execute`'s save and its
-                // `cancelled` check, discarding the passes already recorded.
+                // A cancel that reaches scoring ends the pass cleanly. Propagating
+                // would unwind past `execute`'s save and discard the passes
+                // already recorded.
                 Err(error) if error.is::<metrics::probe::Cancelled>() => {
                     scoring_cancelled = true;
                     None
                 },
                 Err(error) if is_vmaf => return Err(error),
                 Err(error) => {
+                    // The engine is named because the failure is usually
+                    // library-specific and the fallback is otherwise silent.
                     error!(
                         %error,
-                        version = ?av_metrics_vship::libvship_version(),
-                        device = ?av_metrics_vship::device_name(),
+                        engine = ?engine.map(Engine::as_str),
                         metric = config.metric.friendly_name(),
-                        "libvship scoring failed, falling back to the VapourSynth plugin"
+                        "native metric scoring failed, falling back to the VapourSynth plugin"
                     );
                     None
                 },
@@ -1093,8 +1116,8 @@ impl TargetQuality {
         };
 
         if scoring_cancelled {
-            // Close the relay's channel before joining it: the thread ends only
-            // once every sender is dropped, and this scope still owns one.
+            // Dropped before joining: the thread ends only once every sender is
+            // gone, and this scope still owns one.
             drop(compare_progress_tx);
             compare_thread.join().expect("compare progress thread should join")?;
             return Ok((Vec::new(), warnings));
@@ -1173,6 +1196,7 @@ impl TargetQuality {
                 QualityMetric::SSIMULACRA2 {
                     resolution,
                     threads,
+                    gpu_id,
                     ..
                 } => {
                     let (reference_node, distorted_node) =
@@ -1192,6 +1216,7 @@ impl TargetQuality {
                     if VSHIPSSIMULACRA2::plugin_is_installed(core) {
                         let plugin = VSHIPSSIMULACRA2 {
                             num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
+                            gpu_id: gpu_id.map(u32::from),
                             ..Default::default()
                         };
                         let node = plugin.invoke(core, &reference_node, &distorted_node)?;
@@ -1209,6 +1234,7 @@ impl TargetQuality {
                     threads,
                     intensity_multiplier,
                     norm,
+                    gpu_id,
                     ..
                 } => {
                     let (reference_node, distorted_node) =
@@ -1229,6 +1255,7 @@ impl TargetQuality {
                         num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
                         intensity_multiplier: *intensity_multiplier,
                         q_norm: norm.map(|norm| norm as u32),
+                        gpu_id: gpu_id.map(u32::from),
                         ..Default::default()
                     };
                     let node = plugin.invoke(core, &reference_node, &distorted_node)?;
@@ -1275,6 +1302,7 @@ impl TargetQuality {
                     display_model,
                     resize_to_display,
                     disable_temporal,
+                    gpu_id,
                     ..
                 } => {
                     let (reference_node, distorted_node) =
@@ -1295,6 +1323,7 @@ impl TargetQuality {
                         model_name: *display_model,
                         resize_to_display: *resize_to_display,
                         disable_temporal: *disable_temporal,
+                        gpu_id: gpu_id.map(u32::from),
                         ..Default::default()
                     };
                     let node = plugin.invoke(core, &reference_node, &distorted_node)?;
@@ -1556,6 +1585,7 @@ mod tests {
             target_range: (74.0, 76.0),
             resolution:   None,
             threads:      None,
+            gpu_id:       None,
         }
     }
 
@@ -1666,6 +1696,7 @@ mod tests {
             threads:              None,
             intensity_multiplier: None,
             norm:                 None,
+            gpu_id:               None,
         };
         let history = [(20.0, 0.6), (28.0, 0.95), (32.0, 1.15), (40.0, 1.6)];
         assert_eq!(

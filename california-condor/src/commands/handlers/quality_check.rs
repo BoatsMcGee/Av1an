@@ -136,6 +136,7 @@ pub fn configure_quality_check(
                 target_range: DEFAULT_SSIMULACRA2_TARGET_RANGE,
                 resolution:   None,
                 threads:      None,
+                gpu_id:       None,
             },
             QualityMetricBase::BUTTERAUGLI => QualityMetric::BUTTERAUGLI {
                 target_range:         DEFAULT_BUTTERAUGLI_TARGET_RANGE,
@@ -143,6 +144,7 @@ pub fn configure_quality_check(
                 threads:              None,
                 intensity_multiplier: None,
                 norm:                 None,
+                gpu_id:               None,
             },
             QualityMetricBase::BUTTERAUGLI3Norm => QualityMetric::BUTTERAUGLI {
                 target_range:         DEFAULT_BUTTERAUGLI_TARGET_RANGE,
@@ -150,6 +152,7 @@ pub fn configure_quality_check(
                 threads:              None,
                 intensity_multiplier: None,
                 norm:                 Some(3),
+                gpu_id:               None,
             },
             QualityMetricBase::XPSNR => QualityMetric::XPSNR {
                 target_range: DEFAULT_XPSNR_TARGET_RANGE,
@@ -161,6 +164,7 @@ pub fn configure_quality_check(
                 display_model:     None,
                 resize_to_display: None,
                 disable_temporal:  None,
+                gpu_id:            None,
             },
         };
     }
@@ -306,6 +310,7 @@ mod tests {
                 threads:              None,
                 intensity_multiplier: None,
                 norm:                 None,
+                gpu_id:               None,
             },
             statistic: ProbeStatistic::Mean,
             strategy:  ProbeStrategy::Subset {

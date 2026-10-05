@@ -112,19 +112,28 @@ pub fn native_supported(metric: &QualityMetric) -> bool {
 pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<VshipConfig> {
     match metric {
         QualityMetric::SSIMULACRA2 {
-            threads, ..
-        } => Ok(VshipConfig::new()
-            .with_metric(VshipMetric::Ssimulacra2)
-            .with_handler_threads(handler_threads(*threads))),
+            threads,
+            gpu_id,
+            ..
+        } => Ok(with_gpu_id(
+            VshipConfig::new()
+                .with_metric(VshipMetric::Ssimulacra2)
+                .with_handler_threads(handler_threads(*threads)),
+            *gpu_id,
+        )),
         QualityMetric::BUTTERAUGLI {
             threads,
             intensity_multiplier,
             norm,
+            gpu_id,
             ..
         } => {
-            let mut config = VshipConfig::new()
-                .with_metric(VshipMetric::Butteraugli)
-                .with_handler_threads(handler_threads(*threads));
+            let mut config = with_gpu_id(
+                VshipConfig::new()
+                    .with_metric(VshipMetric::Butteraugli)
+                    .with_handler_threads(handler_threads(*threads)),
+                *gpu_id,
+            );
             if let Some(norm) = *norm {
                 config = config.with_q_norm(i32::from(norm));
             }
@@ -140,13 +149,17 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<VshipCon
             display_model,
             resize_to_display,
             disable_temporal,
+            gpu_id,
             ..
         } => {
             // CVVDP is temporal, so its score cannot be split across handlers;
             // `VshipConfig::handler_count` pins it to one regardless.
-            let mut config = VshipConfig::new()
-                .with_metric(VshipMetric::Cvvdp)
-                .with_handler_threads(av_metrics_vship::DEFAULT_HANDLER_THREADS);
+            let mut config = with_gpu_id(
+                VshipConfig::new()
+                    .with_metric(VshipMetric::Cvvdp)
+                    .with_handler_threads(av_metrics_vship::DEFAULT_HANDLER_THREADS),
+                *gpu_id,
+            );
             if frame_rate > 0.0 {
                 config = config.with_fps(frame_rate);
             }
@@ -225,6 +238,21 @@ fn butteraugli_uses_q_norm(metric: &QualityMetric) -> bool {
 #[inline]
 fn handler_threads(threads: Option<u8>) -> u32 {
     threads.map_or(av_metrics_vship::DEFAULT_HANDLER_THREADS, u32::from)
+}
+
+/// Apply a configured `gpu_id` to a `VshipConfig`.
+///
+/// Leaving it unset is meaningful: libvship then chooses the device itself,
+/// preferring a discrete GPU over an integrated one. Mapping `None` to `0`
+/// would instead pin every unscored run to device 0, discarding that
+/// preference, so the field is only written when a device was actually named.
+#[inline]
+fn with_gpu_id(mut config: VshipConfig, gpu_id: Option<u8>) -> VshipConfig {
+    if let Some(gpu_id) = gpu_id {
+        config = config.with_gpu_id(u32::from(gpu_id));
+    }
+
+    config
 }
 
 /// Score only the frames named by `selected`, returning one score per
@@ -431,6 +459,7 @@ mod tests {
             target_range: (74.0, 76.0),
             resolution: None,
             threads,
+            gpu_id: None,
         }
     }
 
@@ -470,6 +499,7 @@ mod tests {
             threads:              None,
             intensity_multiplier: None,
             norm:                 None,
+            gpu_id:               None,
         };
         let cvvdp = QualityMetric::CVVDP {
             target_range:      (0.0, 1.0),
@@ -477,6 +507,7 @@ mod tests {
             display_model:     None,
             resize_to_display: None,
             disable_temporal:  None,
+            gpu_id:            None,
         };
 
         assert_eq!(
@@ -527,6 +558,82 @@ mod tests {
         assert_eq!(config.handler_threads(), 2);
     }
 
+    /// A named device must reach libvship, and an unnamed one must leave the
+    /// choice to the library rather than defaulting to index 0 — that default
+    /// would silently override the discrete-GPU preference.
+    #[test]
+    fn a_configured_gpu_id_is_passed_through() {
+        for metric in [
+            QualityMetric::SSIMULACRA2 {
+                target_range: (74.0, 76.0),
+                resolution:   None,
+                threads:      None,
+                gpu_id:       Some(2),
+            },
+            QualityMetric::BUTTERAUGLI {
+                target_range:         (1.0, 3.0),
+                resolution:           None,
+                threads:              None,
+                intensity_multiplier: None,
+                norm:                 None,
+                gpu_id:               Some(2),
+            },
+            QualityMetric::CVVDP {
+                target_range:      (9.4, 9.6),
+                resolution:        None,
+                display_model:     None,
+                resize_to_display: None,
+                disable_temporal:  None,
+                gpu_id:            Some(2),
+            },
+        ] {
+            let config = scorer_config(&metric, 24.0).expect("config should build");
+
+            assert!(
+                config.has_explicit_gpu_id(),
+                "{}: gpu_id should be set",
+                metric.friendly_name()
+            );
+            assert_eq!(
+                config.gpu_id(),
+                2,
+                "{}: gpu_id should be 2",
+                metric.friendly_name()
+            );
+        }
+    }
+
+    #[test]
+    fn an_unset_gpu_id_leaves_the_device_to_libvship() {
+        for metric in [
+            ssimulacra2(None),
+            QualityMetric::BUTTERAUGLI {
+                target_range:         (1.0, 3.0),
+                resolution:           None,
+                threads:              None,
+                intensity_multiplier: None,
+                norm:                 None,
+                gpu_id:               None,
+            },
+            QualityMetric::CVVDP {
+                target_range:      (9.4, 9.6),
+                resolution:        None,
+                display_model:     None,
+                resize_to_display: None,
+                disable_temporal:  None,
+                gpu_id:            None,
+            },
+        ] {
+            let config = scorer_config(&metric, 24.0).expect("config should build");
+
+            assert!(
+                !config.has_explicit_gpu_id(),
+                "{}: gpu_id should be left unset so libvship picks a discrete device",
+                metric.friendly_name()
+            );
+        }
+    }
+
     #[test]
     fn butteraugli_norm_and_intensity_pass_through() {
         let metric = QualityMetric::BUTTERAUGLI {
@@ -535,6 +642,7 @@ mod tests {
             threads:              Some(3),
             intensity_multiplier: Some(250.0),
             norm:                 Some(3),
+            gpu_id:               None,
         };
         let config = scorer_config(&metric, 24.0).expect("config should build");
 
@@ -553,6 +661,7 @@ mod tests {
             threads:              None,
             intensity_multiplier: None,
             norm:                 None,
+            gpu_id:               None,
         };
         assert!(
             !butteraugli_uses_q_norm(&default),
@@ -569,6 +678,7 @@ mod tests {
                 threads:              None,
                 intensity_multiplier: None,
                 norm:                 Some(norm),
+                gpu_id:               None,
             };
             assert!(
                 butteraugli_uses_q_norm(&configured),
@@ -585,6 +695,7 @@ mod tests {
             display_model:     Some(DisplayModel::StandardFHD),
             resize_to_display: Some(true),
             disable_temporal:  Some(true),
+            gpu_id:            None,
         };
         let config = scorer_config(&metric, 23.976).expect("config should build");
 
@@ -611,6 +722,7 @@ mod tests {
             display_model:     None,
             resize_to_display: None,
             disable_temporal:  None,
+            gpu_id:            None,
         };
 
         let config = scorer_config(&metric, 23.976).expect("config should build");
@@ -712,6 +824,7 @@ mod tests {
             threads:              None,
             intensity_multiplier: None,
             norm:                 None,
+            gpu_id:               None,
         };
         let cvvdp = QualityMetric::CVVDP {
             target_range:      (0.0, 1.0),
@@ -719,6 +832,7 @@ mod tests {
             display_model:     None,
             resize_to_display: None,
             disable_temporal:  None,
+            gpu_id:            None,
         };
 
         // A near-identical encode and a badly wrong one, both against the same

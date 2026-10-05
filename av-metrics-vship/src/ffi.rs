@@ -1050,11 +1050,8 @@ pub fn library_candidates() -> Vec<PathBuf> {
     }
 
     // 4. Platform system directories.
-    if cfg!(target_os = "windows") {
-        for directory in [r"C:\Windows\System32", r"C:\Windows\SysWOW64"] {
-            let directory = PathBuf::from(directory);
-            candidates.extend(names.iter().map(|name| directory.join(name)));
-        }
+    for directory in system_directories() {
+        candidates.extend(names.iter().map(|name| directory.join(name)));
     }
 
     // 5. Bare names, so the platform loader's own search path applies. A parentless
@@ -1063,6 +1060,98 @@ pub fn library_candidates() -> Vec<PathBuf> {
     candidates.extend(names.iter().map(PathBuf::from));
 
     candidates
+}
+
+/// Directories a system-wide install would use on this host.
+///
+/// On Windows these are asked of the OS rather than written down. `C:\Windows`
+/// is not a safe constant: Windows can be installed to another drive or
+/// relocated, and a hardcoded path then names a directory that does not exist.
+/// `GetSystemDirectoryW` and its WOW64 counterpart report what this process can
+/// actually load from, which also gets the WoW64 redirection right without
+/// reasoning about the process bitness here.
+///
+/// Nothing is returned on other platforms, where the bare names already reach
+/// every directory the loader searches.
+#[inline]
+#[must_use]
+fn system_directories() -> Vec<PathBuf> {
+    if !cfg!(target_os = "windows") {
+        return Vec::new();
+    }
+
+    // Native System32 first, then the WOW64 directory. A 32-bit process asking for
+    // System32 is redirected to SysWOW64, which is the directory it can really load
+    // from, so both entry points are worth asking.
+    let mut directories = Vec::with_capacity(2);
+    directories.extend(windows_system_directory(true));
+    directories.extend(windows_system_directory(false));
+    directories.extend(windows_directory("SysWOW64"));
+    directories.dedup();
+
+    directories
+}
+
+/// One of Windows' system directories, as the OS reports it.
+///
+/// `native_system` selects `GetSystemDirectoryW` over
+/// `GetSystemWow64DirectoryW`.
+#[cfg(target_os = "windows")]
+fn windows_system_directory(native_system: bool) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    unsafe extern "system" {
+        fn GetSystemDirectoryW(buffer: *mut u16, size: u32) -> u32;
+        fn GetSystemWow64DirectoryW(buffer: *mut u16, size: u32) -> u32;
+    }
+
+    let entry: unsafe extern "system" fn(*mut u16, u32) -> u32 = if native_system {
+        GetSystemDirectoryW
+    } else {
+        GetSystemWow64DirectoryW
+    };
+
+    // A return equal to the buffer size means the path was truncated, so grow and
+    // ask again rather than using a partial directory.
+    let mut buffer = vec![0u16; 260];
+    loop {
+        let capacity = buffer.len();
+        // SAFETY: `buffer` is writable for `capacity` units, which is the size
+        // passed alongside it.
+        let written = unsafe { entry(buffer.as_mut_ptr(), capacity as u32) };
+        if written == 0 {
+            return None;
+        }
+        if (written as usize) < capacity {
+            buffer.truncate(written as usize);
+            break;
+        }
+        buffer.resize(capacity * 2, 0);
+    }
+
+    Some(PathBuf::from(std::ffi::OsString::from_wide(&buffer)))
+}
+
+/// Nothing to ask off Windows.
+#[cfg(not(target_os = "windows"))]
+#[inline]
+#[must_use]
+const fn windows_system_directory(_native_system: bool) -> Option<PathBuf> {
+    None
+}
+
+/// A directory beside `%SystemRoot%`.
+#[cfg(target_os = "windows")]
+fn windows_directory(subdirectory: &str) -> Option<PathBuf> {
+    env_directory("SystemRoot").map(|root| root.join(subdirectory))
+}
+
+/// Nothing to ask off Windows.
+#[cfg(not(target_os = "windows"))]
+#[inline]
+#[must_use]
+fn windows_directory(_subdirectory: &str) -> Option<PathBuf> {
+    None
 }
 
 /// Candidate library file names for the host platform.
@@ -1237,6 +1326,28 @@ mod tests {
 
     /// `Vship_Sample_t` is the one enum whose values are not contiguous, so a
     /// wrong transcription would silently reinterpret every pixel buffer.
+    #[test]
+    fn system_directories_are_real_and_not_assumed_to_be_on_c() {
+        // Windows can be installed to another drive or relocated, so the system
+        // directory has to come from the OS. A hardcoded `C:\Windows` silently
+        // names a directory that does not exist there, and the failure looks like
+        // "libvship is not installed" rather than "the search path was wrong".
+        for directory in system_directories() {
+            assert!(directory.is_absolute(), "{directory:?} should be absolute");
+            assert!(
+                directory.is_dir(),
+                "the reported system directory {directory:?} does not exist"
+            );
+        }
+
+        // Whatever the OS says, a candidate that does not exist only costs a
+        // failed `dlopen` attempt, so the set must be small and free of blanks.
+        assert!(
+            system_directories().iter().all(|directory| !directory.as_os_str().is_empty()),
+            "an empty system directory would produce a candidate of just the file name"
+        );
+    }
+
     #[test]
     fn sample_discriminants_match_the_c_header() {
         assert_eq!(VshipSample::Float as c_int, 0);

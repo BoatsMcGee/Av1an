@@ -14,7 +14,7 @@ use crate::{
         input::Input,
         sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
     },
-    metrics::{self, OutputIndexing},
+    metrics::{self, Engine, OutputIndexing},
     models::{
         input::{ImportMethod, Input as InputModel},
         sequence::{
@@ -182,9 +182,8 @@ where
 
         // VMAF scores decoded frames through libvmaf rather than a VapourSynth
         // filter graph, so it takes a separate path. Every other metric runs as a
-        // plugin over the nodes built by `measure` -- except SSIMULACRA2,
-        // Butteraugli and CVVDP, which libvship also implements and which are
-        // preferred natively whenever that library is usable.
+        // plugin over the nodes built by `measure`, unless a native engine takes
+        // it first.
         let measurements = if matches!(config.metric, QualityMetric::VMAF { .. }) {
             Self::measure_vmaf(
                 input,
@@ -194,7 +193,7 @@ where
                 &progress_tx,
                 &cancelled,
             )?
-        } else if let Some(scores) = Self::measure_vship(
+        } else if let Some(scores) = Self::measure_native(
             input,
             &condor.output.path,
             config,
@@ -357,16 +356,15 @@ impl QualityCheck {
         Ok(measurements)
     }
 
-    /// Score the selection with libvship, or report that the native path does
-    /// not apply.
+    /// Score the selection with whichever native engine is preferred, or report
+    /// that the native path does not apply.
     ///
-    /// Returns `Ok(None)` when the caller should fall back to the VapourSynth
-    /// plugin branches: either the metric is one libvship does not implement,
-    /// or the library and a device are unusable, or scoring failed. Every
-    /// such case is logged rather than propagated, because the plugin
-    /// branches remain a complete implementation of these metrics; falling
-    /// back preserves the behaviour of a machine without libvship.
-    fn measure_vship(
+    /// Returns `Ok(None)` when the caller should use its VapourSynth branch:
+    /// the metric has no native engine, no engine's library is usable, or
+    /// scoring failed. Every such case is logged rather than propagated,
+    /// because the plugin branches are a complete implementation of these
+    /// metrics.
+    fn measure_native(
         input: &mut Input,
         output_path: &std::path::Path,
         config: &QualityCheckConfig,
@@ -374,9 +372,10 @@ impl QualityCheck {
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
         cancelled: &AtomicBool,
     ) -> Result<Option<Vec<SceneMeasurement>>> {
-        if !metrics::vship::native_supported(&config.metric) {
+        let Some(engine) = metrics::engine(&config.metric, Self::input_is_vapoursynth(input))
+        else {
             return Ok(None);
-        }
+        };
 
         let (total_frames, selected) = Self::native_selection(scene_frame_indices);
 
@@ -391,35 +390,62 @@ impl QualityCheck {
             filters:       Vec::new(),
         })?;
 
-        // As in `measure_vmaf`, each score is reported as libvship produces it.
-        let scores = match metrics::score_vship_frames(
-            reference,
-            distorted.decoder(),
-            &config.metric,
-            &selected,
-            OutputIndexing::Aligned,
-            Some(cancelled),
-            |position, score| {
-                Self::report_frame_score(&selected, total_frames, position, score, progress_tx);
-            },
-        ) {
+        // Each score is reported as the engine produces it.
+        let scores = match engine {
+            Engine::Vship => metrics::score_vship_frames(
+                reference,
+                distorted.decoder(),
+                &config.metric,
+                &selected,
+                OutputIndexing::Aligned,
+                Some(cancelled),
+                |position, score| {
+                    Self::report_frame_score(&selected, total_frames, position, score, progress_tx);
+                },
+            ),
+            Engine::Fmetrics => metrics::fmetrics::score_probed_frames(
+                reference,
+                distorted.decoder(),
+                &config.metric,
+                &selected,
+                OutputIndexing::Aligned,
+                Some(cancelled),
+                |position, score| {
+                    Self::report_frame_score(&selected, total_frames, position, score, progress_tx);
+                },
+            ),
+            // `engine` returns `None` rather than naming a plugin engine, so
+            // reaching this means the ordering changed without this dispatch
+            // following it.
+            Engine::VapourSynth | Engine::Vmaf => return Ok(None),
+        };
+
+        let scores = match scores {
             Ok(scores) => scores,
             // A cancelled pass must not be retried through the plugin, which
             // would ignore the abort and score the whole selection again.
             Err(error) if error.is::<metrics::probe::Cancelled>() => return Err(error),
             Err(error) => {
+                // The engine is named because the failure is usually
+                // library-specific and the fallback is otherwise silent.
                 error!(
                     %error,
-                    version = ?av_metrics_vship::libvship_version(),
-                    device = ?av_metrics_vship::device_name(),
+                    engine = engine.as_str(),
                     metric = config.metric.friendly_name(),
-                    "libvship scoring failed, falling back to the VapourSynth plugin"
+                    "native metric scoring failed, falling back to the VapourSynth plugin"
                 );
                 return Ok(None);
             },
         };
 
         Self::group_native_scores(&scores, total_frames, scene_frame_indices).map(Some)
+    }
+
+    /// Whether the reference side is a VapourSynth graph rather than a native
+    /// decode, which decides whether fmetrics outranks the plugin.
+    #[inline]
+    fn input_is_vapoursynth(input: &Input) -> bool {
+        !matches!(input, Input::Video { .. })
     }
 
     /// The frames a native pass scores, and how many that is.
@@ -672,6 +698,7 @@ impl QualityCheck {
             QualityMetric::SSIMULACRA2 {
                 resolution,
                 threads,
+                gpu_id,
                 ..
             } => {
                 let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
@@ -690,6 +717,7 @@ impl QualityCheck {
                 if VSHIPSSIMULACRA2::plugin_is_installed(core) {
                     let plugin = VSHIPSSIMULACRA2 {
                         num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
+                        gpu_id: gpu_id.map(u32::from),
                         ..Default::default()
                     };
                     let node = plugin.invoke(core, &reference_node, &distorted_node)?;
@@ -741,6 +769,7 @@ impl QualityCheck {
                 threads,
                 intensity_multiplier,
                 norm,
+                gpu_id,
                 ..
             } => {
                 let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
@@ -760,6 +789,7 @@ impl QualityCheck {
                     num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
                     intensity_multiplier: *intensity_multiplier,
                     q_norm: norm.map(|norm| norm as u32),
+                    gpu_id: gpu_id.map(u32::from),
                     ..Default::default()
                 };
                 let node = plugin.invoke(core, &reference_node, &distorted_node)?;
@@ -830,6 +860,7 @@ impl QualityCheck {
                 display_model,
                 resize_to_display,
                 disable_temporal,
+                gpu_id,
                 ..
             } => {
                 let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
@@ -849,6 +880,7 @@ impl QualityCheck {
                     model_name: *display_model,
                     resize_to_display: *resize_to_display,
                     disable_temporal: *disable_temporal,
+                    gpu_id: gpu_id.map(u32::from),
                     ..Default::default()
                 };
                 let node = plugin.invoke(core, &reference_node, &distorted_node)?;

@@ -72,13 +72,22 @@ pub use ffi::{
     VshipColorFamily,
     VshipColorspace,
     VshipCropRectangle,
+    VshipDeviceInfo,
     VshipPrimaries,
     VshipRange,
     VshipSample,
     VshipTransferFunction,
     VshipYuvMatrix,
 };
-pub use scorer::{FrameScore, PlaneSet, PlaneSource, VideoFormat, VshipScorer};
+pub use scorer::{
+    FrameScore,
+    PlaneSet,
+    PlaneSource,
+    VideoFormat,
+    VshipDevice,
+    VshipScorer,
+    devices,
+};
 
 /// The runtime libvship version string, if libvship is loaded and usable.
 #[inline]
@@ -102,4 +111,27 @@ pub fn is_available() -> bool {
 #[must_use]
 pub fn device_name() -> Option<String> {
     VshipScorer::device_name()
+}
+
+/// The compute backend the loaded libvship was compiled for, if it is loaded.
+///
+/// Distinct from [`is_available`]: a library can load and still fail
+/// `Vship_GPUFullCheck`, so the backend may be reported for a system where
+/// scoring cannot actually run.
+#[inline]
+#[must_use]
+pub fn backend() -> Option<VshipBackend> {
+    ffi::VshipApi::load().ok().map(ffi::VshipApi::backend)
+}
+
+/// The device index libvship would use when none is configured, if there is
+/// one.
+///
+/// This is what [`VshipConfig::gpu_id_or_default`] resolves to, and it prefers
+/// a discrete GPU when one is present. `None` means libvship could not be
+/// loaded or reported no devices, so there is no index to name.
+#[inline]
+#[must_use]
+pub fn default_gpu_id() -> Option<u32> {
+    scorer::default_gpu_id()
 }

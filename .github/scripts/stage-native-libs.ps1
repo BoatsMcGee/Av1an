@@ -1,12 +1,12 @@
 <#
 .SYNOPSIS
-    Stages the prebuilt native libraries a Windows release needs.
+    Stages the native libraries a Windows release needs.
 
 .DESCRIPTION
-    Condor.exe opens libvmaf and libvship with `dlopen`, so the libraries it does
-    use have to be beside the executable before packaging:
+    Condor.exe opens libvmaf, libvship and fmetrics with `dlopen`, so the ones it
+    uses have to be beside the executable before packaging:
 
-      libvmaf.dll          dlopened by av-metrics-vmaf, so absence only costs VMAF.
+      libvmaf.dll          dlopened by av-metrics-vmaf; absence only costs VMAF.
       libgcc_s_seh-1.dll   \
       libstdc++-6.dll       |  imported by libvmaf.dll itself. All three are hard
       libwinpthread-1.dll  /   imports: libvmaf.dll fails to load without any of
@@ -14,6 +14,14 @@
                                than inferred.
       libvship.dll         dlopened by av-metrics-vship; absent costs the native
                            vship metrics, which fall back to the VapourSynth plugin.
+      fmetrics.dll         dlopened by av-metrics-fmetrics; absent costs the CPU
+                           fallback for SSIMULACRA2, Butteraugli and CVVDP on a
+                           machine with no usable GPU.
+
+    fmetrics is the exception to the download-everything pattern here: no prebuilt
+    Windows release is published for it and nothing installable carries it, so it
+    is compiled from a pinned commit by the crate's own install script. That makes
+    this step need the Zig toolchain the runner does not have by default.
 
     FFMS2 is not among them: it is linked into the executable, so decoding never
     needs a separate ffms2.dll. Only the VapourSynth plugin path and the FFVship
@@ -27,10 +35,14 @@
     Directory the release is assembled in. Defaults to `target\release`.
 
 .PARAMETER SkipVmaf
-    Skip the libvmaf stage. Only useful when testing the vship stage alone.
+    Skip the libvmaf stage. Only useful when testing another stage alone.
 
 .PARAMETER SkipModels
     Skip fetching the VMAF model JSON files.
+
+.PARAMETER SkipFmetrics
+    Skip building fmetrics. The stage then has no CPU fallback, and only the
+    VapourSynth plugin path can score SSIMULACRA2, Butteraugli and CVVDP.
 #>
 [CmdletBinding()]
 param(
@@ -41,7 +53,10 @@ param(
     [switch] $SkipVmaf,
 
     [Parameter()]
-    [switch] $SkipModels
+    [switch] $SkipModels,
+
+    [Parameter()]
+    [switch] $SkipFmetrics
 )
 
 Set-StrictMode -Version Latest
@@ -113,7 +128,6 @@ function Invoke-Download {
     $size = (Get-Item $OutFile).Length
     Write-Host ("    {0}  {1:N0} bytes" -f (Split-Path $OutFile -Leaf), $size)
 }
-
 
 function Assert-Staged {
     <#
@@ -196,14 +210,27 @@ if (-not $SkipModels) {
     }
 }
 
+if (-not $SkipFmetrics) {
+    # The crate's own install script does the work, so there is one implementation
+    # of the build rather than two that can drift apart.
+    Write-Step 'Building fmetrics from source'
+
+    & ./av-metrics-fmetrics/scripts/install-fmetrics-windows.ps1 -Destination $StageDir
+    if ($LASTEXITCODE -ne 0) {
+        throw 'the fmetrics build failed.'
+    }
+}
+
 Write-Step 'Verifying the staged release'
 
-# Only what this run was asked to produce: `-SkipVmaf` exists so the vship stage
-# can be exercised alone, and asserting on libvmaf regardless made that switch
-# always throw.
+# Only what this run was asked to produce: the Skip switches exist so one stage can
+# be exercised alone, and asserting on a skipped library made them always throw.
 $required = @('libvship.dll')
 if (-not $SkipVmaf) {
     $required += @('libvmaf.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')
+}
+if (-not $SkipFmetrics) {
+    $required += 'fmetrics.dll'
 }
 
 Assert-Staged -Names $required -Directory $StageDir

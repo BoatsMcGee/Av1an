@@ -428,6 +428,7 @@ mod tests {
             target_range: (74.0, 76.0),
             resolution:   None,
             threads:      None,
+            gpu_id:       None,
         };
         assert!(scorer_config(&other).is_err());
     }

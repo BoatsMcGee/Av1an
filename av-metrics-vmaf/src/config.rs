@@ -34,6 +34,17 @@ pub enum VmafModel {
 }
 
 impl VmafModel {
+    /// Every stock model, for enumerating what a libvmaf build can load.
+    ///
+    /// [`Self::Path`] is deliberately excluded: a custom model is a per-run
+    /// choice, not a property of the installation.
+    ///
+    /// [`Self::Weighted`] is included even though libvmaf 3.2.1 cannot load
+    /// it, so that a report walking this list shows the model's real state
+    /// rather than quietly omitting one of the five stock models.
+    pub const STOCK: [Self; 5] =
+        [Self::Default, Self::Neg, Self::UhdNeg, Self::Weighted, Self::Uhd];
+
     /// Resolve this model to the string libvmaf expects.
     ///
     /// `vmaf_model_load` takes a bare version string for built-in models, or a

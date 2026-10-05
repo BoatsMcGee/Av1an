@@ -411,11 +411,16 @@ impl VshipConfig {
     }
 
     /// The device to score on: the configured one, or the chosen default.
+    ///
+    /// Falls back to device 0 when the default could not be resolved, because
+    /// libvship's own entry points still require an index. Scoring then fails
+    /// with libvship's own error rather than being pointed at a device chosen
+    /// here.
     #[inline]
     #[must_use]
     pub fn gpu_id_or_default(&self) -> u32 {
         if self.gpu_id == GPU_UNSET {
-            crate::scorer::default_gpu_id()
+            crate::scorer::default_gpu_id().unwrap_or(0)
         } else {
             self.gpu_id
         }

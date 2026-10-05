@@ -54,6 +54,7 @@ mod tests {
                 target_range: (79.0, 81.0),
                 resolution:   None,
                 threads:      None,
+                gpu_id:       None,
             },
             quantizer_range: (20, 40),
             input: None,

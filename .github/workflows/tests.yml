@@ -86,6 +86,7 @@ jobs:
         run: |
           cargo msrv verify --path av-metrics-vmaf
           cargo msrv verify --path av-metrics-vship
+          cargo msrv verify --path av-metrics-fmetrics
           cargo msrv verify --path andean-condor
           cargo msrv verify --path california-condor
 
@@ -104,6 +105,13 @@ jobs:
       # GPU-gated tests skip themselves; its non-GPU tests still run.
       - name: Testing av-metrics-vship
         working-directory: ./av-metrics-vship
+        run: |
+          cargo test --profile ci
+
+      # No fmetrics binary is installed on the runner, so the tests that need one
+      # skip themselves rather than exercising the FFI paths.
+      - name: Testing av-metrics-fmetrics
+        working-directory: ./av-metrics-fmetrics
         run: |
           cargo test --profile ci
 

@@ -86,6 +86,7 @@ pub enum QualityMetric {
         target_range: (f64, f64),
         resolution:   Option<(u32, u32)>,
         threads:      Option<u8>,
+        gpu_id:       Option<u8>,
     },
     BUTTERAUGLI {
         target_range:         (f64, f64),
@@ -93,6 +94,7 @@ pub enum QualityMetric {
         threads:              Option<u8>,
         intensity_multiplier: Option<f64>,
         norm:                 Option<u8>,
+        gpu_id:               Option<u8>,
     },
     XPSNR {
         target_range: (f64, f64),
@@ -104,6 +106,7 @@ pub enum QualityMetric {
         display_model:     Option<DisplayModel>,
         resize_to_display: Option<bool>,
         disable_temporal:  Option<bool>,
+        gpu_id:            Option<u8>,
     },
 }
 
@@ -114,6 +117,7 @@ impl Default for QualityMetric {
             target_range: DEFAULT_SSIMULACRA2_TARGET_RANGE,
             resolution:   None,
             threads:      None,
+            gpu_id:       None,
         }
     }
 }
@@ -397,6 +401,55 @@ impl Default for QualityPass {
             bitrate:      0.0,
             started_on:   0,
             completed_on: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QualityMetric;
+
+    /// A `condor.json` written before `gpu_id` existed must still load, or
+    /// adding the field would invalidate every configuration in the wild.
+    ///
+    /// `Option` fields are not implicitly defaulted by serde: a missing key is
+    /// an error unless the field is absent from the struct, so this asserts the
+    /// omission is genuinely tolerated rather than assumed to be.
+    #[test]
+    fn a_metric_without_a_gpu_id_still_deserializes() {
+        let legacy =
+            r#"{"SSIMULACRA2":{"target_range":[74.0,76.0],"resolution":null,"threads":null}}"#;
+
+        let metric: QualityMetric =
+            serde_json::from_str(legacy).expect("a config without gpu_id should load");
+
+        assert!(
+            matches!(metric, QualityMetric::SSIMULACRA2 {
+                gpu_id: None,
+                ..
+            }),
+            "an omitted gpu_id should read as unset, got {metric:?}"
+        );
+    }
+
+    /// The other two GPU metrics carry the same field, and a config naming a
+    /// device must keep that value through a deserialize/serialize round trip.
+    #[test]
+    fn a_configured_gpu_id_survives_a_round_trip() {
+        for json in [
+            r#"{"SSIMULACRA2":{"target_range":[74.0,76.0],"resolution":null,"threads":null,"gpu_id":1}}"#,
+            r#"{"BUTTERAUGLI":{"target_range":[0.8,1.2],"resolution":null,"threads":null,"intensity_multiplier":null,"norm":null,"gpu_id":2}}"#,
+            r#"{"CVVDP":{"target_range":[9.4,9.6],"resolution":null,"display_model":null,"resize_to_display":null,"disable_temporal":null,"gpu_id":3}}"#,
+        ] {
+            let metric: QualityMetric =
+                serde_json::from_str(json).expect("a config naming a device should load");
+            let round_tripped =
+                serde_json::to_string(&metric).expect("the metric should serialize");
+
+            assert_eq!(
+                round_tripped, json,
+                "the gpu_id must survive a round trip unchanged"
+            );
         }
     }
 }

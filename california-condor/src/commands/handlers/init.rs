@@ -258,6 +258,7 @@ mod tests {
                 target_range: (74.0, 76.0),
                 resolution:   None,
                 threads:      None,
+                gpu_id:       None,
             },
             quantizer_range: TargetQuality::default_quantizer_range(&EncoderBase::AOM),
             ..Default::default()

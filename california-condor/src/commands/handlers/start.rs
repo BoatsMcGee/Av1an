@@ -834,6 +834,7 @@ mod tests {
                 display_model:     None,
                 resize_to_display: None,
                 disable_temporal:  None,
+                gpu_id:            None,
             };
             tq.probing.statistic = ProbeStatistic::RootMeanSquare;
             tq.probing.strategy = ProbeStrategy::Subset {

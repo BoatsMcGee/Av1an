@@ -158,7 +158,7 @@ is the one that can run these metrics at a useful rate, so libvship's
 `has_explicit_gpu_id` distinguishes the two cases, and `gpu_id_or_default`
 returns the resolved index. `VshipScorer::gpu_id` reports the device a scorer was
 actually built for. The module-level `default_gpu_id()` exposes the same choice
-on its own.
+on its own, as an `Option` that is `None` when libvship reports no devices.
 
 ### Differing input sizes need an explicit target
 

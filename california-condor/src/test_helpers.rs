@@ -1183,6 +1183,7 @@ pub fn check_quality_metric(
             target_range,
             resolution,
             threads,
+            gpu_id,
         } => {
             assert_matches!(
                 quality_metric,
@@ -1194,6 +1195,7 @@ pub fn check_quality_metric(
                     target_range: expected_target_range,
                     resolution: expected_resolution,
                     threads: expected_threads,
+                    gpu_id: expected_gpu_id,
                 } => {
                     assert_eq!(
                         expected_target_range, target_range,
@@ -1208,6 +1210,10 @@ pub fn check_quality_metric(
                         expected_threads, threads,
                         "{name} SSIMULACRA2 threads is {threads:?}"
                     );
+                    assert_eq!(
+                        expected_gpu_id, gpu_id,
+                        "{name} SSIMULACRA2 gpu_id is {gpu_id:?}"
+                    );
                 },
                 other => panic!("expected QualityMetric::SSIMULACRA2. Got {other:?}"),
             }
@@ -1218,6 +1224,7 @@ pub fn check_quality_metric(
             threads,
             intensity_multiplier,
             norm,
+            gpu_id,
         } => {
             assert_matches!(
                 quality_metric,
@@ -1231,6 +1238,7 @@ pub fn check_quality_metric(
                     threads: expected_threads,
                     intensity_multiplier: expected_intensity_multiplier,
                     norm: expected_norm,
+                    gpu_id: expected_gpu_id,
                 } => {
                     assert_eq!(
                         expected_target_range, target_range,
@@ -1250,6 +1258,10 @@ pub fn check_quality_metric(
                         "{name} BUTTERAUGLI intensity multiplier is {intensity_multiplier:?}"
                     );
                     assert_eq!(expected_norm, norm, "{name} BUTTERAUGLI norm is {norm:?}");
+                    assert_eq!(
+                        expected_gpu_id, gpu_id,
+                        "{name} BUTTERAUGLI gpu_id is {gpu_id:?}"
+                    );
                 },
                 other => panic!("expected QualityMetric::BUTTERAUGLI. Got {other:?}"),
             }
@@ -1260,6 +1272,7 @@ pub fn check_quality_metric(
             display_model,
             resize_to_display,
             disable_temporal,
+            gpu_id,
         } => {
             assert_matches!(
                 quality_metric,
@@ -1273,6 +1286,7 @@ pub fn check_quality_metric(
                     display_model: expected_display_model,
                     resize_to_display: expected_resize_to_display,
                     disable_temporal: expected_disable_temporal,
+                    gpu_id: expected_gpu_id,
                 } => {
                     assert_eq!(
                         expected_target_range, target_range,
@@ -1295,6 +1309,7 @@ pub fn check_quality_metric(
                         expected_disable_temporal, disable_temporal,
                         "{name} CVVDP disable temporal is {disable_temporal:?}"
                     );
+                    assert_eq!(expected_gpu_id, gpu_id, "{name} CVVDP gpu_id is {gpu_id:?}");
                 },
                 other => panic!("expected QualityMetric::CVVDP. Got {other:?}"),
             }

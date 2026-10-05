@@ -59,13 +59,19 @@ pub(crate) const GPU_UNSET: u32 = u32::MAX;
 /// so the highest-indexed non-integrated device is chosen, falling back to the
 /// last device enumerated when every one reports integrated.
 ///
+/// Returns `None` when libvship cannot be loaded or reports no devices at all,
+/// rather than substituting an index. Every index this can return was read back
+/// from `device_count`, so a zero here means device 0 does not exist, and
+/// handing it to `gpu_full_check` or reporting it as the default would name a
+/// device that is not there.
+///
 /// The result is cached in a `OnceLock`: the device configuration cannot change
 /// while the process runs, so re-enumerating on each request would be waste.
 #[inline]
 #[must_use]
-pub fn default_gpu_id() -> u32 {
-    static CACHE: OnceLock<u32> = OnceLock::new();
-    *CACHE.get_or_init(|| choose_gpu_id().unwrap_or(0))
+pub fn default_gpu_id() -> Option<u32> {
+    static CACHE: OnceLock<Option<u32>> = OnceLock::new();
+    *CACHE.get_or_init(choose_gpu_id)
 }
 
 /// Enumerate devices and pick a discrete one, or the last one available.
@@ -77,6 +83,58 @@ fn choose_gpu_id() -> Option<u32> {
         .rev()
         .find(|&id| api.device_info(id).is_ok_and(|info| info.integrated == 0))
         .or_else(|| count.checked_sub(1))
+}
+
+/// Every compute device libvship can see, in libvship's own order.
+///
+/// The index of each device is the `gpu_id` that
+/// [`VshipConfig::with_gpu_id`](crate::VshipConfig::with_gpu_id) takes, so this
+/// is what a caller needs in order to select one by hand.
+///
+/// A device whose properties cannot be read is omitted rather than reported
+/// with blanks. Each entry keeps the index it was enumerated at, so omitting
+/// one never renumbers the others: a caller holding `gpu_id` 2 still finds
+/// device 2 in this list.
+///
+/// # Errors
+///
+/// Returns [`VshipError::LibraryNotFound`] if libvship could not be loaded, and
+/// [`VshipError::CallFailed`] if the device count could not be read.
+#[inline]
+pub fn devices() -> Result<Vec<VshipDevice>, VshipError> {
+    let api = VshipApi::load()?;
+    let count = api.device_count()?;
+
+    Ok((0..count)
+        .filter_map(|id| {
+            api.device_info(id).ok().map(|info| VshipDevice {
+                id,
+                info,
+            })
+        })
+        .collect())
+}
+
+/// One compute device libvship enumerated.
+///
+/// No `PartialEq`: [`VshipDeviceInfo`] is a raw `#[repr(C)]` mirror of a C
+/// struct and does not derive it. Compare `id` and the fields read off `info`
+/// instead.
+#[derive(Debug, Clone, Copy)]
+pub struct VshipDevice {
+    /// The device's index, which is the `gpu_id` that selects it.
+    pub id:   u32,
+    /// What libvship reports about it.
+    pub info: VshipDeviceInfo,
+}
+
+impl VshipDevice {
+    /// Whether libvship classifies this device as integrated.
+    #[inline]
+    #[must_use]
+    pub fn is_integrated(&self) -> bool {
+        self.info.integrated != 0
+    }
 }
 
 /// Geometry and format of one input.
@@ -845,14 +903,14 @@ impl VshipScorer {
     #[inline]
     #[must_use]
     pub fn is_available() -> bool {
-        availability(default_gpu_id()).is_ok()
+        default_gpu_id().is_some_and(|gpu_id| availability(gpu_id).is_ok())
     }
 
     /// The runtime libvship version string, if available.
     #[inline]
     #[must_use]
     pub fn libvship_version() -> Option<&'static str> {
-        availability(default_gpu_id()).ok()
+        default_gpu_id().and_then(|gpu_id| availability(gpu_id).ok())
     }
 
     /// The name of the device libvship would use, if it is available.
@@ -860,7 +918,7 @@ impl VshipScorer {
     #[must_use]
     pub fn device_name() -> Option<String> {
         let api = VshipApi::load().ok()?;
-        api.device_info(default_gpu_id()).ok().map(|info| info.name())
+        api.device_info(default_gpu_id()?).ok().map(|info| info.name())
     }
 
     /// What libvship reports about the device it would use.
@@ -868,10 +926,18 @@ impl VshipScorer {
     /// # Errors
     ///
     /// Returns [`VshipError::LibraryNotFound`] if libvship could not be loaded,
-    /// and [`VshipError::CallFailed`] if the device cannot be queried.
+    /// and [`VshipError::CallFailed`] if no device is available or the device
+    /// cannot be queried.
     #[inline]
     pub fn device_info() -> Result<VshipDeviceInfo, VshipError> {
-        VshipApi::load()?.device_info(default_gpu_id())
+        let api = VshipApi::load()?;
+        let gpu_id = default_gpu_id().ok_or_else(|| VshipError::CallFailed {
+            function: "Vship_GetDeviceCount",
+            status:   0,
+            message:  "libvship reported no compute devices".to_owned(),
+        })?;
+
+        api.device_info(gpu_id)
     }
 
     /// Score every matching frame pair from the two decoders.
@@ -1234,7 +1300,12 @@ mod tests {
         let Ok(count) = api.device_count() else {
             return;
         };
-        let chosen = default_gpu_id();
+        // No devices means no index to choose, which is reported rather than
+        // silently resolved to a device that does not exist.
+        let Some(chosen) = default_gpu_id() else {
+            assert_eq!(count, 0, "a device exists, so one must have been chosen");
+            return;
+        };
 
         assert!(
             chosen < count,

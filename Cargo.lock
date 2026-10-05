@@ -44,6 +44,7 @@ dependencies = [
  "av-decoders",
  "av-format",
  "av-ivf",
+ "av-metrics-fmetrics",
  "av-metrics-vmaf",
  "av-metrics-vship",
  "av-scenechange",
@@ -242,6 +243,19 @@ dependencies = [
  "av-format",
  "log",
  "nom 7.1.3",
+]
+
+[[package]]
+name = "av-metrics-fmetrics"
+version = "0.1.0"
+dependencies = [
+ "av-decoders",
+ "libloading 0.8.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+ "v_frame",
+ "y4m",
 ]
 
 [[package]]

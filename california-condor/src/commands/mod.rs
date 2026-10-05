@@ -42,7 +42,8 @@ pub struct CondorCli {
     /// Enable verbose output and logging.
     #[arg(long, global = true, default_value_t = false)]
     pub verbose:           bool,
-    /// Display Encoder and VapourSynth installation information.
+    /// Display Encoder, VapourSynth and quality metric library installation
+    /// information.
     #[arg(short('v'), long, global = true, default_value_t = false)]
     pub version:           bool,
     // Main command arguments
