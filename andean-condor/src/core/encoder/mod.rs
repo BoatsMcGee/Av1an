@@ -36,7 +36,7 @@ use crate::{
 pub mod capability;
 pub mod parse;
 pub mod string_or_bytes;
-pub use capability::EncoderCapability;
+pub use capability::{Container, EncoderCapability};
 pub use parse::*;
 pub use string_or_bytes::StringOrBytes;
 
@@ -100,6 +100,17 @@ impl Encoder {
         };
 
         capability::check_capability(self.base(), &executable_path, capability)
+    }
+
+    /// The container this encoder binary writes, or `None` when it cannot be
+    /// split per scene (Matroska/WebM).
+    ///
+    /// A probe result is cached, so this is cheap after the first call.
+    #[inline]
+    pub fn container(&self) -> Option<Container> {
+        let executable_path = which::which(self.executable()).ok()?;
+
+        capability::encoder_container(self.base(), &executable_path)
     }
 
     #[inline]

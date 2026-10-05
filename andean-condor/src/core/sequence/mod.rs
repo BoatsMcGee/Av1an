@@ -19,6 +19,7 @@ pub mod scene_detector;
 pub mod serial_encoder;
 pub mod speed_scaler;
 pub mod target_quality;
+pub mod zone_encoder;
 
 pub trait Sequence<DataHandler, ConfigHandler>
 where

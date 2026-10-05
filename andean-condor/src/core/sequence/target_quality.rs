@@ -24,6 +24,7 @@ use crate::{
             Status,
             parallel_encoder::{ParallelEncoder, Task as ParallelEncoderTask},
             scene_concatenator::SceneConcatenator,
+            zone_encoder::{ZoneEncoder, ZonePlan},
         },
     },
     metrics::{self, OutputIndexing},
@@ -848,13 +849,32 @@ impl TargetQuality {
             Ok(())
         });
 
-        let results = ParallelEncoder::encode_tasks(
-            input,
-            workers,
-            encode_tasks.iter().cloned().collect::<VecDeque<_>>(),
-            encode_progress_tx,
-            Arc::clone(cancelled),
-        )?;
+        // Zone encoding needs one process for the whole pass, so it applies
+        // only when every scene differs in its quantizer and all scenes share
+        // one encoder; anything else keeps the per-scene encoders.
+        let zone_plan = match ZonePlan::try_build(&encode_tasks) {
+            Ok(plan) => Some(plan),
+            Err(reason) => {
+                debug!("Probe pass {pass} encoding scenes individually: {reason}");
+                None
+            },
+        };
+        let results = match zone_plan {
+            Some(plan) => ZoneEncoder::encode_tasks(
+                input,
+                encode_tasks.iter().cloned().collect::<VecDeque<_>>(),
+                plan,
+                encode_progress_tx,
+                Arc::clone(cancelled),
+            )?,
+            None => ParallelEncoder::encode_tasks(
+                input,
+                workers,
+                encode_tasks.iter().cloned().collect::<VecDeque<_>>(),
+                encode_progress_tx,
+                Arc::clone(cancelled),
+            )?,
+        };
 
         if cancelled.load(sync::atomic::Ordering::Relaxed) {
             // No scene was scored, so no task is complete. Returning the input

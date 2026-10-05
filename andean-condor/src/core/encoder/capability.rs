@@ -14,6 +14,23 @@ pub enum EncoderCapability {
     /// SVT-AV1 support for fractional/quarter-step CRF values (e.g., `--crf
     /// 25.25`)
     SvtAv1QuarterStepCrf,
+    /// Encoder-native zoning: encoding a whole pass with one process while
+    /// overriding the quantizer per frame range. Stock SVT-AV1 lacks `--zones`,
+    /// so support depends on the installed binary.
+    Zoning,
+}
+
+/// The container a raw encoder writes, which Av1an has to split per scene.
+///
+/// SVT-AV1 picks this from how the binary was built: with WebM IO enabled it
+/// writes Matroska even to a `.ivf` path, so the file extension cannot be
+/// trusted and the container is detected from the encoded bytes instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Container {
+    /// IVF: a 32-byte file header followed by size-prefixed frames.
+    Ivf,
+    /// Annex-B: start-code delimited NAL units.
+    AnnexB,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -27,13 +44,32 @@ struct BinaryKey {
 static CAPABILITY_CACHE: LazyLock<RwLock<HashMap<(BinaryKey, EncoderCapability), bool>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// Generate a single Y4M frame stream (420jpeg, `width`x`height`) into
-/// `writer` for testing encoder capabilities.
-fn generate_y4m_stream<W: Write>(mut writer: W, width: u32, height: u32) -> std::io::Result<()> {
-    writeln!(writer, "YUV4MPEG2 W{width} H{height} F30:1 Ip A0:0 C420p10")?;
+/// Thread-safe global cache mapping a binary to the container it writes.
+static CONTAINER_CACHE: LazyLock<RwLock<HashMap<BinaryKey, Container>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Generate a single Y4M frame stream (420, `width`x`height`) into `writer`
+/// for testing encoder capabilities. `bit_depth` 8 yields `C420`, 10 yields
+/// `C420p10`.
+fn generate_y4m_stream<W: Write>(
+    mut writer: W,
+    width: u32,
+    height: u32,
+    bit_depth: u8,
+) -> std::io::Result<()> {
+    let chroma = if bit_depth == 8 {
+        "C420".to_owned()
+    } else {
+        format!("C420p{bit_depth}")
+    };
+    writeln!(
+        writer,
+        "YUV4MPEG2 W{width} H{height} F30:1 Ip A0:0 {chroma}"
+    )?;
     writeln!(writer, "FRAME")?;
-    let y_size = (width * height) as usize;
-    let uv_size = ((width / 2) * (height / 2)) as usize;
+    let bytes_per_sample = usize::from(bit_depth > 8) + 1;
+    let y_size = (width as usize) * (height as usize) * bytes_per_sample;
+    let uv_size = ((width / 2) as usize) * ((height / 2) as usize) * bytes_per_sample;
     let frame = vec![0u8; y_size + 2 * uv_size];
     writer.write_all(&frame)?;
     writer.flush()?;
@@ -55,6 +91,7 @@ fn probe_capability(
             }
             svt_av1_supports_quarter_step_crf(executable)
         },
+        EncoderCapability::Zoning => probe_zoning(encoder_base, executable),
     }
 }
 
@@ -81,10 +118,246 @@ fn svt_av1_supports_quarter_step_crf(executable: &Path) -> bool {
     if let Some(stdin) = child.stdin.take() {
         // Writing may fail if the encoder rejects arguments before reading input;
         // that's fine — we only care about the exit status.
-        let _ = generate_y4m_stream(stdin, 320, 240);
+        let _ = generate_y4m_stream(stdin, 320, 240, 10);
     }
 
     child.wait().is_ok_and(|status| status.success())
+}
+
+/// Probe whether the encoder binary accepts zone (per-frame-range quantizer)
+/// arguments together with a forced keyframe at a zone boundary.
+///
+/// Returns `false` on any failure.
+fn probe_zoning(encoder_base: EncoderBase, executable: &Path) -> bool {
+    let (args, bit_depth, zone_file) = match encoder_base {
+        EncoderBase::X264 => (
+            vec![
+                "-".to_owned(),
+                "--demuxer".to_owned(),
+                "y4m".to_owned(),
+                "--preset".to_owned(),
+                "ultrafast".to_owned(),
+                "--crf".to_owned(),
+                "30".to_owned(),
+                "--keyint".to_owned(),
+                "infinite".to_owned(),
+                "--scenecut".to_owned(),
+                "0".to_owned(),
+                "--log-level".to_owned(),
+                "error".to_owned(),
+                "--zones".to_owned(),
+                "0,0,crf=30".to_owned(),
+                "-o".to_owned(),
+                crate::core::encoder::NULL_OUTPUT.to_owned(),
+            ],
+            8,
+            None,
+        ),
+        EncoderBase::X265 => {
+            let path = std::env::temp_dir()
+                .join(format!("av1an-zone-probe-{}.zonefile", std::process::id()));
+            if std::fs::write(&path, "0 --crf 30\n").is_err() {
+                return false;
+            }
+            (
+                vec![
+                    "-".to_owned(),
+                    "--y4m".to_owned(),
+                    "--preset".to_owned(),
+                    "ultrafast".to_owned(),
+                    "--crf".to_owned(),
+                    "30".to_owned(),
+                    "--keyint".to_owned(),
+                    "-1".to_owned(),
+                    "--scenecut".to_owned(),
+                    "0".to_owned(),
+                    "--zonefile".to_owned(),
+                    path.display().to_string(),
+                    "-o".to_owned(),
+                    crate::core::encoder::NULL_OUTPUT.to_owned(),
+                ],
+                8,
+                Some(path),
+            )
+        },
+        EncoderBase::SVTAV1 => {
+            let path = std::env::temp_dir()
+                .join(format!("av1an-zone-probe-{}.config", std::process::id()));
+            // Config files are keyed on the option's descriptive name, and the
+            // colon separates name from value.
+            if std::fs::write(&path, "Zones : 0,0,30\nForceKeyFrames : 0f\n").is_err() {
+                return false;
+            }
+            (
+                vec![
+                    "-i".to_owned(),
+                    "stdin".to_owned(),
+                    "-b".to_owned(),
+                    crate::core::encoder::NULL_OUTPUT.to_owned(),
+                    "--preset".to_owned(),
+                    "10".to_owned(),
+                    "--crf".to_owned(),
+                    "30".to_owned(),
+                    "--keyint".to_owned(),
+                    "0".to_owned(),
+                    "--scd".to_owned(),
+                    "0".to_owned(),
+                    "--rc".to_owned(),
+                    "0".to_owned(),
+                    "--progress".to_owned(),
+                    "0".to_owned(),
+                    // A WebM IO build defaults to Matroska; the zone split
+                    // needs IVF.
+                    "--webm".to_owned(),
+                    "0".to_owned(),
+                    "-c".to_owned(),
+                    path.display().to_string(),
+                ],
+                10,
+                Some(path),
+            )
+        },
+        _ => return false,
+    };
+
+    let spawned = Command::new(executable)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    let Ok(mut child) = spawned else {
+        if let Some(path) = &zone_file {
+            let _ = std::fs::remove_file(path);
+        }
+        return false;
+    };
+
+    if let Some(stdin) = child.stdin.take() {
+        let _ = generate_y4m_stream(stdin, 320, 240, bit_depth);
+    }
+
+    let success = child.wait().is_ok_and(|status| status.success());
+    if let Some(path) = &zone_file {
+        let _ = std::fs::remove_file(path);
+    }
+    success
+}
+
+/// Reads the container from the encoded bytes.
+///
+/// SVT-AV1 built with WebM IO writes Matroska whatever the output path says,
+/// so Av1an's `.ivf` scene files can be either container; the bytes decide.
+#[inline]
+pub(crate) fn detect_container(bytes: &[u8]) -> Option<Container> {
+    if bytes.starts_with(b"DKIF") {
+        Some(Container::Ivf)
+    } else if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        // EBML header: Matroska/WebM, which per-scene splitting cannot cut.
+        None
+    } else if bytes.starts_with(&[0x00, 0x00, 0x01]) || bytes.starts_with(&[0x00, 0x00, 0x00, 0x01])
+    {
+        Some(Container::AnnexB)
+    } else {
+        None
+    }
+}
+
+/// The container the encoder binary writes, probed once and cached.
+///
+/// A probe failure is reported as `AnnexB` for the Annex-B encoders, which
+/// always write Annex-B, and `None` otherwise.
+pub(crate) fn encoder_container(encoder_base: EncoderBase, executable: &Path) -> Option<Container> {
+    let key = BinaryKey {
+        encoder_base,
+        executable: executable.to_path_buf(),
+    };
+    if let Ok(cache) = CONTAINER_CACHE.read()
+        && let Some(container) = cache.get(&key)
+    {
+        return Some(*container);
+    }
+
+    let container = match encoder_base {
+        EncoderBase::X264 | EncoderBase::X265 => Some(Container::AnnexB),
+        // Probed from real output below.
+        _ => None,
+    }
+    .or_else(|| probe_container(&key));
+
+    if let (Ok(mut cache), Some(container)) = (CONTAINER_CACHE.write(), container) {
+        cache.insert(key, container);
+    }
+    container
+}
+
+/// Whether the SVT-AV1 binary was built with WebM IO, which makes it write
+/// Matroska unless `--webm 0` says otherwise.
+///
+/// `--webm` is absent from a stock build, so the option is probed by name
+/// rather than assumed.
+fn supports_webm_io(executable: &Path) -> bool {
+    static CACHE: LazyLock<RwLock<HashMap<PathBuf, bool>>> =
+        LazyLock::new(|| RwLock::new(HashMap::new()));
+    if let Ok(cache) = CACHE.read()
+        && let Some(&supported) = cache.get(executable)
+    {
+        return supported;
+    }
+    let supported = Command::new(executable)
+        .arg("--full-help")
+        .output()
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("--webm"));
+    if let Ok(mut cache) = CACHE.write() {
+        cache.insert(executable.to_path_buf(), supported);
+    }
+    supported
+}
+
+/// Encodes one throwaway frame and inspects the container it produced.
+fn probe_container(key: &BinaryKey) -> Option<Container> {
+    if key.encoder_base != EncoderBase::SVTAV1 {
+        return None;
+    }
+    let path =
+        std::env::temp_dir().join(format!("av1an-container-probe-{}.out", std::process::id()));
+    let mut args = vec![
+        "-i".to_owned(),
+        "stdin".to_owned(),
+        "-b".to_owned(),
+        path.display().to_string(),
+        "--preset".to_owned(),
+        "12".to_owned(),
+        "--progress".to_owned(),
+        "0".to_owned(),
+        "--crf".to_owned(),
+        "32".to_owned(),
+    ];
+    // A WebM IO build writes Matroska by default; Zone Encoder passes this to
+    // force the IVF it can split, so the probe must pass it too or it reports
+    // a different container than the encode produces.
+    if supports_webm_io(&key.executable) {
+        args.extend(["--webm".to_owned(), "0".to_owned()]);
+    }
+    let Ok(mut child) = Command::new(&key.executable)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return None;
+    };
+    if let Some(stdin) = child.stdin.take() {
+        let _ = generate_y4m_stream(stdin, 320, 240, 10);
+    }
+    if !child.wait().is_ok_and(|status| status.success()) {
+        let _ = std::fs::remove_file(&path);
+        return None;
+    }
+    let container = std::fs::read(&path).ok().as_deref().and_then(detect_container);
+    let _ = std::fs::remove_file(&path);
+    container
 }
 
 /// Checks if encoder supports capability and caches the result
