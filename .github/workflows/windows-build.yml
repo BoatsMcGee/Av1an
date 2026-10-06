@@ -145,13 +145,6 @@ jobs:
           files: |
             target/condor-windows-x64.zip
             target/release/condor.exe
-            target/release/libvmaf.dll
-            target/release/libvship.dll
-            target/release/fmetrics.dll
-            target/release/libgcc_s_seh-1.dll
-            target/release/libstdc++-6.dll
-            target/release/libwinpthread-1.dll
-            target/release/model/*.json
             california-condor/configuration.schema.json
           fail_on_unmatched_files: true
 
@@ -165,12 +158,5 @@ jobs:
           files: |
             target/condor-windows-x64.zip
             target/release/condor.exe
-            target/release/libvmaf.dll
-            target/release/libvship.dll
-            target/release/fmetrics.dll
-            target/release/libgcc_s_seh-1.dll
-            target/release/libstdc++-6.dll
-            target/release/libwinpthread-1.dll
-            target/release/model/*.json
             california-condor/configuration.schema.json
           fail_on_unmatched_files: true

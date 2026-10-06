@@ -1,0 +1,167 @@
+name: Build California Condor (Linux x64)
+on:
+  push:
+    branches:
+      - 'master'
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: boatsmcgee/condor:latest
+      options: --user root
+
+    env:
+      CARGO_INCREMENTAL: 0
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: |
+          pacman -S --noconfirm --needed git clang nasm vapoursynth vmaf ffmpeg vulkan-headers patchelf
+
+      # fmetrics needs Zig 0.16.x specifically: 0.17 removed b.build_root.
+      - name: Zig setup
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      # rust-cache restores and prunes `target/`, run before staging
+      - uses: Swatinem/rust-cache@v2
+
+      # Stages libvmaf, builds libvship and libfmetrics from pinned commits,
+      # and copies the checked-in VMAF models.
+      - name: Stage native libraries
+        run: bash ./.github/scripts/stage-native-libs.sh -StageDir target/release
+
+      # The crates find their libraries relative to the staged copies, so point
+      # them at the release directory rather than at the image's /usr/lib.
+      # VMAF_MODEL_PATH names the staged model directory, which the crate
+      # searches on its own but not before the system paths.
+      - name: Record the native library search paths
+        run: |
+          echo "VSHIP_PLUGIN_PATH=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
+          echo "VSHIP_LIB_DIR=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
+          echo "VMAF_MODEL_PATH=$GITHUB_WORKSPACE/target/release/model" >> "$GITHUB_ENV"
+          echo "FMETRICS_LIB_DIR=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
+
+      - name: Get latest commit
+        id: get_commit
+        run: |
+          commit="$(git log -1 --pretty=format:'%h: %s (%an)')"
+          echo "message=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Condor build
+        run: cargo build --release --bin condor
+
+      - name: Generate configuration schema
+        run: cargo run --release --bin generate-schema > california-condor/configuration.schema.json
+
+      # Writes a $ORIGIN runpath into the binary and packs the staged release
+      # with the executable bit preserved, then asserts the layout.
+      - name: Package the release archive
+        run: bash ./.github/scripts/package-release-linux.sh
+
+      # The archive is the deliverable; smoke-test it in a clean directory
+      # before publishing, the same way a user extracts it.
+      - name: Smoke-test the archive
+        run: |
+          mkdir -p /tmp/smoke && cd /tmp/smoke
+                unzip -q "$GITHUB_WORKSPACE/target/condor-linux-x64.zip"
+          ./condor --version > version.txt 2>&1 || true
+          cat version.txt
+          grep -q 'libvmaf' version.txt
+          grep -q 'libfmetrics' version.txt
+          readelf -d ./condor | grep -q '\$ORIGIN'
+
+      - name: Record the glibc baseline
+        run: |
+          echo "glibc=$(ldd --version | head -1)" >> "$GITHUB_OUTPUT"
+        id: glibc
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          last_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -z "$last_tag" ]; then
+            last_tag="$(git rev-list --max-parents=0 HEAD 2>/dev/null || true)"
+          fi
+          if [ -z "$last_tag" ]; then
+            last_tag='HEAD'
+          fi
+          echo "last_tag=$last_tag" >> "$GITHUB_OUTPUT"
+
+          all="$(git log "$last_tag..HEAD" --pretty=format:'- %s' 2>/dev/null || true)"
+          if [ -z "$all" ]; then
+            all="No changes since $last_tag"
+          fi
+
+          first10="$(echo "$all" | head -10)"
+          rest_count="$(echo "$all" | tail -n +11 | wc -l)"
+
+          commit="$(git log -1 --pretty=format:'%h: %s (%an)')"
+          {
+            echo "Latest build from $GITHUB_SHA"
+            echo
+            echo "Commit:"
+            echo "$commit"
+            echo
+            echo "Changes since $last_tag:"
+            echo "$first10"
+            if [ "$rest_count" -gt 0 ]; then
+              echo
+              echo "<details>"
+              echo "<summary>... and $rest_count more commits</summary>"
+              echo
+              echo "$(echo "$all" | tail -n +11)"
+              echo "</details>"
+            fi
+            echo
+            echo "---"
+            echo
+            echo "## Linux host requirements"
+            echo
+            echo "The Linux archive bundles \`condor\`, \`libvmaf.so\`, \`libvship.so\`,"
+            echo "\`libfmetrics.so\` and the VMAF models. The host still provides:"
+            echo
+            echo "- A recent glibc (built against ${{ steps.glibc.outputs.glibc }})"
+            echo "- Encoder binaries: aomenc, SvtAv1EncApp, rav1e, vpxenc, x264, x265, ffmpeg, mkvmerge"
+            echo "- VapourSynth with its Python plugins (vsjetpack, vsfgs, ZooMVTools)"
+            echo "- vulkan-icd-loader, for libvship"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create or update prerelease for Condor
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
+          tag_name: latest
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            target/condor-linux-x64.zip
+            target/release/condor
+          fail_on_unmatched_files: true
+
+      - name: Create tagged release for Condor
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: false
+          tag_name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.body }}
+          files: |
+            target/condor-linux-x64.zip
+            target/release/condor
+          fail_on_unmatched_files: true
