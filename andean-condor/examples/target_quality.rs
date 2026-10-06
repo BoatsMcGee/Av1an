@@ -148,22 +148,33 @@ fn main() -> Result<()> {
 
     // Per-sequence VapourSynth script inputs, all reading script.vpy.
     let scd_input_model = InputModel::VapourSynthScript {
-        source:    VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
-        variables: HashMap::from([("mode".to_owned(), "scene detection".to_owned())]),
-        index:     0,
-        filters:   resize_filters(Some(960), Some(540), None),
+        source:              VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
+        variables:           HashMap::from([("mode".to_owned(), "scene detection".to_owned())]),
+        index:               0,
+        filters:             resize_filters(Some(960), Some(540), None),
+        stream_concurrently: true,
     };
     let tq_input_model = InputModel::VapourSynthScript {
-        source:    VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
-        variables: HashMap::from([("mode".to_owned(), "target quality".to_owned())]),
-        index:     0,
-        filters:   resize_filters(Some(1280), Some(720), Some(FFPixelFormat::YUV420P10LE)),
+        source:              VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
+        variables:           HashMap::from([("mode".to_owned(), "target quality".to_owned())]),
+        index:               0,
+        filters:             resize_filters(
+            Some(1280),
+            Some(720),
+            Some(FFPixelFormat::YUV420P10LE),
+        ),
+        stream_concurrently: true,
     };
     let pe_input_model = InputModel::VapourSynthScript {
-        source:    VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
-        variables: HashMap::new(),
-        index:     0,
-        filters:   resize_filters(Some(1280), Some(720), Some(FFPixelFormat::YUV420P10LE)),
+        source:              VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
+        variables:           HashMap::new(),
+        index:               0,
+        filters:             resize_filters(
+            Some(1280),
+            Some(720),
+            Some(FFPixelFormat::YUV420P10LE),
+        ),
+        stream_concurrently: true,
     };
     let scd_input = Input::from_vapoursynth(&scd_input_model, None)?;
     let tq_input = Input::from_vapoursynth(&tq_input_model, None)?;

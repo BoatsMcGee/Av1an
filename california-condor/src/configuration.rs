@@ -312,6 +312,7 @@ impl Configuration {
                 variables,
                 index: index.unwrap_or_default(),
                 filters: Vec::new(),
+                stream_concurrently: true,
             }
         } else {
             InputModel::VapourSynth {

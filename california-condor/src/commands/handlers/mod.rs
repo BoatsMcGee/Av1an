@@ -149,6 +149,21 @@ pub fn configure_input(
     let existing_vs_args: Option<Vec<String>> = existing_vs_args
         .map(|args| args.iter().map(|(key, value)| format!("{}={}", key, value)).collect());
 
+    // Only a script has this knob, and the rebuild below cannot know it, so it
+    // is read separately rather than folded into the tuple above.
+    let existing_stream_concurrently = match existing_input {
+        InputModel::VapourSynthScript {
+            stream_concurrently,
+            ..
+        } => Some(*stream_concurrently),
+        InputModel::Video {
+            ..
+        }
+        | InputModel::VapourSynth {
+            ..
+        } => None,
+    };
+
     let mut input = Configuration::new_input_model(
         path_abs::PathAbs::new(input_path.unwrap_or(existing_input_path))?.as_path(),
         decoder.or(existing_decoder.as_ref()),
@@ -159,6 +174,14 @@ pub fn configure_input(
     // The input is rebuilt from its path and decoder, which drops its filters,
     // so carry them over.
     input.adopt_filters(existing_input);
+    if let Some(stream_concurrently) = existing_stream_concurrently
+        && let InputModel::VapourSynthScript {
+            stream_concurrently: rebuilt,
+            ..
+        } = &mut input
+    {
+        *rebuilt = stream_concurrently;
+    }
     Ok(input)
 }
 
@@ -208,9 +231,58 @@ pub fn configure_override_input(
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
+    use std::{assert_matches, collections::HashMap};
 
     use super::*;
+
+    fn script_input(stream_concurrently: bool) -> InputModel {
+        InputModel::VapourSynthScript {
+            source: VapourSynthScriptSource::Path("script.vpy".into()),
+            variables: HashMap::new(),
+            index: 0,
+            filters: Vec::new(),
+            stream_concurrently,
+        }
+    }
+
+    fn built_stream_concurrently(input: &InputModel) -> bool {
+        let InputModel::VapourSynthScript {
+            stream_concurrently,
+            ..
+        } = input
+        else {
+            panic!("expected a VapourSynthScript input");
+        };
+        *stream_concurrently
+    }
+
+    /// Rebuilding the input for a CLI override must not silently re-enable
+    /// concurrent streaming, since the user turned it off on purpose.
+    #[test]
+    fn rebuilding_a_script_input_keeps_concurrent_streaming_off() {
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let script = temp.path().join("script.vpy");
+        // `BlankClip` needs no source file, but does produce a real output
+        // node, which `Configuration::new` requires.
+        std::fs::write(
+            &script,
+            "import vapoursynth as vs\ncore = vs.core\nclip = core.std.BlankClip(width=16, \
+             height=16, format=vs.YUV420P8)\nclip.set_output(0)\n",
+        )
+        .expect("script file writes to disk");
+
+        let configuration =
+            Configuration::new(&script, &PathBuf::from("out.mkv"), None, None, None)
+                .expect("a configuration can be built from a script");
+
+        let rebuilt = configure_input(&configuration, &script_input(false), None, None, None, None)
+            .expect("the input can be rebuilt");
+
+        assert!(
+            !built_stream_concurrently(&rebuilt),
+            "stream_concurrently: false must survive the rebuild"
+        );
+    }
 
     #[test]
     fn invalid_json_reports_parse_error() {

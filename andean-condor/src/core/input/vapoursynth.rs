@@ -297,6 +297,7 @@ pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> R
             source,
             variables,
             index,
+            stream_concurrently,
             ..
         } => {
             let vs_decoder = match source {
@@ -312,6 +313,7 @@ pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> R
                 variables: variables.clone(),
                 index: *index,
                 filters,
+                stream_concurrently: *stream_concurrently,
                 decoder: source_decoder(vs_decoder, modifier)?,
                 clip_info: None,
             })
@@ -387,11 +389,15 @@ pub fn from_vapoursynth_scripted(data: &InputModel) -> Result<Input> {
 
             from_vapoursynth(
                 &InputModel::VapourSynthScript {
-                    source:    VapourSynthScriptSource::Text(script.to_string()),
-                    variables: HashMap::new(),
-                    index:     SCRIPT_OUTPUT_INDEX,
+                    source:              VapourSynthScriptSource::Text(script.to_string()),
+                    variables:           HashMap::new(),
+                    index:               SCRIPT_OUTPUT_INDEX,
                     // Already baked into the script.
-                    filters:   Vec::new(),
+                    filters:             Vec::new(),
+                    // The generated script decodes with the same source plugin
+                    // as the input it wraps, so it keeps whatever that input
+                    // was allowed to do.
+                    stream_concurrently: streams_concurrently(import_method),
                 },
                 None,
             )
@@ -445,10 +451,13 @@ pub fn as_vapoursynth_script(input: &mut Input) -> Result<Option<Input>> {
     script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
 
     let script_input = InputModel::VapourSynthScript {
-        source:    VapourSynthScriptSource::Text(script.to_string()),
-        variables: HashMap::new(),
-        index:     SCRIPT_OUTPUT_INDEX,
-        filters:   Vec::new(),
+        source:              VapourSynthScriptSource::Text(script.to_string()),
+        variables:           HashMap::new(),
+        index:               SCRIPT_OUTPUT_INDEX,
+        filters:             Vec::new(),
+        // This wraps a native input, whose FFMS2 source is known to handle
+        // several readers at once.
+        stream_concurrently: true,
     };
 
     Ok(Some(from_vapoursynth(&script_input, None)?))

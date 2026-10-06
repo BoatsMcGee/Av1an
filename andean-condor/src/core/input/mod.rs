@@ -53,12 +53,13 @@ pub enum Input {
         clip_info:     Option<ClipInfo>,
     },
     VapourSynthScript {
-        source:    VapourSynthScriptSource,
-        variables: HashMap<String, String>,
-        index:     u8,
-        filters:   Vec<VapourSynthFilter>,
-        decoder:   Decoder,
-        clip_info: Option<ClipInfo>,
+        source:              VapourSynthScriptSource,
+        variables:           HashMap<String, String>,
+        index:               u8,
+        filters:             Vec<VapourSynthFilter>,
+        stream_concurrently: bool,
+        decoder:             Decoder,
+        clip_info:           Option<ClipInfo>,
     },
 }
 
@@ -94,12 +95,14 @@ impl Input {
                 variables,
                 index,
                 filters,
+                stream_concurrently,
                 ..
             } => InputModel::VapourSynthScript {
-                source:    source.clone(),
-                variables: variables.clone(),
-                index:     *index,
-                filters:   filters.clone(),
+                source:              source.clone(),
+                variables:           variables.clone(),
+                index:               *index,
+                filters:             filters.clone(),
+                stream_concurrently: *stream_concurrently,
             },
         }
     }
@@ -330,8 +333,8 @@ impl Input {
 
     /// Whether [`Input::frame_sources`] can serve several readers at once
     /// without them slowing each other down. False for DGDecNV, which is
-    /// unmeasured, and for scripts, whose source plugin is unknown and
-    /// shared by every reader.
+    /// unmeasured. A script streams concurrently unless the user turned it
+    /// off, since its source plugin is unknown and may be worth measuring.
     #[inline]
     #[must_use]
     pub fn streams_concurrently(&self) -> bool {
@@ -343,8 +346,9 @@ impl Input {
                 import_method, ..
             } => vapoursynth::streams_concurrently(import_method),
             Input::VapourSynthScript {
+                stream_concurrently,
                 ..
-            } => false,
+            } => *stream_concurrently,
         }
     }
 

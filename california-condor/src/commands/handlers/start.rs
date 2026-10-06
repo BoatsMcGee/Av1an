@@ -810,10 +810,11 @@ mod tests {
         let mut custom_variables = HashMap::new();
         custom_variables.insert("key".to_owned(), "value".to_owned());
         expected_config.condor.input = Input::VapourSynthScript {
-            source:    VapourSynthScriptSource::Path(script_input_abs),
-            variables: custom_variables,
-            index:     0,
-            filters:   custom_filters.clone(),
+            source:              VapourSynthScriptSource::Path(script_input_abs),
+            variables:           custom_variables,
+            index:               0,
+            filters:             custom_filters.clone(),
+            stream_concurrently: true,
         };
         let mut custom_encoder_parameters = EncoderBase::X264.default_parameters();
         custom_encoder_parameters.insert(

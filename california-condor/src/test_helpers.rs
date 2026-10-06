@@ -543,6 +543,7 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                 variables,
                 index,
                 filters,
+                stream_concurrently,
             } => {
                 assert_matches!(
                     config_input,
@@ -555,8 +556,13 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                         variables: ci_variables,
                         index: ci_index,
                         filters: ci_filters,
+                        stream_concurrently: ci_stream_concurrently,
                     } => {
                         assert_eq!(ci_filters, filters, "{input_name} filters are {filters:?}");
+                        assert_eq!(
+                            ci_stream_concurrently, stream_concurrently,
+                            "{input_name} stream_concurrently is {stream_concurrently}"
+                        );
                         match source {
                             VapourSynthScriptSource::Path(path) => {
                                 assert_matches!(

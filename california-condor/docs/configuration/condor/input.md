@@ -10,7 +10,7 @@ Externally-tagged enum. Exactly one key per object.
 | ------- | -------- | ------ |
 | Video file | `Video` | `path`, `import_method`, `filters` |
 | VapourSynth source filter | `VapourSynth` | `path`, `import_method`, `cache_path`, `filters` |
-| VapourSynth script | `VapourSynthScript` | `source`, `variables`, `index`, `filters` |
+| VapourSynth script | `VapourSynthScript` | `source`, `variables`, `index`, `filters`, `stream_concurrently` |
 
 `init` writes `VapourSynth` with `BestSource` for video inputs, `VapourSynthScript` with `Path` source for `.vpy`/`.py` inputs.
 
@@ -86,6 +86,15 @@ CLI mapping: `--decoder bestsource|vs-ffms2|lsmash|dgdecnv|ffms2` selects the me
 | `variables` | Object (string→string) | Yes | `{}` | `--vs-args key=value` pairs. See [VS Args](../../types/vs-args.md) |
 | `index` | Integer | Yes | `0` | Output node index |
 | `filters` | Array of `VapourSynthFilter` | Yes | `[]` | Filters chained onto the script's output node |
+| `stream_concurrently` | Boolean | No | `true` | Let each encoder pull frames from the script at once, bounding memory use |
+
+A config written before `stream_concurrently` existed omits it and behaves as `true`.
+
+With concurrent streaming on, each encoder reads its own frames from the script and only a fixed
+window of decoded frames is kept in memory, so memory use stays flat no matter how long a scene is.
+Turning it off decodes a whole scene ahead of its encoders instead, which uses more memory but can
+decode faster. Set it to `false` if the script's source plugin decodes slowly when several readers
+pull frames from it at once.
 
 Examples:
 
@@ -95,7 +104,8 @@ Examples:
         "source": { "Path": "script.vpy" },
         "variables": { "message": "fluffy kittens" },
         "index": 0,
-        "filters": []
+        "filters": [],
+        "stream_concurrently": true
     }
 }
 ```
@@ -106,7 +116,8 @@ Examples:
         "source": { "Text": "import vapoursynth as vs\ncore = vs.core\nclip = core.bs.VideoSource(source='input.mp4')\nclip.set_output()" },
         "variables": {},
         "index": 0,
-        "filters": [{ "Trim": { "start": 24, "end": null } }]
+        "filters": [{ "Trim": { "start": 24, "end": null } }],
+        "stream_concurrently": false
     }
 }
 ```

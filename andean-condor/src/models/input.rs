@@ -27,12 +27,29 @@ pub enum Input {
         filters:       Vec<VapourSynthFilter>,
     },
     VapourSynthScript {
-        source:    VapourSynthScriptSource,
-        variables: HashMap<String, String>,
-        index:     u8,
+        source:              VapourSynthScriptSource,
+        variables:           HashMap<String, String>,
+        index:               u8,
         /// Filters chained onto the script's output node, in order.
-        filters:   Vec<VapourSynthFilter>,
+        filters:             Vec<VapourSynthFilter>,
+        /// Whether several encoders may pull frames from this script at once.
+        ///
+        /// Streaming frames concurrently bounds memory, because only a fixed
+        /// window of frames is kept resident. Setting this to `false` decodes a
+        /// whole scene ahead of its encoders instead, trading memory for decode
+        /// speed, and is worth trying if the script's source plugin decodes
+        /// slowly under concurrent access.
+        #[serde(default = "stream_concurrently_default")]
+        stream_concurrently: bool,
     },
+}
+
+/// An absent `stream_concurrently` means concurrent streaming, so configs
+/// written before the field existed keep the bounded-memory behaviour.
+#[inline]
+#[must_use]
+fn stream_concurrently_default() -> bool {
+    true
 }
 
 impl Input {
@@ -427,6 +444,63 @@ mod tests {
         assert!(vapoursynth_input(vec![trim()]).has_time_altering_filters());
         assert!(!vapoursynth_input(vec![resize()]).has_time_altering_filters());
         assert!(!video_input(Vec::new()).has_time_altering_filters());
+    }
+
+    fn script_json(stream_concurrently: &str) -> String {
+        format!(
+            r#"{{
+                "VapourSynthScript": {{
+                    "source": {{ "Path": "script.vpy" }},
+                    "variables": {{}},
+                    "index": 0,
+                    "filters": []
+                    {stream_concurrently}
+                }}
+            }}"#
+        )
+    }
+
+    fn script_stream_concurrently(input: &Input) -> bool {
+        let Input::VapourSynthScript {
+            stream_concurrently,
+            ..
+        } = input
+        else {
+            panic!("expected a VapourSynthScript input");
+        };
+        *stream_concurrently
+    }
+
+    /// A config written before this field existed must still load, and must get
+    /// the bounded-memory behaviour rather than failing to parse.
+    #[test]
+    fn a_missing_stream_concurrently_defaults_to_streaming() {
+        let input: Input = serde_json::from_str(&script_json(""))
+            .expect("a script config without the field loads");
+
+        assert!(
+            script_stream_concurrently(&input),
+            "an absent field means concurrent streaming"
+        );
+    }
+
+    /// The user has to be able to turn concurrent streaming off.
+    #[test]
+    fn stream_concurrently_false_survives_a_round_trip() {
+        let input: Input = serde_json::from_str(&script_json(r#", "stream_concurrently": false"#))
+            .expect("an explicit false loads");
+
+        assert!(
+            !script_stream_concurrently(&input),
+            "an explicit false disables concurrent streaming"
+        );
+
+        let written = serde_json::to_string(&input).expect("a script input serializes");
+        let reread: Input = serde_json::from_str(&written).expect("the written config loads");
+        assert!(
+            !script_stream_concurrently(&reread),
+            "false must not be lost when the config is saved and reloaded"
+        );
     }
 }
 
