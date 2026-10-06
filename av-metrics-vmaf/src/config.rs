@@ -315,8 +315,20 @@ fn model_search_paths_for(loaded_from: Option<&Path>) -> Vec<PathBuf> {
 /// rather than assuming the path was constructed consistently.
 #[cfg(test)]
 fn is_system_model_path(path: &str) -> bool {
-    path.starts_with("/usr/")
-        || path.starts_with("/opt/")
+    // Canonical package-manager model directories
+    const SYSTEM_PATHS: &[&str] = &[
+        "/usr/share/model",
+        "/usr/share/vmaf/model",
+        "/usr/local/share/model",
+        "/usr/local/share/vmaf/model",
+        "/opt/homebrew/share/vmaf/model",
+        "/opt/local/share/vmaf/model",
+    ];
+
+    // Exact match or prefix match for canonical system paths
+    SYSTEM_PATHS.iter().any(|sys| path == *sys || path.starts_with(&format!("{}/", sys)))
+        // Also match the share/vmaf/model suffix in any spelling (for Windows paths
+        // assembled from POSIX-looking roots)
         || [
             "share/vmaf/model",
             "share/vmaf\\model",

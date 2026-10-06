@@ -1192,7 +1192,9 @@ impl TargetQuality {
                 // Always scored above, since VMAF has no plugin branch here.
                 QualityMetric::VMAF {
                     ..
-                } => unreachable!("VMAF is scored natively above, not here"),
+                } => {
+                    unreachable!("VMAF is scored natively above, not here")
+                },
                 QualityMetric::SSIMULACRA2 {
                     resolution,
                     threads,

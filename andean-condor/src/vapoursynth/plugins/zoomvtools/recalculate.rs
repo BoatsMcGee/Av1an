@@ -74,7 +74,9 @@ impl Plugin for Recalculate {
 
 impl PluginFunction for Recalculate {
     const FUNCTION_NAME: &'static str = "Recalculate";
-    const FUNCTION_DOCS: Option<&'static str> = Some("https://gitlab.com/shssoichiro/vapoursynth-zoomvtools/-/blob/main/USAGE.md?ref_type=heads#recalculate");
+    const FUNCTION_DOCS: Option<&'static str> = Some(
+        "https://gitlab.com/shssoichiro/vapoursynth-zoomvtools/-/blob/main/USAGE.md?ref_type=heads#recalculate",
+    );
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("super_clip", &ValueType::VideoNode), ("vectors", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

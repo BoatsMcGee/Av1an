@@ -53,7 +53,9 @@ impl Plugin for ZMVSuper {
 
 impl PluginFunction for ZMVSuper {
     const FUNCTION_NAME: &'static str = "Super";
-    const FUNCTION_DOCS: Option<&'static str> = Some("https://gitlab.com/shssoichiro/vapoursynth-zoomvtools/-/blob/main/USAGE.md?ref_type=heads#super");
+    const FUNCTION_DOCS: Option<&'static str> = Some(
+        "https://gitlab.com/shssoichiro/vapoursynth-zoomvtools/-/blob/main/USAGE.md?ref_type=heads#super",
+    );
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("clip", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

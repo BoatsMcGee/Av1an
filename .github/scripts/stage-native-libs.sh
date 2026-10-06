@@ -46,9 +46,17 @@ mkdir -p "$StageDir/model"
 # The nine upstream models are checked in under model/, so the release copies
 # them rather than downloading from Netflix like the Windows script does.
 step 'Staging VMAF models'
+shopt -s nullglob
 for model in model/*.json; do
     cp -v "$model" "$StageDir/model/"
 done
+shopt -u nullglob
+
+# Verify models were copied
+if [ ! -f "$StageDir/model/vmaf_v0.6.1.json" ]; then
+    echo "ERROR: VMAF models not found in model/ directory" >&2
+    exit 1
+fi
 
 # libvmaf comes from the distribution package, which the build container
 # installs. The resolved path is copied rather than symlinked so the archive is

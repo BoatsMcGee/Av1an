@@ -58,8 +58,9 @@ impl Plugin for Degrain {
 
 impl PluginFunction for Degrain {
     const FUNCTION_NAME: &'static str = "Degrain1";
-    const FUNCTION_DOCS: Option<&'static str> =
-        Some("https://gitlab.com/shssoichiro/vapoursynth-zoomvtools/-/blob/main/USAGE.md?ref_type=heads#degrain1");
+    const FUNCTION_DOCS: Option<&'static str> = Some(
+        "https://gitlab.com/shssoichiro/vapoursynth-zoomvtools/-/blob/main/USAGE.md?ref_type=heads#degrain1",
+    );
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[
         ("clip", &ValueType::VideoNode),
         ("super_clip", &ValueType::VideoNode),

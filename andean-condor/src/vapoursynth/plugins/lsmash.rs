@@ -195,7 +195,9 @@ impl Plugin for LWLibavSource {
 
 impl PluginFunction for LWLibavSource {
     const FUNCTION_NAME: &'static str = "LWLibavSource";
-    const FUNCTION_DOCS: Option<&'static str> = Some("https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works/blob/master/VapourSynth/README.md#lsmaslwlibavsource");
+    const FUNCTION_DOCS: Option<&'static str> = Some(
+        "https://github.com/HomeOfAviSynthPlusEvolution/L-SMASH-Works/blob/master/VapourSynth/README.md#lsmaslwlibavsource",
+    );
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("source", &ValueType::Data)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[

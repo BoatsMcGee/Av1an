@@ -96,8 +96,9 @@ impl Plugin for Analyse {
 
 impl PluginFunction for Analyse {
     const FUNCTION_NAME: &'static str = "Analyse";
-    const FUNCTION_DOCS: Option<&'static str> =
-        Some("https://gitlab.com/shssoichiro/vapoursynth-zoomvtools/-/blob/main/USAGE.md?ref_type=heads#analyse");
+    const FUNCTION_DOCS: Option<&'static str> = Some(
+        "https://gitlab.com/shssoichiro/vapoursynth-zoomvtools/-/blob/main/USAGE.md?ref_type=heads#analyse",
+    );
     const REQUIRED_ARGUMENTS: &'static [(&'static str, &'static ValueType)] =
         &[("super_clip", &ValueType::VideoNode)];
     const OPTIONAL_ARGUMENTS: &'static [(&'static str, &'static ValueType)] = &[
