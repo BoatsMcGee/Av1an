@@ -46,15 +46,32 @@ mkdir -p "$StageDir/model"
 # The nine upstream models are checked in under model/, so the release copies
 # them rather than downloading from Netflix like the Windows script does.
 step 'Staging VMAF models'
+
+# Use GITHUB_WORKSPACE to find the model directory reliably in the container
+MODEL_DIR="${GITHUB_WORKSPACE:-$(pwd)}/model"
+
+# Debug: show working directory and model directory contents
+echo "Working directory: $(pwd)"
+echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE:-not set}"
+echo "Model directory: $MODEL_DIR"
+echo "Model directory contents:"
+ls -la "$MODEL_DIR"/ 2>/dev/null || echo "model/ directory not found at $MODEL_DIR"
+
 shopt -s nullglob
-for model in model/*.json; do
+model_count=0
+for model in "$MODEL_DIR"/*.json; do
     cp -v "$model" "$StageDir/model/"
+    model_count=$((model_count + 1))
 done
 shopt -u nullglob
 
+echo "Copied $model_count model files"
+
 # Verify models were copied
 if [ ! -f "$StageDir/model/vmaf_v0.6.1.json" ]; then
-    echo "ERROR: VMAF models not found in model/ directory" >&2
+    echo "ERROR: VMAF models not found in $StageDir/model/ directory" >&2
+    echo "Contents of $StageDir/model/:" >&2
+    ls -la "$StageDir/model/" >&2 || true
     exit 1
 fi
 
