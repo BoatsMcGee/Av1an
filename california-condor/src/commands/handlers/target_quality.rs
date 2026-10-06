@@ -2,35 +2,31 @@ use std::path::{Path, PathBuf};
 
 use andean_condor::{
     core::sequence::target_quality::TargetQuality,
-    models::{
-        input::Input as InputModel,
-        sequence::target_quality::{
-            TargetQualityConfig,
-            types::{
-                DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-                DEFAULT_CVVDP_TARGET_RANGE,
-                DEFAULT_SSIMULACRA2_TARGET_RANGE,
-                DEFAULT_VMAF_TARGET_RANGE,
-                DEFAULT_XPSNR_TARGET_RANGE,
-                ProbeStatistic,
-                ProbeStrategy,
-                QualityMetric,
-                SubsetProbeLength,
-                SubsetProbePosition,
-            },
+    models::sequence::target_quality::{
+        TargetQualityConfig,
+        types::{
+            DEFAULT_BUTTERAUGLI_TARGET_RANGE,
+            DEFAULT_CVVDP_TARGET_RANGE,
+            DEFAULT_SSIMULACRA2_TARGET_RANGE,
+            DEFAULT_VMAF_TARGET_RANGE,
+            DEFAULT_XPSNR_TARGET_RANGE,
+            ProbeStatistic,
+            ProbeStrategy,
+            QualityMetric,
+            SubsetProbeLength,
+            SubsetProbePosition,
         },
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::Result;
-use tracing::warn;
 
 use crate::{
     commands::{
         DecoderMethod,
         QualityMetric as QualityMetricBase,
         QualityProfile,
-        handlers::{configure_input, configure_temp, load_configuration},
+        handlers::{configure_override_input, configure_temp, load_configuration},
     },
     configuration::Configuration,
     utils::parameter_parser::EncoderParamsParser,
@@ -102,47 +98,26 @@ pub fn configure_target_quality(
         return Ok(());
     }
 
-    if input_path.is_some() || decoder.is_some() || filters.is_some() || vs_args.is_some() {
-        let existing_input = if let Some(Some(input)) = configuration
-            .condor
-            .sequence_config
-            .target_quality
-            .as_ref()
-            .map(|tq| tq.input.clone())
-        {
-            input
-        } else {
-            configuration.condor.input.clone()
-        };
-        let input = configure_input(
-            configuration,
-            &existing_input,
-            input_path,
-            decoder,
-            vs_args,
-            None,
-        )?;
-        if let Some(target_quality) = &mut configuration.condor.sequence_config.target_quality {
-            target_quality.input = Some(input);
-        }
-    }
-
-    if let Some(filters) = filters {
-        let tq_input = configuration
-            .condor
-            .sequence_config
-            .target_quality
-            .as_mut()
-            .and_then(|tq| tq.input.as_mut())
-            .unwrap_or(&mut configuration.condor.input);
-        let unsupported = InputModel::unsupported_filters(filters);
-        tq_input.set_filters(filters.to_vec());
-        for filter in unsupported {
-            warn!(
-                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
-                 convert bit depth, chroma and resolution"
-            );
-        }
+    let existing_input = configuration
+        .condor
+        .sequence_config
+        .target_quality
+        .as_ref()
+        .and_then(|tq| tq.input.clone())
+        .unwrap_or_else(|| configuration.condor.input.clone());
+    let override_input = configure_override_input(
+        configuration,
+        &existing_input,
+        input_path,
+        decoder,
+        filters,
+        vs_args,
+    )?;
+    if let (Some(input), Some(target_quality)) = (
+        override_input,
+        &mut configuration.condor.sequence_config.target_quality,
+    ) {
+        target_quality.input = Some(input);
     }
 
     if let (Some(metric), Some(target_quality)) = (

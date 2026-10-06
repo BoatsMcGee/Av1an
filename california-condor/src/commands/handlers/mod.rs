@@ -1,13 +1,16 @@
 use std::path::{Path, PathBuf};
 
-use andean_condor::models::input::{
-    ImportMethod,
-    Input as InputModel,
-    VapourSynthImportMethod,
-    VapourSynthScriptSource,
+use andean_condor::{
+    models::input::{
+        ImportMethod,
+        Input as InputModel,
+        VapourSynthImportMethod,
+        VapourSynthScriptSource,
+    },
+    vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::{Result, bail};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::{
     DEFAULT_CONFIG_PATH,
@@ -157,6 +160,50 @@ pub fn configure_input(
     // so carry them over.
     input.adopt_filters(existing_input);
     Ok(input)
+}
+
+/// Replaces `input`'s filters, warning about any its decoder cannot run.
+pub fn apply_input_filters(input: &mut InputModel, filters: &[VapourSynthFilter]) {
+    let unsupported = InputModel::unsupported_filters(filters);
+    input.set_filters(filters.to_vec());
+    for filter in unsupported {
+        warn!(
+            "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only convert \
+             bit depth, chroma and resolution"
+        );
+    }
+}
+
+/// Builds a sequence's override input, or `None` when no override flag is set.
+///
+/// Filters count as an override, so passing only filters still gives the
+/// sequence its own input. Writing them to the main input instead would replace
+/// its filters, losing the conversions the encoder depends on.
+pub fn configure_override_input(
+    configuration: &Configuration,
+    existing_input: &InputModel,
+    input_path: Option<&Path>,
+    decoder: Option<&DecoderMethod>,
+    filters: Option<&[VapourSynthFilter]>,
+    vs_args: Option<&[String]>,
+) -> Result<Option<InputModel>> {
+    if input_path.is_none() && decoder.is_none() && filters.is_none() && vs_args.is_none() {
+        return Ok(None);
+    }
+
+    let mut input = configure_input(
+        configuration,
+        existing_input,
+        input_path,
+        decoder,
+        vs_args,
+        None,
+    )?;
+    if let Some(filters) = filters {
+        apply_input_filters(&mut input, filters);
+    }
+
+    Ok(Some(input))
 }
 
 #[cfg(test)]

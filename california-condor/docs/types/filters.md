@@ -116,10 +116,15 @@ it does not (a crop, a trim, or any denoiser). Use `--decoder vs-ffms2` to run t
 | Flag                  | Default                               |
 | --------------------- | ------------------------------------- |
 | `--filters`           | `resize:scaler=bicubic;format=yuv420p10le` |
-| `--scd-filters`       | inherits `--filters`                  |
-| `--tq-filters`        | inherits `--filters`                  |
+| `--scd-filters`       | inherits `condor.input`               |
+| `--tq-filters`        | inherits `condor.input`               |
 | `--reference-filters` | `wnnm:sigma=3.0,0.0,0.0;`             |
 | `--denoised-filters`  | `wnnm:sigma=6.0,0.0,0.0;`             |
+
+`--scd-filters` and `--tq-filters` set filters on the Scene Detector and Target Quality
+inputs, creating those inputs if needed. Each inherits the path and decoder of
+`condor.input` when it has none of its own, so they never replace the filters on
+`condor.input` itself. `--filters` always applies to `condor.input`.
 
 ## Examples
 

@@ -1,18 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use andean_condor::{
-    core::input::Input,
-    models::input::Input as InputModel,
-    vapoursynth::vapoursynth_filters::VapourSynthFilter,
-};
+use andean_condor::{core::input::Input, vapoursynth::vapoursynth_filters::VapourSynthFilter};
 use anyhow::Result;
-use tracing::warn;
 
 use crate::{
     commands::{
         DecoderMethod,
         SceneDetectionMethod,
-        handlers::{configure_input, configure_temp, load_configuration},
+        handlers::{configure_override_input, configure_temp, load_configuration},
     },
     configuration::Configuration,
 };
@@ -60,24 +55,23 @@ pub fn configure_scene_detector(
     min_scene_seconds: Option<usize>,
     max_scene_seconds: Option<usize>,
 ) -> Result<()> {
-    if input_path.is_some() || decoder.is_some() || vs_args.is_some() {
-        let existing_input = configuration
-            .condor
-            .sequence_config
-            .scene_detector
-            .input
-            .clone()
-            .unwrap_or_else(|| configuration.condor.input.clone());
-        let scd_input = configure_input(
-            configuration,
-            &existing_input,
-            input_path,
-            decoder,
-            vs_args,
-            None,
-        )?;
-        configuration.condor.sequence_config.scene_detector.input = Some(scd_input);
-    };
+    let existing_input = configuration
+        .condor
+        .sequence_config
+        .scene_detector
+        .input
+        .clone()
+        .unwrap_or_else(|| configuration.condor.input.clone());
+    if let Some(input) = configure_override_input(
+        configuration,
+        &existing_input,
+        input_path,
+        decoder,
+        filters,
+        vs_args,
+    )? {
+        configuration.condor.sequence_config.scene_detector.input = Some(input);
+    }
     let mut input = Input::from_data(
         configuration
             .condor
@@ -116,23 +110,6 @@ pub fn configure_scene_detector(
         .scene_detector
         .method
         .set_maximum_length(max_scene_frames)?;
-    if let Some(filters) = filters {
-        let scd_input = configuration
-            .condor
-            .sequence_config
-            .scene_detector
-            .input
-            .as_mut()
-            .unwrap_or(&mut configuration.condor.input);
-        let unsupported = InputModel::unsupported_filters(filters);
-        scd_input.set_filters(filters.to_vec());
-        for filter in unsupported {
-            warn!(
-                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
-                 convert bit depth, chroma and resolution"
-            );
-        }
-    }
 
     Ok(())
 }
@@ -307,5 +284,102 @@ mod tests {
         );
         check_basic_config(&config, &expected_config);
         assert!(config.condor.scenes.is_empty(), "scenes is empty");
+    }
+
+    /// `--scd-filters` alone must not write through to the main input. Doing so
+    /// replaces its default 10-bit conversion, which the encoder depends on.
+    #[test]
+    fn detect_scenes_filters_only_do_not_touch_main_input() {
+        let test_video = get_test_video();
+        let input_abs = path_abs::PathAbs::new(&test_video.path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let temp_abs = path_abs::PathAbs::new(temp.path().join(hash_path(&input_abs)))
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let output = temp.path().join("out.mkv");
+        let config_path = temp.path().join("condor.json");
+        let custom_filters = vec![VapourSynthFilter::Resize {
+            scaler: Some(Scaler::Point),
+            width:  Some(960),
+            height: Some(540),
+            format: None,
+        }];
+        let mut expected_config = default_config(&test_video, &output, &temp_abs);
+        expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
+            path:          input_abs.clone(),
+            import_method: VapourSynthImportMethod::BestSource {
+                index: None
+            },
+            cache_path:    None,
+            filters:       custom_filters.clone(),
+        });
+        // `condor.input` is left as the default config has it, so `check_input`
+        // inside `check_basic_config` fails if the filters leak onto it.
+        let expected_config = expected_config;
+
+        init_handler(
+            Some(&config_path),
+            Some(&temp.path().join(hash_path(&input_abs))),
+            &test_video.path,
+            &output,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("init_handler should succeed");
+
+        let (config, _) = detect_scenes_handler(
+            Some(&config_path),
+            None,
+            None,
+            None,
+            Some(&custom_filters),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("detect_scenes_handler should succeed");
+
+        // `condor.input` must still match the default config, filters included.
+        check_basic_config(&config, &expected_config);
+        let scd_input = config
+            .condor
+            .sequence_config
+            .scene_detector
+            .input
+            .as_ref()
+            .expect("Scene Detector input is Some");
+        assert_eq!(
+            scd_input.vapoursynth_filters(),
+            custom_filters,
+            "Scene Detector input has the requested filters"
+        );
+        assert_eq!(
+            match scd_input {
+                Input::VapourSynth {
+                    path, ..
+                }
+                | Input::Video {
+                    path, ..
+                } => path,
+                Input::VapourSynthScript {
+                    ..
+                } => panic!("Scene Detector input is a script"),
+            },
+            &input_abs,
+            "Scene Detector input inherits the main input's path"
+        );
     }
 }

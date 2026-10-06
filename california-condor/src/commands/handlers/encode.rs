@@ -1,20 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::{
-    models::{
-        encoder::{Encoder, EncoderBase, EncoderPasses, photon_noise::PhotonNoise},
-        input::Input as InputModel,
-    },
+    models::encoder::{Encoder, EncoderBase, EncoderPasses, photon_noise::PhotonNoise},
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::Result;
-use tracing::warn;
 
 use crate::{
     commands::{
         DecoderMethod,
         EncoderMethod,
-        handlers::{configure_input, configure_temp, load_configuration},
+        handlers::{apply_input_filters, configure_input, configure_temp, load_configuration},
     },
     configuration::Configuration,
     utils::parameter_parser::EncoderParamsParser,
@@ -69,6 +65,13 @@ pub fn configure_parallel_encoder(
     vs_args: Option<&[String]>,
     workers: Option<u8>,
 ) -> Result<()> {
+    // `--filters` describes the input being encoded, not the parallel encoder's own
+    // override, so it always applies to the main input. Applying it first lets an
+    // override built below inherit the filters via `adopt_filters`.
+    if let Some(filters) = filters {
+        apply_input_filters(&mut configuration.condor.input, filters);
+    }
+
     if input_path.is_some() || decoder.is_some() || vs_args.is_some() {
         let existing_input = configuration
             .condor
@@ -86,24 +89,6 @@ pub fn configure_parallel_encoder(
             None,
         )?;
         configuration.condor.sequence_config.parallel_encoder.input = Some(input);
-    }
-
-    if let Some(filters) = filters {
-        let pe_input = configuration
-            .condor
-            .sequence_config
-            .parallel_encoder
-            .input
-            .as_mut()
-            .unwrap_or(&mut configuration.condor.input);
-        let unsupported = InputModel::unsupported_filters(filters);
-        pe_input.set_filters(filters.to_vec());
-        for filter in unsupported {
-            warn!(
-                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
-                 convert bit depth, chroma and resolution"
-            );
-        }
     }
 
     if let Some(workers) = workers {
@@ -215,16 +200,19 @@ pub fn configure_encoder(
 
 #[cfg(test)]
 mod tests {
-    use andean_condor::models::{
-        encoder::cli_parameter::CLIParameter,
-        input::{Input, VapourSynthImportMethod},
-        sequence::parallel_encoder::ParallelEncoderConfig,
+    use andean_condor::{
+        models::{
+            encoder::cli_parameter::CLIParameter,
+            input::{Input, VapourSynthImportMethod},
+            sequence::parallel_encoder::ParallelEncoderConfig,
+        },
+        vapoursynth::plugins::resize::Scaler,
     };
 
     use super::*;
     use crate::{
         commands::handlers::init::init_handler,
-        test_helpers::{check_basic_config, default_config, get_test_video},
+        test_helpers::{check_basic_config, check_input, default_config, get_test_video},
         utils::hash_path::hash_path,
     };
 
@@ -343,6 +331,8 @@ mod tests {
             ccr:        None,
         }));
         expected_config.condor.sequence_config.parallel_encoder = ParallelEncoderConfig {
+            // `--filters` describes the input being encoded, so it applies to
+            // `condor.input` and the override inherits it.
             input:            Some(Input::VapourSynth {
                 path:          input_abs.clone(),
                 import_method: VapourSynthImportMethod::DGDecNV {
@@ -354,6 +344,13 @@ mod tests {
             workers:          Some(2),
             scenes_directory: temp_abs.join("scenes"),
         };
+        if let Input::VapourSynth {
+            filters: main_filters,
+            ..
+        } = &mut expected_config.condor.input
+        {
+            *main_filters = custom_filters.clone();
+        }
         // immutable shadow
         let expected_config = expected_config;
 
@@ -400,5 +397,85 @@ mod tests {
         );
         check_basic_config(&config, &expected_config);
         assert!(config.condor.scenes.is_empty(), "scenes is empty");
+    }
+
+    /// `--filters` describes the input being encoded, so it must reach
+    /// `condor.input` even when the config already carries a
+    /// `parallel_encoder.input` override.
+    #[test]
+    fn encode_filters_target_main_input_with_override_present() {
+        let test_video = get_test_video();
+        let input_abs = path_abs::PathAbs::new(&test_video.path)
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp = tempfile::tempdir().expect("temp directory");
+        let output = temp.path().join("out.mkv");
+        let config_path = temp.path().join("condor.json");
+        let custom_filters = vec![VapourSynthFilter::Resize {
+            scaler: Some(Scaler::Point),
+            width:  Some(960),
+            height: Some(540),
+            format: None,
+        }];
+
+        init_handler(
+            Some(&config_path),
+            Some(&temp.path().join(hash_path(&input_abs))),
+            &test_video.path,
+            &output,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("init_handler should succeed");
+
+        // A pre-existing override is exactly what used to swallow the filters.
+        let (mut config, _) =
+            load_configuration(Some(&config_path)).expect("load_configuration should succeed");
+        config.condor.sequence_config.parallel_encoder.input = Some(Input::VapourSynth {
+            path:          input_abs,
+            import_method: VapourSynthImportMethod::DGDecNV {
+                dgindexnv_executable: None,
+            },
+            cache_path:    None,
+            filters:       vec![],
+        });
+        let override_before = config.condor.sequence_config.parallel_encoder.input.clone();
+        config.save(&config_path).expect("save should succeed");
+
+        let (config, _) = encode_handler(
+            Some(&config_path),
+            None,
+            None,
+            None,
+            Some(&custom_filters),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("encode_handler should succeed");
+
+        assert_eq!(
+            config.condor.input.vapoursynth_filters(),
+            custom_filters,
+            "main input receives the filters"
+        );
+        check_input(
+            config.condor.sequence_config.parallel_encoder.input.as_ref(),
+            override_before.as_ref(),
+            "parallel encoder input",
+        );
     }
 }
