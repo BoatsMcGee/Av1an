@@ -868,7 +868,12 @@ impl VshipApi {
             // was opened, and the two call for different fixes.
             //
             // `exception` is a plain data value here, not a borrowed one.
-            Err(exception) if matches!(crate::driver::probe_once(), crate::driver::DriverProbe::Absent) => {
+            Err(exception)
+                if matches!(
+                    crate::driver::probe_once(),
+                    crate::driver::DriverProbe::Absent
+                ) =>
+            {
                 Err(VshipError::LibraryNotFound {
                     reason: "no GPU driver is installed, so libvship was not opened".to_owned(),
                 })

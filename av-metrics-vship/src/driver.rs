@@ -1,27 +1,29 @@
 //! Whether a GPU driver is present, established before libvship is opened.
 //!
-//! A Vulkan build of libvship declares `VkDeviceManagerList globalVulkanInstance`,
-//! whose constructor calls `vkCreateInstance` and lets upstream's failure
-//! `throw`. That runs during `dlopen`, and an exception escaping a global
-//! constructor calls `std::terminate` -- so the process aborts before any Rust
-//! code runs, and `is_available()` never gets to report unavailability. With no
-//! driver: `Aborted (exit 134)`.
+//! A Vulkan build of libvship declares `VkDeviceManagerList
+//! globalVulkanInstance`, whose constructor calls `vkCreateInstance` and lets
+//! upstream's failure `throw`. That runs during `dlopen`, and an exception
+//! escaping a global constructor calls `std::terminate` -- so the process
+//! aborts before any Rust code runs, and `is_available()` never gets to report
+//! unavailability. With no driver: `Aborted (exit 134)`.
 //!
 //! So the loader is asked the same question first. It reports failure as a
 //! return value rather than throwing, so a driverless machine yields a clean
-//! "unavailable" and libvship is never opened. `Present` means the call libvship
-//! is about to make will succeed, which is why the probe requests the same API
-//! version libvship does: the loader downgrades a version it cannot provide
-//! rather than failing, so a lower request would pass a driver libvship rejects.
+//! "unavailable" and libvship is never opened. `Present` means the call
+//! libvship is about to make will succeed, which is why the probe requests the
+//! same API version libvship does: the loader downgrades a version it cannot
+//! provide rather than failing, so a lower request would pass a driver libvship
+//! rejects.
 //!
 //! The loader is asked rather than the filesystem because discovery is
 //! per-platform (manifest directories on Linux, the registry on Windows,
-//! MoltenVK bundles on macOS) and reimplementing it would drift from the loader.
-//! It exports `vkCreateInstance`, so no Vulkan headers or build dependency are
-//! needed.
+//! MoltenVK bundles on macOS) and reimplementing it would drift from the
+//! loader. It exports `vkCreateInstance`, so no Vulkan headers or build
+//! dependency are needed.
 //!
 //! The CUDA and HIP builds do not throw from a global initialiser, so a machine
-//! without Vulkan is not by itself grounds for refusing; see [`DriverProbe::Unknown`].
+//! without Vulkan is not by itself grounds for refusing; see
+//! [`DriverProbe::Unknown`].
 
 use std::{
     ffi::{c_char, c_int, c_void},
@@ -84,13 +86,13 @@ struct VkApplicationInfo {
 /// `VkInstanceCreateInfo`.
 #[repr(C)]
 struct VkInstanceCreateInfo {
-    s_type:                    c_int,
-    p_next:                    *mut c_void,
-    flags:                     u32,
-    p_application_info:        *const VkApplicationInfo,
-    enabled_layer_count:       u32,
-    pp_enabled_layer_names:    *const *const c_char,
-    enabled_extension_count:   u32,
+    s_type:                     c_int,
+    p_next:                     *mut c_void,
+    flags:                      u32,
+    p_application_info:         *const VkApplicationInfo,
+    enabled_layer_count:        u32,
+    pp_enabled_layer_names:     *const *const c_char,
+    enabled_extension_count:    u32,
     pp_enabled_extension_names: *const *const c_char,
 }
 
@@ -178,14 +180,13 @@ fn probe() -> DriverProbe {
 
 /// Create and destroy an instance through the loader.
 ///
-/// `library` must outlive this call, which `probe_with` guarantees by leaking it.
+/// `library` must outlive this call, which `probe_with` guarantees by leaking
+/// it.
 fn try_create_instance(library: &'static Library) -> Result<(), String> {
     // SAFETY: the signature is that of `vkCreateInstance`.
-    let Ok(create) = (unsafe {
-        library
-            .get::<PfnCreateInstance>(b"vkCreateInstance\0")
-            .map(|symbol| *symbol)
-    }) else {
+    let Ok(create) =
+        (unsafe { library.get::<PfnCreateInstance>(b"vkCreateInstance\0").map(|symbol| *symbol) })
+    else {
         return Err("no vkCreateInstance in the library".to_owned());
     };
 
@@ -203,13 +204,13 @@ fn try_create_instance(library: &'static Library) -> Result<(), String> {
         api_version:         VK_API_VERSION_1_3,
     };
     let create_info = VkInstanceCreateInfo {
-        s_type:                    VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        p_next:                    std::ptr::null_mut(),
-        flags:                     0,
-        p_application_info:        &application_info,
-        enabled_layer_count:       0,
-        pp_enabled_layer_names:    std::ptr::null(),
-        enabled_extension_count:   0,
+        s_type:                     VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        p_next:                     std::ptr::null_mut(),
+        flags:                      0,
+        p_application_info:         &application_info,
+        enabled_layer_count:        0,
+        pp_enabled_layer_names:     std::ptr::null(),
+        enabled_extension_count:    0,
         pp_enabled_extension_names: std::ptr::null(),
     };
 
@@ -245,9 +246,9 @@ fn try_create_instance(library: &'static Library) -> Result<(), String> {
 ///
 /// The backend cannot be read from a library without opening it, which is the
 /// thing that may abort, so this looks for the loader's name in the file's
-/// import table instead. A substring search over the file is conservative in the
-/// safe direction: a Vulkan build always names the loader, and a false positive
-/// only means the gate applies when it need not.
+/// import table instead. A substring search over the file is conservative in
+/// the safe direction: a Vulkan build always names the loader, and a false
+/// positive only means the gate applies when it need not.
 #[inline]
 #[must_use]
 pub(crate) fn is_vulkan_build(path: &Path) -> bool {
@@ -264,7 +265,9 @@ pub(crate) fn is_vulkan_build(path: &Path) -> bool {
         return false;
     };
 
-    markers.iter().any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
+    markers
+        .iter()
+        .any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
 }
 
 /// [`probe`], resolved once: a machine's driver configuration cannot change
@@ -280,8 +283,9 @@ pub(crate) fn probe_once() -> DriverProbe {
 mod tests {
     use super::*;
 
-    /// Creating an instance wedges the loader at process exit, so the tests that
-    /// do it are opt-in. Set this to run them on a machine with a driver.
+    /// Creating an instance wedges the loader at process exit, so the tests
+    /// that do it are opt-in. Set this to run them on a machine with a
+    /// driver.
     fn should_create_instance() -> bool {
         std::env::var_os("AV_METRICS_VSHIP_TEST_VULKAN_PROBE").is_some()
     }
@@ -353,7 +357,10 @@ mod tests {
         let mut vulkan_bytes = b"\x7fELF pretend shared object importing ".to_vec();
         vulkan_bytes.extend_from_slice(marker);
         std::fs::write(&vulkan, &vulkan_bytes).expect("write");
-        assert!(is_vulkan_build(&vulkan), "a library importing the loader is Vulkan");
+        assert!(
+            is_vulkan_build(&vulkan),
+            "a library importing the loader is Vulkan"
+        );
 
         let cuda = directory.path().join("libvship-cuda.so");
         std::fs::write(
@@ -375,8 +382,14 @@ mod tests {
         // about field order.
         assert_eq!(std::mem::offset_of!(VkApplicationInfo, s_type), 0);
         assert_eq!(std::mem::offset_of!(VkApplicationInfo, p_next), 8);
-        assert_eq!(std::mem::offset_of!(VkApplicationInfo, p_application_name), 16);
-        assert_eq!(std::mem::offset_of!(VkApplicationInfo, application_version), 24);
+        assert_eq!(
+            std::mem::offset_of!(VkApplicationInfo, p_application_name),
+            16
+        );
+        assert_eq!(
+            std::mem::offset_of!(VkApplicationInfo, application_version),
+            24
+        );
         assert_eq!(std::mem::offset_of!(VkApplicationInfo, p_engine_name), 32);
         assert_eq!(std::mem::offset_of!(VkApplicationInfo, engine_version), 40);
         assert_eq!(std::mem::offset_of!(VkApplicationInfo, api_version), 44);
@@ -384,10 +397,22 @@ mod tests {
         assert_eq!(std::mem::offset_of!(VkInstanceCreateInfo, s_type), 0);
         assert_eq!(std::mem::offset_of!(VkInstanceCreateInfo, p_next), 8);
         assert_eq!(std::mem::offset_of!(VkInstanceCreateInfo, flags), 16);
-        assert_eq!(std::mem::offset_of!(VkInstanceCreateInfo, p_application_info), 24);
-        assert_eq!(std::mem::offset_of!(VkInstanceCreateInfo, enabled_layer_count), 32);
-        assert_eq!(std::mem::offset_of!(VkInstanceCreateInfo, pp_enabled_layer_names), 40);
-        assert_eq!(std::mem::offset_of!(VkInstanceCreateInfo, enabled_extension_count), 48);
+        assert_eq!(
+            std::mem::offset_of!(VkInstanceCreateInfo, p_application_info),
+            24
+        );
+        assert_eq!(
+            std::mem::offset_of!(VkInstanceCreateInfo, enabled_layer_count),
+            32
+        );
+        assert_eq!(
+            std::mem::offset_of!(VkInstanceCreateInfo, pp_enabled_layer_names),
+            40
+        );
+        assert_eq!(
+            std::mem::offset_of!(VkInstanceCreateInfo, enabled_extension_count),
+            48
+        );
         assert_eq!(
             std::mem::offset_of!(VkInstanceCreateInfo, pp_enabled_extension_names),
             56
