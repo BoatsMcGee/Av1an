@@ -9,13 +9,14 @@ RUN python -m pip install --no-cache-dir --break-system-packages vsjetpack[full]
 
 # Add extra plugins to ENV to cover VS R74 packaging changes
 ENV VAPOURSYNTH_EXTRA_PLUGIN_PATH="/usr/lib/vapoursynth"
-# Upstream ships no Linux libvship, so none is installed here. These two let a
-# user drop a self-built (or AUR-sourced) libvship.so into /usr/lib/vapoursynth
-# and have the native metric path activate without editing the image.
-ENV VSHIP_LIB_DIR="/usr/lib/vapoursynth"
-ENV VSHIP_PLUGIN_PATH="/usr/lib/vapoursynth"
+# Both metric libraries are built in the `metrics` stage and staged in /usr/lib.
+# VSHIP_PLUGIN_PATH is left unset: no VapourSynth plugin is installed here, so an
+# override would only name an empty directory.
+ENV VSHIP_LIB_DIR="/usr/lib"
 # Where libvmaf looks for the VMAF model files
 ENV VMAF_MODEL_PATH="/usr/share/model"
+# fmetrics is the CPU engine, and the only one available without a GPU
+ENV FMETRICS_LIB_DIR="/usr/lib"
 
 # Install ZooMVTools with generic linux binary
 RUN ZOOMVTOOLS_VERSION="v2.0.2" && \
@@ -52,9 +53,48 @@ RUN cargo build --release -p california-condor && \
     cd .. && rm -rf ./Condor
 
 
+# Builds libvship and fmetrics from source; neither is packaged for Linux.
+# Kept apart from `build` so a Condor change does not invalidate them.
+FROM base AS metrics
+
+# git, zig, clang and vulkan-headers are build-time only. vulkan-icd-loader is
+# also a runtime dependency, installed again below.
+#
+# No Vulkan driver: libvship is skipped unless the host supplies one, and
+# fmetrics covers scoring without a GPU. See av-metrics-vship/src/driver.rs.
+RUN pacman -S --noconfirm --needed \
+        git \
+        zig \
+        clang \
+        vulkan-headers \
+        vulkan-icd-loader
+
+# libvship, Vulkan backend. -Destination is required, since the script stages
+# into $PWD by default.
+ARG VSHIP_VERSION="v5.1.1"
+ARG VSHIP_COMMIT="256dc5a85e56e42a88a7a90d641037fdc148b91e"
+
+COPY av-metrics-vship/scripts/install-libvship-linux.sh /usr/local/bin/
+RUN VSHIP_VERSION="$VSHIP_VERSION" VSHIP_COMMIT="$VSHIP_COMMIT" \
+    /usr/local/bin/install-libvship-linux.sh -Destination /usr/lib -Quiet
+
+# fmetrics
+ARG FMETRICS_COMMIT="ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac"
+
+COPY av-metrics-fmetrics/scripts/install-fmetrics-linux.sh /usr/local/bin/
+RUN FMETRICS_COMMIT="$FMETRICS_COMMIT" \
+    /usr/local/bin/install-fmetrics-linux.sh -Destination /usr/lib -Quiet
+
 FROM base AS runtime
 
 ENV MPLCONFIGDIR="/home/app_user/"
+
+# libvship imports the Vulkan loader, so the loader must be present even though
+# no driver is.
+RUN pacman -S --noconfirm --needed vulkan-icd-loader
+
+COPY --from=metrics /usr/lib/libvship.so /usr/lib/libvship.so
+COPY --from=metrics /usr/lib/libfmetrics.so /usr/lib/libfmetrics.so
 
 COPY --from=build /usr/local/bin/condor /usr/local/bin/condor
 

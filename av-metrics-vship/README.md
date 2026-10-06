@@ -245,7 +245,21 @@ If libvship is installed as a VapourSynth plugin, nothing else is needed. The pl
 
 ### Linux and macOS
 
-There is no distribution-agnostic libvship build to install. Upstream publishes release assets for Windows only, so on Linux the C API must come from a source build of whichever backend you need — the AUR carries GPU-only VapourSynth plugin packages, `vapoursynth-plugin-vship-cuda-git` and `vapoursynth-plugin-vship-amd-git`, neither of which is a standalone library.
+There is no distribution-agnostic libvship build to install. Upstream publishes release assets for Windows only, so on Linux the C API must come from a source build:
+
+```sh
+./scripts/install-libvship-linux.sh
+```
+
+`-Backend` selects `vulkan` (default), `cuda` or `amd`. Vulkan is the default
+because its only imports are `libvulkan.so.1` and libc/libstdc++/libm/libgcc_s,
+so one build runs against any NVIDIA, AMD or Intel driver; the other two need the
+CUDA and ROCm runtimes. `-Destination` chooses the install directory and `-Quiet`
+suppresses the printed `export` line.
+
+A Vulkan build on a machine with no Vulkan driver would abort the process, so the
+crate checks for a driver before opening the library and reports it unavailable
+instead. See the `driver` module.
 
 Set `VSHIP_LIB_DIR` or `VSHIP_PLUGIN_PATH` at build time so `build.rs` records the directory it finds, and at run time so `dlopen` finds the same one. Without either, the crate still compiles cleanly but reports itself unavailable, and the VapourSynth plugin path is used instead.
 

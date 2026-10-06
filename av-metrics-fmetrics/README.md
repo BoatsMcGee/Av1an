@@ -108,15 +108,22 @@ compile on Windows), builds `fmetrics.dll`, and installs it to `$PWD\fmetrics`.
 `-Destination` chooses another directory; the script prints the
 `SetEnvironmentVariable` line that points the crate at it.
 
-### Linux and macOS
+### Linux
+
+Needs Zig 0.16.x, Git and a C compiler:
 
 ```sh
-git clone --branch add-windows-shared-build https://github.com/BoatsMcGee/fmetrics.git
-cd fmetrics
-zig build --release=fast -Dshared=true
+./scripts/install-fmetrics-linux.sh
 ```
 
-That produces `zig-out/lib/libfmetrics.so` or `.dylib`.
+The script fetches a pinned commit, builds the static library, and links
+`libfmetrics.so` by hand — `zig build -Dshared=true` is broken on ELF and yields
+a library exporting nothing.
+
+`-Destination` chooses another directory; the script prints the `export` line
+that points the crate at it. `-Quiet` suppresses that.
+
+macOS is untested: the hand-link uses `--whole-archive`, a GNU ld and lld flag.
 
 ## Discovery order
 
