@@ -864,7 +864,15 @@ impl VshipApi {
 
         match API.get_or_init(resolve) {
             Ok(api) => Ok(api),
+            // A missing driver is its own cause, not a failed `dlopen`: nothing
+            // was opened, and the two call for different fixes.
+            //
             // `exception` is a plain data value here, not a borrowed one.
+            Err(exception) if matches!(crate::driver::probe_once(), crate::driver::DriverProbe::Absent) => {
+                Err(VshipError::LibraryNotFound {
+                    reason: "no GPU driver is installed, so libvship was not opened".to_owned(),
+                })
+            },
             Err(exception) => Err(VshipError::LibraryNotFound {
                 reason: format!(
                     "no libvship could be dlopened ({}); tried {}",
@@ -944,6 +952,35 @@ fn fallback_message(exception: VshipException) -> String {
 
 /// Resolve one of the candidate libvship libraries.
 fn resolve() -> Result<VshipApi, VshipException> {
+    // A Vulkan build's global initialiser throws without a driver, which aborts
+    // the process from inside `dlopen` and cannot be caught, so absence of a
+    // driver is established while a refusal is still returnable. See `driver`.
+    //
+    // Scoped to Vulkan builds: a CUDA or HIP build reports absence through the
+    // C API, and refusing one because this machine has no Vulkan driver would
+    // disable a library that works. The backend is not knowable before the
+    // library is opened, which is the thing being guarded.
+    let vulkan_unusable = !crate::driver::probe_once().permits_load();
+
+    if vulkan_unusable {
+        let vulkan_builds = library_candidates()
+            .into_iter()
+            .any(|candidate| crate::driver::is_vulkan_build(&candidate));
+
+        if vulkan_builds {
+            tracing::debug!(
+                "no usable Vulkan driver and a Vulkan-built libvship is installed; skipping it"
+            );
+            return Err(VshipException::NoDeviceDetected);
+        }
+
+        // Nothing Vulkan-built is installed, so a CUDA or HIP build may still be
+        // usable. Opening it is the only way to find out.
+        tracing::debug!(
+            "no usable Vulkan driver, but no Vulkan-built libvship is installed; loading anyway"
+        );
+    }
+
     let library = open_library()?;
     // Keep the mapping alive for the life of the process. The pointers resolved
     // below are only valid while it is loaded.

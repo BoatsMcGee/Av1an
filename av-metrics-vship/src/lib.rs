@@ -17,6 +17,16 @@
 //! a successful load already means the driver is present; `Vship_GPUFullCheck`
 //! then confirms the device itself.
 //!
+//! # A missing driver cannot be reported by opening the library
+//!
+//! A Vulkan build opens its Vulkan instance from a global initialiser, and
+//! upstream lets that failure `throw`. The exception escapes a global
+//! constructor and aborts the process from inside `dlopen`, so [`is_available`]
+//! never gets the chance to answer `false`. The driver is therefore established
+//! first, by asking the Vulkan loader to create an instance; a driverless
+//! machine then gets a clean `false` and falls back to another engine. See the
+//! `driver` module.
+//!
 //! # Metrics
 //!
 //! [`VshipMetric::Ssimulacra2`] and [`VshipMetric::Butteraugli`] are per-pair:
@@ -49,6 +59,7 @@
 //! ```
 
 mod config;
+mod driver;
 mod error;
 pub mod ffi;
 mod scorer;
