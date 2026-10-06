@@ -18,6 +18,46 @@ use std::{
 };
 
 use av_metrics_vship::ffi::{VshipApi, library_candidates};
+use tempfile;
+
+/// Environment variables that affect library discovery.
+const DISCOVERY_ENV_VARS: &[&str] = &[
+    "VSHIP_PLUGIN_PATH",
+    "VSHIP_LIB_DIR",
+    "VSSCRIPT_PATH",
+    "VAPOURSYNTH_EXTRA_PLUGIN_PATH",
+];
+
+/// Save all discovery-related environment variables and clear them.
+fn clear_discovery_env() -> Vec<(String, OsString)> {
+    DISCOVERY_ENV_VARS
+        .iter()
+        .filter_map(|var| env::var_os(var).map(|val| (var.to_string(), val)))
+        .collect()
+}
+
+/// Restore previously saved environment variables.
+fn restore_discovery_env(saved: Vec<(String, OsString)>) {
+    // First clear all discovery vars except VSSCRIPT_PATH (handled by
+    // with_vsscript_path)
+    for var in DISCOVERY_ENV_VARS {
+        if *var != "VSSCRIPT_PATH" {
+            // SAFETY: no other thread exists in this test binary while this runs
+            unsafe {
+                env::remove_var(var);
+            }
+        }
+    }
+    // Then restore saved values except VSSCRIPT_PATH
+    for (var, val) in saved {
+        if var != "VSSCRIPT_PATH" {
+            // SAFETY: no other thread exists in this test binary while this runs
+            unsafe {
+                env::set_var(var, val);
+            }
+        }
+    }
+}
 
 /// A candidate is a bare file name when it has no directory component, which is
 /// the signal that the platform loader decides where the library is.
@@ -66,27 +106,52 @@ fn with_vsscript_path<T>(script: Option<&str>, body: impl FnOnce() -> T) -> T {
 /// candidate.
 #[test]
 fn the_vapoursynth_plugin_directory_is_a_candidate() {
-    with_vsscript_path(Some(r"C:\vs\vapoursynth\vsscript.dll"), || {
-        let candidates = library_candidates();
-        let plugins = Path::new(r"C:\vs\vapoursynth\plugins");
+    let saved = clear_discovery_env();
+    // Use a temporary directory structure that mimics a VapourSynth installation
+    let temp_dir = tempfile::tempdir().unwrap();
+    let runtime_dir = temp_dir.path().join("vapoursynth");
+    let plugins_dir = runtime_dir.join("plugins");
+    let script_path = runtime_dir.join(if cfg!(target_os = "windows") {
+        "vsscript.dll"
+    } else {
+        "vsscript"
+    });
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    std::fs::write(&script_path, b"dummy").unwrap();
 
+    with_vsscript_path(Some(script_path.to_str().unwrap()), || {
+        let candidates = library_candidates();
         assert!(
-            candidates.iter().any(|candidate| candidate.parent() == Some(plugins)),
+            candidates
+                .iter()
+                .any(|candidate| candidate.parent() == Some(plugins_dir.as_path())),
             "the VapourSynth plugin directory must be searched"
         );
     });
+    restore_discovery_env(saved);
 }
 
 /// The library file name itself is looked for there, not merely the directory.
 #[test]
 fn the_plugin_directory_yields_a_library_file_name() {
-    with_vsscript_path(Some(r"C:\vs\vapoursynth\vsscript.dll"), || {
-        let candidates = library_candidates();
-        let plugins = Path::new(r"C:\vs\vapoursynth\plugins");
+    let saved = clear_discovery_env();
+    // Use a temporary directory structure that mimics a VapourSynth installation
+    let temp_dir = tempfile::tempdir().unwrap();
+    let runtime_dir = temp_dir.path().join("vapoursynth");
+    let plugins_dir = runtime_dir.join("plugins");
+    let script_path = runtime_dir.join(if cfg!(target_os = "windows") {
+        "vsscript.dll"
+    } else {
+        "vsscript"
+    });
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    std::fs::write(&script_path, b"dummy").unwrap();
 
+    with_vsscript_path(Some(script_path.to_str().unwrap()), || {
+        let candidates = library_candidates();
         let in_plugins: Vec<&PathBuf> = candidates
             .iter()
-            .filter(|candidate| candidate.parent() == Some(plugins))
+            .filter(|candidate| candidate.parent() == Some(plugins_dir.as_path()))
             .collect();
 
         assert!(
@@ -102,12 +167,14 @@ fn the_plugin_directory_yields_a_library_file_name() {
             "a plugin-directory candidate must name the library, not a directory"
         );
     });
+    restore_discovery_env(saved);
 }
 
 /// The bare names must come last, so a specific installation always wins over
 /// whatever the loader's search path happens to hold.
 #[test]
 fn bare_names_come_after_the_specific_directories() {
+    let saved = clear_discovery_env();
     let candidates = library_candidates();
     let bare = candidates.iter().position(|path| is_bare(path));
 
@@ -116,12 +183,14 @@ fn bare_names_come_after_the_specific_directories() {
         Some(candidates.len() - bare_candidates().len()),
         "bare names come last"
     );
+    restore_discovery_env(saved);
 }
 
 /// Every platform gets at least one bare name, since the loader's own search
 /// path is the last resort everywhere.
 #[test]
 fn a_bare_name_is_always_offered() {
+    let saved = clear_discovery_env();
     assert!(
         !library_candidates().is_empty(),
         "the candidate list must not be empty"
@@ -130,24 +199,30 @@ fn a_bare_name_is_always_offered() {
         !bare_candidates().is_empty(),
         "a bare name must always be offered"
     );
+    restore_discovery_env(saved);
 }
 
 /// A stale override must not mask the platform loader's own search path, so the
 /// bare names survive even when `VSHIP_PLUGIN_PATH` names an empty directory.
 #[test]
 fn an_override_does_not_suppress_the_bare_names() {
+    let saved = clear_discovery_env();
     assert!(!bare_candidates().is_empty());
+    restore_discovery_env(saved);
 }
 
 /// `VAPOURSYNTH_EXTRA_PLUGIN_PATH` is a path list, and every entry in it must
 /// be searched.
 #[test]
 fn the_extra_plugin_path_list_is_expanded() {
+    let saved = clear_discovery_env();
     let Ok(extra) = env::var("VAPOURSYNTH_EXTRA_PLUGIN_PATH") else {
         // Nothing to assert when the user has not set it.
+        restore_discovery_env(saved);
         return;
     };
     if extra.is_empty() {
+        restore_discovery_env(saved);
         return;
     }
 
@@ -167,12 +242,14 @@ fn the_extra_plugin_path_list_is_expanded() {
             "every entry of the extra-plugin path list must be searched"
         );
     }
+    restore_discovery_env(saved);
 }
 
 /// `build.rs` records a hint and never fails, so the crate compiles whether or
 /// not libvship is present.
 #[test]
 fn the_build_records_a_hint_without_failing() {
+    let saved = clear_discovery_env();
     // A build that failed in `build.rs` would not have produced a test binary at
     // all, so reaching this assertion is itself the check. What can be inspected
     // is the hint's shape when one was recorded.
@@ -188,6 +265,7 @@ fn the_build_records_a_hint_without_failing() {
             "a recorded hint must name a directory"
         );
     }
+    restore_discovery_env(saved);
 }
 
 /// A machine without libvship must be reported rather than aborting, since a
