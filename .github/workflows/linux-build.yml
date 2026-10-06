@@ -44,7 +44,7 @@ jobs:
       # Stages libvmaf, builds libvship and libfmetrics from pinned commits,
       # and copies the checked-in VMAF models.
       - name: Stage native libraries
-        run: bash ./.github/scripts/stage-native-libs.sh -StageDir target/release
+        run: bash ./.github/scripts/stage-native-libs.sh target/release
 
       # The crates find their libraries relative to the staged copies, so point
       # them at the release directory rather than at the image's /usr/lib.

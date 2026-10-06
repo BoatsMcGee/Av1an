@@ -26,10 +26,18 @@
 #     binary cargo is about to produce.
 #
 # .EXAMPLE
+#     ./.github/scripts/stage-native-libs.sh target/release
 #     ./.github/scripts/stage-native-libs.sh -StageDir target/release
 set -euo pipefail
 
-StageDir="${1:-target/release}"
+# Accept both positional and flag-style arguments for compatibility
+StageDir="target/release"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -StageDir) StageDir="$2"; shift 2 ;;
+        *) StageDir="$1"; shift ;;
+    esac
+done
 
 step() { echo "==> $1"; }
 

@@ -31,6 +31,7 @@
 #
 # .EXAMPLE
 #     ./.github/scripts/package-release-linux.sh
+#     ./.github/scripts/package-release-linux.sh target/release target/condor-linux-x64.zip
 set -euo pipefail
 
 StageDir="${1:-target/release}"
