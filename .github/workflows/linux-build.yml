@@ -20,6 +20,9 @@ jobs:
     env:
       CARGO_INCREMENTAL: 0
 
+    outputs:
+      glibc: ${{ steps.glibc.outputs.glibc }}
+
     steps:
       - name: Install build dependencies
         run: |
@@ -57,12 +60,6 @@ jobs:
           echo "VMAF_MODEL_PATH=$GITHUB_WORKSPACE/target/release/model" >> "$GITHUB_ENV"
           echo "FMETRICS_LIB_DIR=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
 
-      - name: Get latest commit
-        id: get_commit
-        run: |
-          commit="$(git log -1 --pretty=format:'%h: %s (%an)')"
-          echo "message=$commit" >> "$GITHUB_OUTPUT"
-
       - name: Condor build
         run: cargo build --release --bin condor
 
@@ -91,6 +88,37 @@ jobs:
         run: |
           echo "glibc=$(ldd --version | head -1)" >> "$GITHUB_OUTPUT"
         id: glibc
+
+      - name: Stage the release assets
+        run: |
+          mkdir -p dist
+          cp target/condor-linux-x64.zip dist/
+          cp target/release/condor dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: condor-linux-x64
+          path: dist/
+          retention-days: 1
+
+  # The changelog reads the repository history: the last tag and the range of
+  # commits since it. That cannot happen in the build container, where the
+  # workspace is a bind mount owned by the runner's user while git runs as
+  # container root, so git refuses to read it at all.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download the release assets
+        uses: actions/download-artifact@v8
+        with:
+          name: condor-linux-x64
+          path: dist
 
       - name: Generate changelog
         id: changelog
@@ -139,7 +167,7 @@ jobs:
             echo "The Linux archive bundles \`condor\`, \`libvmaf.so\`, \`libvship.so\`,"
             echo "\`libfmetrics.so\` and the VMAF models. The host still provides:"
             echo
-            echo "- A recent glibc (built against ${{ steps.glibc.outputs.glibc }})"
+            echo "- A recent glibc (built against ${{ needs.build.outputs.glibc }})"
             echo "- Encoder binaries: aomenc, SvtAv1EncApp, rav1e, vpxenc, x264, x265, ffmpeg, mkvmerge"
             echo "- VapourSynth with its Python plugins (vsjetpack, vsfgs, ZooMVTools)"
             echo "- vulkan-icd-loader, for libvship"
@@ -154,8 +182,8 @@ jobs:
           tag_name: latest
           body: ${{ steps.changelog.outputs.body }}
           files: |
-            target/condor-linux-x64.zip
-            target/release/condor
+            dist/condor-linux-x64.zip
+            dist/condor
           fail_on_unmatched_files: true
 
       - name: Create tagged release for Condor
@@ -166,6 +194,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.changelog.outputs.body }}
           files: |
-            target/condor-linux-x64.zip
-            target/release/condor
+            dist/condor-linux-x64.zip
+            dist/condor
           fail_on_unmatched_files: true
