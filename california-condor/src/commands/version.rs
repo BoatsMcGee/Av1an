@@ -2,6 +2,7 @@ use andean_condor::{
     metrics::{MetricLibraryInfo, libraries},
     models::encoder::{Encoder, EncoderBase},
     vapoursynth::{
+        get_api,
         get_core,
         get_environment,
         plugins::{
@@ -88,8 +89,13 @@ Commit Date:  {}",
 
     println!("{}", version_info);
 
-    let env = get_environment()?;
-    let core = get_core(&env)?;
+    // VapourSynth is optional: Environment::new() panics when the library
+    // is missing, so check the API first.
+    let environment = match get_api() {
+        Ok(_) => Some(get_environment()?),
+        Err(_) => None,
+    };
+    let core = environment.as_ref().map(get_core).transpose()?;
     let plugin_infos = vec![
         VideoSource::info(core)?,
         Source::info(core)?,

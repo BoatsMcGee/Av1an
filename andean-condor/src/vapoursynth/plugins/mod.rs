@@ -101,13 +101,16 @@ where
         }
     }
 
+    /// Return a [`VapourSynthPluginInfo`] for this plugin.
+    ///
+    /// If VapourSynth is not installed/loaded, pass `None`.
     #[inline]
-    fn info<'core>(core: CoreRef<'core>) -> Result<VapourSynthPluginInfo> {
+    fn info<'core>(core: Option<CoreRef<'core>>) -> Result<VapourSynthPluginInfo> {
         Ok(VapourSynthPluginInfo {
             name:      Self::PLUGIN_NAME,
             id:        Self::PLUGIN_ID,
             docs:      Self::PLUGIN_DOCS,
-            installed: Self::plugin_is_installed(core),
+            installed: core.is_some_and(Self::plugin_is_installed),
         })
     }
 
