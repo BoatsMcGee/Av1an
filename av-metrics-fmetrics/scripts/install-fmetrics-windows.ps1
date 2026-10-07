@@ -12,24 +12,12 @@
     0.16.x and Git. Zig 0.17 is refused because it removed `b.build_root`, which
     the pinned `build.zig` still uses.
 
-    Two upstream gaps are bridged from a branch rather than from
-    halidecx/fmetrics:
+    Built from BoatsMcGee/fmetrics, which adds what upstream lacks: a
+    shared-library target to load at all, and a patch making fcvvdp compile on
+    Windows, where it calls POSIX-only `sysconf()`.
 
-      - a shared-library target, so there is a DLL to load at all;
-      - a patch making fcvvdp compile on Windows, since it calls POSIX
-        `sysconf()` and Zig fetches it as a dependency where it cannot be
-        edited in place.
-
-        Dependencies are fetched with `zig build --fetch` rather than by running a
-        build and ignoring its failure: `--fetch` populates zig-pkg/ without
-        compiling, which is the only order that works when one of the dependencies
-        is exactly what needs patching.
-
-        Once both are upstream this becomes a plain clone-and-build with no patch
-        step, and `PatchRef` can point back at halidecx/fmetrics.
-
-    The library is installed as `fmetrics.dll`, the first name
-    `library_names` offers on Windows.
+    The library is installed as `fmetrics.dll`, the first name `library_names`
+    offers on Windows.
 
 .PARAMETER Destination
     Where to place `fmetrics.dll`. Defaults to `$PWD\fmetrics`.
@@ -62,10 +50,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$Repository = 'https://github.com/BoatsMcGee/fmetrics.git'
-$PatchRef = 'add-windows-shared-build'
-$UpstreamBase = 'e8bf3cfe06fb78f51864804b2f7003667d4c5a71'
+# Defaults, overridable from the environment so the release pipeline can pass
+# its pins without editing this script. It stays standalone: with nothing set,
+# these literals are what a direct run uses.
+$Repository   = if ($env:FMETRICS_REPO)          { $env:FMETRICS_REPO }          else { 'https://github.com/BoatsMcGee/fmetrics.git' }
+$PatchRef     = if ($env:FMETRICS_BRANCH)        { $env:FMETRICS_BRANCH }        else { 'add-windows-shared-build' }
+$UpstreamBase = if ($env:FMETRICS_UPSTREAM_BASE) { $env:FMETRICS_UPSTREAM_BASE } else { 'e8bf3cfe06fb78f51864804b2f7003667d4c5a71' }
 $RequiredZigMajor = '0.16'
+
+if (-not $PSBoundParameters.ContainsKey('Commit') -and $env:FMETRICS_COMMIT) {
+    $Commit = $env:FMETRICS_COMMIT
+}
 
 $dllName = 'fmetrics.dll'
 $target = Join-Path $Destination $dllName
@@ -82,8 +77,7 @@ function Resolve-Zig {
     .DESCRIPTION
         `-ZigPath` may be a bare name to look up on PATH, or a path to zig.exe.
         The major version is checked because 0.17 removed `b.build_root`, which
-        the pinned `build.zig` uses, so a newer Zig fails deep inside the build
-        rather than at the point of the mistake.
+        the pinned `build.zig` uses.
     #>
     $command = Get-Command $ZigPath -ErrorAction SilentlyContinue
     if ($command) {
@@ -138,13 +132,10 @@ try {
 
     # --- dependency patch ---
 
-    # fcvvdp is fetched by Zig into zig-pkg/ and so is not part of the repository
-    # tree. On Windows it calls POSIX-only sysconf(), which does not compile, so
-    # its patch is applied here.
-    #
-    # Zig extracts dependencies without their .git directory, so git apply runs
-    # from the repository root with --directory. Run from inside
-    # zig-pkg/fcvvdp-* it reports `Skipped patch` and silently patches nothing.
+    # fcvvdp is fetched by Zig into zig-pkg/, outside the repository tree, and
+    # calls POSIX-only sysconf() on Windows. Zig extracts dependencies without
+    # their .git directory, so the patch is applied from the repository root with
+    # --directory.
     $patch = "$work/patches/0001-windows-portability.patch"
     if (-not (Test-Path $patch)) {
         throw "the $PatchRef checkout has no patches/0001-windows-portability.patch; the shared-library work moved."
@@ -153,16 +144,13 @@ try {
     Write-Step 'Fetching dependencies'
     Push-Location $work
     try {
-            # `--fetch` populates zig-pkg/ without compiling, which matters because
-            # fcvvdp cannot compile until the patch below is applied. Running a real
-            # build to fetch them would fail on cvvdp.c and print four `error:`
-            # lines that describe the bug being fixed rather than anything wrong
-            # with the install.
-            & $zig build --fetch
-            if ($LASTEXITCODE -ne 0) { throw 'fetching the Zig dependencies failed.' }
-        } finally {
-            Pop-Location
-        }
+        # `--fetch` populates zig-pkg/ without compiling, so fcvvdp can be
+        # patched before it is built.
+        & $zig build --fetch
+        if ($LASTEXITCODE -ne 0) { throw 'fetching the Zig dependencies failed.' }
+    } finally {
+        Pop-Location
+    }
 
         $dep = Get-ChildItem (Join-Path $work 'zig-pkg') -Directory -Filter 'fcvvdp-*' |
             Select-Object -First 1

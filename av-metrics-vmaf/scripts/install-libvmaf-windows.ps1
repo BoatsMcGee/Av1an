@@ -8,26 +8,24 @@
     headers and no compiler. `tar` and `curl.exe` both ship with Windows, so
     this script is self-contained.
 
-    The four DLLs come from ordinary MSYS2 binary packages. `libvmaf.dll`
-        imports the other three directly, so they must sit beside it or the library
-    will not load:
+    The four DLLs come from ordinary MSYS2 binary packages and must sit beside
+    each other: `libvmaf.dll` imports the other three directly.
 
         libvmaf.dll          <- mingw-w64-x86_64-vmaf
         libgcc_s_seh-1.dll   <- mingw-w64-x86_64-libgcc       (GCC unwinder)
-            libstdc++-6.dll      <- mingw-w64-x86_64-libstdc++     (C++ runtime)
-            libwinpthread-1.dll  <- mingw-w64-x86_64-libwinpthread-git
+        libstdc++-6.dll      <- mingw-w64-x86_64-libstdc++   (C++ runtime)
+        libwinpthread-1.dll  <- mingw-w64-x86_64-libwinpthread-git
 
-        libvmaf's only other imports are kernel32.dll and msvcrt.dll, which every
-        Windows install already provides.
-
-    All nine upstream VMAF models are downloaded. Four are selectable by name
-    through Av1an's `features` option; the rest can be passed with `model`.
+    libvmaf's only other imports are kernel32.dll and msvcrt.dll, which every
+    Windows install already provides. All nine upstream VMAF models are fetched;
+    four are selectable by name through Av1an's `features` option.
 
 .PARAMETER InstallDir
     Where to place `bin` and `model`. Defaults to `$PWD\libvmaf`.
 
 .PARAMETER LibvmafVersion
-    libvmaf version to fetch. Defaults to 3.2.1, the latest release.
+    libvmaf version to fetch. Defaults to 3.2.1, or to `$env:VMAF_VERSION` when
+    that is set.
 
 .PARAMETER ModelsOnly
     Skip the DLL download and only fetch the models. Useful for refreshing
@@ -55,12 +53,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-# MSYS2's canonical host, followed by mirrors that carry the same tree.
-#
-# `repo.msys2.org` refuses connections on some networks, in which case curl
-# reports `(7) Failed to connect` rather than an HTTP error, so the failure is
-# indistinguishable from the host being down. Every mirror is therefore tried in
-# turn. All of them serve identical package bytes for the same filename.
+# Precedence: -LibvmafVersion, then $env:VMAF_VERSION (e.g. .github/.env), then
+# the default in the param block.
+if (-not $PSBoundParameters.ContainsKey('LibvmafVersion') -and $env:VMAF_VERSION) {
+    $LibvmafVersion = $env:VMAF_VERSION
+}
+
+# MSYS2's canonical host first, then mirrors carrying the same tree, tried in
+# turn: the primary refuses connections on some networks.
 $Repos = @(
     'https://repo.msys2.org/mingw/mingw64/',
     'https://mirrors.dotsrc.org/msys2/mingw/mingw64/',
@@ -83,21 +83,10 @@ $RuntimePackages = @(
     'mingw-w64-x86_64-libwinpthread-git-12.0.0.r747.g1a99f8514-1-any.pkg.tar.zst'
 )
 
-# Every model libvmaf v3.2.1 ships. Only the four in the first group work with
-# the MSYS2 build, which is compiled without -Denable_float=true:
-#
-#   * the `vmaf_float_*` models need VMAF_feature_float_adm, which that option
-#     controls, and which the MSYS2 build does not contain;
-#   * `vmaf_b_v0.6.3` needs VMAF_feature_bound_adm, and libvmaf 3.2.1 has no
-#     `enable_bound` option at all -- the BOUND extractors were removed, so this
-#     model fails with "could not read model from path" on any stock build.
-#
-# Verified against the DLL: `vmaf_v0.6.1`, `vmaf_v0.6.1neg`, `vmaf_4k_v0.6.1`
-# and `vmaf_4k_v0.6.1neg` all load and score. The other five are fetched anyway
-# so the set is complete and version-pinned.
-#
-# The four working models map to a name in av-metrics-vmaf's `VmafModel`, so they
-# resolve automatically on a build without built-in models.
+# Every model libvmaf v3.2.1 ships. The four in the first group work with the
+# MSYS2 build and map to a name in av-metrics-vmaf's `VmafModel`, so they resolve
+# automatically. The rest need a libvmaf built with -Denable_float=true, or, for
+# `vmaf_b_v0.6.3`, one that still has the BOUND extractors.
 $Models = @(
     # Selectable by name through Av1an's `features` option.
     'vmaf_v0.6.1',        # default
@@ -148,13 +137,8 @@ function Save-File {
         Downloads the first URI that responds, returning which one worked.
 
     .DESCRIPTION
-        MSYS2's canonical host is not reachable from every network. When it is
-        down, curl fails with `(7) Failed to connect`, which is a network-level
-        refusal rather than a 404, so the file is worth retrying elsewhere.
-
-        Mirrors that serve files but block directory listings are still useful
-        here: this function downloads known filenames and never needs the index,
-        which only `Get-LatestPackage` reads.
+        Mirrors that block directory listings still serve known filenames, so
+        only `Get-LatestPackage` reads an index.
     #>
     param(
         [Parameter(Mandatory)][string[]] $Uri,
@@ -196,27 +180,27 @@ if (-not $ModelsOnly) {
 
     foreach ($package in $packages) {
         $archive = Join-Path $StageDir $package
-            # One candidate per mirror; Save-File stops at the first that responds.
-            $candidates = $Repos | ForEach-Object { "$_$package" }
-            $used = Save-File -Uri $candidates -OutFile $archive
-            $null = $usedRepos.Add(([uri]$used).Host)
-            Write-Host ("  {0}  <- {1}" -f $package, ([uri]$used).Host)
+        # One candidate per mirror; Save-File stops at the first that responds.
+        $candidates = $Repos | ForEach-Object { "$_$package" }
+        $used = Save-File -Uri $candidates -OutFile $archive
+        $null = $usedRepos.Add(([uri]$used).Host)
+        Write-Host ("  {0}  <- {1}" -f $package, ([uri]$used).Host)
 
-            # Extract only the DLLs. The package also carries headers, an import
-            # library, pkgconfig and vmaf.exe, none of which this crate needs.
-            tar -xf $archive -C $StageDir 'mingw64/bin/*.dll' 2>$null
-        }
+        # Extract only the DLLs; the package also carries headers, an import
+        # library, pkgconfig and vmaf.exe, none of which this crate needs.
+        tar -xf $archive -C $StageDir 'mingw64/bin/*.dll' 2>$null
+    }
 
     $staged = Join-Path $StageDir 'mingw64/bin'
     if (-not (Test-Path $staged)) {
         throw "No DLLs were extracted from any of: $($usedRepos -join ', ')"
     }
 
-    # libgcc_s_seh-1.dll, libstdc++-6.dll and libwinpthread-1.dll must land beside
-        # libvmaf.dll or the loader cannot resolve libvmaf's own imports.
+    # All four must land together: the loader resolves libvmaf.dll's imports
+    # from its own directory.
     Copy-Item (Join-Path $staged '*.dll') $BinDir -Force
 
-        $expected = @('libvmaf.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')
+    $expected = @('libvmaf.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')
     $missing = $expected | Where-Object { -not (Test-Path (Join-Path $BinDir $_)) }
     if ($missing) {
         throw "Missing after extraction: $($missing -join ', '). These are required."

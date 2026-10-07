@@ -79,11 +79,12 @@ jobs:
       - name: Smoke-test the archive
         run: |
           mkdir -p /tmp/smoke && cd /tmp/smoke
-                unzip -q "$GITHUB_WORKSPACE/target/condor-linux-x64.zip"
+          unzip -q "$GITHUB_WORKSPACE/target/condor-linux-x64.zip"
           ./condor --version > version.txt 2>&1 || true
           cat version.txt
+          # The report names the libraries `libvmaf` and `fmetrics`.
           grep -q 'libvmaf' version.txt
-          grep -q 'libfmetrics' version.txt
+          grep -q 'fmetrics' version.txt
           readelf -d ./condor | grep -q '\$ORIGIN'
 
       - name: Record the glibc baseline
@@ -112,7 +113,9 @@ jobs:
           rest_count="$(echo "$all" | tail -n +11 | wc -l)"
 
           commit="$(git log -1 --pretty=format:'%h: %s (%an)')"
+          # Step outputs are written as a `name<<delimiter` block.
           {
+            echo 'body<<CHANGELOG_EOF'
             echo "Latest build from $GITHUB_SHA"
             echo
             echo "Commit:"
@@ -140,6 +143,7 @@ jobs:
             echo "- Encoder binaries: aomenc, SvtAv1EncApp, rav1e, vpxenc, x264, x265, ffmpeg, mkvmerge"
             echo "- VapourSynth with its Python plugins (vsjetpack, vsfgs, ZooMVTools)"
             echo "- vulkan-icd-loader, for libvship"
+            echo 'CHANGELOG_EOF'
           } >> "$GITHUB_OUTPUT"
 
       - name: Create or update prerelease for Condor

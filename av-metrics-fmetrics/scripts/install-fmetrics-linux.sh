@@ -19,11 +19,15 @@
 #
 #     `zig build -Dshared=true` is deliberately not used. It links the static
 #     archive the ordinary way, so the linker pulls in only those members that
-#     resolve an undefined symbol, and nothing references them. That leaves a
-#     2.5 KB library exporting nothing at all. Windows is unaffected because
+#     resolve an undefined symbol, and nothing references them, which leaves a
+#     library exporting nothing at all. Windows is unaffected because
 #     `win32_module_definition` (src/fmetrics.def) forces the members in; ELF
 #     gets no export list, so the failure is Linux-only. Zig 0.16 offers no
 #     whole-archive option, so the library is linked here instead.
+#
+#     This script is standalone: it needs no repository checkout and nothing
+#     beside itself. The release pipeline overrides the pins below with
+#     environment variables instead of editing the defaults.
 #
 # .PARAMETER Destination
 #     Where to place `libfmetrics.so`. Defaults to `$PWD/fmetrics`.
@@ -41,10 +45,13 @@
 #     ./install-fmetrics-linux.sh -Destination /usr/lib -Quiet
 set -euo pipefail
 
-# The commit is pinnable from the environment so a caller (the Dockerfile) can
-# set it; the default is what a user gets.
+# Defaults, overridable from the environment so the release pipeline can pass
+# its pins without editing this script.
 Destination="$PWD/fmetrics"
 Commit="${FMETRICS_COMMIT:-ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac}"
+Repository="${FMETRICS_REPO:-https://github.com/BoatsMcGee/fmetrics.git}"
+PatchRef="${FMETRICS_BRANCH:-add-windows-shared-build}"
+RequiredZigMajor='0.16'
 Quiet=0
 
 while [ $# -gt 0 ]; do
@@ -52,14 +59,10 @@ while [ $# -gt 0 ]; do
         -Destination) Destination="$2"; shift 2 ;;
         -Commit)      Commit="$2";      shift 2 ;;
         -Quiet)       Quiet=1;          shift ;;
-        -h|--help)    sed -n '2,38p' "$0"; exit 0 ;;
+        -h|--help)    awk 'NR > 1 { if (/^#/) print; else exit }' "$0"; exit 0 ;;
         *)            echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-
-Repository='https://github.com/BoatsMcGee/fmetrics.git'
-PatchRef='add-windows-shared-build'
-RequiredZigMajor='0.16'
 
 library=libfmetrics.so
 
@@ -101,12 +104,6 @@ if [ "$actual" != "$Commit" ]; then
     exit 1
 fi
 
-step 'Fetching dependencies'
-# `--fetch` populates zig-pkg/ without compiling. The Windows script needs it
-# ordered this way so fcvvdp can be patched before it compiles; there is no patch
-# here, but the two-step form is kept so both scripts fetch identically.
-(cd "$work" && zig build --fetch)
-
 step 'Building libfmetrics.a'
 (cd "$work" && zig build --release=fast)
 
@@ -122,9 +119,7 @@ gcc -shared -fPIC -o "$target" \
     -lm -lpthread
 
 # The failure this link works around is a silently empty library, so the exports
-# are asserted rather than assumed. Counted into a variable rather than piped to
-# `grep -q`, which exits at the first match and leaves nm killed by SIGPIPE --
-# under `pipefail` that is indistinguishable from "no match".
+# are asserted rather than assumed.
 exports="$(nm -D --defined-only "$target" | grep -c ' T fmetrics_' || true)"
 if [ "$exports" -lt 10 ]; then
     echo "$target exports only $exports fmetrics_* symbols." >&2

@@ -12,20 +12,10 @@
 //! libvship is a GPU metric with no CPU fallback in the shipped builds, and it
 //! is distributed as a VapourSynth plugin rather than a standalone library. It
 //! is opened with `dlopen` at runtime, so the crate compiles on machines
-//! without it and [`is_available`] reports `false`. Each backend build imports
-//! a different driver — `vulkan-1.dll`, the CUDA runtime, `amdhip64_6.dll` — so
-//! a successful load already means the driver is present; `Vship_GPUFullCheck`
-//! then confirms the device itself.
-//!
-//! # A missing driver cannot be reported by opening the library
-//!
-//! A Vulkan build opens its Vulkan instance from a global initialiser, and
-//! upstream lets that failure `throw`. The exception escapes a global
-//! constructor and aborts the process from inside `dlopen`, so [`is_available`]
-//! never gets the chance to answer `false`. The driver is therefore established
-//! first, by asking the Vulkan loader to create an instance; a driverless
-//! machine then gets a clean `false` and falls back to another engine. See the
-//! `driver` module.
+//! without it and [`is_available`] reports `false`. Since libvship v5.1.2,
+//! Vulkan initialization is lazy and a missing driver is reported normally.
+//! [`Vship_GPUFullCheck`](ffi::VshipApi::gpu_full_check) confirms the device is
+//! usable after loading.
 //!
 //! # Metrics
 //!
@@ -59,7 +49,6 @@
 //! ```
 
 mod config;
-mod driver;
 mod error;
 pub mod ffi;
 mod scorer;

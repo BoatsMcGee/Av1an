@@ -19,11 +19,9 @@
 #     $(PREFIX)/lib/vapoursynth. Only the shared library is needed, because the
 #     crate `dlopen`s it.
 #
-#     A Vulkan build aborts the process on a machine with no Vulkan driver: its
-#     global initialiser throws, and an exception escaping a global constructor
-#     cannot be caught. av-metrics-vship checks for a driver before opening the
-#     library and reports it unavailable instead, so a Vulkan install without a
-#     driver degrades to fmetrics rather than killing the process.
+#     This script is standalone: it needs no repository checkout and nothing
+#     beside itself. The release pipeline overrides the pins below with
+#     environment variables instead of editing the defaults.
 #
 # .PARAMETER Destination
 #     Where to place `libvship.so`. Defaults to `$PWD/vship`.
@@ -32,7 +30,7 @@
 #     Which upstream build to compile: `vulkan`, `cuda` or `amd`.
 #
 # .PARAMETER Version
-#     libvship release tag to build. Defaults to 5.1.1, the latest release.
+#     libvship release tag to build. Defaults to the pinned tag below.
 #
 # .PARAMETER Commit
 #     The commit to build. Defaults to the pinned revision of `Version`.
@@ -47,12 +45,13 @@
 #     ./install-libvship-linux.sh -Backend cuda -Destination /usr/lib
 set -euo pipefail
 
-# Environment variables let a caller (the Dockerfile) set the pins; the defaults
-# are what a user gets.
+# Defaults, overridable from the environment so the release pipeline can pass
+# its pins without editing this script.
 Destination="$PWD/vship"
 Backend="${VSHIP_BACKEND:-vulkan}"
-Version="${VSHIP_VERSION:-v5.1.1}"
-Commit="${VSHIP_COMMIT:-256dc5a85e56e42a88a7a90d641037fdc148b91e}"
+Version="${VSHIP_VERSION:-v5.1.2}"
+Commit="${VSHIP_COMMIT:-5a627933274196219f782b3b74e13fad47cd6370}"
+Repository="${VSHIP_REPO:-https://codeberg.org/Line-fr/Vship.git}"
 Quiet=0
 
 while [ $# -gt 0 ]; do
@@ -62,7 +61,7 @@ while [ $# -gt 0 ]; do
         -Version)     Version="$2";     shift 2 ;;
         -Commit)      Commit="$2";      shift 2 ;;
         -Quiet)       Quiet=1;          shift ;;
-        -h|--help)    sed -n '2,46p' "$0"; exit 0 ;;
+        -h|--help)    awk 'NR > 1 { if (/^#/) print; else exit }' "$0"; exit 0 ;;
         *)            echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
@@ -74,7 +73,6 @@ case "$Backend" in
     *)      echo "Backend must be vulkan, cuda or amd, not '$Backend'." >&2; exit 2 ;;
 esac
 
-Repository='https://codeberg.org/Line-fr/Vship.git'
 library=libvship.so
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/vship-build-XXXXXX")"

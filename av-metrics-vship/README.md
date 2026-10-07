@@ -188,7 +188,7 @@ VMAF and XPSNR are unaffected: VMAF is served by the separate libvmaf binding an
 
 libvship is **not** vendored, and it has no CPU fallback in the builds that are published — it is a GPU metric. Install it separately:
 
-- [libvship](https://codeberg.org/Line-fr/Vship) 5.1.1 or later.
+- [libvship](https://codeberg.org/Line-fr/Vship) 5.1.2 or later.
 - A GPU and the driver matching the libvship build you installed: a Vulkan driver for the `vulkan` build, the NVIDIA CUDA runtime for `nvidia`, or the AMD ROCm runtime for `amd`.
 
 > [!NOTE]
@@ -257,9 +257,8 @@ so one build runs against any NVIDIA, AMD or Intel driver; the other two need th
 CUDA and ROCm runtimes. `-Destination` chooses the install directory and `-Quiet`
 suppresses the printed `export` line.
 
-A Vulkan build on a machine with no Vulkan driver would abort the process, so the
-crate checks for a driver before opening the library and reports it unavailable
-instead. See the `driver` module.
+Vulkan initialization is lazy in libvship 5.1.2 and later, so the library can
+be loaded on a machine without a Vulkan driver and report itself unavailable.
 
 Set `VSHIP_LIB_DIR` or `VSHIP_PLUGIN_PATH` at build time so `build.rs` records the directory it finds, and at run time so `dlopen` finds the same one. Without either, the crate still compiles cleanly but reports itself unavailable, and the VapourSynth plugin path is used instead.
 
@@ -279,7 +278,7 @@ Each directory is tried under both names, because an installation may use either
 
 ## Availability
 
-`is_available()` needs more than a successful `dlopen`. libvship is compiled per backend and each build imports a different driver — `vulkan-1.dll` for Vulkan, the CUDA runtime for CUDA, `amdhip64_6.dll` for ROCm — so a binary whose driver is missing fails at load time. On top of that, `Vship_GetVersion` must answer and `Vship_GPUFullCheck` must pass on a device. Any of those failing reports unavailability rather than panicking, and with no usable device there is nothing for the crate to fall back to, so callers use the VapourSynth plugin path instead.
+`is_available()` needs more than a successful `dlopen`: `Vship_GetVersion` must answer and `Vship_GPUFullCheck` must pass on a device. Since libvship 5.1.2, a missing Vulkan driver is reported through the C API instead of aborting during load. Missing runtime libraries for other backends can still prevent loading. Any unavailable library or device returns `false`, so callers can use the VapourSynth plugin path instead.
 
 The result is cached, so the call is cheap. `VshipScorer::backend()` reports which backend the loaded build targets, and `device_name()` names the device.
 

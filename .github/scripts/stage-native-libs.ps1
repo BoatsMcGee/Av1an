@@ -8,28 +8,20 @@
 
       libvmaf.dll          dlopened by av-metrics-vmaf; absence only costs VMAF.
       libgcc_s_seh-1.dll   \
-      libstdc++-6.dll       |  imported by libvmaf.dll itself. All three are hard
-      libwinpthread-1.dll  /   imports: libvmaf.dll fails to load without any of
-                               them, verified against the MSYS2 package rather
-                               than inferred.
+      libstdc++-6.dll       |  imported by libvmaf.dll, which fails to load
+      libwinpthread-1.dll  /   without all three.
       libvship.dll         dlopened by av-metrics-vship; absent costs the native
-                           vship metrics, which fall back to the VapourSynth plugin.
+                           vship metrics, which fall back to the VapourSynth
+                           plugin. The Vulkan build imports only vulkan-1.dll and
+                           KERNEL32.dll, so it needs no vendor runtime.
       fmetrics.dll         dlopened by av-metrics-fmetrics; absent costs the CPU
                            fallback for SSIMULACRA2, Butteraugli and CVVDP on a
                            machine with no usable GPU.
 
-    fmetrics is the exception to the download-everything pattern here: no prebuilt
-    Windows release is published for it and nothing installable carries it, so it
-    is compiled from a pinned commit by the crate's own install script. That makes
-    this step need the Zig toolchain the runner does not have by default.
+    fmetrics has no prebuilt Windows release, so the crate's own install script
+    compiles it from a pinned commit, which needs Zig on the runner.
 
-    FFMS2 is not among them: it is linked into the executable, so decoding never
-    needs a separate ffms2.dll. Only the VapourSynth plugin path and the FFVship
-    CLI use one, and neither is part of this release.
-
-    libvship's Vulkan build is the default because its only imports are
-    vulkan-1.dll and KERNEL32.dll: it loads against any working NVIDIA, AMD or
-    Intel Vulkan driver and needs no vendor redistributable.
+    FFMS2 is linked into the executable, so decoding never loads an ffms2.dll.
 
 .PARAMETER StageDir
     Directory the release is assembled in. Defaults to `target\release`.
@@ -63,13 +55,33 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
+# The Docker image, the Linux staging script and the install scripts all read
+# this same file, so every entry point builds the same pins. Any value may also
+# be overridden from the environment.
+$CicdEnv = @{}
+foreach ($line in Get-Content (Join-Path $PSScriptRoot '..\.env')) {
+    if ($line -match '^\s*#' -or $line -notmatch '\S') { continue }
+    if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$') {
+        $CicdEnv[$Matches[1]] = $Matches[2]
+    }
+}
+
+function Get-Pin([string] $Name) {
+    <#
+    .SYNOPSIS
+        Returns one value from .github/.env, failing if it is absent.
+    #>
+    if (-not $CicdEnv.ContainsKey($Name)) {
+        throw "Missing $Name in .github/.env."
+    }
+    return $CicdEnv[$Name]
+}
+
 # Some mirrors reject requests without a User-Agent with 403.
 $UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
 
-# Pinned for reproducibility. MSYS2 retains old package files for a long time,
-# but nothing guarantees it forever, so these are re-checkable rather than
-# resolved at run time.
-$VmafVersion = '3.2.1'
+# Pinned so every run stages the same bytes.
+$VmafVersion = Get-Pin 'VMAF_VERSION'
 $Msys2Packages = @(
     "mingw-w64-x86_64-vmaf-$VmafVersion-1-any.pkg.tar.zst",
     'mingw-w64-x86_64-libgcc-16.2.0-4-any.pkg.tar.zst',
@@ -77,21 +89,18 @@ $Msys2Packages = @(
     'mingw-w64-x86_64-libwinpthread-git-12.0.0.r747.g1a99f8514-1-any.pkg.tar.zst'
 )
 
-# repo.msys2.org refuses connections on some networks, where curl reports
-# `(7) Failed to connect` rather than an HTTP error, so the failure is
-# indistinguishable from the host being down. Every mirror is tried in turn.
+# Tried in turn: the primary mirror refuses connections on some networks.
 $Msys2Repos = @(
     'https://repo.msys2.org/mingw/mingw64/',
     'https://mirrors.dotsrc.org/msys2/mingw/mingw64/',
     'https://mirror.msys2.org/mingw/mingw64/'
 )
 
-$VshipUrl = 'https://codeberg.org/Line-fr/Vship/releases/download/v5.1.1/libvship_VULKAN.dll'
+$VshipVersion = Get-Pin 'VSHIP_VERSION'
+$VshipUrl = "https://codeberg.org/Line-fr/Vship/releases/download/$VshipVersion/libvship_VULKAN.dll"
 
-# Every model libvmaf ships. Only the first four work with the MSYS2 build, which
-# is compiled without -Denable_float=true and against a libvmaf that removed the
-# BOUND extractors. The rest are staged anyway -- under a megabyte in total -- so a
-# user pairing this release with a source-built libvmaf has the full set.
+# Every model libvmaf ships. The first four are what the MSYS2 build accepts; the
+# rest need a libvmaf built with -Denable_float=true or with the BOUND extractors.
 $VmafModels = @(
     'vmaf_v0.6.1', 'vmaf_v0.6.1neg', 'vmaf_4k_v0.6.1', 'vmaf_4k_v0.6.1neg',
     'vmaf_b_v0.6.3', 'vmaf_float_v0.6.1', 'vmaf_float_v0.6.1neg',
@@ -161,13 +170,14 @@ if (-not $SkipVmaf) {
             $failures = [System.Collections.Generic.List[string]]::new()
 
             foreach ($repo in $Msys2Repos) {
-                curl.exe -sSfL -A $UserAgent --retry 2 --retry-delay 1 -o $archive "$repo$package" 2>$null
-                if ($LASTEXITCODE -eq 0 -and (Test-Path $archive) -and (Get-Item $archive).Length -gt 0) {
+                try {
+                    Invoke-Download -Uri "$repo$package" -OutFile $archive -Retries 2
                     Write-Host "    $package <- $repo"
                     $failures.Clear()
                     break
+                } catch {
+                    $failures.Add($_.Exception.Message)
                 }
-                $failures.Add("$repo (curl exit $LASTEXITCODE)")
             }
 
             if ($failures.Count -gt 0) {
@@ -214,6 +224,13 @@ if (-not $SkipFmetrics) {
     # The crate's own install script does the work, so there is one implementation
     # of the build rather than two that can drift apart.
     Write-Step 'Building fmetrics from source'
+
+    # Hand the pins over in the environment; the install script keeps working
+    # standalone when they are absent.
+    $env:FMETRICS_COMMIT        = Get-Pin 'FMETRICS_COMMIT'
+    $env:FMETRICS_REPO          = Get-Pin 'FMETRICS_REPO'
+    $env:FMETRICS_BRANCH        = Get-Pin 'FMETRICS_BRANCH'
+    $env:FMETRICS_UPSTREAM_BASE = Get-Pin 'FMETRICS_UPSTREAM_BASE'
 
     & ./av-metrics-fmetrics/scripts/install-fmetrics-windows.ps1 -Destination $StageDir
     if ($LASTEXITCODE -ne 0) {

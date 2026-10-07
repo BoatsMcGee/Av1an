@@ -60,8 +60,8 @@ FROM base AS metrics
 # git, zig, clang and vulkan-headers are build-time only. vulkan-icd-loader is
 # also a runtime dependency, installed again below.
 #
-# No Vulkan driver: libvship is skipped unless the host supplies one, and
-# fmetrics covers scoring without a GPU. See av-metrics-vship/src/driver.rs.
+# Vship 5.1.2 uses lazy Vulkan initialization so the library can load without
+# a driver; fmetrics remains the CPU fallback for scoring without a GPU.
 RUN pacman -S --noconfirm --needed \
     git \
     zig \
@@ -69,25 +69,18 @@ RUN pacman -S --noconfirm --needed \
     vulkan-headers \
     vulkan-icd-loader
 
-# libvship, Vulkan backend. -Destination is required, since the script stages
-# into $PWD by default.
-ARG VSHIP_VERSION="v5.1.1"
-ARG VSHIP_COMMIT="256dc5a85e56e42a88a7a90d641037fdc148b91e"
+# Both installers are standalone, and their pins come from .github/.env -- the
+# same file the release-staging scripts read, so the image cannot drift from it.
+COPY .github/.env /tmp/cicd.env
+COPY av-metrics-vship/scripts/install-libvship-linux.sh av-metrics-fmetrics/scripts/install-fmetrics-linux.sh /usr/local/bin/
 
-COPY av-metrics-vship/scripts/install-libvship-linux.sh /usr/local/bin/
-# The script is not executable in git, and a Windows checkout has CRLF, so strip
-# the carriage returns and run it through bash rather than executing it directly.
-RUN sed -i 's/\r$//' /usr/local/bin/install-libvship-linux.sh && \
-    VSHIP_VERSION="$VSHIP_VERSION" VSHIP_COMMIT="$VSHIP_COMMIT" \
-    bash /usr/local/bin/install-libvship-linux.sh -Destination /usr/lib -Quiet
-
-# fmetrics
-ARG FMETRICS_COMMIT="ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac"
-
-COPY av-metrics-fmetrics/scripts/install-fmetrics-linux.sh /usr/local/bin/
-RUN sed -i 's/\r$//' /usr/local/bin/install-fmetrics-linux.sh && \
-    FMETRICS_COMMIT="$FMETRICS_COMMIT" \
-    bash /usr/local/bin/install-fmetrics-linux.sh -Destination /usr/lib -Quiet
+# Run via bash: the scripts are not executable and may carry CRLF. Sourcing the
+# env file exports every pin for the installers to pick up.
+RUN set -a && . /tmp/cicd.env && set +a && \
+    sed -i 's/\r$//' /usr/local/bin/install-libvship-linux.sh /usr/local/bin/install-fmetrics-linux.sh && \
+    bash /usr/local/bin/install-libvship-linux.sh -Destination /usr/lib -Quiet && \
+    bash /usr/local/bin/install-fmetrics-linux.sh -Destination /usr/lib -Quiet && \
+    rm -f /tmp/cicd.env
 
 FROM base AS runtime
 

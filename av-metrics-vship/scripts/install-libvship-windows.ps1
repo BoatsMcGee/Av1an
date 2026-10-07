@@ -15,20 +15,18 @@
         nvidia  libvship_NVIDIA.zip  -> libvship_NVIDIA.dll   (CUDA)
         amd     libvship_AMD.zip     -> libvship_AMD.dll      (ROCm)
 
-    `vulkan` is the default because its only imports are vulkan-1.dll and
-    KERNEL32.dll: it runs against any working NVIDIA, AMD or Intel Vulkan driver
-    and needs no vendor redistributable. `nvidia` and `amd` are roughly 40 MB and
-    26 MB and do require the CUDA or ROCm runtime respectively.
+    `vulkan` is the default: it needs only vulkan-1.dll and KERNEL32.dll, while
+    `nvidia` and `amd` need the CUDA or ROCm runtime.
 
-    FFMS2 is a separate install. Av1an links it dynamically through
-    av-decoders' `ffms2` feature, so it is required whether or not libvship is
-    present.
+    FFMS2 is a separate install; Av1an links it dynamically, so it is required
+    whether or not libvship is present.
 
 .PARAMETER Destination
     Where to place `vship.dll`. Defaults to `$PWD\vship`.
 
 .PARAMETER Version
-    libvship release tag to fetch. Defaults to 5.1.1, the latest release.
+    libvship release tag to fetch. Defaults to 5.1.2, or to `$env:VSHIP_VERSION`
+    when that is set.
 
 .PARAMETER Variant
     Which upstream build to install: `vulkan`, `nvidia` or `amd`.
@@ -39,13 +37,14 @@
 .EXAMPLE
     .\install-libvship-windows.ps1 -Variant amd -Destination C:\tools\vship -Verbose
 #>
+
 [CmdletBinding()]
 param(
     [Parameter()]
     [string] $Destination = (Join-Path $PWD 'vship'),
 
     [Parameter()]
-    [string] $Version = '5.1.1',
+    [string] $Version = '5.1.2',
 
     [Parameter()]
     [ValidateSet('vulkan', 'nvidia', 'amd')]
@@ -55,6 +54,13 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+# Precedence: -Version, then the tag in the environment (e.g. .github/.env), then
+# the default in the param block. The leading `v` is dropped so the value matches
+# the `-Version` form the download URL is built from.
+if (-not $PSBoundParameters.ContainsKey('Version') -and $env:VSHIP_VERSION) {
+    $Version = $env:VSHIP_VERSION.TrimStart('v')
+}
 
 # Some hosts reject requests that carry no User-Agent with 403.
 $UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
@@ -85,9 +91,8 @@ $Variants = @{
 
 $BaseUrl = "https://codeberg.org/Line-fr/Vship/releases/download/v$Version/"
 
-# Nothing published upstream is smaller than 1.1 MB, so anything under half a
-# megabyte is a truncated download or an HTML error page saved under the asset
-# name, and must not be staged.
+# Nothing upstream is smaller than 1.1 MB, so half a megabyte is the floor for a
+# complete download.
 $MinimumBytes = 500KB
 
 function Get-Asset {
@@ -96,12 +101,8 @@ function Get-Asset {
         Downloads an asset with retries, returning the bytes it wrote.
 
     .DESCRIPTION
-        Codeberg is a volunteer-run forge and refuses connections on some
-        networks outright, in which case curl reports `(7) Failed to connect`
-        rather than an HTTP error -- the same network-level refusal the MSYS2
-        mirrors show. Either way the transfer is worth retrying before an
-        install is declared failed, so the retry is unconditional rather than
-        reserved for 5xx responses.
+        Retries unconditionally: Codeberg refuses connections on some networks
+        rather than returning an HTTP error.
     #>
     param(
         [Parameter(Mandatory)][string] $Uri,

@@ -121,6 +121,8 @@ celerybeat.pid
 
 # Environments
 .env
+# .github/.env holds the CI/CD pins, not secrets, and is tracked on purpose.
+!.github/.env
 .venv
 env/
 venv/

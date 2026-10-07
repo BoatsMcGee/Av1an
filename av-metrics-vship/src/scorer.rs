@@ -803,8 +803,6 @@ impl VshipScorer {
         config.validate()?;
         let api = VshipApi::load()?;
 
-        // A failing `Vship_GPUFullCheck` means the device cannot run libvship at
-        // all, so it is checked before any handler is claimed.
         api.gpu_full_check(config.gpu_id_or_default())?;
 
         // libvship performs no geometry-equality check between the two sides: it
@@ -893,11 +891,9 @@ impl VshipScorer {
 
     /// Whether libvship is available on this system.
     ///
-    /// This needs more than a successful `dlopen`. libvship is compiled per
-    /// backend and each build imports a different driver, so a missing driver
-    /// fails at load time. On top of that, `Vship_GetVersion` must answer and
-    /// `Vship_GPUFullCheck` must pass on a device. Any of those failing reports
-    /// unavailability rather than panicking.
+    /// This needs more than a successful `dlopen`: `Vship_GetVersion` must
+    /// answer and `Vship_GPUFullCheck` must pass on a device. Any of those
+    /// failing reports unavailability rather than panicking.
     ///
     /// Cheap to call: the library is resolved once and cached.
     #[inline]

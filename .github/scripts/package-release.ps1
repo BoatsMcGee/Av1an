@@ -15,18 +15,14 @@
         still found by relative path. FFMS2 needs nothing here: it is linked
         into the executable.
 
-    Shipping one archive is therefore the only way a download can reconstruct the
-    layout. Individual files are also attached for anyone who needs them, but the
-    zip is what a user should take.
-
 .PARAMETER StageDir
     Directory holding the staged release. Defaults to `target\release`.
 
 .PARAMETER OutputPath
     Where to write the archive. Defaults to `target\condor-windows-x64.zip`.
 
-.PARAMETER IncludeSchema
-    Include `configuration.schema.json` at the archive root when it exists.
+.PARAMETER SkipSchema
+    Leave `configuration.schema.json` out of the archive.
 #>
 [CmdletBinding()]
 param(
@@ -86,9 +82,7 @@ Write-Step "Writing $OutputPath"
 New-Item -ItemType Directory -Force -Path (Split-Path $OutputPath -Parent) | Out-Null
 if (Test-Path $OutputPath) { Remove-Item -Force $OutputPath }
 
-# Written entry by entry rather than with Compress-Archive, which nests whatever
-# path prefix it is given and cannot mix a file from outside the stage directory
-# into the same root. Both would break the relative lookups the release relies on.
+# Written entry by entry so every entry lands at the archive root.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Add-ZipFile {
@@ -97,8 +91,7 @@ function Add-ZipFile {
         Copies one file into the open archive under a given entry name.
 
     .DESCRIPTION
-        Uses the stream API rather than CreateEntryFromFile, which is an
-        extension method absent from Windows PowerShell 5.1.
+        Uses the stream API, which Windows PowerShell 5.1 supports.
     #>
     param(
         [Parameter(Mandatory)][string] $Source,
