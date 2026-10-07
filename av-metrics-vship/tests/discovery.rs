@@ -18,7 +18,6 @@ use std::{
 };
 
 use av_metrics_vship::ffi::{VshipApi, library_candidates};
-use tempfile;
 
 /// Environment variables that affect library discovery.
 const DISCOVERY_ENV_VARS: &[&str] = &[
