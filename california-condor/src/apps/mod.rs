@@ -105,8 +105,6 @@ impl<S: Clone + Send + 'static> Clone for SharedProgress<S> {
 
 enum AppEvent {
     Quit,
-    Tick,                   // 30 FPS
-    Input(event::KeyEvent), // Keyboard events
 }
 
 pub trait TuiApp: Send + Sync + 'static {
@@ -262,50 +260,14 @@ pub trait TuiApp: Send + Sync + 'static {
         false
     }
 
-    /// The full runtime: spawns input/tick/progress threads, waits headlessly
-    /// in test mode, and drives the terminal event loop otherwise.
+    /// The full runtime: spawns the progress thread, waits headlessly in
+    /// test mode, and drives the terminal event loop otherwise.
     fn run(
         &mut self,
         progress_rx: Receiver<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<()> {
         let (event_tx, event_rx) = mpsc::channel();
-
-        // The input and tick threads outlive the event loop unless stopped. Without
-        // this the input thread keeps consuming the real terminal into a dropped
-        // receiver, so later keypresses never reach the next app.
-        let threads_stopped = Arc::new(AtomicBool::new(false));
-
-        if !is_test_mode() {
-            let input_tx = event_tx.clone();
-            let input_stopped = Arc::clone(&threads_stopped);
-            thread::spawn(move || {
-                loop {
-                    if input_stopped.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    if let Ok(TermEvent::Key(key)) = event::read()
-                        && input_tx.send(AppEvent::Input(key)).is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-
-        if !is_test_mode() {
-            let tick_tx = event_tx.clone();
-            let tick_stopped = Arc::clone(&threads_stopped);
-            thread::spawn(move || {
-                loop {
-                    if tick_stopped.load(Ordering::Relaxed) || tick_tx.send(AppEvent::Tick).is_err()
-                    {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(33)); // ~30 FPS
-                }
-            });
-        }
 
         let shared_progress = self.shared_progress().clone();
         let quit = Arc::new(AtomicBool::new(false));
@@ -336,8 +298,15 @@ pub trait TuiApp: Send + Sync + 'static {
         let mut terminal = self.init()?;
         let stdout_is_terminal = stdout().is_terminal();
         loop {
-            while let Ok(AppEvent::Input(key)) = event_rx.try_recv() {
-                if self.handle_ctrl_c(key, &cancelled, stdout_is_terminal) {
+            // Keyboard input is read here, never on a helper thread:
+            // crossterm's event reader is process-wide, and teardown's
+            // cursor position query (restore -> terminal.clear) must acquire
+            // it, so no other thread may hold it. The drain also ends when
+            // input is exhausted or no terminal can be read (`Err`).
+            while matches!(event::poll(Duration::ZERO), Ok(true)) {
+                if let Ok(TermEvent::Key(key)) = event::read()
+                    && self.handle_ctrl_c(key, &cancelled, stdout_is_terminal)
+                {
                     if let Some(snapshot) = self.shared_progress().read_if_dirty() {
                         self.on_snapshot(snapshot);
                     }
@@ -356,31 +325,16 @@ pub trait TuiApp: Send + Sync + 'static {
                 self.on_snapshot(snapshot);
                 terminal.draw(|f| self.render(f))?;
                 self.restore(terminal)?;
-                threads_stopped.store(true, Ordering::Release);
                 break;
             }
 
             match event_rx.recv_timeout(Duration::from_millis(33)) {
-                Ok(AppEvent::Tick) => {
-                    terminal.draw(|f| self.render(f))?;
-                },
-                Ok(AppEvent::Input(key)) => {
-                    if self.handle_ctrl_c(key, &cancelled, stdout_is_terminal) {
-                        if let Some(snapshot) = self.shared_progress().read_if_dirty() {
-                            self.on_snapshot(snapshot);
-                        }
-                        terminal.draw(|f| self.render(f))?;
-                        self.restore(terminal)?;
-                        Self::force_quit();
-                    }
-                },
                 Ok(AppEvent::Quit) => {
                     if let Some(snapshot) = self.shared_progress().read_if_dirty() {
                         self.on_snapshot(snapshot);
                     }
                     terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
-                    threads_stopped.store(true, Ordering::Release);
                     break;
                 },
                 Err(RecvTimeoutError::Timeout) => {
@@ -392,7 +346,6 @@ pub trait TuiApp: Send + Sync + 'static {
                     }
                     terminal.draw(|f| self.render(f))?;
                     self.restore(terminal)?;
-                    threads_stopped.store(true, Ordering::Release);
                     break;
                 },
             }
