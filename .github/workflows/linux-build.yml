@@ -21,16 +21,16 @@ jobs:
       CARGO_INCREMENTAL: 0
 
     steps:
+      - name: Install build dependencies
+        run: |
+          pacman -S --noconfirm --needed git clang nasm vapoursynth vmaf ffmpeg vulkan-headers patchelf unzip
+
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install build dependencies
-        run: |
-          pacman -S --noconfirm --needed git clang nasm vapoursynth vmaf ffmpeg vulkan-headers patchelf unzip
 
       # fmetrics needs Zig 0.16.x specifically: 0.17 removed b.build_root.
       - name: Zig setup
