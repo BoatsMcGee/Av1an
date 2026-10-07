@@ -30,7 +30,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          pacman -S --noconfirm --needed git clang nasm vapoursynth vmaf ffmpeg vulkan-headers patchelf
+          pacman -S --noconfirm --needed git clang nasm vapoursynth vmaf ffmpeg vulkan-headers patchelf unzip
 
       # fmetrics needs Zig 0.16.x specifically: 0.17 removed b.build_root.
       - name: Zig setup
@@ -42,7 +42,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # Stages libvmaf, builds libvship and libfmetrics from pinned commits,
-      # and copies the checked-in VMAF models.
+      # and copies the VMAF models the distribution's package installs.
       - name: Stage native libraries
         run: bash ./.github/scripts/stage-native-libs.sh target/release
 

@@ -23,7 +23,7 @@ RUN ZOOMVTOOLS_VERSION="v2.0.2" && \
     PLUGIN_DIR="$(python -c 'import site; print(site.getsitepackages()[0])')/vapoursynth/plugins" && \
     mkdir -p "$PLUGIN_DIR" && \
     curl -fL -o "$PLUGIN_DIR/libzoomvtools.so" \
-        "https://gitlab.com/api/v4/projects/78027771/packages/generic/vapoursynth-zoomvtools/${ZOOMVTOOLS_VERSION}/vapoursynth-zoomvtools-${ZOOMVTOOLS_VERSION}-linux-x86_64.so"
+    "https://gitlab.com/api/v4/projects/78027771/packages/generic/vapoursynth-zoomvtools/${ZOOMVTOOLS_VERSION}/vapoursynth-zoomvtools-${ZOOMVTOOLS_VERSION}-linux-x86_64.so"
 
 FROM base AS build-base
 
@@ -63,11 +63,11 @@ FROM base AS metrics
 # No Vulkan driver: libvship is skipped unless the host supplies one, and
 # fmetrics covers scoring without a GPU. See av-metrics-vship/src/driver.rs.
 RUN pacman -S --noconfirm --needed \
-        git \
-        zig \
-        clang \
-        vulkan-headers \
-        vulkan-icd-loader
+    git \
+    zig \
+    clang \
+    vulkan-headers \
+    vulkan-icd-loader
 
 # libvship, Vulkan backend. -Destination is required, since the script stages
 # into $PWD by default.
@@ -75,15 +75,19 @@ ARG VSHIP_VERSION="v5.1.1"
 ARG VSHIP_COMMIT="256dc5a85e56e42a88a7a90d641037fdc148b91e"
 
 COPY av-metrics-vship/scripts/install-libvship-linux.sh /usr/local/bin/
-RUN VSHIP_VERSION="$VSHIP_VERSION" VSHIP_COMMIT="$VSHIP_COMMIT" \
-    /usr/local/bin/install-libvship-linux.sh -Destination /usr/lib -Quiet
+# The script is not executable in git, and a Windows checkout has CRLF, so strip
+# the carriage returns and run it through bash rather than executing it directly.
+RUN sed -i 's/\r$//' /usr/local/bin/install-libvship-linux.sh && \
+    VSHIP_VERSION="$VSHIP_VERSION" VSHIP_COMMIT="$VSHIP_COMMIT" \
+    bash /usr/local/bin/install-libvship-linux.sh -Destination /usr/lib -Quiet
 
 # fmetrics
 ARG FMETRICS_COMMIT="ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac"
 
 COPY av-metrics-fmetrics/scripts/install-fmetrics-linux.sh /usr/local/bin/
-RUN FMETRICS_COMMIT="$FMETRICS_COMMIT" \
-    /usr/local/bin/install-fmetrics-linux.sh -Destination /usr/lib -Quiet
+RUN sed -i 's/\r$//' /usr/local/bin/install-fmetrics-linux.sh && \
+    FMETRICS_COMMIT="$FMETRICS_COMMIT" \
+    bash /usr/local/bin/install-fmetrics-linux.sh -Destination /usr/lib -Quiet
 
 FROM base AS runtime
 

@@ -43,12 +43,23 @@ step() { echo "==> $1"; }
 
 mkdir -p "$StageDir/model"
 
-# The nine upstream models are checked in under model/, so the release copies
-# them rather than downloading from Netflix like the Windows script does.
+# The release copies the nine upstream models rather than downloading them from
+# Netflix like the Windows script does. The repository's own model/ directory is
+# gitignored (*.json), so a clean checkout does not carry it; fall back to the
+# copy the distribution's `vmaf` package installs.
 step 'Staging VMAF models'
 
 # Use GITHUB_WORKSPACE to find the model directory reliably in the container
 MODEL_DIR="${GITHUB_WORKSPACE:-$(pwd)}/model"
+
+if [ ! -d "$MODEL_DIR" ]; then
+    for candidate in /usr/share/model /usr/share/vmaf/model /usr/local/share/model; do
+        if [ -d "$candidate" ]; then
+            MODEL_DIR="$candidate"
+            break
+        fi
+    done
+fi
 
 # Debug: show working directory and model directory contents
 echo "Working directory: $(pwd)"
