@@ -134,7 +134,7 @@ pub fn run_scene_detector_tui(
 
     let mut scene_detector = SceneDetector {
         input,
-        method: condor.sequence_config.scene_detector.method,
+        method: condor.sequence_config.scene_detector.method.clone(),
     };
 
     debug!("Validating Scene Detector"); // Input should alrady be validated but just in case

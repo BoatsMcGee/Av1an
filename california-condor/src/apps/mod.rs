@@ -43,6 +43,18 @@ pub fn is_test_mode() -> bool {
     std::env::var("CONDOR_TEST_MODE").is_ok_and(|v| v == "1")
 }
 
+/// Whether the app should drive the TUI or wait headlessly instead.
+///
+/// The TUI renders to stdout when it is a terminal and to stderr otherwise,
+/// and it needs raw mode plus the alternate screen on whichever it picks.
+/// With *neither* stream on a terminal — output piped into a file, a CI job,
+/// or a container started without `-t` — enabling raw mode fails with
+/// `ENXIO` (`No such device or address`) because there is no controlling
+/// terminal to take over.
+fn run_headless(stdout_is_terminal: bool, stderr_is_terminal: bool, test_mode: bool) -> bool {
+    test_mode || !(stdout_is_terminal || stderr_is_terminal)
+}
+
 /// Thread-safe container for sharing mutable progress state between a
 /// producer thread (progress receiver) and a consumer thread (UI event loop).
 ///
@@ -280,8 +292,13 @@ pub trait TuiApp: Send + Sync + 'static {
             quit_flag.store(true, Ordering::Release);
         });
 
-        if is_test_mode() {
-            // In test mode, avoid any terminal operations - headless wait.
+        if run_headless(
+            stdout().is_terminal(),
+            stderr().is_terminal(),
+            is_test_mode(),
+        ) {
+            // No terminal to take over (or test mode): avoid any terminal
+            // operations - headless wait.
             while !quit.load(Ordering::Acquire) {
                 thread::sleep(Duration::from_millis(10));
                 if let Some(snapshot) = self.shared_progress().read_if_dirty() {
@@ -356,4 +373,28 @@ pub trait TuiApp: Send + Sync + 'static {
     }
 
     fn render(&self, frame: &mut Frame);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_headless;
+
+    #[test]
+    fn always_run_headless_in_test_mode() {
+        assert!(run_headless(true, true, true));
+        assert!(run_headless(false, false, true));
+    }
+
+    #[test]
+    fn a_terminal_on_either_stream_runs_the_tui() {
+        assert!(!run_headless(true, false, false));
+        assert!(!run_headless(false, true, false));
+        assert!(!run_headless(true, true, false));
+    }
+
+    #[test]
+    fn no_terminal_at_all_runs_headless() {
+        // The `docker run` without `-t` case: raw mode would fail with ENXIO.
+        assert!(run_headless(false, false, false));
+    }
 }

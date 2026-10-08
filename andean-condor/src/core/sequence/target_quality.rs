@@ -915,9 +915,6 @@ impl TargetQuality {
         }
 
         let metric_input = metric_input.unwrap_or(input);
-        // Owned, so it outlives the `&mut v_input` borrow taken below.
-        let mut v_input_owned = metric_input.as_vapoursynth_script()?;
-        let v_input = v_input_owned.as_mut();
         // VMAF is scored by libvmaf over decoded frames, and its decoder borrow
         // would conflict with the one the node graph below needs. Score it first,
         // while `metric_input` is still free.
@@ -1123,54 +1120,6 @@ impl TargetQuality {
             return Ok((Vec::new(), warnings));
         }
 
-        let decoder = match metric_input {
-            Input::VapourSynth {
-                decoder, ..
-            }
-            | Input::VapourSynthScript {
-                decoder, ..
-            } => decoder,
-            Input::Video {
-                ..
-            } => v_input.expect("Video Input exists").decoder(),
-        };
-        let vapoursynth_decoder = decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
-        let env = &vapoursynth_decoder.env;
-        let reference_node = vapoursynth_decoder.get_output(
-            vapoursynth_decoder.get_output_index(),
-            vapoursynth_decoder.get_node_modifier(),
-        )?;
-        let core = get_core(env)?;
-
-        let reference_node = {
-            let frame_nodes: Vec<_> = tasks
-                .iter()
-                .map(|task| {
-                    task.frame_indices
-                        .iter()
-                        .map(|index| {
-                            Trim {
-                                first: Some(*index as u32),
-                                last: Some(*index as u32),
-                                ..Default::default()
-                            }
-                            .invoke(core, &reference_node)
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect();
-
-            Splice::invoke(core, &frame_nodes)?
-        };
-        let distorted_node = Source {
-            source: output,
-            ..Default::default()
-        }
-        .invoke(core)?;
-
         // The relay thread spawned above ends only once every sender is dropped. Each
         // plugin branch moves its sender into `get_scores`, so the channel
         // disconnects as soon as that call returns. The branch that reuses the
@@ -1188,6 +1137,68 @@ impl TargetQuality {
             drop(compare_progress_tx);
             native_scores.take().expect("native scores were just taken")
         } else {
+            // The branches below score over a VapourSynth graph built from the metric
+            // input, so everything here - the graph itself, and for a natively decoded
+            // input the VapourSynth script it is converted into - is created only on
+            // this path. A host without VapourSynth scores every metric with a native
+            // engine without touching it at all.
+            //
+            // Owned, so it outlives the `&mut v_input` borrow taken below.
+            let mut v_input_owned = if matches!(metric_input, Input::Video { .. }) {
+                metric_input.as_vapoursynth_script()?
+            } else {
+                None
+            };
+            let v_input = v_input_owned.as_mut();
+            let decoder = match metric_input {
+                Input::VapourSynth {
+                    decoder, ..
+                }
+                | Input::VapourSynthScript {
+                    decoder, ..
+                } => decoder,
+                Input::Video {
+                    ..
+                } => v_input.expect("Video Input exists").decoder(),
+            };
+            let vapoursynth_decoder =
+                decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
+            let env = &vapoursynth_decoder.env;
+            let reference_node = vapoursynth_decoder.get_output(
+                vapoursynth_decoder.get_output_index(),
+                vapoursynth_decoder.get_node_modifier(),
+            )?;
+            let core = get_core(env)?;
+
+            let reference_node = {
+                let frame_nodes: Vec<_> = tasks
+                    .iter()
+                    .map(|task| {
+                        task.frame_indices
+                            .iter()
+                            .map(|index| {
+                                Trim {
+                                    first: Some(*index as u32),
+                                    last: Some(*index as u32),
+                                    ..Default::default()
+                                }
+                                .invoke(core, &reference_node)
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+
+                Splice::invoke(core, &frame_nodes)?
+            };
+            let distorted_node = Source {
+                source: output,
+                ..Default::default()
+            }
+            .invoke(core)?;
+
             match &config.metric {
                 // Always scored above, since VMAF has no plugin branch here.
                 QualityMetric::VMAF {

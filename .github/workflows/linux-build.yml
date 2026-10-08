@@ -11,22 +11,22 @@ permissions:
   contents: write
 
 jobs:
+  # Built on the runner: its Ubuntu 24.04 glibc (2.39) is the floor every
+  # artifact and staged metric library is built against.
   build:
-    runs-on: ubuntu-latest
-    container:
-      image: boatsmcgee/condor:latest
-      options: --user root
+    runs-on: ubuntu-24.04
 
     env:
       CARGO_INCREMENTAL: 0
-
-    outputs:
-      glibc: ${{ steps.glibc.outputs.glibc }}
+      FFMS_LIB_DIR: /usr/lib/x86_64-linux-gnu
+      FFMS_INCLUDE_DIR: /usr/include
 
     steps:
       - name: Install build dependencies
         run: |
-          pacman -S --noconfirm --needed git clang nasm vapoursynth vmaf ffmpeg vulkan-headers patchelf unzip
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nasm patchelf libclang-dev libffms2-dev libvulkan-dev meson ninja-build
 
       - uses: actions/checkout@v6
         with:
@@ -44,15 +44,11 @@ jobs:
       # rust-cache restores and prunes `target/`, run before staging
       - uses: Swatinem/rust-cache@v2
 
-      # Stages libvmaf, builds libvship and libfmetrics from pinned commits,
-      # and copies the VMAF models the distribution's package installs.
+      # Staged here so the metric libraries share the runner's glibc.
       - name: Stage native libraries
         run: bash ./.github/scripts/stage-native-libs.sh target/release
 
-      # The crates find their libraries relative to the staged copies, so point
-      # them at the release directory rather than at the image's /usr/lib.
-      # VMAF_MODEL_PATH names the staged model directory, which the crate
-      # searches on its own but not before the system paths.
+      # The crates find their libraries relative to the staged copies.
       - name: Record the native library search paths
         run: |
           echo "VSHIP_PLUGIN_PATH=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
@@ -66,28 +62,24 @@ jobs:
       - name: Generate configuration schema
         run: cargo run --release --bin generate-schema > california-condor/configuration.schema.json
 
-      # Writes a $ORIGIN runpath into the binary and packs the staged release
-      # with the executable bit preserved, then asserts the layout.
       - name: Package the release archive
         run: bash ./.github/scripts/package-release-linux.sh
 
-      # The archive is the deliverable; smoke-test it in a clean directory
-      # before publishing, the same way a user extracts it.
+      # The report colourises each verdict with ANSI escapes, which is why the
+      # text is stripped before it is asserted. `libvship` is deliberately not
+      # asserted: it loads a Vulkan device, so its verdict depends on the
+      # runner's ICD rather than on the archive.
       - name: Smoke-test the archive
         run: |
           mkdir -p /tmp/smoke && cd /tmp/smoke
           unzip -q "$GITHUB_WORKSPACE/target/condor-linux-x64.zip"
-          ./condor --version > version.txt 2>&1 || true
+          ./condor --version > version.txt 2>&1
           cat version.txt
-          # The report names the libraries `libvmaf` and `fmetrics`.
-          grep -q 'libvmaf' version.txt
-          grep -q 'fmetrics' version.txt
+          sed -r 's/\x1b\[[0-9;]*[A-Za-z]//g' version.txt > verdict.txt
+          # The CPU metric libraries ship in the archive: they must load.
+          grep -q '✓ libvmaf' verdict.txt
+          grep -q '✓ fmetrics' verdict.txt
           readelf -d ./condor | grep -q '\$ORIGIN'
-
-      - name: Record the glibc baseline
-        run: |
-          echo "glibc=$(ldd --version | head -1)" >> "$GITHUB_OUTPUT"
-        id: glibc
 
       - name: Stage the release assets
         run: |
@@ -101,10 +93,7 @@ jobs:
           path: dist/
           retention-days: 1
 
-  # The changelog reads the repository history: the last tag and the range of
-  # commits since it. That cannot happen in the build container, where the
-  # workspace is a bind mount owned by the runner's user while git runs as
-  # container root, so git refuses to read it at all.
+  # Full checkout: the changelog walks history and appends the Linux notes.
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -122,57 +111,7 @@ jobs:
 
       - name: Generate changelog
         id: changelog
-        run: |
-          last_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-          if [ -z "$last_tag" ]; then
-            last_tag="$(git rev-list --max-parents=0 HEAD 2>/dev/null || true)"
-          fi
-          if [ -z "$last_tag" ]; then
-            last_tag='HEAD'
-          fi
-          echo "last_tag=$last_tag" >> "$GITHUB_OUTPUT"
-
-          all="$(git log "$last_tag..HEAD" --pretty=format:'- %s' 2>/dev/null || true)"
-          if [ -z "$all" ]; then
-            all="No changes since $last_tag"
-          fi
-
-          first10="$(echo "$all" | head -10)"
-          rest_count="$(echo "$all" | tail -n +11 | wc -l)"
-
-          commit="$(git log -1 --pretty=format:'%h: %s (%an)')"
-          # Step outputs are written as a `name<<delimiter` block.
-          {
-            echo 'body<<CHANGELOG_EOF'
-            echo "Latest build from $GITHUB_SHA"
-            echo
-            echo "Commit:"
-            echo "$commit"
-            echo
-            echo "Changes since $last_tag:"
-            echo "$first10"
-            if [ "$rest_count" -gt 0 ]; then
-              echo
-              echo "<details>"
-              echo "<summary>... and $rest_count more commits</summary>"
-              echo
-              echo "$(echo "$all" | tail -n +11)"
-              echo "</details>"
-            fi
-            echo
-            echo "---"
-            echo
-            echo "## Linux host requirements"
-            echo
-            echo "The Linux archive bundles \`condor\`, \`libvmaf.so\`, \`libvship.so\`,"
-            echo "\`libfmetrics.so\` and the VMAF models. The host still provides:"
-            echo
-            echo "- A recent glibc (built against ${{ needs.build.outputs.glibc }})"
-            echo "- Encoder binaries: aomenc, SvtAv1EncApp, rav1e, vpxenc, x264, x265, ffmpeg, mkvmerge"
-            echo "- VapourSynth with its Python plugins (vsjetpack, vsfgs, ZooMVTools)"
-            echo "- vulkan-icd-loader, for libvship"
-            echo 'CHANGELOG_EOF'
-          } >> "$GITHUB_OUTPUT"
+        run: bash ./.github/scripts/generate-changelog.sh ./.github/scripts/linux-release-notes.md
 
       - name: Create or update prerelease for Condor
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}

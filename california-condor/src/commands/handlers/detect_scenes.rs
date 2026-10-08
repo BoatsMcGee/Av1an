@@ -1,6 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use andean_condor::{core::input::Input, vapoursynth::vapoursynth_filters::VapourSynthFilter};
+use andean_condor::{
+    core::input::Input,
+    models::sequence::scene_detector::SceneDetectionMethod as CoreSceneDetectionMethod,
+    vapoursynth::vapoursynth_filters::VapourSynthFilter,
+};
 use anyhow::Result;
 
 use crate::{
@@ -84,7 +88,7 @@ pub fn configure_scene_detector(
     let clip_info = input.clip_info()?;
     let fps = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
 
-    let previous_method = configuration.condor.sequence_config.scene_detector.method;
+    let previous_method = configuration.condor.sequence_config.scene_detector.method.clone();
     let min_scene_frames = min_scene_seconds.map_or_else(
         || previous_method.minimum_length(),
         |seconds| (fps * seconds as f64).round() as usize,
@@ -95,7 +99,39 @@ pub fn configure_scene_detector(
     );
     let new_method =
         method.map(|method| method.as_core_method(Some(min_scene_frames), Some(max_scene_frames)));
-    if let Some(new_method) = new_method {
+    if let Some(mut new_method) = new_method {
+        // Keep the properties the CLI cannot express: the pinned model file
+        // and the score-saving switch the config carries.
+        match (&previous_method, &mut new_method) {
+            (
+                CoreSceneDetectionMethod::TransNetV2 {
+                    model_path: previous_path,
+                    save_scores: previous_scores,
+                    ..
+                },
+                CoreSceneDetectionMethod::TransNetV2 {
+                    model_path: slot,
+                    save_scores: score_slot,
+                    ..
+                },
+            ) => {
+                if slot.is_none() {
+                    *slot = previous_path.clone();
+                }
+                *score_slot = *previous_scores;
+            },
+            (
+                CoreSceneDetectionMethod::AVSceneChange {
+                    save_scores: previous_scores,
+                    ..
+                },
+                CoreSceneDetectionMethod::AVSceneChange {
+                    save_scores: score_slot,
+                    ..
+                },
+            ) => *score_slot = *previous_scores,
+            _ => {},
+        }
         configuration.condor.sequence_config.scene_detector.method = new_method;
     }
     configuration
@@ -240,6 +276,7 @@ mod tests {
                 minimum_length: expected_min,
                 maximum_length: expected_max,
                 method:         ScenecutMethod::Fast,
+                save_scores:    false,
             };
         // immutable shadow
         let expected_config = expected_config;

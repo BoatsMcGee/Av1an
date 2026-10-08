@@ -30,9 +30,8 @@ jobs:
           # version: 2.16.03
           from-source: false
 
-      # fmetrics is the only native dependency with no prebuilt Windows release, so
-      # it is compiled from a pinned commit rather than downloaded. 0.16.x
-      # specifically: 0.17 removed b.build_root, which the pinned build.zig uses.
+      # fmetrics is compiled from a pinned commit (no prebuilt Windows release).
+      # Zig 0.16.x specifically: 0.17 removed b.build_root used by build.zig.
       - name: Zig setup
         uses: mlugg/setup-zig@v2
         with:
@@ -50,41 +49,29 @@ jobs:
           vapoursynth config
           "VSSCRIPT_PATH=$(vapoursynth get-vsscript)" >> "$env:GITHUB_ENV"
 
-      # FFMS2 is a build input only: ffms2-sys needs its headers and import library
-      # to compile. Nothing from it is staged, because the code is linked into
-      # condor.exe and decoding never loads a separate ffms2.dll.
+      # FFMS2 is a build input only: ffms2-sys needs its headers and import
+      # library, and condor.exe links it statically.
       - name: FFMS2 installation
         run: |
           curl -L -o ffms2.7z "https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z"
           7z x ffms2.7z
           Move-Item -Path "ffms2-5.0-msvc" -Destination "C:\ffms2"
 
-      # rust-cache restores and prunes `target/`, so it runs before anything is
-      # staged there rather than after.
+      # rust-cache prunes `target/`, so it runs before anything is staged there.
       - uses: Swatinem/rust-cache@v2
 
-      # Stages libvmaf and its MinGW runtime, libvship, and fmetrics. fmetrics is
-      # built from source here rather than downloaded, since no prebuilt Windows
-      # binary is published for it.
+      # Stages libvmaf and its MinGW runtime, libvship and fmetrics.
       - name: Stage native libraries
         shell: pwsh
         run: ./.github/scripts/stage-native-libs.ps1 -StageDir target/release
 
-      # The crates find their libraries relative to the staged copies, so point
-      # them at the release directory rather than at a system install.
+      # The crates find their libraries relative to the staged copies.
       - name: Record the native library search paths
         shell: pwsh
         run: |
           "VSHIP_PLUGIN_PATH=$env:GITHUB_WORKSPACE\target\release" >> "$env:GITHUB_ENV"
           "VMAF_MODEL_PATH=$env:GITHUB_WORKSPACE\target\release\model" >> "$env:GITHUB_ENV"
           "FMETRICS_LIB_DIR=$env:GITHUB_WORKSPACE\target\release" >> "$env:GITHUB_ENV"
-
-      - name: Get latest commit
-        id: get_commit
-        shell: pwsh
-        run: |
-          $commit = git log -1 --pretty=format:"%h: %s (%an)"
-          echo "message=$commit" >> $env:GITHUB_OUTPUT
 
       - name: Condor build
         run: cargo build --release --bin condor
@@ -93,47 +80,16 @@ jobs:
         shell: pwsh
         run: cargo run --release --bin generate-schema > california-condor/configuration.schema.json
 
-      # The assets only work as a directory: the VMAF models have to sit in model/
-      # beside the executable or they are not found, and libvmaf.dll needs its
-      # MinGW runtime beside it to load. fmetrics.dll has no dependencies of its
-      # own, but is dlopened from the executable's directory, so it travels with
-      # them either way.
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: bash ./.github/scripts/generate-changelog.sh
+
+      # The assets are a directory: the VMAF models and the MinGW runtime must
+      # sit beside the executable or they are not found.
       - name: Package the release archive
         shell: pwsh
         run: ./.github/scripts/package-release.ps1
-
-      - name: Generate changelog
-        id: changelog
-        shell: pwsh
-        run: |
-          $lastTag = git describe --tags --abbrev=0 2>$null
-          if (-not $lastTag) {
-            $lastTag = git rev-list --max-parents=0 HEAD 2>$null
-          }
-          if (-not $lastTag) {
-            $lastTag = 'HEAD'
-          }
-          echo "last_tag=$lastTag" >> $env:GITHUB_OUTPUT
-
-          $all = git log "$lastTag..HEAD" --pretty=format:"- %s" 2>$null
-          if (-not $all) {
-            $all = "No changes since $lastTag"
-          }
-          $lines = @($all -split "`n")
-          $first10 = @($lines | Select-Object -First 10)
-          $rest = @($lines | Select-Object -Skip 10)
-
-          $commit = git log -1 --pretty=format:"%h: %s (%an)"
-          $body = "Latest build from $env:GITHUB_SHA`n`nCommit:`n$commit`n`nChanges since ${lastTag}:`n$($first10 -join "`n")"
-
-          if ($rest.Count -gt 0) {
-            $more = $rest.Count
-            $body += "`n`n<details>`n<summary>... and $more more commits</summary>`n`n$($rest -join "`n")`n</details>"
-          }
-
-          echo "body<<EOF" >> $env:GITHUB_OUTPUT
-          echo "$body" >> $env:GITHUB_OUTPUT
-          echo "EOF" >> $env:GITHUB_OUTPUT
 
       - name: Create or update prerelease for Condor
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}

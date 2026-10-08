@@ -138,6 +138,7 @@ impl Configuration {
                             maximum_length: DEFAULT_MAX_SCENE_LENGTH_SECONDS as usize
                                 * fps.round() as usize,
                             method:         ScenecutMethod::Standard,
+                            save_scores:    false,
                         },
                     },
                     noise_detector:     None,

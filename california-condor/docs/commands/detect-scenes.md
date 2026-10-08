@@ -63,6 +63,7 @@ Method used for detecting scenes. See [Scene Detection](../types/scene-detection
 - `none` - No scene detection, chunks scenes by maximum length
 - `fast` - Fast scene detection, uses av-scenechange with the fast algorithm
 - `standard` - Standard scene detection, uses av-scenechange with the standard algorithm
+- `transnetv2` - Neural network scene detection, uses TransNetV2 via ONNX Runtime
 
 ### Default
 

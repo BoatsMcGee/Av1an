@@ -128,6 +128,7 @@ fn main() -> Result<()> {
                 maximum_length: DEFAULT_MIN_SCENE_LENGTH_FRAMES as usize
                     * DEFAULT_MAX_SCENE_LENGTH_SECONDS as usize,
                 method:         ScenecutMethod::Standard,
+                save_scores:    false,
             },
             input:  None,
         },
@@ -168,6 +169,7 @@ fn main() -> Result<()> {
                     maximum_length: DEFAULT_MIN_SCENE_LENGTH_FRAMES as usize
                         * DEFAULT_MAX_SCENE_LENGTH_SECONDS as usize,
                     method:         ScenecutMethod::Standard,
+                    save_scores:    false,
                 },
             }),
             Box::new(ParallelEncoder::new(None)), // use Condor's own input

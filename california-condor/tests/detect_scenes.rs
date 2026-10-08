@@ -202,6 +202,7 @@ mod tests {
                 minimum_length: test_video.fps().round() as usize,
                 maximum_length: (test_video.fps() * 2.0).round() as usize,
                 method:         ScenecutMethod::Fast,
+                save_scores:    false,
             };
         // immutable shadow
         let expected_config = expected_config;
@@ -311,5 +312,86 @@ mod tests {
                 &format!("scene {} encoder", index),
             );
         });
+    }
+
+    /// Runs the full CLI path through TransNetV2. Ignored by default because
+    /// it needs the ~31 MB model resolved from one of the search locations.
+    #[serial]
+    #[test]
+    #[ignore = "requires the TransNetV2 model (~31 MB) to be present"]
+    fn with_transnetv2() {
+        if !ffmpeg_is_available() {
+            return;
+        }
+        let test_video = get_test_video();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let output = temp.path().join("out.mkv");
+        let input_abs = path_abs::PathAbs::new(test_video.path.clone())
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp_abs = path_abs::PathAbs::new(temp.path().join(hash_path(&input_abs)))
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let config_path = temp.path().join("condor.json");
+
+        condor_cmd(&temp)
+            .args(["init", path_str(&test_video.path), path_str(&output)])
+            .assert()
+            .success();
+
+        condor_cmd(&temp)
+            .env("CONDOR_TEST_MODE", "1")
+            .args(["detect-scenes", "--method", "transnetv2"])
+            .assert()
+            .success();
+
+        let mut expected_config = default_config(&test_video, &output, &temp_abs);
+        expected_config.condor.sequence_config.scene_detector.method =
+            SceneDetectionMethod::TransNetV2 {
+                minimum_length: test_video.fps().round() as usize,
+                maximum_length: (test_video.fps() * 10.0).round() as usize,
+                model_path:     None,
+                save_scores:    false,
+            };
+        // immutable shadow
+        let expected_config = expected_config;
+
+        let (config, _) =
+            load_configuration(Some(&config_path)).expect("load_configuration should succeed");
+
+        check_basic_config(&config, &expected_config);
+
+        let scene_boundaries = config
+            .condor
+            .scenes
+            .iter()
+            .map(|scene| (scene.start_frame, scene.end_frame))
+            .collect::<Vec<_>>();
+
+        // TransNetV2 lands within a few frames of the source's cuts (121, 240,
+        // 528); the 10-second maximum length forces the remaining split (480).
+        let expected_starts = [0usize, 121, 240, 480, 528];
+        assert_eq!(
+            scene_boundaries.len(),
+            expected_starts.len(),
+            "scene boundaries are {scene_boundaries:?}"
+        );
+        for (index, (start, end)) in scene_boundaries.iter().enumerate() {
+            assert!(
+                (*start as i64 - expected_starts[index] as i64).abs() <= 5,
+                "scene {index} starts at {start}, expected within 5 of {}",
+                expected_starts[index]
+            );
+            if let Some(next) = scene_boundaries.get(index + 1) {
+                assert_eq!(*end, next.0, "scenes are contiguous");
+            }
+        }
+        assert_eq!(
+            scene_boundaries.last().expect("non-empty").1,
+            test_video.frames,
+            "last scene ends at the final frame"
+        );
     }
 }

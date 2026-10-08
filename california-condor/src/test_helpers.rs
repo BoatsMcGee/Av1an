@@ -229,6 +229,7 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
                         maximum_length: (DEFAULT_MAX_SCENE_LENGTH_SECONDS as f64 * test_video.fps())
                             .round() as usize,
                         method:         ScenecutMethod::Standard,
+                        save_scores:    false,
                     },
                     input:  None,
                 },
@@ -1001,6 +1002,7 @@ pub fn check_scene_detector(
             minimum_length: expected_minimum_length,
             maximum_length: expected_maximum_length,
             method: expected_method,
+            save_scores: expected_save_scores,
         } => {
             assert_matches!(
                 scene_detector.method,
@@ -1012,6 +1014,7 @@ pub fn check_scene_detector(
                     minimum_length,
                     maximum_length,
                     method,
+                    save_scores,
                 } => {
                     assert_eq!(
                         minimum_length, expected_minimum_length,
@@ -1022,6 +1025,10 @@ pub fn check_scene_detector(
                         "maximum_length is {expected_maximum_length}"
                     );
                     assert_eq!(method, expected_method, "method is {expected_method}");
+                    assert_eq!(
+                        save_scores, expected_save_scores,
+                        "save_scores is {expected_save_scores}"
+                    );
                 },
                 _ => panic!("expected SceneDetectionMethod::AVSceneChange"),
             }
@@ -1050,6 +1057,44 @@ pub fn check_scene_detector(
                     );
                 },
                 _ => panic!("expected SceneDetectionMethod::None"),
+            };
+        },
+        SceneDetectionMethod::TransNetV2 {
+            minimum_length: expected_minimum_length,
+            maximum_length: expected_maximum_length,
+            model_path: ref expected_model_path,
+            save_scores: expected_save_scores,
+        } => {
+            assert_matches!(
+                scene_detector.method,
+                SceneDetectionMethod::TransNetV2 { .. },
+                "Scene Detector method is TransNetV2"
+            );
+            match scene_detector.method {
+                SceneDetectionMethod::TransNetV2 {
+                    minimum_length,
+                    maximum_length,
+                    ref model_path,
+                    save_scores,
+                } => {
+                    assert_eq!(
+                        minimum_length, expected_minimum_length,
+                        "minimum_length is {expected_minimum_length}"
+                    );
+                    assert_eq!(
+                        maximum_length, expected_maximum_length,
+                        "maximum_length is {expected_maximum_length}"
+                    );
+                    assert_eq!(
+                        model_path, expected_model_path,
+                        "model_path is {expected_model_path:?}"
+                    );
+                    assert_eq!(
+                        save_scores, expected_save_scores,
+                        "save_scores is {expected_save_scores}"
+                    );
+                },
+                _ => panic!("expected SceneDetectionMethod::TransNetV2"),
             }
         },
     }

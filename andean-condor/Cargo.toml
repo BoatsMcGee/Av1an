@@ -33,9 +33,13 @@ av1-grain = { version = "0.5", default-features = false, features = ["create"] }
 cfg-if = "1.0.4"
 crossbeam-channel = "0.5.15"
 crossbeam-utils = "0.8.5"
+ffms2-sys = "0.3.0"
 itertools = "0.15.0"
 nom = "8.0.0"
 once_cell = { workspace = true }
+# Pinned: later rcs drop the x86_64-apple-darwin prebuilt and enforce strict
+# execution-provider dist matching.
+ort = "=2.0.0-rc.12"
 pastey = "0.2.0"
 path_abs = { workspace = true }
 schemars = "1.2.2"
@@ -50,11 +54,27 @@ tracing = { workspace = true }
 vapoursynth = "0.5"
 which = "8.0.0"
 
+# Platform-native GPU providers come from the prebuilt ONNX Runtime each target
+# ships (DirectML on Windows, CoreML on macOS); the rest are opt-in because
+# they select a much larger prebuilt runtime at build time.
+[target.'cfg(windows)'.dependencies]
+ort = { version = "=2.0.0-rc.12", features = ["directml"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "=2.0.0-rc.12", features = ["coreml"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 
 [features]
 default = []
+# Hardware acceleration for the TransNetV2 scene detector. Providers register
+# fail-silently, so any provider the installed ONNX Runtime lacks falls back
+# to CPU.
+cuda = ["ort/cuda"]
+webgpu = ["ort/webgpu"]
+rocm = ["ort/rocm"]
+openvino = ["ort/openvino"]
 
 [lints.clippy]
 # Performance

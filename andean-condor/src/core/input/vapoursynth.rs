@@ -55,7 +55,6 @@ pub fn validate(path: &std::path::Path) -> Result<()> {
 
 /// Validates that a `VapourSynthScript` input's source is usable.
 pub fn validate_script(source: &VapourSynthScriptSource) -> Result<()> {
-    // TODO: Check if VapourSynth is installed and static cache it
     let VapourSynthScriptSource::Path(path) = source else {
         return Ok(());
     };
@@ -219,6 +218,15 @@ fn has_script_only_filter(data: &InputModel) -> bool {
 /// Opens a VapourSynth input, chaining its filters onto the source node.
 pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> Result<Input> {
     Input::validate(data)?;
+
+    // `VapoursynthDecoder::new()` panics without the library, and the core API is
+    // reached through VSScript, so this is the same test that constructor does.
+    get_api().map_err(|_| {
+        anyhow::anyhow!(
+            "VapourSynth is not available; it is required for VapourSynth inputs and the \
+             VapourSynth metric path"
+        )
+    })?;
 
     if has_script_only_filter(data) {
         // Baking filters into a script rebuilds from the source node, so a
@@ -614,4 +622,40 @@ pub fn y4m_frames(
             .expect("Condvar should be notified"),
     );
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `VapoursynthDecoder::new()` panics rather than erroring when the library
+    /// is missing, so `from_vapoursynth` checks availability first:
+    /// constructing a script input must come back as an error instead of
+    /// aborting the process.
+    #[test]
+    fn script_input_without_vapoursynth_errors_instead_of_panicking() {
+        let available = get_api().is_ok();
+        let data = InputModel::VapourSynthScript {
+            source:              VapourSynthScriptSource::Text(
+                "from vapoursynth import core
+core.std.BlankClip().set_output()"
+                    .to_owned(),
+            ),
+            variables:           HashMap::new(),
+            index:               0,
+            filters:             Vec::new(),
+            stream_concurrently: false,
+        };
+
+        let result = Input::from_data(&data);
+        if !available {
+            let Err(error) = result else {
+                panic!("a VapourSynth input cannot be constructed without VapourSynth");
+            };
+            assert!(
+                error.to_string().contains("VapourSynth is not available"),
+                "{error}"
+            );
+        }
+    }
 }

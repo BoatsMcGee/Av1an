@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::SystemTime};
+use std::{collections::BTreeMap, path::PathBuf, time::SystemTime};
 
 use anyhow::{Result, bail};
 use av_scenechange::ScenecutResult;
@@ -16,16 +16,19 @@ pub struct SceneDetectorData
 where
     Self: Default,
 {
-    pub scenecut_scores: Option<BTreeMap<usize, ScenecutScore>>,
-    pub created_on:      SystemTime,
+    pub scenecut_scores:   Option<BTreeMap<usize, ScenecutScore>>,
+    /// Per-frame TransNetV2 transition probabilities, absolute frame index.
+    pub transnetv2_scores: Option<BTreeMap<usize, f32>>,
+    pub created_on:        SystemTime,
 }
 
 impl Default for SceneDetectorData {
     #[inline]
     fn default() -> Self {
         Self {
-            scenecut_scores: None,
-            created_on:      SystemTime::now(),
+            scenecut_scores:   None,
+            transnetv2_scores: None,
+            created_on:        SystemTime::now(),
         }
     }
 }
@@ -47,7 +50,8 @@ where
 impl SequenceConfigHandler for SceneDetectorConfig {
 }
 
-#[derive(Copy, Clone, Debug, Serialize, Deserialize, JsonSchema)]
+// Not `Copy`: the TransNetV2 variant carries a `PathBuf` model override.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub enum SceneDetectionMethod {
     None {
         minimum_length: usize,
@@ -57,6 +61,19 @@ pub enum SceneDetectionMethod {
         minimum_length: usize,
         maximum_length: usize,
         method:         ScenecutMethod,
+        /// Keep the per-frame scenecut scores in `SceneDetectorData`. Off by
+        /// default: the scores flood the JSON config and nothing reads them.
+        save_scores:    bool,
+    },
+    /// TransNetV2 neural network via ONNX Runtime. `model_path` pins the
+    /// model file; when unset it is resolved from the standard locations.
+    TransNetV2 {
+        minimum_length: usize,
+        maximum_length: usize,
+        model_path:     Option<PathBuf>,
+        /// Keep the per-frame transition probabilities in `SceneDetectorData`.
+        /// Off by default: they flood the JSON config and nothing reads them.
+        save_scores:    bool,
     },
 }
 
@@ -68,6 +85,7 @@ impl Default for SceneDetectionMethod {
             maximum_length: (DEFAULT_MIN_SCENE_LENGTH_FRAMES as usize
                 * DEFAULT_MAX_SCENE_LENGTH_SECONDS as usize),
             method:         ScenecutMethod::Standard,
+            save_scores:    false,
         }
     }
 }
@@ -80,6 +98,13 @@ impl SceneDetectionMethod {
                 minimum_length,
                 maximum_length: _,
                 method: _,
+                save_scores: _,
+            }
+            | SceneDetectionMethod::TransNetV2 {
+                minimum_length,
+                maximum_length: _,
+                model_path: _,
+                save_scores: _,
             }
             | SceneDetectionMethod::None {
                 minimum_length,
@@ -95,6 +120,13 @@ impl SceneDetectionMethod {
                 minimum_length,
                 maximum_length: _,
                 method: _,
+                save_scores: _,
+            }
+            | SceneDetectionMethod::TransNetV2 {
+                minimum_length,
+                maximum_length: _,
+                model_path: _,
+                save_scores: _,
             }
             | SceneDetectionMethod::None {
                 minimum_length,
@@ -113,6 +145,13 @@ impl SceneDetectionMethod {
                 minimum_length: _,
                 maximum_length,
                 method: _,
+                save_scores: _,
+            }
+            | SceneDetectionMethod::TransNetV2 {
+                minimum_length: _,
+                maximum_length,
+                model_path: _,
+                save_scores: _,
             }
             | SceneDetectionMethod::None {
                 minimum_length: _,
@@ -128,6 +167,13 @@ impl SceneDetectionMethod {
                 minimum_length: _,
                 maximum_length,
                 method: _,
+                save_scores: _,
+            }
+            | SceneDetectionMethod::TransNetV2 {
+                minimum_length: _,
+                maximum_length,
+                model_path: _,
+                save_scores: _,
             }
             | SceneDetectionMethod::None {
                 minimum_length: _,
@@ -146,6 +192,7 @@ impl SceneDetectionMethod {
                 minimum_length: _,
                 maximum_length: _,
                 method,
+                save_scores: _,
             } => Ok(*method),
             _ => {
                 bail!("Cannot get method for None method");
@@ -160,6 +207,7 @@ impl SceneDetectionMethod {
                 minimum_length: _,
                 maximum_length: _,
                 method,
+                save_scores: _,
             } => {
                 *method = scenecut_method;
                 Ok(())

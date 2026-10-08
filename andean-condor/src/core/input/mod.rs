@@ -1,8 +1,9 @@
 //! A decoded video input, and the backends that can produce it.
 //!
 //! An [`Input`] is decoded natively through FFMS2 or read through VapourSynth.
-//! Each has its own filter vocabulary and frame-access strategy, so the work
-//! lives in the [`ffms2`] and [`vapoursynth`] submodules.
+//! Each has its own filter vocabulary, so building inputs lives in the
+//! [`ffms2`] and [`vapoursynth`] submodules, while reading frames back — as
+//! y4m or as the raw planes of a [`FrameFeed`] — lives here.
 
 use std::{collections::HashMap, io::Cursor, path::PathBuf};
 
@@ -25,7 +26,10 @@ use crate::{
 };
 
 mod ffms2;
+mod frame_feed;
 mod vapoursynth;
+
+pub use self::frame_feed::{FrameFeed, RawFrame, RawPlane};
 
 pub mod clip_info;
 pub mod color_range;
@@ -187,6 +191,16 @@ impl Input {
         }
     }
 
+    /// A sequential feed of the raw frames in `[first, end)`, addressed by
+    /// absolute index through whichever backend decodes this input. Frames
+    /// borrow the feed, so only one decode is resident at a time and no plane
+    /// is copied into an av-decoders
+    /// [`Frame`](av_decoders::v_frame::frame::Frame) first.
+    #[inline]
+    pub fn frame_feed(&mut self, first: usize, end: usize) -> Result<FrameFeed<'_>> {
+        FrameFeed::new(self, first, end)
+    }
+
     /// Describes the clip, caching the result on the input.
     #[inline]
     pub fn clip_info(&mut self) -> Result<ClipInfo> {
@@ -258,7 +272,8 @@ impl Input {
         ))
     }
 
-    /// Writes frame `index` as a complete y4m frame.
+    /// Writes frame `index` as a complete y4m frame. Native input packs
+    /// FFMS2's planes directly, without building an av-decoders `Frame`.
     #[inline]
     pub fn y4m_frame(&mut self, index: usize) -> Result<Cursor<Vec<u8>>> {
         let mut stream = Cursor::new(Vec::new());
@@ -282,33 +297,22 @@ impl Input {
 
     /// Sends `frame_indices` as y4m frames through `frame_sender`, in order.
     /// Each frame is sent before the next is decoded, so a bounded
-    /// `frame_sender` bounds resident memory.
+    /// `frame_sender` bounds resident memory. Native input packs FFMS2's own
+    /// planes, without building an av-decoders `Frame` per frame.
     #[inline]
     pub fn y4m_frames(
         &mut self,
         frame_sender: crossbeam_channel::Sender<Cursor<Vec<u8>>>,
         frame_indices: &[usize],
     ) -> Result<()> {
-        let bit_depth = self.clip_info()?.format_info.as_bit_depth()?;
         match self {
             Input::Video {
                 decoder, ..
             } => {
-                fn emit(
-                    sender: &crossbeam_channel::Sender<Cursor<Vec<u8>>>,
-                    frame: Vec<u8>,
-                ) -> Result<()> {
-                    sender.send(Cursor::new(frame))?;
+                let result = ffms2::y4m_frames(decoder, frame_indices, |frame| {
+                    frame_sender.send(Cursor::new(frame))?;
                     Ok(())
-                }
-                let result = match bit_depth {
-                    8 => ffms2::y4m_frames::<u8>(decoder, frame_indices, |frame| {
-                        emit(&frame_sender, frame)
-                    }),
-                    _ => ffms2::y4m_frames::<u16>(decoder, frame_indices, |frame| {
-                        emit(&frame_sender, frame)
-                    }),
-                };
+                });
                 drop(frame_sender);
                 result?;
             },
@@ -318,7 +322,7 @@ impl Input {
             | Input::VapourSynthScript {
                 decoder, ..
             } => {
-                let window = std::thread::available_parallelism().map_or(24, |n| n.get());
+                let window = frame_feed::request_window();
                 vapoursynth::y4m_frames(
                     &vapoursynth::output_node(decoder)?,
                     &frame_sender,

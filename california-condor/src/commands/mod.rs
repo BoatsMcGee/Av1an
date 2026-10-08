@@ -342,6 +342,10 @@ pub enum SceneDetectionMethod {
     #[strum(serialize = "standard")]
     #[value(name = "standard")]
     Standard,
+    /// Neural network scene detection, uses TransNetV2 via ONNX Runtime
+    #[strum(serialize = "transnetv2")]
+    #[value(name = "transnetv2")]
+    TransNetV2,
 }
 
 impl SceneDetectionMethod {
@@ -363,11 +367,19 @@ impl SceneDetectionMethod {
                 method:         ScenecutMethod::Fast,
                 minimum_length: min_length,
                 maximum_length: max_length,
+                save_scores:    false,
             },
             SceneDetectionMethod::Standard => CoreSCDMethod::AVSceneChange {
                 method:         ScenecutMethod::Standard,
                 minimum_length: min_length,
                 maximum_length: max_length,
+                save_scores:    false,
+            },
+            SceneDetectionMethod::TransNetV2 => CoreSCDMethod::TransNetV2 {
+                minimum_length: min_length,
+                maximum_length: max_length,
+                model_path:     None,
+                save_scores:    false,
             },
         }
     }
@@ -541,23 +553,22 @@ pub enum QualityMetric {
     VMAF,
     /// Structural SIMilarity Unveiling Local And Compression Related Artifacts
     ///
-    /// Requires VapourSynth plugin Vapoursynth-HIP for Hardware-accelerated
-    /// processing (recommended) or Vapoursynth-Zig Image Process for CPU
-    /// processing.
+    /// Runs through libvship (GPU) or libfmetrics (CPU), falling back to the
+    /// Vapoursynth-HIP / vszip plugin only when neither is available.
     #[strum(serialize = "ssimulacra2")]
     #[value(name = "ssimulacra2")]
     SSIMULACRA2,
     /// butteraugli Infinite-Norm
     ///
-    /// Requires VapourSynth plugin Vapoursynth-HIP for Hardware-accelerated
-    /// processing (recommended) or vapoursynth-julek-plugin for CPU processing.
+    /// Runs through libvship (GPU) or libfmetrics (CPU), falling back to the
+    /// Vapoursynth-HIP / julek plugin only when neither is available.
     #[strum(serialize = "butteraugli")]
     #[value(name = "butteraugli")]
     BUTTERAUGLI,
     /// butteraugli 3-Norm
     ///
-    /// Requires VapourSynth plugin Vapoursynth-HIP for Hardware-accelerated
-    /// processing (recommended) or vapoursynth-julek-plugin for CPU processing.
+    /// Runs through libvship (GPU) or libfmetrics (CPU), falling back to the
+    /// Vapoursynth-HIP / julek plugin only when neither is available.
     #[strum(serialize = "butteraugli-3")]
     #[value(name = "butteraugli-3")]
     BUTTERAUGLI3Norm,
@@ -565,15 +576,15 @@ pub enum QualityMetric {
     ///
     /// Uses the minimum of the `Y`, `U`, and `V` scores.
     ///
-    /// Requires VapourSynth plugin Vapoursynth-Zig Image Process for CPU
-    /// processing.
+    /// Requires the Vapoursynth-Zig Image Process plugin; no native
+    /// implementation.
     #[strum(serialize = "xpsnr")]
     #[value(name = "xpsnr")]
     XPSNR,
     /// ColorVideoVDP
     ///
-    /// Requires VapourSynth plugin Vapoursynth-HIP for Hardware-accelerated
-    /// processing.
+    /// Runs on the GPU through libvship, falling back to the Vapoursynth-HIP
+    /// plugin only when libvship is unavailable.
     #[strum(serialize = "cvvdp")]
     CVVDP,
 }

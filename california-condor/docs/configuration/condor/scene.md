@@ -16,7 +16,7 @@ Array of scene objects. `[]` on `init`.
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
-| `scene_detection` | Object | Yes | `{ "scenecut_scores": { "<frame>": {...} } or null, "created_on": <SystemTime> }` |
+| `scene_detection` | Object | Yes | `{ "scenecut_scores": { "<frame>": {...} } or null, "transnetv2_scores": { "<frame>": <f32> } or null, "created_on": <SystemTime> }` |
 | `noise_detection` | Object or null | Yes | `{ "noise": <f64>, "luminance": <f64>, "created_on": <SystemTime> }` |
 | `noise_scaling` | Object or null | Yes | `{ "scaler": <f64> }` |
 | `parallel_encoder` | Object | Yes | `{ "started_on": <u128 ms epoch> or null, "completed_on": <u128 ms epoch> or null, "bytes": <u64> or null }` |
@@ -43,7 +43,7 @@ Example (two scenes, fresh detection):
             }
         },
         "sequence_data": {
-            "scene_detection": { "scenecut_scores": null, "created_on": { "secs_since_epoch": 0, "nanos_since_epoch": 0 } },
+            "scene_detection": { "scenecut_scores": null, "transnetv2_scores": null, "created_on": { "secs_since_epoch": 0, "nanos_since_epoch": 0 } },
             "noise_detection": null,
             "noise_scaling": null,
             "parallel_encoder": { "started_on": null, "completed_on": null, "bytes": null },
@@ -67,7 +67,7 @@ Example (two scenes, fresh detection):
             }
         },
         "sequence_data": {
-            "scene_detection": { "scenecut_scores": null, "created_on": { "secs_since_epoch": 0, "nanos_since_epoch": 0 } },
+            "scene_detection": { "scenecut_scores": null, "transnetv2_scores": null, "created_on": { "secs_since_epoch": 0, "nanos_since_epoch": 0 } },
             "noise_detection": null,
             "noise_scaling": null,
             "parallel_encoder": { "started_on": null, "completed_on": null, "bytes": null },

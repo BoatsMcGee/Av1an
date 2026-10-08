@@ -186,6 +186,7 @@ fn main() -> Result<()> {
         minimum_length,
         maximum_length,
         method: ScenecutMethod::Standard,
+        save_scores: false,
     };
 
     // Target Quality probe encoder params: x264 defaults with --preset fast.
@@ -197,7 +198,7 @@ fn main() -> Result<()> {
 
     let sequence_config = ExampleSequenceConfig {
         scene_detector:     SceneDetectorConfig {
-            method: scene_detection_method,
+            method: scene_detection_method.clone(),
             input:  Some(scd_input_model),
         },
         benchmarker:        BenchmarkerConfig::default(),

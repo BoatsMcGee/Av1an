@@ -23,6 +23,11 @@
 
     FFMS2 is linked into the executable, so decoding never loads an ffms2.dll.
 
+    The TransNetV2 scene detection model is fetched into `model/` beside the
+    executable the same way the VMAF model JSONs are: the scene detector
+    searches `model/transnetv2.onnx` relative to itself and never downloads
+    anything at runtime.
+
 .PARAMETER StageDir
     Directory the release is assembled in. Defaults to `target\release`.
 
@@ -35,6 +40,9 @@
 .PARAMETER SkipFmetrics
     Skip building fmetrics. The stage then has no CPU fallback, and only the
     VapourSynth plugin path can score SSIMULACRA2, Butteraugli and CVVDP.
+
+.PARAMETER SkipTransNetV2
+    Skip fetching the TransNetV2 scene detection model.
 #>
 [CmdletBinding()]
 param(
@@ -48,7 +56,10 @@ param(
     [switch] $SkipModels,
 
     [Parameter()]
-    [switch] $SkipFmetrics
+    [switch] $SkipFmetrics,
+
+    [Parameter()]
+    [switch] $SkipTransNetV2
 )
 
 Set-StrictMode -Version Latest
@@ -81,6 +92,8 @@ function Get-Pin([string] $Name) {
 $UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
 
 # Pinned so every run stages the same bytes.
+$TransNetV2ModelUrl = Get-Pin 'TRANSNETV2_MODEL_URL'
+$TransNetV2ModelSha256 = Get-Pin 'TRANSNETV2_MODEL_SHA256'
 $VmafVersion = Get-Pin 'VMAF_VERSION'
 $Msys2Packages = @(
     "mingw-w64-x86_64-vmaf-$VmafVersion-1-any.pkg.tar.zst",
@@ -220,6 +233,27 @@ if (-not $SkipModels) {
     }
 }
 
+if (-not $SkipTransNetV2) {
+    Write-Step 'Fetching the TransNetV2 scene detection model'
+
+    $modelDir = Join-Path $StageDir 'model'
+    New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
+
+    # Downloaded to a .part file and verified before it is moved into place, so
+    # an interrupted fetch can never pass for the real model.
+    $model = Join-Path $modelDir 'transnetv2.onnx'
+    $partial = "$model.part"
+    Invoke-Download -Uri $TransNetV2ModelUrl -OutFile $partial
+
+    if ((Get-FileHash -Algorithm SHA256 $partial).Hash.ToLowerInvariant() -ne $TransNetV2ModelSha256) {
+        Remove-Item $partial -ErrorAction SilentlyContinue
+        throw "The downloaded TransNetV2 model does not match the pinned SHA-256 ($TransNetV2ModelSha256)."
+    }
+
+    Move-Item -Force $partial $model
+    Write-Host ("    transnetv2.onnx  {0:N0} bytes, sha256 verified" -f (Get-Item $model).Length)
+}
+
 if (-not $SkipFmetrics) {
     # The crate's own install script does the work, so there is one implementation
     # of the build rather than two that can drift apart.
@@ -248,6 +282,9 @@ if (-not $SkipVmaf) {
 }
 if (-not $SkipFmetrics) {
     $required += 'fmetrics.dll'
+}
+if (-not $SkipTransNetV2) {
+    $required += 'model/transnetv2.onnx'
 }
 
 Assert-Staged -Names $required -Directory $StageDir
