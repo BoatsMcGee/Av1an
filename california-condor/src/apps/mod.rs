@@ -26,6 +26,7 @@ use ratatui::{
 use tracing::debug;
 
 pub mod benchmarker;
+pub mod initializing;
 pub mod noise_detection;
 pub mod parallel_encoder;
 pub mod quality_check;
@@ -279,6 +280,12 @@ pub trait TuiApp: Send + Sync + 'static {
         progress_rx: Receiver<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<()> {
+        // Install the render theme for the whole run. Reading an env var keeps
+        // the plumbing out of every `new()`; the default (dark) is the
+        // historical look. Headless runs never render, so this is a no-op there.
+        let _theme_guard = crate::theme::Theme::set_mode(crate::theme::ThemeMode::parse(
+            std::env::var("CONDOR_THEME").ok().as_deref(),
+        ));
         let (event_tx, event_rx) = mpsc::channel();
 
         let shared_progress = self.shared_progress().clone();

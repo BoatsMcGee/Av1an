@@ -58,3 +58,27 @@ VapourSynth filters to apply to the Denoised VideoNode. See [Filters](../types/f
 ### Default
 
 If not specified, `wnnm:sigma=6.0,0.0,0.0;` is used.
+
+## Screenshots
+
+The screenshots below are generated from the live interface. Click any image to open it full size.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/noise-detection-light.avif"><picture><source srcset="../media/tui/noise-detection-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/noise-detection-light.avif" alt="Detecting noise" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Detecting noise</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-detect-noise-light.avif"><picture><source srcset="../media/tui/help-detect-noise-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-detect-noise-light.avif" alt="condor detect-noise --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor detect-noise --help</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-detect-noise-verbose-light.avif"><picture><source srcset="../media/tui/help-detect-noise-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-detect-noise-verbose-light.avif" alt="condor detect-noise --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor detect-noise --help --verbose</p>
+    </td>
+    <td width="50%" valign="top"></td>
+  </tr>
+</table>

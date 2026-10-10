@@ -167,3 +167,9 @@ logs/
 
 # Project-local cargo config
 */.cargo/
+
+# mdBook build output
+/site/book/
+
+# Generated TUI documentation screenshots (produced in CI before mdbook build)
+/california-condor/docs/media/

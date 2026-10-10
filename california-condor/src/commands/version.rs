@@ -20,6 +20,7 @@ use andean_condor::{
 };
 use anyhow::Result;
 use ironmark::{ParseOptions, render_ansi_terminal};
+use std::fmt::Write as _;
 
 /// The coloured installed/absent marker used by every section.
 ///
@@ -42,8 +43,20 @@ fn render(markdown: &str) -> String {
         .to_owned()
 }
 
+/// Prints the `--version` report to stdout.
 #[tracing::instrument(skip_all)]
 pub fn print_version(verbose: bool) -> Result<()> {
+    print!("{}", render_version(verbose)?);
+    Ok(())
+}
+
+/// Builds the `--version` report as a string.
+///
+/// [`print_version`] prints this verbatim; the screenshot harness captures the
+/// same string, so the documentation image cannot drift from the real output.
+#[tracing::instrument(skip_all)]
+pub fn render_version(verbose: bool) -> Result<String> {
+    let mut out = String::new();
     let version_info = match (
         option_env!("VERGEN_GIT_SHA"),
         option_env!("VERGEN_CARGO_DEBUG"),
@@ -87,7 +100,7 @@ Commit Date:  {}",
         _ => env!("CARGO_PKG_VERSION").to_owned(),
     };
 
-    println!("{}", version_info);
+    let _ = writeln!(out, "{version_info}");
 
     // VapourSynth is optional: Environment::new() panics when the library
     // is missing, so check the API first.
@@ -166,9 +179,9 @@ Commit Date:  {}",
         .unwrap_or(0)
         + 1;
 
-    println!("\nVapourSynth Plugins Installed\n{}", "-".repeat(max_width));
+    let _ = writeln!(out, "\nVapourSynth Plugins Installed\n{}", "-".repeat(max_width));
     for plugin_info in plugin_infos {
-        println!(
+        let _ = writeln!(out,
             "{} {}",
             marker(plugin_info.installed),
             render(&if verbose && let Some(docs) = plugin_info.docs {
@@ -179,10 +192,10 @@ Commit Date:  {}",
         );
     }
 
-    println!("\nEncoders Installed\n{}", "-".repeat(max_width));
+    let _ = writeln!(out, "\nEncoders Installed\n{}", "-".repeat(max_width));
     for (base, encoder) in encoders {
         let installed = encoder.validate().is_ok();
-        println!(
+        let _ = writeln!(out,
             "{} {} ({}){}",
             marker(installed),
             render(&format!("**{}**", base.friendly_name())),
@@ -195,7 +208,7 @@ Commit Date:  {}",
         );
     }
 
-    println!("\nQuality Metric Libraries\n{}", "-".repeat(max_width));
+    let _ = writeln!(out, "\nQuality Metric Libraries\n{}", "-".repeat(max_width));
     for info in library_infos {
         // The details are diagnostics rather than state, so an absent library
         // still renders: it just has no version or detail suffix to show.
@@ -216,7 +229,8 @@ Commit Date:  {}",
             String::new()
         };
 
-        println!(
+        let _ = writeln!(
+            out,
             "{} {}{suffix}",
             marker(info.available),
             render(&format!("**{}**", info.name))
@@ -226,18 +240,18 @@ Commit Date:  {}",
         // a one-GPU machine gains nothing from a table with one row, and the
         // default is already named on the line above.
         if verbose && !info.devices.is_empty() {
-            print_devices(&info);
+            write_devices(&mut out, &info);
         }
     }
 
-    Ok(())
+    Ok(out)
 }
 
 /// Render one library's compute devices, marking the default.
 ///
 /// The `gpuId` column leads because it is the actionable value: it is what a
 /// user copies into a configuration to override the default selection.
-fn print_devices(info: &MetricLibraryInfo) {
+fn write_devices(out: &mut String, info: &MetricLibraryInfo) {
     let rows: Vec<String> = info
         .devices
         .iter()
@@ -258,10 +272,10 @@ fn print_devices(info: &MetricLibraryInfo) {
 
     let width = rows.iter().map(String::len).max().unwrap_or(0) + 1;
 
-    println!("  Compute Devices");
-    println!("  {}", "-".repeat(width));
+    let _ = writeln!(out, "  Compute Devices");
+    let _ = writeln!(out, "  {}", "-".repeat(width));
     for row in &rows {
-        println!("  {}", render(row));
+        let _ = writeln!(out, "  {}", render(row));
     }
 }
 

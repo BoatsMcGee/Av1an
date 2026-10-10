@@ -110,3 +110,30 @@ The preset profile to choose the Target Quality Probe Strategy and Statistic. Se
 ### Default
 
 If not specified, `standard` is used.
+
+## Screenshots
+
+The screenshots below are generated from the live interface. Click any image to open it full size.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/target-quality-encoding-light.avif"><picture><source srcset="../media/tui/target-quality-encoding-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/target-quality-encoding-light.avif" alt="Target Quality — encoding" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Target Quality — encoding</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/target-quality-comparing-light.avif"><picture><source srcset="../media/tui/target-quality-comparing-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/target-quality-comparing-light.avif" alt="Target Quality — comparing" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Target Quality — comparing</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-target-quality-light.avif"><picture><source srcset="../media/tui/help-target-quality-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-target-quality-light.avif" alt="condor target-quality --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor target-quality --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-target-quality-verbose-light.avif"><picture><source srcset="../media/tui/help-target-quality-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-target-quality-verbose-light.avif" alt="condor target-quality --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor target-quality --help --verbose</p>
+    </td>
+  </tr>
+</table>

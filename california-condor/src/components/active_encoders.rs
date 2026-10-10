@@ -19,9 +19,12 @@ use crate::{
 /// Takes a reference to the full `SceneEncoder` map (no clone on render) so
 /// that each worker's area can display both the per-scene encoder parameters
 /// (top half) and a full progress bar with FPS/elapsed/remaining (bottom half).
+///
+/// The panels divide the available space between the *active* encoders, not
+/// the configured worker count: with 16 workers but four scenes left, four
+/// full-width panels read better than four cramped ones above twelve blanks.
 pub struct ActiveEncoders<'a> {
     pub color:          Color,
-    pub workers:        u8,
     pub parent_encoder: Encoder,
     pub active_scenes:  &'a BTreeMap<u64, SceneEncoder>,
 }
@@ -34,7 +37,7 @@ impl Widget for ActiveEncoders<'_> {
         let worker_areas = Layout::default()
             .constraints(std::iter::repeat_n(
                 Constraint::Fill(1),
-                self.workers as usize,
+                self.active_scenes.len().max(1),
             ))
             .split(area);
         for (worker_area, (scene_index, scene_encoder)) in
@@ -87,13 +90,11 @@ impl<'a> ActiveEncoders<'a> {
     #[inline]
     pub fn new(
         color: Color,
-        workers: u8,
         parent_encoder: Encoder,
         active_scenes: &'a BTreeMap<u64, SceneEncoder>,
     ) -> Self {
         Self {
             color,
-            workers,
             parent_encoder,
             active_scenes,
         }

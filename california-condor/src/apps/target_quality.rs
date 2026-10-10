@@ -246,7 +246,8 @@ impl TuiApp for TargetQualityApp {
     }
 
     fn render(&self, frame: &mut Frame) {
-        const MAIN_COLOR: Color = Color::DarkGray;
+        let theme = crate::theme::Theme::current();
+        let main: Color = theme.main;
         let layout = Layout::default()
             .constraints([
                 Constraint::Percentage(20),
@@ -287,12 +288,12 @@ impl TuiApp for TargetQualityApp {
         let datasets = vec![
             Dataset::default()
                 .name("Quantizer")
-                .style(Color::Blue)
+                .style(theme.accent_blue)
                 .graph_type(ratatui::widgets::GraphType::Scatter)
                 .data(&quantizers),
             Dataset::default()
                 .name("Score")
-                .style(Color::Green)
+                .style(theme.accent_green)
                 .graph_type(ratatui::widgets::GraphType::Scatter)
                 .data(&scores),
         ];
@@ -322,7 +323,7 @@ impl TuiApp for TargetQualityApp {
         frame.render_widget(chart, layout[1]);
 
         let progress_bar = ProgressBar {
-            color:               MAIN_COLOR,
+            color:               main,
             processing_title:    if self.attempted_cancel {
                 "Shutting down...".to_owned()
             } else if state.frames_encoded < state.total_frames {
@@ -423,10 +424,10 @@ pub enum TargetQualityConsoleEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityPass {
-    scene:        u64,
-    current_pass: u8,
-    total_passes: u8,
-    quantizer:    f64,
-    score:        f64,
-    bitrate:      f64,
+    pub(crate) scene:        u64,
+    pub(crate) current_pass: u8,
+    pub(crate) total_passes: u8,
+    pub(crate) quantizer:    f64,
+    pub(crate) score:        f64,
+    pub(crate) bitrate:      f64,
 }

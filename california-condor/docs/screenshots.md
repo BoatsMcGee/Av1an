@@ -1,0 +1,215 @@
+# Screenshots
+
+Every image on this page is **generated from the live interface** by an
+integration test (`cargo test --features screenshots`) and the
+`gen_screenshots` binary, then encoded as 1920x1080 AVIF. Because they are
+rendered through the exact code the terminal uses, they can never fall out of
+date: any change to a screen is reflected the next time they are generated.
+
+The light and dark variants are chosen automatically by your system preference
+via a `prefers-color-scheme` media query. Click any image to open it full size.
+
+The most relevant screenshots are also embedded in each command's own page —
+follow the [Commands](commands/condor.md) section to see them in context.
+
+## Interface
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/initializing-input-light.avif"><picture><source srcset="media/tui/initializing-input-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/initializing-input-light.avif" alt="Initializing the input" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Initializing the input</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/scene-detection-light.avif"><picture><source srcset="media/tui/scene-detection-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/scene-detection-light.avif" alt="Detecting scenes" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Detecting scenes</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/noise-detection-light.avif"><picture><source srcset="media/tui/noise-detection-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/noise-detection-light.avif" alt="Detecting noise" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Detecting noise</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/benchmarker-light.avif"><picture><source srcset="media/tui/benchmarker-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/benchmarker-light.avif" alt="Benchmarking workers" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Benchmarking workers</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/target-quality-encoding-light.avif"><picture><source srcset="media/tui/target-quality-encoding-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/target-quality-encoding-light.avif" alt="Target Quality — encoding" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Target Quality — encoding</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/target-quality-comparing-light.avif"><picture><source srcset="media/tui/target-quality-comparing-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/target-quality-comparing-light.avif" alt="Target Quality — comparing" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Target Quality — comparing</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/parallel-encoder-light.avif"><picture><source srcset="media/tui/parallel-encoder-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/parallel-encoder-light.avif" alt="Parallel encoder" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Parallel encoder</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/scene-concatenator-light.avif"><picture><source srcset="media/tui/scene-concatenator-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/scene-concatenator-light.avif" alt="Scene concatenator" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Scene concatenator</p>
+    </td>
+  </tr>
+</table>
+
+## Command Help
+
+`condor --help` and the per-command help, in both the short and verbose
+(`--help --verbose`) forms.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-light.avif"><picture><source srcset="media/tui/help-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-light.avif" alt="condor --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-verbose-light.avif"><picture><source srcset="media/tui/help-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-verbose-light.avif" alt="condor --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-init-light.avif"><picture><source srcset="media/tui/help-init-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-init-light.avif" alt="condor init --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor init --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-init-verbose-light.avif"><picture><source srcset="media/tui/help-init-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-init-verbose-light.avif" alt="condor init --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor init --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-detect-scenes-light.avif"><picture><source srcset="media/tui/help-detect-scenes-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-detect-scenes-light.avif" alt="condor detect-scenes --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor detect-scenes --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-detect-scenes-verbose-light.avif"><picture><source srcset="media/tui/help-detect-scenes-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-detect-scenes-verbose-light.avif" alt="condor detect-scenes --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor detect-scenes --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-detect-noise-light.avif"><picture><source srcset="media/tui/help-detect-noise-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-detect-noise-light.avif" alt="condor detect-noise --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor detect-noise --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-detect-noise-verbose-light.avif"><picture><source srcset="media/tui/help-detect-noise-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-detect-noise-verbose-light.avif" alt="condor detect-noise --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor detect-noise --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-scale-noise-light.avif"><picture><source srcset="media/tui/help-scale-noise-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-scale-noise-light.avif" alt="condor scale-noise --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor scale-noise --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-scale-noise-verbose-light.avif"><picture><source srcset="media/tui/help-scale-noise-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-scale-noise-verbose-light.avif" alt="condor scale-noise --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor scale-noise --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-benchmark-light.avif"><picture><source srcset="media/tui/help-benchmark-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-benchmark-light.avif" alt="condor benchmark --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor benchmark --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-benchmark-verbose-light.avif"><picture><source srcset="media/tui/help-benchmark-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-benchmark-verbose-light.avif" alt="condor benchmark --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor benchmark --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-target-quality-light.avif"><picture><source srcset="media/tui/help-target-quality-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-target-quality-light.avif" alt="condor target-quality --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor target-quality --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-target-quality-verbose-light.avif"><picture><source srcset="media/tui/help-target-quality-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-target-quality-verbose-light.avif" alt="condor target-quality --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor target-quality --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-optimize-bitrate-light.avif"><picture><source srcset="media/tui/help-optimize-bitrate-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-optimize-bitrate-light.avif" alt="condor optimize-bitrate --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor optimize-bitrate --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-optimize-bitrate-verbose-light.avif"><picture><source srcset="media/tui/help-optimize-bitrate-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-optimize-bitrate-verbose-light.avif" alt="condor optimize-bitrate --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor optimize-bitrate --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-scale-speed-light.avif"><picture><source srcset="media/tui/help-scale-speed-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-scale-speed-light.avif" alt="condor scale-speed --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor scale-speed --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-scale-speed-verbose-light.avif"><picture><source srcset="media/tui/help-scale-speed-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-scale-speed-verbose-light.avif" alt="condor scale-speed --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor scale-speed --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-encode-light.avif"><picture><source srcset="media/tui/help-encode-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-encode-light.avif" alt="condor encode --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor encode --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-encode-verbose-light.avif"><picture><source srcset="media/tui/help-encode-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-encode-verbose-light.avif" alt="condor encode --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor encode --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-concatenate-light.avif"><picture><source srcset="media/tui/help-concatenate-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-concatenate-light.avif" alt="condor concatenate --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor concatenate --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-concatenate-verbose-light.avif"><picture><source srcset="media/tui/help-concatenate-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-concatenate-verbose-light.avif" alt="condor concatenate --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor concatenate --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-quality-check-light.avif"><picture><source srcset="media/tui/help-quality-check-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-quality-check-light.avif" alt="condor quality-check --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor quality-check --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-quality-check-verbose-light.avif"><picture><source srcset="media/tui/help-quality-check-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-quality-check-verbose-light.avif" alt="condor quality-check --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor quality-check --help --verbose</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-clean-light.avif"><picture><source srcset="media/tui/help-clean-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-clean-light.avif" alt="condor clean --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor clean --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/help-clean-verbose-light.avif"><picture><source srcset="media/tui/help-clean-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/help-clean-verbose-light.avif" alt="condor clean --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor clean --help --verbose</p>
+    </td>
+  </tr>
+</table>
+
+## Version
+
+The environment report printed by `condor --version`: which VapourSynth
+plugins, encoders and quality metric libraries are installed. The verbose form
+adds versions and compute-device details.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="media/tui/version-light.avif"><picture><source srcset="media/tui/version-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/version-light.avif" alt="condor --version" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor --version</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="media/tui/version-verbose-light.avif"><picture><source srcset="media/tui/version-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="media/tui/version-verbose-light.avif" alt="condor --version --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor --version --verbose</p>
+    </td>
+  </tr>
+</table>

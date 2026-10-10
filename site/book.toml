@@ -2,5 +2,15 @@
 authors = ["Av1an Contributors"]
 language = "en"
 multilingual = false
-src = "src"
+src = "../california-condor/docs"
 title = "Av1an Documentation"
+
+[output.html]
+git-repository-url = "https://github.com/rust-av/Av1an"
+edit-url-template = "https://github.com/rust-av/Av1an/edit/master/california-condor/docs/{path}"
+site-url = "/Av1an/"
+no-section-label = true
+
+[output.html.fold]
+enable = true
+level = 0

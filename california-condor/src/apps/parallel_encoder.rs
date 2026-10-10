@@ -190,7 +190,8 @@ impl TuiApp for ParallelEncoderApp {
     }
 
     fn render(&self, frame: &mut Frame) {
-        const MAIN_COLOR: Color = Color::DarkGray;
+        let theme = crate::theme::Theme::current();
+        let main: Color = theme.main;
         let layout = Layout::default()
             .constraints([
                 Constraint::Percentage(20),
@@ -218,8 +219,7 @@ impl TuiApp for ParallelEncoderApp {
         frame.render_widget(encoder_info, top_info_areas[1]);
 
         let active_encoders = ActiveEncoders::new(
-            MAIN_COLOR,
-            self.workers,
+            main,
             self.encoder.clone(),
             &self.cached_state.active_encoders,
         );
@@ -227,7 +227,7 @@ impl TuiApp for ParallelEncoderApp {
 
         let scenes_completed = self.cached_state.completed_scenes_count;
         let progress_bar = ProgressBar {
-            color:               MAIN_COLOR,
+            color:               main,
             processing_title:    if self.attempted_cancel {
                 "Shutting down after Encoders complete...".to_owned()
             } else {

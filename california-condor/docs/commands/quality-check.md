@@ -70,3 +70,20 @@ The preset profile to choose the Quality Check Strategy and Statistic. See [Qual
 ### Default
 
 If not specified, `standard` is used.
+
+## Screenshots
+
+The screenshots below are generated from the live interface. Click any image to open it full size.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-quality-check-light.avif"><picture><source srcset="../media/tui/help-quality-check-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-quality-check-light.avif" alt="condor quality-check --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor quality-check --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-quality-check-verbose-light.avif"><picture><source srcset="../media/tui/help-quality-check-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-quality-check-verbose-light.avif" alt="condor quality-check --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor quality-check --help --verbose</p>
+    </td>
+  </tr>
+</table>

@@ -104,3 +104,27 @@ Generate and apply a photon noise table using Film Grain Synthesis with the spec
 ## Chroma Noise `--chroma-noise`
 
 Apply chroma noise of the specified ISO strength to the photon noise table using Film Grain Synthesis. Only compatible with `aom`, `svt-av1`, `rav1e`, and `avm`. See [Photon Noise](../types/photon-noise.md).
+
+## Screenshots
+
+The screenshots below are generated from the live interface. Click any image to open it full size.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/parallel-encoder-light.avif"><picture><source srcset="../media/tui/parallel-encoder-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/parallel-encoder-light.avif" alt="Parallel encoder" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Parallel encoder</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-encode-light.avif"><picture><source srcset="../media/tui/help-encode-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-encode-light.avif" alt="condor encode --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor encode --help</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-encode-verbose-light.avif"><picture><source srcset="../media/tui/help-encode-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-encode-verbose-light.avif" alt="condor encode --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor encode --help --verbose</p>
+    </td>
+    <td width="50%" valign="top"></td>
+  </tr>
+</table>

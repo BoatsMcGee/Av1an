@@ -103,7 +103,8 @@ impl TuiApp for SceneDetectionApp {
     }
 
     fn render(&self, frame: &mut Frame) {
-        const MAIN_COLOR: Color = Color::DarkGray;
+        let theme = crate::theme::Theme::current();
+        let main: Color = theme.main;
         let layout = Layout::default()
             .constraints([
                 Constraint::Percentage(10),
@@ -121,7 +122,7 @@ impl TuiApp for SceneDetectionApp {
         frame.render_widget(input_info, layout[0]);
 
         let progress_bar = ProgressBar {
-            color:               MAIN_COLOR,
+            color:               main,
             processing_title:    if self.attempted_cancel {
                 "Shutting down Scene Detector...".to_owned()
             } else {

@@ -1,11 +1,8 @@
 use std::io::IsTerminal;
 
-use andean_condor::{
-    core::{
-        input::clip_info::ClipInfo,
-        sequence::{SequenceCompletion, SequenceStatus, Status},
-    },
-    models::sequence::scene_concatenator::ConcatMethod,
+use andean_condor::core::{
+    input::clip_info::ClipInfo,
+    sequence::{SequenceCompletion, SequenceStatus, Status},
 };
 use ratatui::{
     Frame,
@@ -21,24 +18,27 @@ use crate::{
     components::{input_info::InputInfo, progress_bar::ProgressBar},
 };
 
+/// Progress snapshot for the input-initialization (indexing) screen.
 #[derive(Clone)]
-pub struct SceneConcatenatorState {
+pub struct InitializingState {
     pub percent: f64,
 }
 
-pub struct SceneConcatenatorApp {
+/// The screen shown while the input is being indexed (clip info probed and
+/// frames counted) before any processing phase begins. Indexing can take a
+/// while on large or network inputs, so it gets its own progress screen rather
+/// than printing a bare log line.
+pub struct InitializingApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub started:                    std::time::Instant,
     pub clip_info:                  ClipInfo,
-    pub method:                     ConcatMethod,
-    pub scenes_len:                 usize,
     attempted_cancel:               bool,
-    shared_progress:                SharedProgress<SceneConcatenatorState>,
-    cached_state:                   SceneConcatenatorState,
+    shared_progress:                SharedProgress<InitializingState>,
+    cached_state:                   InitializingState,
 }
 
-impl TuiApp for SceneConcatenatorApp {
-    type State = SceneConcatenatorState;
+impl TuiApp for InitializingApp {
+    type State = InitializingState;
 
     fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
         &mut self.original_panic_hook
@@ -65,7 +65,7 @@ impl TuiApp for SceneConcatenatorApp {
     }
 
     fn cancel_message(&self) -> &'static str {
-        "Waiting for Concatenation to finish. Press Ctrl+C again to exit immediately."
+        "Waiting for Input to finish indexing. Press Ctrl+C again to exit immediately."
     }
 
     fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool {
@@ -76,9 +76,10 @@ impl TuiApp for SceneConcatenatorApp {
         {
             state.percent = percentage;
             if !std::io::stdout().is_terminal() {
-                let event = SceneConcatenatorConsoleEvent::Processed(percentage);
-                let event = serde_json::to_string(&event).unwrap();
-                println!("[Scene Concatenator][Progress]: {}", event);
+                println!(
+                    "[Initializing Input][Progress]: {}",
+                    serde_json::to_string(&InitializingConsoleEvent::Processed(percentage)).unwrap()
+                );
             }
             return true;
         }
@@ -100,24 +101,23 @@ impl TuiApp for SceneConcatenatorApp {
         let input_info = input_info.generate(false);
         let input_block = Block::bordered()
             .border_type(ratatui::widgets::BorderType::Rounded)
-            .title(Line::from("Input").centered())
-            .title_bottom(Line::from(self.method.to_string()).centered());
+            .title(Line::from("Input").centered());
         let input_info = input_info.block(input_block);
         frame.render_widget(input_info, layout[0]);
 
         let progress_bar = ProgressBar {
             color:               main,
             processing_title:    if self.attempted_cancel {
-                "Waiting for Concatenation to Finish...".to_owned()
+                "Waiting for Indexing to Finish...".to_owned()
             } else {
-                "Concatenating Scenes...".to_owned()
+                "Indexing Input...".to_owned()
             },
             completed_title:     if self.attempted_cancel {
-                "Concatenation Aborted".to_owned()
+                "Initialization Aborted".to_owned()
             } else {
-                "Concatenation Completed".to_owned()
+                "Input Initialized".to_owned()
             },
-            top_right_title:     format!("{} scenes", self.scenes_len),
+            top_right_title:     String::new(),
             bottom_center_title: String::new(),
             unit_per_second:     "%".to_owned(),
             unit:                "Percent".to_owned(),
@@ -131,29 +131,23 @@ impl TuiApp for SceneConcatenatorApp {
     }
 }
 
-impl SceneConcatenatorApp {
-    pub fn new(
-        clip_info: ClipInfo,
-        scenes_len: usize,
-        method: ConcatMethod,
-    ) -> SceneConcatenatorApp {
-        let state = SceneConcatenatorState {
-            percent: 0.0
+impl InitializingApp {
+    pub fn new(clip_info: ClipInfo) -> InitializingApp {
+        let state = InitializingState {
+            percent: 0.0,
         };
-        SceneConcatenatorApp {
+        InitializingApp {
             original_panic_hook: None,
-            started: std::time::Instant::now(),
+            started:             std::time::Instant::now(),
             clip_info,
-            method,
-            scenes_len,
-            attempted_cancel: false,
-            shared_progress: SharedProgress::new(state.clone()),
-            cached_state: state,
+            attempted_cancel:    false,
+            shared_progress:     SharedProgress::new(state.clone()),
+            cached_state:        state,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-enum SceneConcatenatorConsoleEvent {
+enum InitializingConsoleEvent {
     Processed(f64),
 }

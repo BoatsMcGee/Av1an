@@ -25,7 +25,7 @@ pub struct ProgressBar {
 impl Default for ProgressBar {
     fn default() -> Self {
         Self {
-            color:               Color::DarkGray,
+            color:               crate::theme::Theme::current().main,
             processing_title:    String::new(),
             completed_title:     String::new(),
             top_right_title:     String::new(),
@@ -69,13 +69,14 @@ impl ProgressBar {
             },
             |started| {
                 let elapsed = started.elapsed();
-                let ups = (self.completed - self.initial_completed) as f64 / elapsed.as_secs_f64();
-                let elapsed_per_unit = if (self.completed - self.initial_completed) == 0 {
+                let done = self.completed.saturating_sub(self.initial_completed);
+                let ups = done as f64 / elapsed.as_secs_f64();
+                let elapsed_per_unit = if done == 0 {
                     0.0
                 } else {
-                    elapsed.as_secs_f64() / (self.completed - self.initial_completed) as f64
+                    elapsed.as_secs_f64() / done as f64
                 };
-                let remaining_time = (self.total - self.completed) as f64 * elapsed_per_unit;
+                let remaining_time = self.total.saturating_sub(self.completed) as f64 * elapsed_per_unit;
                 let eta = elapsed.as_secs_f64() + remaining_time;
                 let elapsed_hms = seconds_to_hms(elapsed.as_secs(), false);
                 let remaining_hms = seconds_to_hms(remaining_time as u64, false);

@@ -191,7 +191,8 @@ impl TuiApp for QualityCheckApp {
     }
 
     fn render(&self, frame: &mut Frame) {
-        const MAIN_COLOR: Color = Color::DarkGray;
+        let theme = crate::theme::Theme::current();
+        let main: Color = theme.main;
         let layout = Layout::default()
             .constraints([
                 Constraint::Percentage(20),
@@ -221,7 +222,7 @@ impl TuiApp for QualityCheckApp {
         let datasets = vec![
             Dataset::default()
                 .name("Scene Score")
-                .style(Color::Blue)
+                .style(theme.accent_blue)
                 .graph_type(ratatui::widgets::GraphType::Scatter)
                 .data(&scene_scores),
         ];
@@ -250,7 +251,7 @@ impl TuiApp for QualityCheckApp {
         frame.render_widget(chart, layout[1]);
 
         let progress_bar = ProgressBar {
-            color:               MAIN_COLOR,
+            color:               main,
             processing_title:    if self.attempted_cancel {
                 "Shutting down...".to_owned()
             } else {

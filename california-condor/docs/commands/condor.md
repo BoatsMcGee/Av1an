@@ -189,3 +189,20 @@ The preset profile for Target Quality Probe Strategy and Statistic. Defaults to 
 ## Skip SCD `--skip-scd`
 
 Skip Scene Detection. Useful when encoding a subset of scenes.
+
+## Screenshots
+
+The screenshots below are generated from the live interface. Click any image to open it full size.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-light.avif"><picture><source srcset="../media/tui/help-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-light.avif" alt="condor --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-verbose-light.avif"><picture><source srcset="../media/tui/help-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-verbose-light.avif" alt="condor --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor --help --verbose</p>
+    </td>
+  </tr>
+</table>
