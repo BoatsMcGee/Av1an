@@ -14,7 +14,7 @@
 
 use std::{
     collections::VecDeque,
-    fmt::Write as _,
+    fmt::{self, Write as _},
     fs,
     io::{BufRead, BufReader, BufWriter, Cursor, Read, Write},
     path::{Path, PathBuf},
@@ -88,8 +88,12 @@ pub enum ZoneIneligible {
     #[error("scene {scene} already configures a zone or keyframe option")]
     ReservedOption { scene: usize },
     /// Scenes differ beyond their quantizer, or use different encoders.
-    #[error("scene {scene} differs from the first scene beyond the quantizer")]
-    DifferingEncoder { scene: usize },
+    #[error("scene {scene} differs from the first scene beyond the quantizer: {field}")]
+    DifferingEncoder {
+        scene: usize,
+        /// The first encoder field found to differ.
+        field: DifferingField,
+    },
     /// The scene's encoder has no quantizer to zone by.
     #[error("scene {scene} has no quantizer")]
     NoQuantizer { scene: usize },
@@ -99,6 +103,41 @@ pub enum ZoneIneligible {
     /// The encoder writes a container that cannot be split back into scenes.
     #[error("the encoder writes a container that cannot be split per scene")]
     UnsplittableContainer,
+}
+
+/// Which part of a scene encoder differs from the first scene's, quantizer
+/// aside.
+///
+/// Carried by [`ZoneIneligible::DifferingEncoder`] so the fallback log names
+/// the field to look at instead of reporting a generic mismatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DifferingField {
+    /// The encoder base (x264, x265, SVT-AV1, ...).
+    Base,
+    /// The encoder binary.
+    Executable,
+    /// The pass configuration.
+    Passes,
+    /// SVT-AV1 photon noise.
+    PhotonNoise,
+    /// The FFmpeg filtergraph.
+    FfmpegFilter,
+    /// The encoder options once the quantizer is normalized away.
+    Options,
+}
+
+impl fmt::Display for DifferingField {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Base => "encoder base",
+            Self::Executable => "executable",
+            Self::Passes => "passes",
+            Self::PhotonNoise => "photon_noise",
+            Self::FfmpegFilter => "ffmpeg_filter",
+            Self::Options => "options",
+        })
+    }
 }
 
 /// The zoning layout of a pass: contiguous stream ranges, one per scene, each
@@ -149,9 +188,10 @@ impl ZonePlan {
                     scene: task.original_index,
                 });
             }
-            if !encoders_equivalent(&first.encoder, &task.encoder) {
+            if let Some(field) = differing_field(&first.encoder, &task.encoder) {
                 return Err(ZoneIneligible::DifferingEncoder {
                     scene: task.original_index,
+                    field,
                 });
             }
         }
@@ -197,34 +237,51 @@ impl ZonePlan {
     }
 }
 
-/// Whether two scene encoders produce the same output apart from their
-/// quantizer: same base, binary, passes, photon noise, FFmpeg filter and
-/// identical options once the quantizer is normalized away.
-fn encoders_equivalent(reference: &Encoder, other: &Encoder) -> bool {
-    reference.base() == other.base()
-        && reference.executable() == other.executable()
-        && passes_equivalent(reference.passes(), other.passes())
-        && reference.ffmpeg_filter() == other.ffmpeg_filter()
-        // `PhotonNoise` has no `PartialEq`; debug output is its stable field
-        // form. SVTAV1 is the only zone-capable base that carries it.
-        && match (reference, other) {
-            (
-                Encoder::SVTAV1 {
-                    photon_noise: a, ..
-                },
-                Encoder::SVTAV1 {
-                    photon_noise: b, ..
-                },
-            ) => format!("{a:?}") == format!("{b:?}"),
-            _ => true,
-        }
-        && {
-            let mut reference = reference.clone();
-            let mut other = other.clone();
-            reference.set_quantizer(0.0);
-            other.set_quantizer(0.0);
-            reference.parameters() == other.parameters()
-        }
+/// The first part of `other`'s encoder that differs from `reference`'s apart
+/// from the quantizer, or `None` when the two encode the same way: same base,
+/// binary, passes, FFmpeg filter, photon noise and options once the quantizer
+/// is normalized away.
+fn differing_field(reference: &Encoder, other: &Encoder) -> Option<DifferingField> {
+    if reference.base() != other.base() {
+        return Some(DifferingField::Base);
+    }
+    if reference.executable() != other.executable() {
+        return Some(DifferingField::Executable);
+    }
+    if !passes_equivalent(reference.passes(), other.passes()) {
+        return Some(DifferingField::Passes);
+    }
+    if reference.ffmpeg_filter() != other.ffmpeg_filter() {
+        return Some(DifferingField::FfmpegFilter);
+    }
+    if !photon_noise_equivalent(reference, other) {
+        return Some(DifferingField::PhotonNoise);
+    }
+    let mut reference = reference.clone();
+    let mut other = other.clone();
+    reference.set_quantizer(0.0);
+    other.set_quantizer(0.0);
+    if reference.parameters() != other.parameters() {
+        return Some(DifferingField::Options);
+    }
+    None
+}
+
+/// Whether two scene encoders carry identical photon noise. SVTAV1 is the only
+/// zone-capable base that carries it.
+#[inline]
+fn photon_noise_equivalent(reference: &Encoder, other: &Encoder) -> bool {
+    match (reference, other) {
+        (
+            Encoder::SVTAV1 {
+                photon_noise: a, ..
+            },
+            Encoder::SVTAV1 {
+                photon_noise: b, ..
+            },
+        ) => a == b,
+        _ => true,
+    }
 }
 
 #[inline]
@@ -419,7 +476,7 @@ impl ZoneEncoder {
 
         let (frames_tx, frames_rx) = crossbeam_channel::bounded::<Cursor<Vec<u8>>>(8);
         // A filtergraph applies to the whole pass, so every scene must agree
-        // on it — `encoders_equivalent` already rejected the pass otherwise.
+        // on it — `differing_field` already rejected the pass otherwise.
         let (encoder_rx, filter_stage) = match encoder.ffmpeg_filter() {
             Some(graph) => {
                 let stage = FfmpegFilter::spawn(frames_rx, 8, graph, Arc::new(Mutex::new(None)))?;
@@ -813,6 +870,7 @@ fn find_start_code(bytes: &[u8], from: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::encoder::photon_noise::PhotonNoise;
 
     fn temp_directory(name: &str) -> PathBuf {
         let directory =
@@ -838,6 +896,25 @@ mod tests {
         let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
         encoder.set_quantizer(quantizer);
         encoder
+    }
+
+    /// Sets the photon noise the noise scaler would have written for a scene.
+    fn set_photon_noise_iso(encoder: &mut Encoder, iso: u32) {
+        let Encoder::SVTAV1 {
+            photon_noise, ..
+        } = encoder
+        else {
+            panic!("only SVT-AV1 carries photon noise");
+        };
+        *photon_noise = Some(PhotonNoise {
+            iso,
+            chroma_iso: Some(iso / 3),
+            width: None,
+            height: None,
+            c_y: None,
+            ccb: None,
+            ccr: None,
+        });
     }
 
     fn task(original_index: usize, frames: usize, encoder: Encoder) -> Task {
@@ -898,7 +975,8 @@ mod tests {
         assert_eq!(
             ZonePlan::try_build(&tasks),
             Err(ZoneIneligible::DifferingEncoder {
-                scene: 1
+                scene: 1,
+                field: DifferingField::Options,
             })
         );
     }
@@ -911,7 +989,8 @@ mod tests {
         assert_eq!(
             ZonePlan::try_build(&tasks),
             Err(ZoneIneligible::DifferingEncoder {
-                scene: 1
+                scene: 1,
+                field: DifferingField::Base,
             })
         );
     }
@@ -939,7 +1018,8 @@ mod tests {
         assert_eq!(
             ZonePlan::try_build(&tasks),
             Err(ZoneIneligible::DifferingEncoder {
-                scene: 1
+                scene: 1,
+                field: DifferingField::FfmpegFilter,
             })
         );
     }
@@ -952,8 +1032,46 @@ mod tests {
         assert_eq!(
             ZonePlan::try_build(&tasks),
             Err(ZoneIneligible::DifferingEncoder {
-                scene: 1
+                scene: 1,
+                field: DifferingField::FfmpegFilter,
             })
+        );
+    }
+
+    /// The zone encoder compares photon noise, so a scene the noise scaler
+    /// gave a stronger iso must be reported as a photon-noise difference, and
+    /// the fallback log must name the field.
+    #[test]
+    fn scenes_differing_only_in_photon_noise_name_the_field() {
+        let mut first = svt_av1(20.0);
+        set_photon_noise_iso(&mut first, 600);
+        let mut second = svt_av1(30.0);
+        set_photon_noise_iso(&mut second, 12000);
+        let tasks = vec![task(0, 5, first), task(1, 3, second)];
+        let reason = ZonePlan::try_build(&tasks).expect_err("scenes differ");
+        assert_eq!(reason, ZoneIneligible::DifferingEncoder {
+            scene: 1,
+            field: DifferingField::PhotonNoise,
+        });
+        assert_eq!(
+            reason.to_string(),
+            "scene 1 differs from the first scene beyond the quantizer: photon_noise"
+        );
+    }
+
+    /// Equality is structural: two photon noises that serialize identically
+    /// are not a difference, so the quantizer remains the only thing scenes
+    /// may vary in.
+    #[test]
+    fn identical_photon_noise_is_not_a_difference() {
+        let mut first = svt_av1(20.0);
+        set_photon_noise_iso(&mut first, 6177);
+        let mut second = svt_av1(30.0);
+        set_photon_noise_iso(&mut second, 6177);
+        assert_eq!(
+            differing_field(&first, &second),
+            None,
+            "identical photon noise leaves the quantizer as the only difference"
         );
     }
 

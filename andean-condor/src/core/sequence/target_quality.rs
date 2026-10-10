@@ -626,8 +626,8 @@ impl TargetQuality {
                 executable,
                 pass,
                 options,
-                photon_noise,
                 ffmpeg_filter,
+                ..
             } => {
                 let psychovisual_parameters: HashMap<String, CLIParameter> =
                     std::iter::once(("film-grain-table", CLIParameter::new_string("--", "=", "")))
@@ -647,7 +647,7 @@ impl TargetQuality {
                     executable:    executable.clone(),
                     pass:          *pass,
                     options:       sanitized_options,
-                    photon_noise:  photon_noise.clone(),
+                    photon_noise:  None,
                     ffmpeg_filter: ffmpeg_filter.clone(),
                 }
             },
@@ -655,8 +655,8 @@ impl TargetQuality {
                 executable,
                 pass,
                 options,
-                photon_noise,
                 ffmpeg_filter,
+                ..
             } => {
                 let psychovisual_parameters: HashMap<String, CLIParameter> = std::iter::once((
                     "photon-noise-table",
@@ -678,7 +678,7 @@ impl TargetQuality {
                     executable:    executable.clone(),
                     pass:          *pass,
                     options:       sanitized_options,
-                    photon_noise:  photon_noise.clone(),
+                    photon_noise:  None,
                     ffmpeg_filter: ffmpeg_filter.clone(),
                 }
             },
@@ -689,8 +689,8 @@ impl TargetQuality {
                 executable,
                 pass,
                 options,
-                photon_noise,
                 ffmpeg_filter,
+                ..
             } => {
                 let psychovisual_parameters: HashMap<String, CLIParameter> = [
                     ("fgs-table", CLIParameter::new_string("--", " ", "")),
@@ -720,7 +720,7 @@ impl TargetQuality {
                     executable:    executable.clone(),
                     pass:          *pass,
                     options:       sanitized_options,
-                    photon_noise:  photon_noise.clone(),
+                    photon_noise:  None,
                     ffmpeg_filter: ffmpeg_filter.clone(),
                 }
             },
@@ -728,8 +728,8 @@ impl TargetQuality {
                 executable,
                 pass,
                 options,
-                photon_noise,
                 ffmpeg_filter,
+                ..
             } => {
                 let psychovisual_parameters: HashMap<String, CLIParameter> =
                     std::iter::once(("film-grain-table", CLIParameter::new_string("--", "=", "")))
@@ -749,7 +749,7 @@ impl TargetQuality {
                     executable:    executable.clone(),
                     pass:          *pass,
                     options:       sanitized_options,
-                    photon_noise:  photon_noise.clone(),
+                    photon_noise:  None,
                     ffmpeg_filter: ffmpeg_filter.clone(),
                 }
             },
@@ -1580,7 +1580,7 @@ mod tests {
             sequence::parallel_encoder::ParallelEncoderResult,
         },
         models::{
-            encoder::{Encoder, EncoderBase},
+            encoder::{Encoder, EncoderBase, photon_noise::PhotonNoise},
             sequence::target_quality::types::QualityMetric,
         },
     };
@@ -1829,6 +1829,51 @@ mod tests {
             probe.ffmpeg_filter(),
             None,
             "the probe encoder must not filter"
+        );
+    }
+
+    /// Probes are scored against the unfiltered reference, and a per-scene iso
+    /// would also make scenes differ beyond the quantizer, so the probe drops
+    /// the scene's photon noise while the final encode keeps it.
+    #[test]
+    fn a_probe_encoder_drops_the_photon_noise() {
+        let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+        let Encoder::SVTAV1 {
+            photon_noise, ..
+        } = &mut encoder
+        else {
+            panic!("the base is SVT-AV1");
+        };
+        *photon_noise = Some(PhotonNoise {
+            iso:        12000,
+            chroma_iso: Some(4000),
+            width:      None,
+            height:     None,
+            c_y:        None,
+            ccb:        None,
+            ccr:        None,
+        });
+
+        let Encoder::SVTAV1 {
+            photon_noise: scene,
+            ..
+        } = &encoder
+        else {
+            panic!("the base is SVT-AV1");
+        };
+        assert!(scene.is_some(), "the scene encoder applies grain");
+
+        let probe = TargetQuality::remove_psychovisual_parameters(&encoder);
+        let Encoder::SVTAV1 {
+            photon_noise: probe,
+            ..
+        } = &probe
+        else {
+            panic!("the base is SVT-AV1");
+        };
+        assert!(
+            probe.is_none(),
+            "the probe encoder must not apply photon noise"
         );
     }
 }
