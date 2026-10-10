@@ -255,6 +255,7 @@ fn run() -> anyhow::Result<()> {
             params,
             photon_noise,
             chroma_noise,
+            ffmpeg_filter,
         }) => {
             let (configuration, save_file) = encode_handler(
                 config_path.as_deref(),
@@ -269,6 +270,7 @@ fn run() -> anyhow::Result<()> {
                 params.as_deref(),
                 photon_noise,
                 chroma_noise,
+                ffmpeg_filter.as_deref(),
             )?;
 
             run_encoder(&configuration, &save_file)?;
@@ -332,6 +334,7 @@ fn run() -> anyhow::Result<()> {
                 cli.tq_params.as_deref(),
                 cli.photon_noise,
                 cli.chroma_noise,
+                cli.ffmpeg_filter.as_deref(),
                 cli.target_metric.as_ref(),
                 cli.target,
                 cli.minimum_quantizer,

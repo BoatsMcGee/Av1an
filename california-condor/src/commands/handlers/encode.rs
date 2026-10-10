@@ -30,6 +30,7 @@ pub fn encode_handler(
     params: Option<&str>,
     photon_noise: Option<u32>,
     chroma_noise: Option<u32>,
+    ffmpeg_filter: Option<&str>,
 ) -> Result<(Configuration, PathBuf)> {
     let (mut configuration, config_path) = load_configuration(config_path)?;
 
@@ -41,6 +42,7 @@ pub fn encode_handler(
         params,
         photon_noise,
         chroma_noise,
+        ffmpeg_filter,
     )?;
     configure_parallel_encoder(
         &mut configuration,
@@ -98,6 +100,7 @@ pub fn configure_parallel_encoder(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn configure_encoder(
     configuration: &mut Configuration,
     encoder: Option<&EncoderMethod>,
@@ -105,6 +108,7 @@ pub fn configure_encoder(
     params: Option<&str>,
     photon_noise: Option<u32>,
     chroma_noise: Option<u32>,
+    ffmpeg_filter: Option<&str>,
 ) -> Result<()> {
     if let Some(encoder) = encoder {
         let encoder = encoder.as_encoder_base();
@@ -116,44 +120,52 @@ pub fn configure_encoder(
                 pass,
                 options,
                 photon_noise: None,
+                ffmpeg_filter: None,
             },
             EncoderBase::RAV1E => Encoder::RAV1E {
                 executable: None,
                 pass,
                 options,
                 photon_noise: None,
+                ffmpeg_filter: None,
             },
             EncoderBase::VPX => Encoder::VPX {
                 executable: None,
                 pass,
                 options,
+                ffmpeg_filter: None,
             },
             EncoderBase::SVTAV1 => Encoder::SVTAV1 {
                 executable: None,
                 pass,
                 options,
                 photon_noise: None,
+                ffmpeg_filter: None,
             },
             EncoderBase::AVM => Encoder::AVM {
                 executable: None,
                 pass,
                 options,
                 photon_noise: None,
+                ffmpeg_filter: None,
             },
             EncoderBase::X264 => Encoder::X264 {
                 executable: None,
                 pass,
                 options,
+                ffmpeg_filter: None,
             },
             EncoderBase::X265 => Encoder::X265 {
                 executable: None,
                 pass,
                 options,
+                ffmpeg_filter: None,
             },
             EncoderBase::VVenC => Encoder::VVenC {
                 executable: None,
                 pass,
                 options,
+                ffmpeg_filter: None,
             },
             EncoderBase::FFmpeg => Encoder::FFmpeg {
                 executable: None,
@@ -181,6 +193,10 @@ pub fn configure_encoder(
             ccb: None,
             ccr: None,
         }));
+    }
+    // Written after the `--encoder` rebuild above, which would otherwise drop it.
+    if let Some(ffmpeg_filter) = ffmpeg_filter {
+        configuration.condor.encoder.set_ffmpeg_filter(Some(ffmpeg_filter.to_owned()));
     }
     // // Overwrite encoder for all scenes if any paramters are provided (Note: I do
     // // not like this feature. It's inconsistent across various user intents.)
@@ -258,6 +274,7 @@ mod tests {
         let (config, found_config_path) = encode_handler(
             // Simulate default directory to avoid changing CWD
             Some(&config_path),
+            None,
             None,
             None,
             None,
@@ -386,6 +403,7 @@ mod tests {
             Some("--speed 10"),
             Some(1600),
             Some(400),
+            None,
         )
         .expect("encode_handler should succeed");
 
@@ -457,6 +475,7 @@ mod tests {
             None,
             None,
             Some(&custom_filters),
+            None,
             None,
             None,
             None,

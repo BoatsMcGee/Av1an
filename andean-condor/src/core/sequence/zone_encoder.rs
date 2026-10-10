@@ -21,6 +21,7 @@ use std::{
     sync::{
         self,
         Arc,
+        Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -40,6 +41,7 @@ use crate::{
             SequenceCompletion,
             SequenceStatus,
             Status,
+            ffmpeg_filter::FfmpegFilter,
             parallel_encoder::{ParallelEncoderError, ParallelEncoderResult, Task},
         },
     },
@@ -196,12 +198,13 @@ impl ZonePlan {
 }
 
 /// Whether two scene encoders produce the same output apart from their
-/// quantizer: same base, binary, passes and photon noise, and identical
-/// options once the quantizer is normalized away.
+/// quantizer: same base, binary, passes, photon noise, FFmpeg filter and
+/// identical options once the quantizer is normalized away.
 fn encoders_equivalent(reference: &Encoder, other: &Encoder) -> bool {
     reference.base() == other.base()
         && reference.executable() == other.executable()
         && passes_equivalent(reference.passes(), other.passes())
+        && reference.ffmpeg_filter() == other.ffmpeg_filter()
         // `PhotonNoise` has no `PartialEq`; debug output is its stable field
         // form. SVTAV1 is the only zone-capable base that carries it.
         && match (reference, other) {
@@ -415,10 +418,19 @@ impl ZoneEncoder {
         });
 
         let (frames_tx, frames_rx) = crossbeam_channel::bounded::<Cursor<Vec<u8>>>(8);
+        // A filtergraph applies to the whole pass, so every scene must agree
+        // on it — `encoders_equivalent` already rejected the pass otherwise.
+        let (encoder_rx, filter_stage) = match encoder.ffmpeg_filter() {
+            Some(graph) => {
+                let stage = FfmpegFilter::spawn(frames_rx, 8, graph, Arc::new(Mutex::new(None)))?;
+                (stage.receiver(), Some(stage))
+            },
+            None => (frames_rx, None),
+        };
         let encode_thread = thread::spawn({
             let encoder = encoder.clone();
             let whole_output = whole_output.clone();
-            move || encoder.encode_with_stream(frames_rx, &whole_output, encode_progress_tx)
+            move || encoder.encode_with_stream(encoder_rx, &whole_output, encode_progress_tx)
         });
 
         // Feeding by hand (rather than `y4m_frames`) keeps cancellation
@@ -454,6 +466,12 @@ impl ZoneEncoder {
         if cancelled.load(Ordering::Relaxed) {
             discard();
             return Ok(vec![None; total_tasks]);
+        }
+        if let Some(stage) = &filter_stage
+            && let Err(err) = stage.check()
+        {
+            discard();
+            bail!("FFmpeg filter failed while zone encoding: {err}");
         }
         if let Some(error) = feed_failure {
             discard();
@@ -895,6 +913,58 @@ mod tests {
             Err(ZoneIneligible::DifferingEncoder {
                 scene: 1
             })
+        );
+    }
+
+    #[test]
+    fn a_shared_filter_keeps_the_pass_zone_eligible() {
+        let mut first = x264(20.0);
+        first.set_ffmpeg_filter(Some("crop=iw-16:ih-16".to_owned()));
+        let mut second = x264(30.0);
+        second.set_ffmpeg_filter(Some("crop=iw-16:ih-16".to_owned()));
+        let tasks = vec![task(0, 5, first), task(1, 3, second)];
+        assert!(
+            ZonePlan::try_build(&tasks).is_ok(),
+            "scenes sharing one filtergraph still zone encode"
+        );
+    }
+
+    #[test]
+    fn differing_filters_are_ineligible() {
+        let mut first = x264(20.0);
+        first.set_ffmpeg_filter(Some("crop=iw-16:ih-16".to_owned()));
+        let mut second = x264(30.0);
+        second.set_ffmpeg_filter(Some("hflip".to_owned()));
+        let tasks = vec![task(0, 5, first), task(1, 3, second)];
+        assert_eq!(
+            ZonePlan::try_build(&tasks),
+            Err(ZoneIneligible::DifferingEncoder {
+                scene: 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_filter_on_only_one_scene_is_ineligible() {
+        let mut filtered = x264(30.0);
+        filtered.set_ffmpeg_filter(Some("crop=iw-16:ih-16".to_owned()));
+        let tasks = vec![task(0, 5, x264(20.0)), task(1, 3, filtered)];
+        assert_eq!(
+            ZonePlan::try_build(&tasks),
+            Err(ZoneIneligible::DifferingEncoder {
+                scene: 1
+            })
+        );
+    }
+
+    #[test]
+    fn the_ffmpeg_encoder_never_carries_a_filter() {
+        let mut encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, false);
+        encoder.set_ffmpeg_filter(Some("crop=iw-16:ih-16".to_owned()));
+        assert_eq!(
+            encoder.ffmpeg_filter(),
+            None,
+            "the FFmpeg encoder filters through its options instead"
         );
     }
 

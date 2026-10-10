@@ -237,6 +237,10 @@ where
                         encoder.parameters_mut().clear();
                         encoder.parameters_mut().extend(parameters.clone());
                     }
+                    // Probes are scored against the unfiltered reference, so a
+                    // filter would corrupt the metric the same way it does for
+                    // Quality Check. The final encode still filters.
+                    encoder.set_ffmpeg_filter(None);
                     let encoder = Self::remove_psychovisual_parameters(&encoder);
                     let output = pass_directory.join(format!(
                         "{}.{}",
@@ -623,6 +627,7 @@ impl TargetQuality {
                 pass,
                 options,
                 photon_noise,
+                ffmpeg_filter,
             } => {
                 let psychovisual_parameters: HashMap<String, CLIParameter> =
                     std::iter::once(("film-grain-table", CLIParameter::new_string("--", "=", "")))
@@ -639,10 +644,11 @@ impl TargetQuality {
                 }
 
                 Encoder::AOM {
-                    executable:   executable.clone(),
-                    pass:         *pass,
-                    options:      sanitized_options,
-                    photon_noise: photon_noise.clone(),
+                    executable:    executable.clone(),
+                    pass:          *pass,
+                    options:       sanitized_options,
+                    photon_noise:  photon_noise.clone(),
+                    ffmpeg_filter: ffmpeg_filter.clone(),
                 }
             },
             Encoder::RAV1E {
@@ -650,6 +656,7 @@ impl TargetQuality {
                 pass,
                 options,
                 photon_noise,
+                ffmpeg_filter,
             } => {
                 let psychovisual_parameters: HashMap<String, CLIParameter> = std::iter::once((
                     "photon-noise-table",
@@ -668,10 +675,11 @@ impl TargetQuality {
                 }
 
                 Encoder::RAV1E {
-                    executable:   executable.clone(),
-                    pass:         *pass,
-                    options:      sanitized_options,
-                    photon_noise: photon_noise.clone(),
+                    executable:    executable.clone(),
+                    pass:          *pass,
+                    options:       sanitized_options,
+                    photon_noise:  photon_noise.clone(),
+                    ffmpeg_filter: ffmpeg_filter.clone(),
                 }
             },
             Encoder::VPX {
@@ -682,6 +690,7 @@ impl TargetQuality {
                 pass,
                 options,
                 photon_noise,
+                ffmpeg_filter,
             } => {
                 let psychovisual_parameters: HashMap<String, CLIParameter> = [
                     ("fgs-table", CLIParameter::new_string("--", " ", "")),
@@ -708,10 +717,11 @@ impl TargetQuality {
                 }
 
                 Encoder::SVTAV1 {
-                    executable:   executable.clone(),
-                    pass:         *pass,
-                    options:      sanitized_options,
-                    photon_noise: photon_noise.clone(),
+                    executable:    executable.clone(),
+                    pass:          *pass,
+                    options:       sanitized_options,
+                    photon_noise:  photon_noise.clone(),
+                    ffmpeg_filter: ffmpeg_filter.clone(),
                 }
             },
             Encoder::AVM {
@@ -719,6 +729,7 @@ impl TargetQuality {
                 pass,
                 options,
                 photon_noise,
+                ffmpeg_filter,
             } => {
                 let psychovisual_parameters: HashMap<String, CLIParameter> =
                     std::iter::once(("film-grain-table", CLIParameter::new_string("--", "=", "")))
@@ -735,10 +746,11 @@ impl TargetQuality {
                 }
 
                 Encoder::AVM {
-                    executable:   executable.clone(),
-                    pass:         *pass,
-                    options:      sanitized_options,
-                    photon_noise: photon_noise.clone(),
+                    executable:    executable.clone(),
+                    pass:          *pass,
+                    options:       sanitized_options,
+                    photon_noise:  photon_noise.clone(),
+                    ffmpeg_filter: ffmpeg_filter.clone(),
                 }
             },
             Encoder::X264 {
@@ -851,7 +863,9 @@ impl TargetQuality {
 
         // Zone encoding needs one process for the whole pass, so it applies
         // only when every scene differs in its quantizer and all scenes share
-        // one encoder; anything else keeps the per-scene encoders.
+        // one encoder; anything else keeps the per-scene encoders. Probe
+        // encoders never carry an FFmpeg filter, so filters cannot make scenes
+        // differ here.
         let zone_plan = match ZonePlan::try_build(&encode_tasks) {
             Ok(plan) => Some(plan),
             Err(reason) => {
@@ -1562,7 +1576,10 @@ mod tests {
             encoder::{EncoderResult, StringOrBytes},
             sequence::parallel_encoder::ParallelEncoderResult,
         },
-        models::{encoder::EncoderBase, sequence::target_quality::types::QualityMetric},
+        models::{
+            encoder::{Encoder, EncoderBase},
+            sequence::target_quality::types::QualityMetric,
+        },
     };
 
     /// A `Task` with `passes` recorded passes; only the count is consulted.
@@ -1788,6 +1805,24 @@ mod tests {
             reports.last(),
             Some(&(total as u64, total as u64)),
             "the last report must reach the total"
+        );
+    }
+
+    /// Probes are scored against the unfiltered reference, so a filter would
+    /// corrupt the metric the same way it does for Quality Check.
+    #[test]
+    fn a_probe_encoder_drops_the_ffmpeg_filter() {
+        let mut encoder = Encoder::default_from_base(&EncoderBase::X264, false);
+        encoder.set_ffmpeg_filter(Some("crop=iw-16:ih-16".to_owned()));
+        assert!(encoder.ffmpeg_filter().is_some(), "the scene encoder filters");
+
+        encoder.set_ffmpeg_filter(None);
+        let probe = TargetQuality::remove_psychovisual_parameters(&encoder);
+
+        assert_eq!(
+            probe.ffmpeg_filter(),
+            None,
+            "the probe encoder must not filter"
         );
     }
 }

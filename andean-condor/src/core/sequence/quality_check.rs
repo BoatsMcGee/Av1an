@@ -82,6 +82,13 @@ where
                 path: condor.output.path.clone(),
             }));
         }
+        // Quality Check compares the reference input against the encoded
+        // output frame-for-frame, so a picture-altering filter makes the two
+        // sides incomparable. Harmless filters still score fine, so this is a
+        // warning rather than a failure.
+        if condor.scenes.iter().any(|scene| scene.encoder.ffmpeg_filter().is_some()) {
+            warnings.push(anyhow::Error::new(QualityCheckError::FilteredEncoderOutput));
+        }
 
         Ok(((), warnings))
     }
@@ -942,6 +949,12 @@ pub enum QualityCheckError {
     ScenesEmpty,
     #[error("Output file not found: {path}")]
     OutputMissing { path: std::path::PathBuf },
+    #[error(
+        "Quality Check compares unfiltered reference frames against the Parallel Encoder's \
+         filtered output; picture-altering filters (crop, invert, ...) make the comparison \
+         unrepresentative"
+    )]
+    FilteredEncoderOutput,
     #[error("Failed to measure quality")]
     QualityMeasurementFailed,
     #[error("Cancelled")]

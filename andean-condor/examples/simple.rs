@@ -116,6 +116,7 @@ fn main() -> Result<()> {
         pass: EncoderPasses::All(1),
         options,
         photon_noise: None,
+        ffmpeg_filter: None,
     };
 
     // Configure Sequences SceneDetector, ParallelEncoder, and SceneConcatenator

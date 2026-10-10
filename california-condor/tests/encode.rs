@@ -154,9 +154,10 @@ mod tests {
         );
         encoder_params.insert("crf".to_owned(), CLIParameter::new_number("--", " ", 18.0));
         expected_config.condor.encoder = Encoder::X264 {
-            executable: None,
-            pass:       EncoderPasses::All(2),
-            options:    encoder_params,
+            executable:    None,
+            pass:          EncoderPasses::All(2),
+            options:       encoder_params,
+            ffmpeg_filter: None,
         };
         // immutable shadow
         let expected_config = expected_config;
@@ -301,5 +302,104 @@ mod tests {
                 "{label} output exists"
             );
         }
+    }
+
+    /// `--ffmpeg-filter` pipes each scene through FFmpeg before the encoder,
+    /// so the encoded chunk must carry the filtered (cropped) dimensions
+    /// rather than the input's.
+    #[serial]
+    #[test]
+    fn with_ffmpeg_filter() {
+        if !ffmpeg_is_available() {
+            return;
+        }
+        let ffprobe = std::process::Command::new("ffprobe").arg("-version").output();
+        if ffprobe.is_err() {
+            return;
+        }
+        const FILTER: &str = "crop=iw-16:ih-16";
+        let test_video = get_test_video();
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let output = temp.path().join("out.mkv");
+        let input_abs = path_abs::PathAbs::new(test_video.path.clone())
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let temp_abs = path_abs::PathAbs::new(temp.path().join(hash_path(&input_abs)))
+            .expect("path_abs should succeed")
+            .as_path()
+            .to_path_buf();
+        let config_path = temp.path().join("condor.json");
+
+        // One short scene keeps this encode cheap; nothing here depends on
+        // scene count.
+        let mut config = default_config(&test_video, &output, &temp_abs);
+        if let Input::VapourSynth {
+            filters, ..
+        } = &mut config.condor.input
+        {
+            *filters = vec![VapourSynthFilter::Resize {
+                scaler: None,
+                width:  Some(WIDTH),
+                height: Some(HEIGHT),
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }];
+        }
+        config.condor.encoder.parameters_mut().insert(
+            "preset".to_owned(),
+            CLIParameter::new_number("--", " ", 10.0),
+        );
+        config.condor.scenes = test_video.mock_scenes(&config.condor.encoder);
+        config.condor.scenes.truncate(1);
+        // The filter lives on the encoder, and scenes carry their own encoder
+        // copies from detection, so the scene's encoder is what filters.
+        config.condor.scenes[0].encoder.set_ffmpeg_filter(Some(FILTER.to_owned()));
+        config.save(&config_path).expect("configuration save should succeed");
+
+        condor_cmd(&temp)
+            .env("CONDOR_TEST_MODE", "1")
+            .args(["encode", "--workers", "1", "--ffmpeg-filter", FILTER])
+            .assert()
+            .success();
+
+        let mut expected_config = config;
+        expected_config.condor.sequence_config.parallel_encoder.workers = Some(1);
+        expected_config.condor.encoder.set_ffmpeg_filter(Some(FILTER.to_owned()));
+        // immutable shadow
+        let expected_config = expected_config;
+
+        let (config, _) =
+            load_configuration(Some(&config_path)).expect("load_configuration should succeed");
+
+        check_basic_config(&config, &expected_config);
+
+        let chunk =
+            std::fs::read_dir(&config.condor.sequence_config.parallel_encoder.scenes_directory)
+                .expect("scenes read_dir should succeed")
+                .filter_map(|entry| entry.ok())
+                .find(|entry| entry.path().extension().is_some_and(|ext| ext == "ivf"))
+                .expect("at least one encoded scene chunk exists");
+
+        let probe = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0"])
+            .args(["-show_entries", "stream=width,height"])
+            .args(["-of", "csv=p=0"])
+            .arg(chunk.path())
+            .output()
+            .expect("ffprobe should run");
+        assert!(probe.status.success(), "ffprobe should succeed");
+        let probed = String::from_utf8_lossy(&probe.stdout);
+        let (width, height) =
+            probed.trim().split_once(',').expect("ffprobe reports width and height");
+        assert_eq!(
+            width.parse::<usize>().expect("width is numeric"),
+            WIDTH - 16,
+            "encoded chunk width is cropped"
+        );
+        assert_eq!(
+            height.parse::<usize>().expect("height is numeric"),
+            HEIGHT - 16,
+            "encoded chunk height is cropped"
+        );
     }
 }

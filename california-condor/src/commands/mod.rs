@@ -90,6 +90,8 @@ pub struct CondorCli {
     pub photon_noise:      Option<u32>,
     #[arg(long, value_name = "ISO", help = HELP_CHROMA_NOISE_SHORT, long_help = HELP_CHROMA_NOISE)]
     pub chroma_noise:      Option<u32>,
+    #[arg(long, value_name = "FFmpeg Filter", allow_hyphen_values = true, help = HELP_FFMPEG_FILTER_SHORT, long_help = HELP_FFMPEG_FILTER)]
+    pub ffmpeg_filter:     Option<String>,
     #[arg(long, value_name = "Metric", help = HELP_TARGET_METRIC_SHORT, long_help = HELP_TARGET_METRIC)]
     pub target_metric:     Option<QualityMetric>,
     #[arg(long, value_name = "Score", help = HELP_TARGET_SHORT, long_help = HELP_TARGET)]
@@ -267,26 +269,28 @@ pub enum Commands {
     /// Encode scenes in parallel (Triggers TUI).
     Encode {
         #[arg(long, short('i'), value_name = "Input", help = HELP_INPUT_SHORT, long_help = HELP_INPUT)]
-        input:        Option<PathBuf>,
+        input:         Option<PathBuf>,
         #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
-        decoder:      Option<DecoderMethod>,
+        decoder:       Option<DecoderMethod>,
         #[arg(long, value_name = "VapourSynth Filters", help = HELP_FILTERS_SHORT, long_help = HELP_FILTERS)]
-        filters:      Option<Vec<VapourSynthFilter>>,
+        filters:       Option<Vec<VapourSynthFilter>>,
         #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
-        vs_args:      Option<Vec<String>>,
+        vs_args:       Option<Vec<String>>,
         /// The amount of encoder processes to use at once
         #[arg(long, short('w'), value_name = "Workers", help = HELP_WORKERS_SHORT, long_help = HELP_WORKERS)]
-        workers:      Option<u8>,
+        workers:       Option<u8>,
         #[arg(long, short('e'), value_name = "Encoder", help = HELP_ENCODER_SHORT, long_help = HELP_ENCODER)]
-        encoder:      Option<EncoderMethod>,
+        encoder:       Option<EncoderMethod>,
         #[arg(long, value_name = "Passes", help = HELP_PASSES_SHORT, long_help = HELP_PASSES)]
-        passes:       Option<u8>,
+        passes:        Option<u8>,
         #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_PARAMS_SHORT, long_help = HELP_PARAMS)]
-        params:       Option<String>,
+        params:        Option<String>,
         #[arg(long, value_name = "ISO", help = HELP_PHOTON_NOISE_SHORT, long_help = HELP_PHOTON_NOISE)]
-        photon_noise: Option<u32>,
+        photon_noise:  Option<u32>,
         #[arg(long, value_name = "ISO", help = HELP_CHROMA_NOISE_SHORT, long_help = HELP_CHROMA_NOISE)]
-        chroma_noise: Option<u32>,
+        chroma_noise:  Option<u32>,
+        #[arg(long, value_name = "FFmpeg Filter", allow_hyphen_values = true, help = HELP_FFMPEG_FILTER_SHORT, long_help = HELP_FFMPEG_FILTER)]
+        ffmpeg_filter: Option<String>,
     },
     /// Concatenate encoded scenes into output video (Triggers TUI).
     Concatenate {
@@ -885,6 +889,30 @@ mod tests {
                         ..
                     }),
                     "\"condor\" parses"
+                );
+            }
+
+            #[test]
+            fn with_ffmpeg_filter() {
+                let test_video = get_test_video();
+
+                let result = CondorCli::try_parse_from([
+                    "condor",
+                    "--input",
+                    test_video.path.to_str().expect("test_video path is valid"),
+                    "--output",
+                    "./out.mkv",
+                    "--ffmpeg-filter",
+                    "crop=iw-16:ih-16",
+                ]);
+                assert_matches!(
+                    result,
+                    Ok(CondorCli {
+                        command: None,
+                        ffmpeg_filter: Some(_),
+                        ..
+                    }),
+                    "\"condor --input INPUT --output OUTPUT --ffmpeg-filter ...\" parses"
                 );
             }
 
@@ -1962,6 +1990,27 @@ mod tests {
                         ..
                     }),
                     "\"condor encode --vs-args threads=8\" parses"
+                );
+            }
+
+            #[test]
+            fn with_ffmpeg_filter() {
+                let result = CondorCli::try_parse_from([
+                    "condor",
+                    "encode",
+                    "--ffmpeg-filter",
+                    "crop=iw-16:ih-16",
+                ]);
+                assert_matches!(
+                    result,
+                    Ok(CondorCli {
+                        command: Some(Commands::Encode {
+                            ffmpeg_filter: Some(_),
+                            ..
+                        }),
+                        ..
+                    }),
+                    "\"condor encode --ffmpeg-filter ...\" parses"
                 );
             }
 

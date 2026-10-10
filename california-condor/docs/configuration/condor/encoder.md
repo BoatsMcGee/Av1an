@@ -12,6 +12,7 @@ Externally-tagged enum keyed by encoder base. Exactly one key per object: `AOM`,
 | `pass` | Object | Yes | All except `FFmpeg` | `{ "All": <u8> }` or `{ "Specific": [<u8>, <u8>] }`. Default `{"All": 2}` for AOM/VPX, `{"All": 1}` otherwise |
 | `options` | Object (string→CLIParameter) | Yes | All | Encoder CLI options. See [Encoder Parameters](../../types/encoder-params.md) |
 | `photon_noise` | Object or null | Yes | AOM, RAV1E, SVTAV1, AVM | See [Photon Noise](../../types/photon-noise.md). VPX/X264/X265/VVenC/FFmpeg have no such field |
+| `ffmpeg_filter` | String or null | No | All except `FFmpeg` | FFmpeg filtergraph applied to the frames before they reach this encoder. Defaults to `null`. See [FFmpeg Filter](#ffmpeg-filter) |
 
 `CLIParameter` objects (see [Encoder Parameters](../../types/encoder-params.md)):
 
@@ -49,6 +50,33 @@ Externally-tagged enum keyed by encoder base. Exactly one key per object: `AOM`,
 | X264, X265, VVenC | `(5, 35)` |
 | FFmpeg | `(15, 50)` |
 
+## FFmpeg Filter
+
+`ffmpeg_filter` runs the decoded frames through an FFmpeg subprocess before
+they reach the encoder. FFmpeg must be installed and available in PATH; the
+encode fails validation if it is not found.
+
+- Frames are piped as Y4M into `ffmpeg -vf <graph>` and the filtered Y4M
+  stream is piped straight into the encoder, so streaming memory stays
+  window-bounded — the filter adds no frame buffering of its own beyond
+  FFmpeg's own probe and filter graph buffers.
+- Each worker pays FFmpeg startup and a few frames of probe latency per
+  scene, plus CPU cost proportional to the filter and worker count. Benchmarker
+  calibration encodes with the same filter, so measured speeds account for it.
+  Target Quality probes do **not** filter: they are scored against the
+  unfiltered reference, so filtering would corrupt the metric the same way it
+  does for Quality Check.
+- The field lives on the encoder, so each scene can carry its own
+  filtergraph. Zone encoding runs one process for a whole pass, so scenes
+  with differing filters fall back to per-scene encoding.
+- The `FFmpeg` encoder has no `ffmpeg_filter` field: it already accepts `-vf`
+  through `options`.
+- A filter that changes the picture (`crop`, `hflip`, `negate`, ...) makes
+  Quality Check compare an unfiltered reference against the filtered encoded
+  output, so scores become meaningless. Quality Check emits a warning when
+  any encoded scene carries a filter; harmless filters (for example a pure
+  pixel-format conversion) still score fine.
+
 ## Examples
 
 SVT-AV1 (init default):
@@ -66,7 +94,8 @@ SVT-AV1 (init default):
             "crf": { "Number": { "prefix": "--", "delimiter": " ", "value": 25.0 } },
             "progress": { "Number": { "prefix": "--", "delimiter": " ", "value": 2.0 } }
         },
-        "photon_noise": null
+        "photon_noise": null,
+        "ffmpeg_filter": null
     }
 }
 ```
@@ -85,7 +114,24 @@ AOM with photon noise:
             "kf-max-dist": { "Number": { "prefix": "--", "delimiter": "=", "value": 9999.0 } },
             "end-usage": { "String": { "prefix": "--", "delimiter": "=", "value": "q" } }
         },
-        "photon_noise": { "iso": 800, "chroma_iso": null, "width": null, "height": null, "c_y": null, "ccb": null, "ccr": null }
+        "photon_noise": { "iso": 800, "chroma_iso": null, "width": null, "height": null, "c_y": null, "ccb": null, "ccr": null },
+        "ffmpeg_filter": null
+    }
+}
+```
+
+x264 with a crop filter:
+
+```json
+{
+    "X264": {
+        "executable": null,
+        "pass": { "All": 1 },
+        "options": {
+            "preset": { "Number": { "prefix": "--", "delimiter": " ", "value": 4.0 } },
+            "crf": { "Number": { "prefix": "--", "delimiter": " ", "value": 18.0 } }
+        },
+        "ffmpeg_filter": "crop=iw-16:ih-16"
     }
 }
 ```

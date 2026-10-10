@@ -30,6 +30,7 @@ $ condor --config-file ./config.json --skip-scd
 | [Target Quality Parameters](#target-quality-parameters---tq-params) | `--tq-params`       | [String](../types/encoder-params.md)      | Params                 |
 | [Photon Noise](#photon-noise---photon-noise)                      | `--photon-noise`      | [Integer](../types/photon-noise.md)      |                        |
 | [Chroma Noise](#chroma-noise---chroma-noise)                      | `--chroma-noise`      | [Integer](../types/photon-noise.md)      |                        |
+| [FFmpeg Filter](#ffmpeg-filter---ffmpeg-filter)                  | `--ffmpeg-filter`    | String      |                        |
 | [Target Metric](#target-metric---target-metric)                    | `--target-metric`     | [`METRIC`](../types/quality-metric.md)    | `ssimulacra2`          |
 | [Target](#target---target)                                         | `--target`            | Float       |                        |
 | [Minimum Quantizer](#minimum-quantizer---minimum-quantizer)       | `--minimum-quantizer` | Integer     | Based on Encoder       |
@@ -150,6 +151,21 @@ Photon Noise ISO strength for Film Grain Synthesis. Compatible with `aom`, `svt-
 ## Chroma Noise `--chroma-noise`
 
 Chroma noise ISO strength for the photon noise table. Compatible with `aom`, `svt-av1`, `rav1e`, `avm`. See [Photon Noise](../types/photon-noise.md).
+
+## FFmpeg Filter `--ffmpeg-filter`
+
+FFmpeg filtergraph applied to every scene before it reaches the encoder. The decoded frames are piped into an FFmpeg subprocess as Y4M and the filtered stream is piped straight into the encoder, so streaming memory usage is unchanged. Requires FFmpeg in PATH. See [`condor.encoder`'s `ffmpeg_filter`](../configuration/condor/encoder.md#ffmpeg-filter).
+
+The flag writes the encoder's filter, so it applies to scenes detected later. Scenes already in the config keep their own encoder copies, matching how `--params` and `--encoder` behave.
+
+Each worker pays FFmpeg startup and probe latency per scene plus the filter's CPU cost. Benchmarker calibration encodes with the same filter, so measured speeds account for it. Target Quality probes do **not** filter: they are scored against the unfiltered reference, so filtering would corrupt the metric the same way it does for Quality Check.
+
+A picture-altering filter (`crop`, `hflip`, `negate`, ...) changes what gets encoded, so Quality Check compares an unfiltered reference against the filtered output and reports misleading scores. A warning is emitted when Quality Check runs in that state.
+
+### Examples
+
+- `> condor --ffmpeg-filter "crop=iw-16:ih-16"`
+- `> condor --ffmpeg-filter "eq=brightness=0.05:saturation=1.2"`
 
 ## Target Metric `--target-metric`
 

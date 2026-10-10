@@ -1462,10 +1462,11 @@ impl Default for Encoder {
     #[inline]
     fn default() -> Self {
         Self::SVTAV1 {
-            executable:   None,
-            pass:         EncoderPasses::All(1),
-            options:      HashMap::new(),
-            photon_noise: None,
+            executable:    None,
+            pass:          EncoderPasses::All(1),
+            options:       HashMap::new(),
+            photon_noise:  None,
+            ffmpeg_filter: None,
         }
     }
 }

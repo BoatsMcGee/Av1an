@@ -474,48 +474,72 @@ impl EncoderBase {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum Encoder {
     AOM {
-        executable:   Option<PathBuf>,
-        pass:         EncoderPasses,
-        options:      HashMap<String, CLIParameter>,
-        photon_noise: Option<PhotonNoise>,
+        executable:    Option<PathBuf>,
+        pass:          EncoderPasses,
+        options:       HashMap<String, CLIParameter>,
+        photon_noise:  Option<PhotonNoise>,
+        /// FFmpeg filtergraph applied to the frames before they reach this
+        /// encoder. Requires FFmpeg in PATH.
+        ffmpeg_filter: Option<String>,
     },
     RAV1E {
-        executable:   Option<PathBuf>,
-        pass:         EncoderPasses,
-        options:      HashMap<String, CLIParameter>,
-        photon_noise: Option<PhotonNoise>,
+        executable:    Option<PathBuf>,
+        pass:          EncoderPasses,
+        options:       HashMap<String, CLIParameter>,
+        photon_noise:  Option<PhotonNoise>,
+        /// FFmpeg filtergraph applied to the frames before they reach this
+        /// encoder. Requires FFmpeg in PATH.
+        ffmpeg_filter: Option<String>,
     },
     VPX {
-        executable: Option<PathBuf>,
-        pass:       EncoderPasses,
-        options:    HashMap<String, CLIParameter>,
+        executable:    Option<PathBuf>,
+        pass:          EncoderPasses,
+        options:       HashMap<String, CLIParameter>,
+        /// FFmpeg filtergraph applied to the frames before they reach this
+        /// encoder. Requires FFmpeg in PATH.
+        ffmpeg_filter: Option<String>,
     },
     SVTAV1 {
-        executable:   Option<PathBuf>,
-        pass:         EncoderPasses,
-        options:      HashMap<String, CLIParameter>,
-        photon_noise: Option<PhotonNoise>,
+        executable:    Option<PathBuf>,
+        pass:          EncoderPasses,
+        options:       HashMap<String, CLIParameter>,
+        photon_noise:  Option<PhotonNoise>,
+        /// FFmpeg filtergraph applied to the frames before they reach this
+        /// encoder. Requires FFmpeg in PATH.
+        ffmpeg_filter: Option<String>,
     },
     AVM {
-        executable:   Option<PathBuf>,
-        pass:         EncoderPasses,
-        options:      HashMap<String, CLIParameter>,
-        photon_noise: Option<PhotonNoise>,
+        executable:    Option<PathBuf>,
+        pass:          EncoderPasses,
+        options:       HashMap<String, CLIParameter>,
+        photon_noise:  Option<PhotonNoise>,
+        /// FFmpeg filtergraph applied to the frames before they reach this
+        /// encoder. Requires FFmpeg in PATH.
+        ffmpeg_filter: Option<String>,
     },
     X264 {
-        executable: Option<PathBuf>,
-        pass:       EncoderPasses,
-        options:    HashMap<String, CLIParameter>,
+        executable:    Option<PathBuf>,
+        pass:          EncoderPasses,
+        options:       HashMap<String, CLIParameter>,
+        /// FFmpeg filtergraph applied to the frames before they reach this
+        /// encoder. Requires FFmpeg in PATH.
+        ffmpeg_filter: Option<String>,
     },
     X265 {
-        executable: Option<PathBuf>,
-        pass:       EncoderPasses,
-        options:    HashMap<String, CLIParameter>,
+        executable:    Option<PathBuf>,
+        pass:          EncoderPasses,
+        options:       HashMap<String, CLIParameter>,
+        /// FFmpeg filtergraph applied to the frames before they reach this
+        /// encoder. Requires FFmpeg in PATH.
+        ffmpeg_filter: Option<String>,
     },
     VVenC {
-        executable: Option<PathBuf>,
-        pass:       EncoderPasses,
-        options:    HashMap<String, CLIParameter>,
+        executable:    Option<PathBuf>,
+        pass:          EncoderPasses,
+        options:       HashMap<String, CLIParameter>,
+        /// FFmpeg filtergraph applied to the frames before they reach this
+        /// encoder. Requires FFmpeg in PATH.
+        ffmpeg_filter: Option<String>,
     },
     FFmpeg {
         executable: Option<PathBuf>,
@@ -571,44 +595,52 @@ impl Encoder {
                 pass,
                 options,
                 photon_noise: None,
+                ffmpeg_filter: None,
             },
             EncoderBase::RAV1E => Encoder::RAV1E {
                 executable: None,
                 pass,
                 options,
                 photon_noise: None,
+                ffmpeg_filter: None,
             },
             EncoderBase::VPX => Encoder::VPX {
                 executable: None,
                 pass,
                 options,
+                ffmpeg_filter: None,
             },
             EncoderBase::SVTAV1 => Encoder::SVTAV1 {
                 executable: None,
                 pass,
                 options,
                 photon_noise: None,
+                ffmpeg_filter: None,
             },
             EncoderBase::AVM => Encoder::AVM {
                 executable: None,
                 pass,
                 options,
                 photon_noise: None,
+                ffmpeg_filter: None,
             },
             EncoderBase::X264 => Encoder::X264 {
                 executable: None,
                 pass,
                 options,
+                ffmpeg_filter: None,
             },
             EncoderBase::X265 => Encoder::X265 {
                 executable: None,
                 pass,
                 options,
+                ffmpeg_filter: None,
             },
             EncoderBase::VVenC => Encoder::VVenC {
                 executable: None,
                 pass,
                 options,
+                ffmpeg_filter: None,
             },
             EncoderBase::FFmpeg => Encoder::FFmpeg {
                 executable: None,
@@ -761,10 +793,139 @@ impl Encoder {
     pub fn output_extension(&self) -> &'static str {
         self.base().output_extension()
     }
+
+    /// The FFmpeg filtergraph applied to this encoder's frames, if any.
+    ///
+    /// Always `None` for [`Encoder::FFmpeg`], which filters through `options`.
+    #[inline]
+    pub fn ffmpeg_filter(&self) -> Option<&str> {
+        match self {
+            Encoder::AOM {
+                ffmpeg_filter, ..
+            }
+            | Encoder::RAV1E {
+                ffmpeg_filter, ..
+            }
+            | Encoder::VPX {
+                ffmpeg_filter, ..
+            }
+            | Encoder::SVTAV1 {
+                ffmpeg_filter, ..
+            }
+            | Encoder::AVM {
+                ffmpeg_filter, ..
+            }
+            | Encoder::X264 {
+                ffmpeg_filter, ..
+            }
+            | Encoder::X265 {
+                ffmpeg_filter, ..
+            }
+            | Encoder::VVenC {
+                ffmpeg_filter, ..
+            } => ffmpeg_filter.as_deref(),
+            Encoder::FFmpeg {
+                ..
+            } => None,
+        }
+    }
+
+    /// Sets the FFmpeg filtergraph applied to this encoder's frames.
+    ///
+    /// A no-op for [`Encoder::FFmpeg`], which filters through `options`.
+    #[inline]
+    pub fn set_ffmpeg_filter(&mut self, filter: Option<String>) {
+        match self {
+            Encoder::AOM {
+                ffmpeg_filter, ..
+            }
+            | Encoder::RAV1E {
+                ffmpeg_filter, ..
+            }
+            | Encoder::VPX {
+                ffmpeg_filter, ..
+            }
+            | Encoder::SVTAV1 {
+                ffmpeg_filter, ..
+            }
+            | Encoder::AVM {
+                ffmpeg_filter, ..
+            }
+            | Encoder::X264 {
+                ffmpeg_filter, ..
+            }
+            | Encoder::X265 {
+                ffmpeg_filter, ..
+            }
+            | Encoder::VVenC {
+                ffmpeg_filter, ..
+            } => *ffmpeg_filter = filter,
+            Encoder::FFmpeg {
+                ..
+            } => {},
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 pub enum EncoderPasses {
     All(u8),
     Specific(u8, u8),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_base_except_ffmpeg_round_trips_a_filter() {
+        for base in [
+            EncoderBase::AOM,
+            EncoderBase::RAV1E,
+            EncoderBase::VPX,
+            EncoderBase::SVTAV1,
+            EncoderBase::AVM,
+            EncoderBase::X264,
+            EncoderBase::X265,
+            EncoderBase::VVenC,
+        ] {
+            let mut encoder = Encoder::default_from_base(&base, false);
+            assert_eq!(encoder.ffmpeg_filter(), None, "{base} starts unfiltered");
+            encoder.set_ffmpeg_filter(Some("crop=iw-16:ih-16".to_owned()));
+            assert_eq!(
+                encoder.ffmpeg_filter(),
+                Some("crop=iw-16:ih-16"),
+                "{base} keeps the filtergraph"
+            );
+            encoder.set_ffmpeg_filter(None);
+            assert_eq!(
+                encoder.ffmpeg_filter(),
+                None,
+                "{base} clears the filtergraph"
+            );
+        }
+    }
+
+    #[test]
+    fn the_ffmpeg_encoder_ignores_a_filter() {
+        let mut encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, false);
+        encoder.set_ffmpeg_filter(Some("crop=iw-16:ih-16".to_owned()));
+        assert_eq!(encoder.ffmpeg_filter(), None);
+    }
+
+    #[test]
+    fn a_filter_survives_serialization() {
+        let mut encoder = Encoder::default_from_base(&EncoderBase::X264, false);
+        encoder.set_ffmpeg_filter(Some("eq=brightness=0.05".to_owned()));
+        let json = serde_json::to_string(&encoder).expect("encoder serializes");
+        let restored: Encoder = serde_json::from_str(&json).expect("encoder deserializes");
+        assert_eq!(restored.ffmpeg_filter(), Some("eq=brightness=0.05"));
+    }
+
+    #[test]
+    fn a_config_without_a_filter_deserializes() {
+        let json = r#"{"X264":{"executable":null,"pass":{"All":1},"options":{}}}"#;
+        let encoder: Encoder = serde_json::from_str(json).expect("encoder deserializes");
+        assert_eq!(encoder.ffmpeg_filter(), None);
+    }
 }

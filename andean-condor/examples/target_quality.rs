@@ -144,6 +144,7 @@ fn main() -> Result<()> {
         executable: None,
         pass:       EncoderPasses::All(1),
         options:    encoder_options,
+        ffmpeg_filter: None,
     };
 
     // Per-sequence VapourSynth script inputs, all reading script.vpy.

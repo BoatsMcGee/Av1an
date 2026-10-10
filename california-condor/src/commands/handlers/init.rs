@@ -77,6 +77,7 @@ pub fn init_handler(
         params,
         photon_noise,
         None,
+        None,
     )?;
     configure_parallel_encoder(&mut configuration, None, None, None, None, workers)?;
     configure_target_quality(
@@ -238,10 +239,10 @@ mod tests {
             filters:       custom_filters.clone(),
         };
         expected_config.condor.encoder = Encoder::AOM {
-            executable:   None,
-            pass:         EncoderPasses::All(2),
-            options:      custom_encoder_parameters,
-            photon_noise: Some(PhotonNoise {
+            executable:    None,
+            pass:          EncoderPasses::All(2),
+            options:       custom_encoder_parameters,
+            photon_noise:  Some(PhotonNoise {
                 iso:        4800,
                 chroma_iso: None,
                 width:      None,
@@ -250,6 +251,7 @@ mod tests {
                 ccb:        None,
                 ccr:        None,
             }),
+            ffmpeg_filter: None,
         };
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(2);
         expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {

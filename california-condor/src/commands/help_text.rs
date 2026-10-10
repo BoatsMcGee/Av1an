@@ -309,6 +309,24 @@ Available filters:"#,
 );
 pub const HELP_FILTERS_SHORT: &str = short_help(HELP_FILTERS);
 
+pub const HELP_FFMPEG_FILTER: &str = r#"FFmpeg filtergraph to apply to each scene before encoding.
+
+FFmpeg must be installed and available in PATH.
+A filter that changes the picture (crop, flip, negate, etc.) makes Quality Check
+report misleading results for this encode, since Quality Check compares the
+unfiltered source against the encoded output. A warning is emitted when Quality
+Check is run with this filter.
+
+Example filtergraphs:
+
+- `crop=iw-16:ih-16`
+- `eq=brightness=0.05:saturation=1.2`
+- `hflip,vflip`
+
+Defaults to no filter.
+"#;
+pub const HELP_FFMPEG_FILTER_SHORT: &str = short_help(HELP_FFMPEG_FILTER);
+
 pub const HELP_SCD_FILTERS: &str = concat!(
     r#"Filters to apply to the Scene Detector input.
 

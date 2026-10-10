@@ -10,6 +10,7 @@ use crate::{
 
 pub mod benchmarker;
 pub mod bitrate_optimizer;
+pub mod ffmpeg_filter;
 pub mod noise_detector;
 pub mod noise_scaler;
 pub mod parallel_encoder;
