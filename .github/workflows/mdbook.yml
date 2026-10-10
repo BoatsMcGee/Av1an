@@ -104,8 +104,18 @@ jobs:
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v5
+      - name: Point the docs at this deploy
+        run: >-
+          bash ./.github/scripts/prepare-docs-for-deploy.sh
+          "${{ steps.pages.outputs.base_url }}/"
+          "${{ github.server_url }}/${{ github.repository }}"
+      # Both repository references in book.toml are replaced with the one that
+      # actually built this site, so a fork's pages link to themselves
       - name: Build with mdBook
         run: mdbook build ./site
+        env:
+          MDBOOK_OUTPUT__HTML__GIT_REPOSITORY_URL: "${{ github.server_url }}/${{ github.repository }}"
+          MDBOOK_OUTPUT__HTML__EDIT_URL_TEMPLATE: "${{ github.server_url }}/${{ github.repository }}/edit/HEAD/california-condor/{path}"
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:

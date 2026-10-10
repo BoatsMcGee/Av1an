@@ -6,10 +6,18 @@ src = "../california-condor/docs"
 title = "Av1an Documentation"
 
 [output.html]
+# The header's repository icon. CI overrides this with the repository that
+# built the site, so a fork's pages link to themselves.
 git-repository-url = "https://github.com/rust-av/Av1an"
-edit-url-template = "https://github.com/rust-av/Av1an/edit/master/california-condor/docs/{path}"
+# `{path}` is relative to `site/`, so it arrives as `../california-condor/docs/page.md`.
+# The `california-condor/` prefix absorbs that `..`; without it the link resolves
+# to `california-condor/california-condor/docs/page.md`, which does not exist.
+# CI overrides this with the repository that actually built the site.
+edit-url-template = "https://github.com/rust-av/Av1an/edit/master/california-condor/{path}"
 site-url = "/Av1an/"
 no-section-label = true
+# Keeps each screenshot link's target on the theme its thumbnail shows.
+additional-js = ["screenshot-theme.js"]
 
 [output.html.fold]
 enable = true

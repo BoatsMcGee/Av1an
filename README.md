@@ -59,7 +59,7 @@ Av1an can analyze video properties and qualities to improve encoded video qualit
 ### Installation
 
 Install the Av1an CLI, California Condor, from [crates.io][crates], [Arch AUR][aur], Docker, or download it from [Releases](https://github.com/rust-av/Av1an/releases).
-For platform details and required dependencies see [Installation](./california-condor/docs/installation.md); to build from source see [Compiling](./california-condor/docs/compiling.md).
+For platform details and required dependencies see [Installation](https://rust-av.github.io/Av1an/installation.html); to build from source see [Compiling](https://rust-av.github.io/Av1an/compiling.html).
 
 ```bash
 $ pacman -S condor       # Arch Linux & Manjaro
@@ -71,7 +71,7 @@ $ docker pull boatsmcgee/condor:latest   # Docker Hub
 
 #### California Condor CLI
 
-The Av1an CLI, California Condor, uses a single JSON configuration file to manage the entire encoding process. Each step can also be executed individually with its own command. You can use `--help` on each command for details on how to use them (e.g. `condor --help`, `condor detect-scenes --help`, `condor target-quality --help`). For a complete guide on using California Condor, see the [California Condor README](./california-condor/README.md) and [guide](./california-condor/docs/guide.md). For a quick start, see the example below.
+The Av1an CLI, California Condor, uses a single JSON configuration file to manage the entire encoding process. Each step can also be executed individually with its own command. You can use `--help` on each command for details on how to use them (e.g. `condor --help`, `condor detect-scenes --help`, `condor target-quality --help`). For a complete guide on using California Condor, see the [California Condor README](./california-condor/README.md) and [guide](https://rust-av.github.io/Av1an/guide.html). For a quick start, see the example below.
 
 *Encode a 1080p 10-bit AV1 video with Film Grain Synthesis using rav1e. Use FFMS2 to decode the input. Downscale the scene detection input to 540p to detect scenes faster. Target a SSIMULACRA 2 quality score of 85 quickly. Use mkvmerge to concatenate the output video.*
 
@@ -100,7 +100,7 @@ The Av1an library, Andean Condor, consists of the following components: `Input`,
 
 ## Developing
 
-See [Developing and Contributing](https://rust-av.github.io/Av1an/contributing) for a guide on developing Av1an and preparing for a Pull Request.
+See [Developing and Contributing](https://rust-av.github.io/Av1an/contributing.html) for a guide on developing Av1an and preparing for a Pull Request.
 
 <!-- Links -->
 

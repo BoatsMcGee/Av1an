@@ -30,7 +30,7 @@ California Condor is the command-line interface and Terminal User Interface (TUI
 
 ## Getting Started
 
-For a complete walkthrough, see the [guide](./docs/guide.md). It covers the end-to-end workflow, the JSON configuration file, temporary and log file layout, and when each command launches a TUI.
+For a complete walkthrough, see the [guide](https://rust-av.github.io/Av1an/guide.html). It covers the end-to-end workflow, the JSON configuration file, temporary and log file layout, and when each command launches a TUI.
 
 ### Installation
 
@@ -93,7 +93,7 @@ $ condor \
     --concat "mkvmerge"
 ```
 
-See [condor](./docs/commands/condor.md) for all full-run flags, [configuration](./docs/configuration.md) for global flags and `condor.json` validation, [types](./docs/types.md) for Decoder, Encoder, Filters, and other complex types, and the [guide](./docs/guide.md) for step ordering.
+See [condor](https://rust-av.github.io/Av1an/commands/condor.html) for all full-run flags, [configuration](https://rust-av.github.io/Av1an/configuration.html) for global flags and `condor.json` validation, [types](https://rust-av.github.io/Av1an/types.html) for Decoder, Encoder, Filters, and other complex types, and the [guide](https://rust-av.github.io/Av1an/guide.html) for step ordering.
 
 ## Gallery
 
