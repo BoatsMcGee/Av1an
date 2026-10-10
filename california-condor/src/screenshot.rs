@@ -53,7 +53,7 @@ use crate::{
     apps::{
         TuiApp,
         benchmarker::{BenchmarkerApp, BenchmarkerState, WorkerStatus},
-        initializing::{InitializingApp, InitializingState},
+        initializing::{InitializingApp, InitializingPhase, InitializingState},
         noise_detection::{NoiseDetectionApp, NoiseDetectionState},
         parallel_encoder::{ParallelEncoderApp, ParallelEncoderState, SceneEncoder},
         scene_concatenator::{SceneConcatenatorApp, SceneConcatenatorState},
@@ -648,10 +648,11 @@ fn tui_screens() -> Vec<Screen> {
 
     // Initializing Input.
     {
-        let mut app = InitializingApp::new(ci);
+        let mut app = InitializingApp::new(Some(ci));
         backdate(&mut app.started, 12);
         app.on_snapshot(InitializingState {
             percent: 34.0,
+            phase:   InitializingPhase::Indexing,
         });
         screens.push(Screen {
             slug: "initializing-input",

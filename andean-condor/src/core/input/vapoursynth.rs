@@ -4,7 +4,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Write as _,
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, atomic::AtomicBool},
 };
 
 use anyhow::{Result, bail};
@@ -12,7 +12,7 @@ use av_decoders::{Decoder, DecoderError, ModifyNode, VapoursynthDecoder};
 use vapoursynth::{core::CoreRef, frame::FrameRef, map::OwnedMap, node::Node};
 
 use crate::{
-    core::input::{Input, InputError, clip_info::ClipInfo},
+    core::input::{Input, InputError, OpenProgress, clip_info::ClipInfo},
     models::input::{Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource},
     vapoursynth::{
         get_api,
@@ -215,6 +215,53 @@ fn has_script_only_filter(data: &InputModel) -> bool {
     }
 }
 
+/// Pre-indexes `data`'s source ahead of opening it, reporting progress.
+///
+/// Only DGDecNV indexes out of process: it spawns `dgindexnv`, whose stdout
+/// carries something countable. Every other import method indexes lazily
+/// inside its own source plugin, where no callback of ours can reach it, so
+/// nothing is reported here and the caller stays indeterminate.
+pub fn index_source(
+    data: &InputModel,
+    mut progress: impl FnMut(OpenProgress),
+    cancelled: Option<&AtomicBool>,
+) -> Result<()> {
+    let InputModel::VapourSynth {
+        path,
+        import_method,
+        cache_path,
+        ..
+    } = data
+    else {
+        return Ok(());
+    };
+    let VapourSynthImportMethod::DGDecNV {
+        dgindexnv_executable,
+    } = import_method
+    else {
+        return Ok(());
+    };
+    // Before spawning: a missing source must fail with the error
+    // `from_vapoursynth` would give, not after a pointless `dgindexnv` run.
+    Input::validate(data)?;
+
+    // `index_video` reports the start itself, so an existing `.dgi` never
+    // claims to be indexing.
+    DGSource::index_video(
+        path,
+        cache_path.as_deref(),
+        dgindexnv_executable.as_deref(),
+        Some(&mut |current, total| {
+            progress(OpenProgress::Indexing {
+                current,
+                total,
+            });
+        }),
+        cancelled,
+    )?;
+    Ok(())
+}
+
 /// Opens a VapourSynth input, chaining its filters onto the source node.
 pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> Result<Input> {
     Input::validate(data)?;
@@ -258,8 +305,14 @@ pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> R
                 dgindexnv_executable,
             } = import_method
             {
-                DGSource::index_video(path, cache_path.as_deref(), dgindexnv_executable.as_deref())
-                    .map_err(|_| DecoderError::UnsupportedDecoder)?;
+                DGSource::index_video(
+                    path,
+                    cache_path.as_deref(),
+                    dgindexnv_executable.as_deref(),
+                    None,
+                    None,
+                )
+                .map_err(|_| DecoderError::UnsupportedDecoder)?;
             }
             let call = SourceCall::new(import_method);
 
