@@ -6,8 +6,8 @@
 //! y4m or as the raw planes of a [`FrameFeed`] — lives here.
 
 use std::{collections::HashMap, io::Cursor, path::PathBuf, sync::atomic::AtomicBool};
-// `::vapoursynth` is the crate, not this module's `vapoursynth` submodule.
 
+// `::vapoursynth` is the crate, not this module's `vapoursynth` submodule.
 use ::vapoursynth::node::Node;
 use anyhow::Result;
 use av_decoders::{Decoder, VideoDetails, v_frame::chroma::ChromaSubsampling};
