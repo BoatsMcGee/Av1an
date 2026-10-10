@@ -237,7 +237,7 @@ fn main() -> Result<()> {
             ..ParallelEncoderConfig::new(&scenes_directory)
         },
         scene_concatenator: SceneConcatenatorConfig {
-            method: ConcatMethod::FFmpeg,
+            method: ConcatMethod::FFmpeg(Default::default()),
             ..SceneConcatenatorConfig::new(&scenes_directory)
         },
     };

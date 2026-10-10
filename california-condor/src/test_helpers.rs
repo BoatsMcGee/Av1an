@@ -248,7 +248,7 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
                     input:            None,
                 },
                 scene_concatenator: SceneConcatenatorConfig {
-                    method: ConcatMethod::MKVMerge,
+                    method: ConcatMethod::MKVMerge(Default::default()),
                     scenes_directory,
                     output: None,
                 },

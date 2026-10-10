@@ -640,7 +640,7 @@ pub fn run_scene_concatenator_tui(
 ) -> Result<()> {
     let scenes_len = condor.scenes.len();
     let clip_info = condor.input.clip_info()?;
-    let method = condor.sequence_config.scene_concatenator.method;
+    let method = condor.sequence_config.scene_concatenator.method.clone();
 
     let mut scene_concatenator = SceneConcatenator::default();
 

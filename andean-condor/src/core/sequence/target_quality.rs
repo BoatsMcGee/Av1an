@@ -887,24 +887,27 @@ impl TargetQuality {
 
         let scene_paths = tasks.iter().map(|task| task.output.clone()).collect::<Vec<_>>();
         match concat_method {
-            ConcatMethod::MKVMerge => {
+            ConcatMethod::MKVMerge(_) => {
                 SceneConcatenator::mkvmerge(
                     &pass_directory,
                     &output,
                     &scene_paths,
                     None,
                     framerate,
+                    None,
                     &progress_tx,
                     cancelled,
                 )?;
             },
-            ConcatMethod::FFmpeg => {
+            ConcatMethod::FFmpeg(_) => {
                 SceneConcatenator::ffmpeg(
                     &pass_directory,
                     &output,
                     &scene_paths,
+                    None,
                     total_frames,
                     framerate,
+                    None,
                     &progress_tx,
                     cancelled,
                 )?;

@@ -845,7 +845,8 @@ mod tests {
             tq.quantizer_range.1 = 25;
         }
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(12);
-        expected_config.condor.sequence_config.scene_concatenator.method = ConcatMethod::MKVMerge;
+        expected_config.condor.sequence_config.scene_concatenator.method =
+            ConcatMethod::MKVMerge(Default::default());
         // immutable shadow
         let expected_config = expected_config;
 

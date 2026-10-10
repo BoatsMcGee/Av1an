@@ -27,7 +27,7 @@ Example (init defaults):
     "noise_scaler": null,
     "benchmarker": { "threshold": 5, "max_memory": null },
     "parallel_encoder": { "workers": null, "scenes_directory": "./a1b2c3d4/scenes", "input": null },
-    "scene_concatenator": { "method": "mkvmerge", "scenes_directory": "./a1b2c3d4/scenes", "output": null },
+    "scene_concatenator": { "method": { "mkvmerge": {} }, "scenes_directory": "./a1b2c3d4/scenes", "output": null },
     "target_quality": null,
     "quality_check": null,
     "bitrate_optimizer": { "bitrate_sigma_threshold": null },
