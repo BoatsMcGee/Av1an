@@ -11,7 +11,7 @@
 
 - `None`: `{ "None": { "minimum_length": <usize frames>, "maximum_length": <usize frames> } }` — uniform splitting, no content analysis
 - `AVSceneChange`: `{ "AVSceneChange": { "minimum_length": <usize frames>, "maximum_length": <usize frames>, "method": "Fast" | "Standard", "save_scores": <bool> } }`
-- `TransNetV2`: `{ "TransNetV2": { "minimum_length": <usize frames>, "maximum_length": <usize frames>, "model_path": <path or null>, "save_scores": <bool> } }` — neural network detection via ONNX Runtime; `model_path` pins the model file (see [Scene Detection](../../types/scene-detection.md)), otherwise it is searched beside the executable. The `andean-condor/scripts/install-transnetv2-model-*` scripts download a copy and print the `TRANSNETV2_MODEL_PATH` to set
+- `TransNetV2`: `{ "TransNetV2": { "minimum_length": <usize frames>, "maximum_length": <usize frames>, "model_path": <path or null>, "save_scores": <bool> } }` — neural network detection via ONNX Runtime; `model_path` pins the model file (see [Scene Detection](../../../types/scene-detection.md)), otherwise it is searched beside the executable. The `andean-condor/scripts/install-transnetv2-model-*` scripts download a copy and print the `TRANSNETV2_MODEL_PATH` to set
 
 `save_scores` keeps the method's per-frame scores in each scene's `sequence_data.scene_detection` ([condor.scenes](../scene.md)). It defaults to `false`: the scores are unused and would flood `condor.json`.
 

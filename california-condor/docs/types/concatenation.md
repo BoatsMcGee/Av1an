@@ -1,11 +1,11 @@
 # Concatenation
 
-`CONCAT` selects how encoded scenes are joined. Used by `--concat` and `concatenate --method` (see [init]\(../commands/init.md\), [pipeline](../commands/condor.md), [concatenate]\(../commands/concatenate.md\)).
+`CONCAT` selects how encoded scenes are joined. Used by `--concat` and `concatenate --method` (see [init](../commands/init.md), [pipeline](../commands/condor.md), [concatenate](../commands/concatenate.md)).
 
 | Value      | Tool              | Output Formats | Notes                                                        |
 | ---------- | ----------------- | -------------- | ------------------------------------------------------------ |
-| `mkvmerge` | MKVToolNix        | `.mkv` only    | Default. Generally best; requires mkvmerge installed.        |
-| `ffmpeg`   | FFmpeg            | many           | Supports non-Matroska/IVF; may break audio seeking.          |
+| `mkvmerge` | MKVToolNix        | `.mkv` only    | Default. Generally best; requires mkvmerge installed. Honors the `mkvmerge` settings under `scene_concatenator.method`. |
+| `ffmpeg`   | FFmpeg            | many           | Supports non-Matroska/IVF; may break audio seeking. Honors the `ffmpeg` settings (filters/codecs) under `scene_concatenator.method`. |
 | `ivf`      | IVF concatenation | `.ivf` only    | Video only; drops audio, subtitles, chapters, metadata.      |
 
 ## Default

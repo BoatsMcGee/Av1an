@@ -265,7 +265,8 @@ mod tests {
             quantizer_range: TargetQuality::default_quantizer_range(&EncoderBase::AOM),
             ..Default::default()
         });
-        expected_config.condor.sequence_config.scene_concatenator.method = ConcatMethod::FFmpeg;
+        expected_config.condor.sequence_config.scene_concatenator.method =
+            ConcatMethod::FFmpeg(Default::default());
         // immutable shadow
         let expected_config = expected_config;
 

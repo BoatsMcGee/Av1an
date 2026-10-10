@@ -18,7 +18,10 @@ use common::condor_cmd;
 mod tests {
     use andean_condor::{
         ffmpeg::FFPixelFormat,
-        models::{input::Input, sequence::scene_concatenator::ConcatMethod},
+        models::{
+            input::Input,
+            sequence::scene_concatenator::{ConcatMethod, FfmpegConfig, MkvmergeConfig},
+        },
         vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
     };
     use serial_test::serial;
@@ -269,9 +272,7 @@ mod tests {
         // The encoded scenes are now on disk, so both concatenation methods can
         // be exercised against them. Concatenating is far cheaper than encoding,
         // and it leaves the scene files in place, so this needs no second encode.
-        for (method, label) in
-            [(ConcatMethod::MKVMerge, "mkvmerge"), (ConcatMethod::FFmpeg, "ffmpeg")]
-        {
+        for label in ["mkvmerge", "ffmpeg"] {
             // Clear the previous run's output so each method starts clean. The
             // first iteration has none yet, since encoding only writes chunks.
             if output.exists() {
@@ -283,6 +284,14 @@ mod tests {
                 .args(["concatenate", "--method", label])
                 .assert()
                 .success();
+
+            // Switching to a method that is not the current one starts from that
+            // method's defaults; the baseline config is mkvmerge, so the ffmpeg
+            // run lands on default FFmpeg settings.
+            let method = match label {
+                "mkvmerge" => ConcatMethod::MKVMerge(MkvmergeConfig::default()),
+                _ => ConcatMethod::FFmpeg(FfmpegConfig::default()),
+            };
 
             let mut expected = expected_config.clone();
             expected.condor.sequence_config.scene_concatenator.method = method;

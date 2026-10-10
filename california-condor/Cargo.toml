@@ -17,6 +17,13 @@ readme = "README.md"
 name = "condor"
 path = "src/main.rs"
 
+# Documentation screenshot generator; only built with the `screenshots`
+# feature so the shipping `condor` binary stays free of the rasterizer crates.
+[[bin]]
+name = "gen_screenshots"
+path = "src/bin/gen_screenshots.rs"
+required-features = ["screenshots"]
+
 [dependencies]
 anyhow = { workspace = true }
 andean-condor = { workspace = true }
@@ -37,6 +44,12 @@ tracing = { workspace = true }
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ironmark = "2.0.1"
+# Screenshot generation (behind the `screenshots` feature): rasterize ratatui
+# buffers to pixels. AVIF encoding is delegated to FFmpeg, which Condor already
+# depends on, so no image/AVIF crate is linked. Not compiled into the shipping
+# binary.
+ab_glyph = { version = "0.2", optional = true }
+av-format = { version = "0.7", optional = true }
 
 [build-dependencies]
 vergen-git2 = { version = "9.1.0", features = ["build", "rustc", "cargo"] }
@@ -48,6 +61,10 @@ cuda = ["andean-condor/cuda"]
 webgpu = ["andean-condor/webgpu"]
 rocm = ["andean-condor/rocm"]
 openvino = ["andean-condor/openvino"]
+# Generates the documentation TUI screenshots (light + dark) as AVIF. Used by
+# `src/bin/gen_screenshots.rs` and the `screenshots` integration test; the
+# shipping binary does not link `ab_glyph`.
+screenshots = ["dep:ab_glyph", "dep:av-format"]
 
 [dev-dependencies]
 assert_cmd = "2.1.1"

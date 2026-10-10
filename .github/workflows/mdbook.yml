@@ -1,7 +1,9 @@
-# Sample workflow for building and deploying a mdBook site to GitHub Pages
+# Builds and deploys the mdBook site to GitHub Pages.
 #
-# To get started with mdBook see: https://rust-lang.github.io/mdBook/index.html
-#
+# The documentation screenshots (light + dark AVIF) are generated from the live
+# TUI by the `gen_screenshots` binary, in the `screenshots` job, and handed to
+# the mdBook build as an artifact — so every deploy ships screenshots that match
+# the current interface. See `california-condor/docs/screenshots.md`.
 name: Deploy mdBook site to Pages
 
 on:
@@ -25,13 +27,76 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Renders the TUI screenshots. Building the generator links Andean Condor, so
+  # this mirrors the native setup from `linux-build.yml` (FFMS2, Zig, staged
+  # metric libraries). The `ci` profile keeps the link fast; output is identical
+  # to a release build for rendering purposes.
+  screenshots:
+    runs-on: ubuntu-24.04
+
+    env:
+      CARGO_INCREMENTAL: 0
+      FFMS_LIB_DIR: /usr/lib/x86_64-linux-gnu
+      FFMS_INCLUDE_DIR: /usr/include
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            nasm patchelf libclang-dev libffms2-dev libvulkan-dev meson ninja-build \
+            fonts-dejavu-core
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # fmetrics needs Zig 0.16.x specifically: 0.17 removed b.build_root.
+      - name: Zig setup
+        uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Stage native libraries
+        run: bash ./.github/scripts/stage-native-libs.sh target/release
+
+      - name: Record the native library search paths
+        run: |
+          echo "VSHIP_PLUGIN_PATH=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
+          echo "VSHIP_LIB_DIR=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
+          echo "VMAF_MODEL_PATH=$GITHUB_WORKSPACE/target/release/model" >> "$GITHUB_ENV"
+          echo "FMETRICS_LIB_DIR=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
+
+      - name: Generate TUI screenshots
+        run: >
+          cargo run --profile ci --features screenshots --bin gen_screenshots --
+          california-condor/docs/media/tui
+
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v7
+        with:
+          name: docs-media
+          path: california-condor/docs/media/tui
+          retention-days: 1
+
   # Build job
   build:
     runs-on: ubuntu-latest
     env:
       MDBOOK_VERSION: 0.4.36
+    needs: screenshots
     steps:
       - uses: actions/checkout@v7
+      - name: Download screenshots
+        uses: actions/download-artifact@v8
+        with:
+          name: docs-media
+          path: california-condor/docs/media/tui
       - name: Install mdBook
         uses: taiki-e/install-action@v2
         with:

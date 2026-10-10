@@ -120,3 +120,27 @@ A picture-altering filter (`crop`, `hflip`, `negate`, ...) changes what gets enc
 
 - `> condor encode --ffmpeg-filter "crop=iw-16:ih-16"`
 - `> condor encode --ffmpeg-filter "eq=brightness=0.05:saturation=1.2"`
+
+## Screenshots
+
+The screenshots below are generated from the live interface. Click any image to open it full size.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/parallel-encoder-light.avif"><picture><source srcset="../media/tui/parallel-encoder-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/parallel-encoder-light.avif" alt="Parallel encoder" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Parallel encoder</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-encode-light.avif"><picture><source srcset="../media/tui/help-encode-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-encode-light.avif" alt="condor encode --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor encode --help</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-encode-verbose-light.avif"><picture><source srcset="../media/tui/help-encode-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-encode-verbose-light.avif" alt="condor encode --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor encode --help --verbose</p>
+    </td>
+    <td width="50%" valign="top"></td>
+  </tr>
+</table>

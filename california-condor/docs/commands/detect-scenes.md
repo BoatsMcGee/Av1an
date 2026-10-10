@@ -84,3 +84,27 @@ Maximum scene duration in seconds.
 ### Default
 
 If not specified, `10` is used.
+
+## Screenshots
+
+The screenshots below are generated from the live interface. Click any image to open it full size.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/scene-detection-light.avif"><picture><source srcset="../media/tui/scene-detection-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/scene-detection-light.avif" alt="Detecting scenes" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Detecting scenes</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-detect-scenes-light.avif"><picture><source srcset="../media/tui/help-detect-scenes-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-detect-scenes-light.avif" alt="condor detect-scenes --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor detect-scenes --help</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-detect-scenes-verbose-light.avif"><picture><source srcset="../media/tui/help-detect-scenes-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-detect-scenes-verbose-light.avif" alt="condor detect-scenes --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor detect-scenes --help --verbose</p>
+    </td>
+    <td width="50%" valign="top"></td>
+  </tr>
+</table>

@@ -1,6 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use andean_condor::models::sequence::scene_concatenator::ConcatMethod;
+use andean_condor::models::sequence::scene_concatenator::{
+    ConcatMethod,
+    FfmpegConfig,
+    MkvmergeConfig,
+};
 use anyhow::Result;
 
 use crate::{
@@ -32,9 +36,18 @@ pub fn configure_concatenate(
     method: Option<&ConcatenationMethod>,
 ) -> Result<()> {
     if let Some(concat) = method {
+        // Switching methods keeps that method's existing settings; changing to
+        // a different method starts from its defaults.
+        let existing = configuration.condor.sequence_config.scene_concatenator.method.clone();
         let concat = match concat {
-            ConcatenationMethod::MkvMerge => ConcatMethod::MKVMerge,
-            ConcatenationMethod::FFmpeg => ConcatMethod::FFmpeg,
+            ConcatenationMethod::MkvMerge => match existing {
+                ConcatMethod::MKVMerge(config) => ConcatMethod::MKVMerge(config),
+                _ => ConcatMethod::MKVMerge(MkvmergeConfig::default()),
+            },
+            ConcatenationMethod::FFmpeg => match existing {
+                ConcatMethod::FFmpeg(config) => ConcatMethod::FFmpeg(config),
+                _ => ConcatMethod::FFmpeg(FfmpegConfig::default()),
+            },
             ConcatenationMethod::Ivf => ConcatMethod::Ivf,
         };
         configuration.condor.sequence_config.scene_concatenator.method = concat;
@@ -129,7 +142,8 @@ mod tests {
             .to_path_buf();
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
-        expected_config.condor.sequence_config.scene_concatenator.method = ConcatMethod::FFmpeg;
+        expected_config.condor.sequence_config.scene_concatenator.method =
+            ConcatMethod::FFmpeg(Default::default());
         expected_config.condor.sequence_config.scene_concatenator.scenes_directory =
             temp_abs.join("scenes");
         // immutable shadow

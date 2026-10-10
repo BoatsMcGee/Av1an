@@ -382,6 +382,10 @@ pub const HELP_TQ_FILTERS_SHORT: &str = short_help(HELP_TQ_FILTERS);
 pub const HELP_CONCAT: &str = r#"Method used for concatenating the encoded chunks into the output file.
 
 Defaults to **mkvmerge**.
+
+Track, chapter, metadata, and filter settings for the selected method live in
+the *scene_concatenator.method* entry in the configuration file, which carries
+that muxer's settings object.
 "#;
 pub const HELP_CONCAT_SHORT: &str = short_help(HELP_CONCAT);
 

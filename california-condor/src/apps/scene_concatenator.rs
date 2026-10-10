@@ -86,7 +86,8 @@ impl TuiApp for SceneConcatenatorApp {
     }
 
     fn render(&self, frame: &mut Frame) {
-        const MAIN_COLOR: Color = Color::DarkGray;
+        let theme = crate::theme::Theme::current();
+        let main: Color = theme.main;
         let layout = Layout::default()
             .constraints([
                 Constraint::Percentage(10),
@@ -105,7 +106,7 @@ impl TuiApp for SceneConcatenatorApp {
         frame.render_widget(input_info, layout[0]);
 
         let progress_bar = ProgressBar {
-            color:               MAIN_COLOR,
+            color:               main,
             processing_title:    if self.attempted_cancel {
                 "Waiting for Concatenation to Finish...".to_owned()
             } else {

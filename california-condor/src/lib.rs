@@ -47,6 +47,9 @@ pub mod commands;
 pub mod components;
 pub mod configuration;
 pub mod logging;
+#[cfg(feature = "screenshots")]
+pub mod screenshot;
+pub mod theme;
 pub mod tui;
 pub mod utils;
 

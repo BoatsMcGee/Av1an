@@ -1,20 +1,28 @@
 use std::{
     fmt::Write,
+    io::{BufRead, BufReader},
     path::{Path, PathBuf, absolute},
-    process::Command,
+    process::{Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
 };
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
-use crate::vapoursynth::{
-    VapourSynthError,
-    plugins::{Plugin, PluginFunction},
-    script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
-        script::{Imports, Line},
+use crate::{
+    core::input::IndexProgress,
+    vapoursynth::{
+        VapourSynthError,
+        plugins::{Plugin, PluginFunction},
+        script_builder::{
+            NodeVariableName,
+            VapourSynthPluginScript,
+            script::{Imports, Line},
+        },
     },
 };
 
@@ -275,11 +283,18 @@ impl DGSource {
     /// executable and save the resulting cache file to the provided path or
     /// next to the source file. If the cache file already exists, indexing will
     /// be skipped.
+    ///
+    /// DGIndexNV runs out of process, so its console output is read line by
+    /// line rather than swallowed by [`Command::output`] and forwarded to
+    /// `progress` as `(current, total)`. Pass `cancelled` to kill the child
+    /// part-way through.
     #[inline]
     pub fn index_video(
         source: &Path,
         cache: Option<&Path>,
         executable: Option<&Path>,
+        mut progress: Option<IndexProgress<'_>>,
+        cancelled: Option<&AtomicBool>,
     ) -> Result<PathBuf> {
         let absolute_source = absolute(source)?;
         let absolute_cache = if let Some(c_path) = cache {
@@ -287,25 +302,133 @@ impl DGSource {
         } else {
             absolute_source.with_extension("dgi")
         };
-        if !absolute_cache.exists() {
-            let _dgindexnv = Command::new(
-                executable.map_or_else(|| "dgindexnv".to_owned(), |exe| exe.display().to_string()),
-            )
-            .arg("-h")
-            .arg("-i")
-            .arg(&absolute_source)
-            .arg("-o")
-            .arg(&absolute_cache)
-            .output()
-            .map_err(|_| VapourSynthError::PluginFunctionError {
+        if absolute_cache.exists() {
+            return Ok(absolute_cache);
+        }
+        // The cache is known missing from here on, so this is the only point
+        // that can honestly claim indexing is starting.
+        if let Some(progress) = progress.as_mut() {
+            (**progress)(0, 0);
+        }
+
+        let mut child = Command::new(
+            executable.map_or_else(|| "dgindexnv".to_owned(), |exe| exe.display().to_string()),
+        )
+        .arg("-h")
+        .arg("-i")
+        .arg(&absolute_source)
+        .arg("-o")
+        .arg(&absolute_cache)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|_| VapourSynthError::PluginFunctionError {
+            plugin:   DGSource::PLUGIN_NAME.to_owned(),
+            function: DGSource::FUNCTION_NAME.to_owned(),
+            message:  "Failed to index video".to_owned(),
+        })?;
+
+        // Drained on its own thread so DGIndexNV can never stall writing to a
+        // pipe nobody is reading. Kept for diagnostics; the exit status is
+        // still ignored, exactly as it was when this used `output()`.
+        let mut stderr = child.stderr.take().ok_or_else(|| {
+            VapourSynthError::PluginFunctionError {
                 plugin:   DGSource::PLUGIN_NAME.to_owned(),
                 function: DGSource::FUNCTION_NAME.to_owned(),
-                message:  "Failed to index video".to_owned(),
-            })?;
+                message:  "Failed to read DGIndexNV stderr".to_owned(),
+            }
+        })?;
+        let stderr_thread = thread::spawn(move || {
+            let mut captured = String::new();
+            let _ = std::io::Read::read_to_string(&mut stderr, &mut captured);
+            captured
+        });
+
+        let stdout = child.stdout.take().ok_or_else(|| {
+            VapourSynthError::PluginFunctionError {
+                plugin:   DGSource::PLUGIN_NAME.to_owned(),
+                function: DGSource::FUNCTION_NAME.to_owned(),
+                message:  "Failed to read DGIndexNV stdout".to_owned(),
+            }
+        })?;
+        let mut reader = BufReader::new(stdout);
+        let mut line = Vec::new();
+        let mut read_error = None;
+        loop {
+            line.clear();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) => break,
+                // Progress is rewritten in place with carriage returns, so both
+                // terminators delimit a report and `\r\n` yields empty chunks.
+                Ok(_) => {
+                    for chunk in String::from_utf8_lossy(&line).split(['\n', '\r']) {
+                        if let (Some(progress), Some((current, total))) =
+                            (progress.as_mut(), parse_progress(chunk))
+                        {
+                            (**progress)(current, total);
+                        }
+                    }
+                    if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = stderr_thread.join();
+                        anyhow::bail!("indexing of {} was cancelled", source.display());
+                    }
+                },
+                Err(error) => {
+                    read_error = Some(error);
+                    break;
+                },
+            }
+        }
+        // A failed read must still reap the child, or `dgindexnv` outlives us.
+        if let Some(error) = read_error {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stderr_thread.join();
+            return Err(error.into());
+        }
+
+        let _ = child.wait()?;
+        let captured = stderr_thread.join().unwrap_or_default();
+        if !captured.trim().is_empty() {
+            tracing::debug!("DGIndexNV stderr: {}", captured.trim());
         }
 
         Ok(absolute_cache)
     }
+}
+
+/// Extract `(current, total)` from one chunk of DGIndexNV output.
+///
+/// DGIndexNV writes the progress percentage to stdout for third-party tools,
+/// one item per line under a label such as `Project`. A bare integer is the
+/// common form (`100`), so it is matched against the whole line rather than a
+/// token — otherwise `DGIndexNV 2.0.0.73` or a frame count would read as
+/// progress. A `current/total` pair is taken as frames when present, and a
+/// percentage is scaled onto a 0..=10000 basis so both reach callers in the
+/// same shape.
+fn parse_progress(chunk: &str) -> Option<(u64, u64)> {
+    let chunk = chunk.trim();
+
+    let mut frames: Option<(u64, u64)> = None;
+    for token in chunk.split_whitespace() {
+        if let Some((current, total)) = token.split_once('/')
+            && let (Ok(current), Ok(total)) = (current.parse::<u64>(), total.parse::<u64>())
+            && total > 0
+        {
+            frames = Some((current, total));
+        }
+    }
+
+    let percent = chunk
+        .strip_suffix('%')
+        .unwrap_or(chunk)
+        .parse::<f64>()
+        .ok()
+        .map(|value| value.clamp(0.0, 100.0));
+
+    frames.or_else(|| percent.map(|value| ((value * 100.0).round() as u64, 10_000)))
 }
 
 impl VapourSynthPluginScript for DGSource {
@@ -330,5 +453,58 @@ impl VapourSynthPluginScript for DGSource {
         lines.push(Line::Expression(node_name, line));
 
         Ok((None, lines))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_progress;
+
+    /// What DGIndexNV actually writes: the percentage as a bare integer on its
+    /// own line, under a label. Captured from DGIndexNV indexing real MKVs.
+    #[test]
+    fn a_bare_integer_line_is_the_percentage() {
+        assert_eq!(parse_progress("100"), Some((10_000, 10_000)));
+        assert_eq!(parse_progress("45"), Some((4500, 10_000)));
+        assert_eq!(parse_progress(" 100 \n"), Some((10_000, 10_000)));
+        // Out-of-range values are clamped rather than sent on.
+        assert_eq!(parse_progress("110"), Some((10_000, 10_000)));
+    }
+
+    /// A percentage with a sign still reads, scaled onto a 0..=10000 basis so
+    /// callers compute the same value out of either form.
+    #[test]
+    fn a_signed_percentage_is_scaled_to_a_basis_of_ten_thousand() {
+        assert_eq!(parse_progress("45.2%"), Some((4520, 10_000)));
+    }
+
+    /// A `current/total` pair is read as frames when one is present.
+    #[test]
+    fn a_frame_pair_is_read_as_frames() {
+        assert_eq!(parse_progress("Indexing 1234/2468"), Some((1234, 2468)));
+        // The last pair on a rewritten line is the newest.
+        assert_eq!(
+            parse_progress("Indexing 100/2468  Indexing 2400/2468"),
+            Some((2400, 2468))
+        );
+    }
+
+    /// Labels, versions and paths share stdout with the percentage. Matching
+    /// the whole line rather than any token is what keeps `2.0.0.73` and a
+    /// frame count out of the progress bar.
+    #[test]
+    fn non_progress_output_is_ignored() {
+        assert_eq!(parse_progress("Project"), None);
+        assert_eq!(parse_progress("DGIndexNV 2.0.0.73"), None);
+        assert_eq!(parse_progress("D:/Videos/input.m2ts"), None);
+        assert_eq!(parse_progress("Frame 100"), None);
+        assert_eq!(parse_progress(""), None);
+        assert_eq!(parse_progress("   "), None);
+    }
+
+    /// Zero of zero frames names no progress at all.
+    #[test]
+    fn a_zero_total_is_ignored() {
+        assert_eq!(parse_progress("0/0"), None);
     }
 }

@@ -26,3 +26,27 @@ If not specified, `5` is used.
 ### Examples
 
 - `> condor benchmark --threshold 5`
+
+## Screenshots
+
+The screenshots below are generated from the live interface. Click any image to open it full size.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/benchmarker-light.avif"><picture><source srcset="../media/tui/benchmarker-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/benchmarker-light.avif" alt="Benchmarking workers" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">Benchmarking workers</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-benchmark-light.avif"><picture><source srcset="../media/tui/help-benchmark-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-benchmark-light.avif" alt="condor benchmark --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor benchmark --help</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-benchmark-verbose-light.avif"><picture><source srcset="../media/tui/help-benchmark-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-benchmark-verbose-light.avif" alt="condor benchmark --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor benchmark --help --verbose</p>
+    </td>
+    <td width="50%" valign="top"></td>
+  </tr>
+</table>

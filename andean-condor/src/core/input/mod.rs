@@ -5,8 +5,13 @@
 //! [`ffms2`] and [`vapoursynth`] submodules, while reading frames back — as
 //! y4m or as the raw planes of a [`FrameFeed`] — lives here.
 
-use std::{collections::HashMap, io::Cursor, path::PathBuf};
-
+use std::{
+    collections::HashMap,
+    io::Cursor,
+    path::PathBuf,
+    sync::atomic::AtomicBool,
+}
+;
 // `::vapoursynth` is the crate, not this module's `vapoursynth` submodule.
 use ::vapoursynth::node::Node;
 use anyhow::Result;
@@ -35,6 +40,25 @@ pub mod clip_info;
 pub mod color_range;
 pub mod ffms2_filter;
 pub mod pixel_format;
+
+/// Reports backend indexing progress as `(current, total)` units — frames for
+/// FFMS2, whatever its stdout counts for a subprocess.
+pub type IndexProgress<'a> = &'a mut dyn FnMut(u64, u64);
+
+/// The stage of opening an input, as reported by [`Input::ensure_indexed`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenProgress {
+    /// FFMS2 is indexing the source, in `current` of `total` frames. Both are
+    /// `0` until FFMS2 has counted the stream.
+    Indexing {
+        current: u64,
+        total:   u64,
+    },
+    /// An index already existed and the input is being opened. No finer
+    /// progress is available — VapourSynth indexes inside its source plugin,
+    /// out of reach of this process.
+    Opening,
+}
 
 pub enum Input {
     Video {
@@ -165,6 +189,63 @@ impl Input {
     #[inline]
     pub fn from_vapoursynth_scripted(data: &InputModel) -> Result<Self> {
         vapoursynth::from_vapoursynth_scripted(data)
+    }
+
+    /// Opens the input described by `data`, reporting indexing progress first.
+    ///
+    /// A native FFMS2 input is pre-indexed here through FFMS2's own indexer —
+    /// the one [`crate::core::input::ffms2`] and av-decoders use — so progress
+    /// can be reported while the `.ffindex` cache is built. A VapourSynth input
+    /// reports a single indeterminate [`OpenProgress::Opening`]: its source
+    /// plugin indexes internally, out of reach of this process. DGDecNV is the
+    /// one exception, since it shells out to `dgindexnv` and reports back on
+    /// its stdout.
+    ///
+    /// Pass `cancelled` to abort an in-flight index early.
+    #[inline]
+    pub fn ensure_indexed(
+        data: &InputModel,
+        mut progress: impl FnMut(OpenProgress),
+        cancelled: Option<&AtomicBool>,
+    ) -> Result<Self> {
+        match data {
+            InputModel::Video {
+                path,
+                ..
+            } => {
+                // Validated here too: indexing must fail on a missing file
+                // with the same error `from_video` would have given.
+                Input::validate(data)?;
+                // If no `.ffindex` exists yet this is the index `from_video`
+                // would otherwise build itself; if one does it returns at once
+                // and `from_video` reads it straight from the cache.
+                ffms2::index_video_with_progress(
+                    path,
+                    Some(&mut |current, total| {
+                        progress(OpenProgress::Indexing {
+                            current,
+                            total,
+                        });
+                    }),
+                    cancelled,
+                )?;
+                progress(OpenProgress::Opening);
+                ffms2::from_video(data)
+            },
+            InputModel::VapourSynth {
+                ..
+            } => {
+                vapoursynth::index_source(data, &mut progress, cancelled)?;
+                progress(OpenProgress::Opening);
+                vapoursynth::from_vapoursynth(data, None)
+            },
+            InputModel::VapourSynthScript {
+                ..
+            } => {
+                progress(OpenProgress::Opening);
+                vapoursynth::from_vapoursynth(data, None)
+            },
+        }
     }
 
     /// Reopens a natively-decoded input through VapourSynth, translating its

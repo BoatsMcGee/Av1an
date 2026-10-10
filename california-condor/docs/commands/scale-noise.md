@@ -33,3 +33,20 @@ Maximum scale factor for Photon Noise ISO scaling.
 ## Scale Chroma `--scale-chroma`
 
 Scale Chroma ISO.
+
+## Screenshots
+
+The screenshots below are generated from the live interface. Click any image to open it full size.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-scale-noise-light.avif"><picture><source srcset="../media/tui/help-scale-noise-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-scale-noise-light.avif" alt="condor scale-noise --help" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor scale-noise --help</p>
+    </td>
+    <td width="50%" valign="top">
+      <a href="../media/tui/help-scale-noise-verbose-light.avif"><picture><source srcset="../media/tui/help-scale-noise-verbose-dark.avif" media="(prefers-color-scheme: dark)"><img src="../media/tui/help-scale-noise-verbose-light.avif" alt="condor scale-noise --help --verbose" style="width:100%;border-radius:8px;display:block;"></picture></a>
+      <p style="text-align:center;font-size:0.85em;opacity:0.75;margin:0.35em 0 0;">condor scale-noise --help --verbose</p>
+    </td>
+  </tr>
+</table>
