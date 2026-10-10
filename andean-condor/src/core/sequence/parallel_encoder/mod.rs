@@ -8,9 +8,7 @@ use crate::{
     core::{
         Condor,
         input::Input,
-        sequence::{
-            Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status,
-        },
+        sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
     },
     models::sequence::{
         SequenceConfigHandler,
@@ -117,7 +115,8 @@ where
         }
 
         // Generate Photon Noise tables
-        let input = self.input.as_mut().unwrap_or(&mut condor.input);        let clip_info = input.clip_info()?;
+        let input = self.input.as_mut().unwrap_or(&mut condor.input);
+        let clip_info = input.clip_info()?;
         let transfer_function = clip_info.transfer_characteristics;
         for scene in &mut condor.scenes {
             let params = scene.encoder.generate_photon_noise_table(

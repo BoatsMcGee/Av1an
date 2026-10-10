@@ -13,16 +13,24 @@ use std::{
 use anyhow::Result;
 use av_decoders::{Decoder, Ffms2Decoder};
 use ffms2_sys::{
-    FFMS_CreateIndexer, FFMS_DoIndexing2, FFMS_DestroyIndex, FFMS_ErrorInfo, FFMS_Init,
-    FFMS_IndexBelongsToFile, FFMS_ReadIndex, FFMS_SetProgressCallback, FFMS_TrackType,
-    FFMS_TrackTypeIndexSettings, FFMS_WriteIndex,
+    FFMS_CreateIndexer,
+    FFMS_DestroyIndex,
+    FFMS_DoIndexing2,
+    FFMS_ErrorInfo,
+    FFMS_IndexBelongsToFile,
+    FFMS_Init,
+    FFMS_ReadIndex,
+    FFMS_SetProgressCallback,
+    FFMS_TrackType,
+    FFMS_TrackTypeIndexSettings,
+    FFMS_WriteIndex,
 };
 
 use crate::{
     core::input::{
+        IndexProgress,
         Input,
         InputError,
-        IndexProgress,
         RawFrame,
         RawPlane,
         clip_info::ClipInfo,
@@ -149,10 +157,10 @@ const ERR_BUFFER_SIZE: usize = 1024;
 
 fn empty_error_info(buffer: &mut [c_char; ERR_BUFFER_SIZE]) -> FFMS_ErrorInfo {
     FFMS_ErrorInfo {
-        ErrorType:    0,
-        SubType:      0,
-        BufferSize:   ERR_BUFFER_SIZE as i32,
-        Buffer:       buffer.as_mut_ptr(),
+        ErrorType:  0,
+        SubType:    0,
+        BufferSize: ERR_BUFFER_SIZE as i32,
+        Buffer:     buffer.as_mut_ptr(),
     }
 }
 
@@ -161,9 +169,7 @@ fn error_message(err: FFMS_ErrorInfo) -> String {
         return "unknown FFMS2 error".to_owned();
     }
     // SAFETY: FFMS2 wrote a nul-terminated C string into the caller-owned buffer.
-    unsafe { std::ffi::CStr::from_ptr(err.Buffer) }
-        .to_string_lossy()
-        .into_owned()
+    unsafe { std::ffi::CStr::from_ptr(err.Buffer) }.to_string_lossy().into_owned()
 }
 
 /// Context shared with the FFMS2 progress trampoline for the duration of
@@ -228,7 +234,12 @@ pub fn index_video_with_progress(
     let mut err_buffer = [0 as c_char; ERR_BUFFER_SIZE];
     let cached_index = if Path::new(&index_path).exists() {
         // SAFETY: pointers are live and the error buffer is valid.
-        unsafe { FFMS_ReadIndex(index_cstring.as_ptr(), &mut empty_error_info(&mut err_buffer)) }
+        unsafe {
+            FFMS_ReadIndex(
+                index_cstring.as_ptr(),
+                &mut empty_error_info(&mut err_buffer),
+            )
+        }
     } else {
         std::ptr::null_mut()
     };
@@ -258,7 +269,10 @@ pub fn index_video_with_progress(
 
     // SAFETY: `input_cstring` and the error buffer are live.
     let indexer = unsafe {
-        FFMS_CreateIndexer(input_cstring.as_ptr(), &mut empty_error_info(&mut err_buffer))
+        FFMS_CreateIndexer(
+            input_cstring.as_ptr(),
+            &mut empty_error_info(&mut err_buffer),
+        )
     };
     if indexer.is_null() {
         anyhow::bail!(
@@ -296,9 +310,7 @@ pub fn index_video_with_progress(
     }
 
     // SAFETY: `indexer` is live; `DoIndexing2` consumes it and returns the index.
-    let idx = unsafe {
-        FFMS_DoIndexing2(indexer, 0, &mut empty_error_info(&mut err_buffer))
-    };
+    let idx = unsafe { FFMS_DoIndexing2(indexer, 0, &mut empty_error_info(&mut err_buffer)) };
     if idx.is_null() {
         if context.cancelled.is_some_and(|c| c.load(Ordering::Relaxed)) {
             anyhow::bail!("indexing of {} was cancelled", path.display());
@@ -312,7 +324,11 @@ pub fn index_video_with_progress(
 
     // SAFETY: `idx` is a live index handle; writing and destroying it is our job.
     let write_result = unsafe {
-        FFMS_WriteIndex(index_cstring.as_ptr(), idx, &mut empty_error_info(&mut err_buffer))
+        FFMS_WriteIndex(
+            index_cstring.as_ptr(),
+            idx,
+            &mut empty_error_info(&mut err_buffer),
+        )
     };
     // SAFETY: `idx` is a live index handle, and destroying it is our job.
     unsafe {

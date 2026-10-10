@@ -6,31 +6,29 @@ use std::{
     time::{Duration, Instant},
 };
 
-use andean_condor::core::{
-    Condor,
-    input::{
-        Input,
-        OpenProgress,
-        clip_info::ClipInfo,
+use andean_condor::{
+    core::{
+        Condor,
+        input::{Input, OpenProgress, clip_info::ClipInfo},
+        sequence::{
+            Sequence,
+            SequenceCompletion,
+            SequenceStatus,
+            Status,
+            benchmarker::Benchmarker,
+            bitrate_optimizer::BitrateOptimizer,
+            noise_detector::NoiseDetector,
+            noise_scaler::NoiseScaler,
+            parallel_encoder::ParallelEncoder,
+            quality_check::QualityCheck,
+            scene_concatenator::SceneConcatenator,
+            scene_detector::SceneDetector,
+            speed_scaler::SpeedScaler,
+            target_quality::TargetQuality,
+        },
     },
-    sequence::{
-        Sequence,
-        SequenceCompletion,
-        SequenceStatus,
-        benchmarker::Benchmarker,
-        bitrate_optimizer::BitrateOptimizer,
-        noise_detector::NoiseDetector,
-        noise_scaler::NoiseScaler,
-        parallel_encoder::ParallelEncoder,
-        quality_check::QualityCheck,
-        scene_concatenator::SceneConcatenator,
-        scene_detector::SceneDetector,
-        speed_scaler::SpeedScaler,
-        target_quality::TargetQuality,
-        Status,
-    },
+    models::input::Input as InputModel,
 };
-use andean_condor::models::input::Input as InputModel;
 use anyhow::{Result, bail};
 use thiserror::Error as ThisError;
 use tracing::{debug, error, info, warn};
@@ -39,7 +37,7 @@ use crate::{
     apps::{
         TuiApp,
         benchmarker::BenchmarkerApp,
-        initializing::{INDEXING_ID, OPENING_ID, InitializingApp},
+        initializing::{INDEXING_ID, InitializingApp, OPENING_ID},
         noise_detection::NoiseDetectionApp,
         parallel_encoder::ParallelEncoderApp,
         quality_check::QualityCheckApp,
@@ -152,8 +150,7 @@ pub fn run_scene_detector_tui(
     // Without a `scene_detector.input` override there is nothing to open:
     // `SceneDetector` reads `condor.input` itself when it holds no input of
     // its own, so re-opening the same model here would only index it twice.
-    let (input, clip_info) = if let Some(configured) =
-        &condor.sequence_config.scene_detector.input
+    let (input, clip_info) = if let Some(configured) = &condor.sequence_config.scene_detector.input
     {
         let (input, clip_info) = open_input_with_progress(configured, &cancelled)?;
         (Some(input), clip_info)

@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-};
+use std::{collections::HashMap, path::PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -78,40 +75,40 @@ impl MkvmergeTrack {
 pub struct TrackOptions {
     /// Whether to copy this track. Defaults to `true`.
     #[serde(default = "default_true")]
-    pub copy:             bool,
+    pub copy:              bool,
     /// Track name (`--track-name`).
     #[serde(default)]
-    pub name:             Option<String>,
+    pub name:              Option<String>,
     /// ISO 639-2 language code (`--language`).
     #[serde(default)]
-    pub language:         Option<String>,
+    pub language:          Option<String>,
     /// Delay in milliseconds (`--sync`).
     #[serde(default)]
-    pub delay:            Option<i64>,
+    pub delay:             Option<i64>,
     /// Default-track flag (`--default-track-flag`).
     #[serde(default)]
-    pub default_track:    Option<bool>,
+    pub default_track:     Option<bool>,
     /// Forced-display flag (`--forced-display-flag`).
     #[serde(default)]
-    pub forced:           Option<bool>,
+    pub forced:            Option<bool>,
     /// Track-enabled flag (`--track-enabled-flag`).
     #[serde(default)]
-    pub enabled:          Option<bool>,
+    pub enabled:           Option<bool>,
     /// Hearing-impaired flag (`--hearing-impaired-flag`).
     #[serde(default)]
-    pub hearing_impaired: Option<bool>,
+    pub hearing_impaired:  Option<bool>,
     /// Visual-impaired flag (`--visual-impaired-flag`).
     #[serde(default)]
-    pub visual_impaired:  Option<bool>,
+    pub visual_impaired:   Option<bool>,
     /// Text-descriptions flag (`--text-descriptions-flag`).
     #[serde(default)]
     pub text_descriptions: Option<bool>,
     /// Original-language flag (`--original-flag`).
     #[serde(default)]
-    pub original:         Option<bool>,
+    pub original:          Option<bool>,
     /// Commentary flag (`--commentary-flag`).
     #[serde(default)]
-    pub commentary:       Option<bool>,
+    pub commentary:        Option<bool>,
 }
 
 impl TrackOptions {
@@ -204,65 +201,65 @@ pub struct WhiteColorCoordinates {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct VideoTrack {
     #[serde(flatten)]
-    pub track:                     TrackOptions,
+    pub track:                    TrackOptions,
     /// `--cropping`.
     #[serde(default)]
-    pub crop:                      Option<Crop>,
+    pub crop:                     Option<Crop>,
     /// `--display-dimensions`.
     #[serde(default)]
-    pub display_dimensions:        Option<DisplayDimensions>,
+    pub display_dimensions:       Option<DisplayDimensions>,
     /// `--aspect-ratio` (a ratio, e.g. `16/9`). Mutually exclusive with
     /// `display_dimensions` and `aspect_ratio_factor`.
     #[serde(default)]
-    pub aspect_ratio:              Option<String>,
+    pub aspect_ratio:             Option<String>,
     /// `--aspect-ratio-factor`.
     #[serde(default)]
-    pub aspect_ratio_factor:       Option<String>,
+    pub aspect_ratio_factor:      Option<String>,
     /// `--color-primaries`.
     #[serde(default)]
-    pub color_primaries:           Option<u32>,
+    pub color_primaries:          Option<u32>,
     /// `--color-transfer-characteristics`.
     #[serde(default)]
-    pub transfer_characteristics:  Option<u32>,
+    pub transfer_characteristics: Option<u32>,
     /// `--color-matrix-coefficients`.
     #[serde(default)]
-    pub matrix_coefficients:       Option<u32>,
+    pub matrix_coefficients:      Option<u32>,
     /// `--color-range`.
     #[serde(default)]
-    pub color_range:               Option<u32>,
+    pub color_range:              Option<u32>,
     /// `--color-bits-per-channel`.
     #[serde(default)]
-    pub color_bits_per_channel:    Option<u32>,
+    pub color_bits_per_channel:   Option<u32>,
     /// `--chroma-subsample`.
     #[serde(default)]
-    pub chroma_subsample:          Option<ChromaSubsample>,
+    pub chroma_subsample:         Option<ChromaSubsample>,
     /// `--chroma-siting`.
     #[serde(default)]
-    pub chroma_siting:             Option<ChromaSiting>,
+    pub chroma_siting:            Option<ChromaSiting>,
     /// `--max-content-light` (MaxCLL).
     #[serde(default)]
-    pub max_content_light:         Option<u32>,
+    pub max_content_light:        Option<u32>,
     /// `--max-frame-light` (MaxFALL).
     #[serde(default)]
-    pub max_frame_light:           Option<u32>,
+    pub max_frame_light:          Option<u32>,
     /// `--max-luminance`.
     #[serde(default)]
-    pub max_luminance:             Option<f32>,
+    pub max_luminance:            Option<f32>,
     /// `--min-luminance`.
     #[serde(default)]
-    pub min_luminance:             Option<f32>,
+    pub min_luminance:            Option<f32>,
     /// `--chromaticity-coordinates`.
     #[serde(default)]
-    pub chromaticity_coordinates:  Option<ChromaticityCoordinates>,
+    pub chromaticity_coordinates: Option<ChromaticityCoordinates>,
     /// `--white-color-coordinates`.
     #[serde(default)]
-    pub white_color_coordinates:   Option<WhiteColorCoordinates>,
+    pub white_color_coordinates:  Option<WhiteColorCoordinates>,
     /// `--stereo-mode`.
     #[serde(default)]
-    pub stereo_mode:               Option<String>,
+    pub stereo_mode:              Option<String>,
     /// `--field-order`.
     #[serde(default)]
-    pub field_order:               Option<u32>,
+    pub field_order:              Option<u32>,
 }
 
 impl VideoTrack {
@@ -273,7 +270,10 @@ impl VideoTrack {
         let mut args = self.track.common_args(id);
         if let Some(crop) = self.crop {
             args.push("--cropping".to_owned());
-            args.push(format!("{id}:{},{},{},{}", crop.left, crop.top, crop.right, crop.bottom));
+            args.push(format!(
+                "{id}:{},{},{},{}",
+                crop.left, crop.top, crop.right, crop.bottom
+            ));
         }
         if let Some(dimensions) = self.display_dimensions {
             args.push("--display-dimensions".to_owned());
@@ -293,9 +293,15 @@ impl VideoTrack {
                 "--color-transfer-characteristics",
                 self.transfer_characteristics.map(u64::from),
             ),
-            ("--color-matrix-coefficients", self.matrix_coefficients.map(u64::from)),
+            (
+                "--color-matrix-coefficients",
+                self.matrix_coefficients.map(u64::from),
+            ),
             ("--color-range", self.color_range.map(u64::from)),
-            ("--color-bits-per-channel", self.color_bits_per_channel.map(u64::from)),
+            (
+                "--color-bits-per-channel",
+                self.color_bits_per_channel.map(u64::from),
+            ),
             ("--max-content-light", self.max_content_light.map(u64::from)),
             ("--max-frame-light", self.max_frame_light.map(u64::from)),
         ];
@@ -307,7 +313,10 @@ impl VideoTrack {
         }
         if let Some(subsample) = self.chroma_subsample {
             args.push("--chroma-subsample".to_owned());
-            args.push(format!("{id}:{},{}", subsample.horizontal, subsample.vertical));
+            args.push(format!(
+                "{id}:{},{}",
+                subsample.horizontal, subsample.vertical
+            ));
         }
         if let Some(siting) = self.chroma_siting {
             args.push("--chroma-siting".to_owned());
@@ -348,10 +357,10 @@ impl VideoTrack {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AudioTrack {
     #[serde(flatten)]
-    pub track:       TrackOptions,
+    pub track:          TrackOptions,
     /// `--aac-is-sbr`.
     #[serde(default)]
-    pub aac_is_sbr:  Option<bool>,
+    pub aac_is_sbr:     Option<bool>,
     /// `--reduce-to-core`.
     #[serde(default)]
     pub reduce_to_core: Option<bool>,

@@ -22,9 +22,7 @@ use super::{
     progress::relay_progress,
     task::{ParallelEncoderResult, ResultStream, Task},
 };
-use crate::{
-    core::{encoder::EncodeProgress, input::Input, sequence::SequenceStatus},
-};
+use crate::core::{encoder::EncodeProgress, input::Input, sequence::SequenceStatus};
 
 impl ParallelEncoder {
     #[allow(clippy::too_many_lines)]

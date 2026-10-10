@@ -1817,7 +1817,10 @@ mod tests {
     fn a_probe_encoder_drops_the_ffmpeg_filter() {
         let mut encoder = Encoder::default_from_base(&EncoderBase::X264, false);
         encoder.set_ffmpeg_filter(Some("crop=iw-16:ih-16".to_owned()));
-        assert!(encoder.ffmpeg_filter().is_some(), "the scene encoder filters");
+        assert!(
+            encoder.ffmpeg_filter().is_some(),
+            "the scene encoder filters"
+        );
 
         encoder.set_ffmpeg_filter(None);
         let probe = TargetQuality::remove_psychovisual_parameters(&encoder);

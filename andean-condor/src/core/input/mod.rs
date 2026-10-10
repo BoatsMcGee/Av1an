@@ -5,14 +5,9 @@
 //! [`ffms2`] and [`vapoursynth`] submodules, while reading frames back — as
 //! y4m or as the raw planes of a [`FrameFeed`] — lives here.
 
-use std::{
-    collections::HashMap,
-    io::Cursor,
-    path::PathBuf,
-    sync::atomic::AtomicBool,
-}
-;
+use std::{collections::HashMap, io::Cursor, path::PathBuf, sync::atomic::AtomicBool};
 // `::vapoursynth` is the crate, not this module's `vapoursynth` submodule.
+
 use ::vapoursynth::node::Node;
 use anyhow::Result;
 use av_decoders::{Decoder, VideoDetails, v_frame::chroma::ChromaSubsampling};
@@ -50,10 +45,7 @@ pub type IndexProgress<'a> = &'a mut dyn FnMut(u64, u64);
 pub enum OpenProgress {
     /// FFMS2 is indexing the source, in `current` of `total` frames. Both are
     /// `0` until FFMS2 has counted the stream.
-    Indexing {
-        current: u64,
-        total:   u64,
-    },
+    Indexing { current: u64, total: u64 },
     /// An index already existed and the input is being opened. No finer
     /// progress is available — VapourSynth indexes inside its source plugin,
     /// out of reach of this process.
@@ -210,8 +202,7 @@ impl Input {
     ) -> Result<Self> {
         match data {
             InputModel::Video {
-                path,
-                ..
+                path, ..
             } => {
                 // Validated here too: indexing must fail on a missing file
                 // with the same error `from_video` would have given.

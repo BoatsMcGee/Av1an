@@ -142,20 +142,12 @@ mod tests {
         let total_final = AtomicUsize::new(0);
 
         let handle = std::thread::spawn(move || {
-            relay_progress(
-                rx,
-                &status_tx,
-                1,
-                7,
-                frames,
-                frames,
-                &total_final,
-            )
+            relay_progress(rx, &status_tx, 1, 7, frames, frames, &total_final)
         });
 
         for frame in 1..=frames {
             tx.send(EncodeProgress {
-                pass:  (1, 1),
+                pass: (1, 1),
                 frame,
                 usage: Default::default(),
             })

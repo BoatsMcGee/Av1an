@@ -135,7 +135,8 @@ impl TuiApp for InitializingApp {
             if !std::io::stdout().is_terminal() {
                 println!(
                     "[Initializing Input][Progress]: {}",
-                    serde_json::to_string(&InitializingConsoleEvent::Processed(percentage)).unwrap()
+                    serde_json::to_string(&InitializingConsoleEvent::Processed(percentage))
+                        .unwrap()
                 );
             }
         }
@@ -247,7 +248,7 @@ mod tests {
 
     fn status(id: &str, percent: f64) -> SequenceStatus {
         SequenceStatus::Whole(Status::Processing {
-            id: id.to_owned(),
+            id:         id.to_owned(),
             completion: SequenceCompletion::Percentage(percent),
         })
     }
@@ -261,7 +262,10 @@ mod tests {
             phase:   InitializingPhase::Opening,
         };
 
-        assert!(!InitializingApp::map_progress(status(OPENING_ID, 0.0), &mut state));
+        assert!(!InitializingApp::map_progress(
+            status(OPENING_ID, 0.0),
+            &mut state
+        ));
         assert_eq!(state.phase, InitializingPhase::Opening);
         assert_eq!(state.percent, 0.0);
     }
@@ -275,7 +279,10 @@ mod tests {
             phase:   InitializingPhase::Opening,
         };
 
-        assert!(InitializingApp::map_progress(status(INDEXING_ID, 37.5), &mut state));
+        assert!(InitializingApp::map_progress(
+            status(INDEXING_ID, 37.5),
+            &mut state
+        ));
         assert_eq!(state.phase, InitializingPhase::Indexing);
         assert_eq!(state.percent, 38.0);
     }
@@ -290,7 +297,10 @@ mod tests {
         };
         InitializingApp::map_progress(status(INDEXING_ID, 100.0), &mut state);
 
-        assert!(InitializingApp::map_progress(status(OPENING_ID, 0.0), &mut state));
+        assert!(InitializingApp::map_progress(
+            status(OPENING_ID, 0.0),
+            &mut state
+        ));
         assert_eq!(state.phase, InitializingPhase::Opening);
         assert_eq!(state.percent, 100.0);
     }

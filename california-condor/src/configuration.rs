@@ -71,11 +71,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::info;
 
-use crate::{
-    commands::DecoderMethod,
-    tui::open_input_with_progress,
-    utils::hash_path::hash_path,
-};
+use crate::{commands::DecoderMethod, tui::open_input_with_progress, utils::hash_path::hash_path};
 
 /// Fallback schema URL used when the binary was built without git metadata
 /// (e.g. from a source tarball). Normal builds bake the correct URL in via

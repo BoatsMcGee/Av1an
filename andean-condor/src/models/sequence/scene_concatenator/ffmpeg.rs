@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-};
+use std::{collections::HashMap, path::PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -35,11 +32,11 @@ pub struct FfmpegConfig {
 /// An additional source file muxed into the output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FfmpegExtraInput {
-    pub path:   PathBuf,
+    pub path:     PathBuf,
     /// Per-stream overrides for this file. `None` copies all its audio and
     /// subtitle streams.
     #[serde(default)]
-    pub tracks: Option<FfmpegTrackMap>,
+    pub tracks:   Option<FfmpegTrackMap>,
     /// Metadata handling for this file.
     #[serde(default)]
     pub metadata: Option<Metadata>,
@@ -224,8 +221,8 @@ impl FfmpegConfig {
             }
             if extra.metadata.is_some() {
                 warnings.push(anyhow::anyhow!(
-                    "FFmpeg extra input {} sets metadata, which applies to the whole output; \
-                     only the main input's metadata is written",
+                    "FFmpeg extra input {} sets metadata, which applies to the whole output; only \
+                     the main input's metadata is written",
                     extra.path.display()
                 ));
             }
@@ -256,8 +253,8 @@ fn validate_tracks(tracks: &FfmpegTrackMap, source: &str) -> anyhow::Result<()> 
             let normalized = key.trim_start_matches('-').trim().to_ascii_lowercase();
             if FORBIDDEN_PARAMETERS.contains(&normalized.as_str()) {
                 anyhow::bail!(
-                    "{source} {id}: parameter \"{key}\" conflicts with an argument Condor sets; use \
-                     the codec/filter fields instead"
+                    "{source} {id}: parameter \"{key}\" conflicts with an argument Condor sets; \
+                     use the codec/filter fields instead"
                 );
             }
             if normalized.contains(char::is_whitespace) || normalized.contains('\n') {
@@ -308,39 +305,34 @@ mod tests {
     /// A parameter that would fight Condor's own arguments is rejected.
     #[test]
     fn forbidden_parameter_is_rejected() {
-        let config =
-            config_from(r#"{"tracks":{"1":{"type":"audio","parameters":{"-map":"0"}}}}"#);
+        let config = config_from(r#"{"tracks":{"1":{"type":"audio","parameters":{"-map":"0"}}}}"#);
         assert!(config.validate().is_err());
     }
 
     /// The leading dashes and case are ignored when matching forbidden keys.
     #[test]
     fn forbidden_parameter_matching_is_normalized() {
-        let config = config_from(
-            r#"{"tracks":{"1":{"type":"audio","parameters":{"-Codec:A":"aac"}}}}"#,
-        );
+        let config =
+            config_from(r#"{"tracks":{"1":{"type":"audio","parameters":{"-Codec:A":"aac"}}}}"#);
         assert!(config.validate().is_err());
     }
 
     /// Keys must be FFmpeg options, so a bare word is rejected.
     #[test]
     fn parameter_without_dash_is_rejected() {
-        let config = config_from(
-            r#"{"tracks":{"1":{"type":"audio","parameters":{"b:a":"128k"}}}}"#,
-        );
+        let config =
+            config_from(r#"{"tracks":{"1":{"type":"audio","parameters":{"b:a":"128k"}}}}"#);
         assert!(config.validate().is_err());
     }
 
     /// Video cannot be filtered, and filtering a copied stream is rejected.
     #[test]
     fn filter_only_applies_to_re_encoded_audio_or_subtitles() {
-        let video = config_from(
-            r#"{"tracks":{"0":{"type":"video","filter":"hflip","codec":"libx264"}}}"#,
-        );
+        let video =
+            config_from(r#"{"tracks":{"0":{"type":"video","filter":"hflip","codec":"libx264"}}}"#);
         assert!(video.validate().is_err(), "video filtering is rejected");
 
-        let copy_audio =
-            config_from(r#"{"tracks":{"1":{"type":"audio","filter":"volume=0.5"}}}"#);
+        let copy_audio = config_from(r#"{"tracks":{"1":{"type":"audio","filter":"volume=0.5"}}}"#);
         assert!(
             copy_audio.validate().is_err(),
             "filtering a copied stream is rejected"

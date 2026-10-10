@@ -15,8 +15,10 @@ use crossbeam_channel::Receiver;
 use tracing::{debug, trace};
 
 use super::{
-    ParallelEncoder, STREAM_WINDOW,
+    ParallelEncoder,
+    STREAM_WINDOW,
     error::ParallelEncoderError,
+    progress::{drain_finished_results, first_filter_failure, relay_progress},
     task::{ParallelEncoderResult, ResultStream, Task},
 };
 use crate::{
@@ -27,8 +29,6 @@ use crate::{
     },
     utils::semaphore::Semaphore,
 };
-
-use super::progress::{drain_finished_results, first_filter_failure, relay_progress};
 
 /// The frame channel an encoder reads, plus the filter stage feeding it.
 pub(super) type FilteredFrames = (Receiver<Cursor<Vec<u8>>>, Option<FfmpegFilter>);
@@ -244,10 +244,9 @@ impl ParallelEncoder {
                             &total_final_pass_frames_encoded,
                         )
                     });
-                    let temp_output = task.output.with_extension(format!(
-                        "temp.{}",
-                        task.encoder.output_extension()
-                    ));
+                    let temp_output = task
+                        .output
+                        .with_extension(format!("temp.{}", task.encoder.output_extension()));
                     trace!(
                         "Encoding Scene {} to {}",
                         task.original_index,
@@ -266,9 +265,8 @@ impl ParallelEncoder {
                     let scene_seconds = task.frame_indices.len() as f64 * framerate;
                     let bytes = temp_output.metadata().ok().map_or(0, |meta| meta.len());
                     let bitrate = (bytes * 8) as f64 / scene_seconds;
-                    let filter_failed = filter_stage
-                        .as_ref()
-                        .is_some_and(|stage| stage.is_failed().is_some());
+                    let filter_failed =
+                        filter_stage.as_ref().is_some_and(|stage| stage.is_failed().is_some());
                     finalize_scene(
                         SceneOutcome {
                             temp_output,
@@ -288,18 +286,15 @@ impl ParallelEncoder {
                     );
                     worker_semaphore.release(); // Release for next worker
                     decoder_semaphore_clone.release(); // Release for next decoder
-                    let parallel_result = report_result(
-                        &results_tx,
-                        &finished_scenes,
-                        ParallelEncoderResult {
+                    let parallel_result =
+                        report_result(&results_tx, &finished_scenes, ParallelEncoderResult {
                             scene: task.original_index,
                             started,
                             ended,
                             bytes,
                             bitrate,
                             result,
-                        },
-                    )?;
+                        })?;
                     Ok(Some(parallel_result))
                 });
 

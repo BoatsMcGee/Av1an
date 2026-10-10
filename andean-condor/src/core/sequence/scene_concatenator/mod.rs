@@ -92,12 +92,7 @@ where
                 }
                 let has_input = matches!(
                     condor.input,
-                    Input::Video {
-                        ..
-                    }
-                    | Input::VapourSynth {
-                        ..
-                    }
+                    Input::Video { .. } | Input::VapourSynth { .. }
                 );
                 if !has_input && ffmpeg.extra_inputs.is_empty() {
                     warnings.push(anyhow::anyhow!(
@@ -292,4 +287,3 @@ pub enum SceneConcatenatorError {
         stderr: String,
     },
 }
-

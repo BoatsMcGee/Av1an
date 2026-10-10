@@ -3,9 +3,7 @@ use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf, absolute},
     process::{Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
     thread,
 };
 
@@ -331,25 +329,22 @@ impl DGSource {
         // Drained on its own thread so DGIndexNV can never stall writing to a
         // pipe nobody is reading. Kept for diagnostics; the exit status is
         // still ignored, exactly as it was when this used `output()`.
-        let mut stderr = child.stderr.take().ok_or_else(|| {
-            VapourSynthError::PluginFunctionError {
+        let mut stderr =
+            child.stderr.take().ok_or_else(|| VapourSynthError::PluginFunctionError {
                 plugin:   DGSource::PLUGIN_NAME.to_owned(),
                 function: DGSource::FUNCTION_NAME.to_owned(),
                 message:  "Failed to read DGIndexNV stderr".to_owned(),
-            }
-        })?;
+            })?;
         let stderr_thread = thread::spawn(move || {
             let mut captured = String::new();
             let _ = std::io::Read::read_to_string(&mut stderr, &mut captured);
             captured
         });
 
-        let stdout = child.stdout.take().ok_or_else(|| {
-            VapourSynthError::PluginFunctionError {
-                plugin:   DGSource::PLUGIN_NAME.to_owned(),
-                function: DGSource::FUNCTION_NAME.to_owned(),
-                message:  "Failed to read DGIndexNV stdout".to_owned(),
-            }
+        let stdout = child.stdout.take().ok_or_else(|| VapourSynthError::PluginFunctionError {
+            plugin:   DGSource::PLUGIN_NAME.to_owned(),
+            function: DGSource::FUNCTION_NAME.to_owned(),
+            message:  "Failed to read DGIndexNV stdout".to_owned(),
         })?;
         let mut reader = BufReader::new(stdout);
         let mut line = Vec::new();

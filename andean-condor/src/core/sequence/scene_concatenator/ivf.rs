@@ -92,4 +92,3 @@ impl SceneConcatenator {
         Ok(())
     }
 }
-

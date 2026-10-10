@@ -369,9 +369,7 @@ mod tests {
     use super::*;
 
     fn strings(args: Vec<OsString>) -> Vec<String> {
-        args.into_iter()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect()
+        args.into_iter().map(|arg| arg.to_string_lossy().into_owned()).collect()
     }
     /// Without output settings FFmpeg stays video-only.
     #[test]
@@ -452,15 +450,9 @@ mod tests {
             Some(&config),
         ));
         assert!(args.windows(2).any(|pair| pair == ["-attach", "font.ttf"]));
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["-metadata:s:t:0", "mimetype=font/ttf"]));
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["-metadata:s:t:0", "filename=My Font"]));
-        assert!(args
-            .windows(2)
-            .any(|pair| pair == ["-metadata:s:t:0", "comment=A font"]));
+        assert!(args.windows(2).any(|pair| pair == ["-metadata:s:t:0", "mimetype=font/ttf"]));
+        assert!(args.windows(2).any(|pair| pair == ["-metadata:s:t:0", "filename=My Font"]));
+        assert!(args.windows(2).any(|pair| pair == ["-metadata:s:t:0", "comment=A font"]));
     }
 
     /// Copying every stream also carries attachment (`t`) and data (`d`)
@@ -478,4 +470,3 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair == ["-map", "1:d?"]));
     }
 }
-

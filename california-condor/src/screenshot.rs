@@ -9,13 +9,14 @@
 //! `prefers-color-scheme` media query.
 //!
 //! This whole module is compiled only under the `screenshots` feature so the
-//! shipping binary does not link `ab_glyph`. AVIF encoding is done by FFmpeg. See
-//! `src/bin/gen_screenshots.rs` to produce the files and `tests/screenshots.rs`
-//! for the in-memory smoke test.
+//! shipping binary does not link `ab_glyph`. AVIF encoding is done by FFmpeg.
+//! See `src/bin/gen_screenshots.rs` to produce the files and
+//! `tests/screenshots.rs` for the in-memory smoke test.
 
 use std::{
     collections::BTreeMap,
-    env, fs,
+    env,
+    fs,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -32,10 +33,7 @@ use andean_condor::{
     models::{
         encoder::{Encoder, EncoderBase},
         scene::Scene,
-        sequence::{
-            scene_concatenator::ConcatMethod,
-            target_quality::types::ProbeStatistic,
-        },
+        sequence::{scene_concatenator::ConcatMethod, target_quality::types::ProbeStatistic},
     },
 };
 use clap::CommandFactory;
@@ -130,8 +128,25 @@ fn load_font() -> Vec<u8> {
 /// against the theme.
 fn rgb(color: ratatui::style::Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
     use ratatui::style::Color::{
-        Black, Blue, Cyan, DarkGray, Gray, Green, Indexed, LightBlue, LightCyan, LightGreen,
-        LightMagenta, LightRed, LightYellow, Magenta, Rgb, Reset, Red, White, Yellow,
+        Black,
+        Blue,
+        Cyan,
+        DarkGray,
+        Gray,
+        Green,
+        Indexed,
+        LightBlue,
+        LightCyan,
+        LightGreen,
+        LightMagenta,
+        LightRed,
+        LightYellow,
+        Magenta,
+        Red,
+        Reset,
+        Rgb,
+        White,
+        Yellow,
     };
     match color {
         Reset => fallback,
@@ -160,9 +175,22 @@ fn rgb(color: ratatui::style::Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
 fn xterm256(i: u8) -> (u8, u8, u8) {
     match i {
         0..=15 => [
-            (0, 0, 0), (205, 0, 0), (0, 205, 0), (205, 205, 0), (0, 0, 238), (205, 0, 205),
-            (0, 205, 205), (192, 192, 192), (128, 128, 128), (255, 0, 0), (0, 255, 0),
-            (255, 255, 0), (92, 92, 255), (255, 0, 255), (0, 255, 255), (255, 255, 255),
+            (0, 0, 0),
+            (205, 0, 0),
+            (0, 205, 0),
+            (205, 205, 0),
+            (0, 0, 238),
+            (205, 0, 205),
+            (0, 205, 205),
+            (192, 192, 192),
+            (128, 128, 128),
+            (255, 0, 0),
+            (0, 255, 0),
+            (255, 255, 0),
+            (92, 92, 255),
+            (255, 0, 255),
+            (0, 255, 255),
+            (255, 255, 255),
         ][i as usize],
         16..=231 => {
             let i = i - 16;
@@ -195,7 +223,11 @@ impl Canvas {
         for _ in 0..pixels {
             data.extend_from_slice(&color);
         }
-        Self { width, height, data }
+        Self {
+            width,
+            height,
+            data,
+        }
     }
 
     fn width(&self) -> u32 {
@@ -212,12 +244,7 @@ impl Canvas {
 
     fn get_pixel(&self, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * self.width + x) * 4) as usize;
-        [
-            self.data[i],
-            self.data[i + 1],
-            self.data[i + 2],
-            self.data[i + 3],
-        ]
+        [self.data[i], self.data[i + 1], self.data[i + 2], self.data[i + 3]]
     }
 
     fn put_pixel(&mut self, x: u32, y: u32, color: [u8; 4]) {
@@ -271,10 +298,15 @@ fn draw_tiling_char(img: &mut Canvas, ch: char, x0: u32, y0: u32, fg: (u8, u8, u
     let (mut h_full, mut v_full, mut h_left, mut h_right, mut v_top, mut v_bottom) =
         (false, false, false, false, false, false);
     let (thickness, double) = match ch {
-        '─' | '│' | '┌' | '┐' | '└' | '┘' | '├' | '┤' | '┬' | '┴' | '┼' | '╭' | '╮' | '╰'
-        | '╯' => (2, false),
-        '━' | '┃' | '┏' | '┓' | '┗' | '┛' | '┣' | '┫' | '┳' | '┻' | '╋' => (3, false),
-        '═' | '║' | '╔' | '╗' | '╚' | '╝' | '╠' | '╣' | '╦' | '╩' | '╬' => (1, true),
+        '─' | '│' | '┌' | '┐' | '└' | '┘' | '├' | '┤' | '┬' | '┴' | '┼' | '╭' | '╮' | '╰' | '╯' => {
+            (2, false)
+        },
+        '━' | '┃' | '┏' | '┓' | '┗' | '┛' | '┣' | '┫' | '┳' | '┻' | '╋' => {
+            (3, false)
+        },
+        '═' | '║' | '╔' | '╗' | '╚' | '╝' | '╠' | '╣' | '╦' | '╩' | '╬' => {
+            (1, true)
+        },
         _ => (0, false),
     };
     if thickness > 0 {
@@ -359,7 +391,14 @@ fn draw_tiling_char(img: &mut Canvas, ch: char, x0: u32, y0: u32, fg: (u8, u8, u
                 let f = s as f64 / steps as f64;
                 let px = f.mul_add(bx - ax, ax);
                 let py = f.mul_add(by - ay, ay);
-                fill(img, (px - 1.0).round().max(0.0) as u32, (py - 1.0).round().max(0.0) as u32, 3, 3, fg);
+                fill(
+                    img,
+                    (px - 1.0).round().max(0.0) as u32,
+                    (py - 1.0).round().max(0.0) as u32,
+                    3,
+                    3,
+                    fg,
+                );
             }
         }
         if ch == '\u{2713}' {
@@ -401,11 +440,12 @@ fn draw_tiling_char(img: &mut Canvas, ch: char, x0: u32, y0: u32, fg: (u8, u8, u
 fn rasterize(buf: &Buffer, theme: Theme, font: &FontVec) -> Canvas {
     let bg_default = rgb(theme.background, (0, 0, 0));
     let fg_default = rgb(theme.foreground, (255, 255, 255));
-    let mut img = Canvas::from_pixel(
-        WIDTH,
-        HEIGHT,
-        [bg_default.0, bg_default.1, bg_default.2, 255],
-    );
+    let mut img = Canvas::from_pixel(WIDTH, HEIGHT, [
+        bg_default.0,
+        bg_default.1,
+        bg_default.2,
+        255,
+    ]);
 
     let scale = PxScale::from(FONT_PX);
     let scaled = font.as_scaled(scale);
@@ -422,7 +462,9 @@ fn rasterize(buf: &Buffer, theme: Theme, font: &FontVec) -> Canvas {
         fill(&mut img, x0, y0, CELL_W, CELL_H, bg);
 
         let symbol = cell.symbol();
-        let Some(ch) = symbol.chars().next() else { continue };
+        let Some(ch) = symbol.chars().next() else {
+            continue;
+        };
         if ch == ' ' || ch.is_control() {
             continue;
         }
@@ -565,7 +607,7 @@ fn clip_info() -> ClipInfo {
     ClipInfo {
         num_frames:               CLIP_FRAMES,
         format_info:              PixelFormat::VapourSynth {
-            bit_depth: 10,
+            bit_depth: 10
         },
         frame_rate:               av_format::rational::Rational64::new(24000, 1001),
         resolution:               (CLIP_WIDTH as u32, CLIP_HEIGHT as u32),
@@ -634,10 +676,11 @@ fn tq_passes(scenes: &[Scene<CliSequenceData>]) -> BTreeMap<u64, Vec<QualityPass
 // ---------------------------------------------------------------------------
 
 struct Screen {
-    slug: &'static str,
-    /// The command whose prompt line heads the screenshot, e.g. `detect-scenes`.
+    slug:    &'static str,
+    /// The command whose prompt line heads the screenshot, e.g.
+    /// `detect-scenes`.
     command: &'static str,
-    buf:  Buffer,
+    buf:     Buffer,
 }
 
 /// Build every TUI screen, rendering under whatever theme is currently
@@ -655,9 +698,9 @@ fn tui_screens() -> Vec<Screen> {
             phase:   InitializingPhase::Indexing,
         });
         screens.push(Screen {
-            slug: "initializing-input",
+            slug:    "initializing-input",
             command: "init",
-            buf:  capture(|f| app.render(f)),
+            buf:     capture(|f| app.render(f)),
         });
     }
 
@@ -676,16 +719,16 @@ fn tui_screens() -> Vec<Screen> {
         let mut app = SceneDetectionApp::new(0, CLIP_FRAMES as u64, Vec::new(), ci);
         app.on_snapshot(SceneDetectionState {
             frames_processed,
-            total_frames:     CLIP_FRAMES as u64,
-            scenes:           found,
+            total_frames: CLIP_FRAMES as u64,
+            scenes: found,
             scenes_len,
         });
         // Backdate after on_snapshot so the FPS reads ~350.
         backdate_for_frames(&mut app.started, frames_processed, 350.0);
         screens.push(Screen {
-            slug: "scene-detection",
+            slug:    "scene-detection",
             command: "detect-scenes",
-            buf:  capture(|f| app.render(f)),
+            buf:     capture(|f| app.render(f)),
         });
     }
 
@@ -704,15 +747,15 @@ fn tui_screens() -> Vec<Screen> {
             .collect();
         app.on_snapshot(NoiseDetectionState {
             frames_processed: processed,
-            total_frames:     scenes.len() as u64,
+            total_frames: scenes.len() as u64,
             scene_noise,
         });
         // ~0.35 SPS => ~34s for 12 scenes.
         backdate_for_frames(&mut app.started, processed, 0.35);
         screens.push(Screen {
-            slug: "noise-detection",
+            slug:    "noise-detection",
             command: "detect-noise",
-            buf:  capture(|f| app.render(f)),
+            buf:     capture(|f| app.render(f)),
         });
     }
 
@@ -729,7 +772,8 @@ fn tui_screens() -> Vec<Screen> {
         // finish it sooner, so aggregate FPS rises with diminishing returns.
         let sample: u64 = 480;
         // (workers, aggregate FPS)
-        let curve: [(u8, f64); 6] = [(1, 24.0), (2, 45.0), (3, 63.0), (4, 78.0), (5, 90.0), (6, 95.0)];
+        let curve: [(u8, f64); 6] =
+            [(1, 24.0), (2, 45.0), (3, 63.0), (4, 78.0), (5, 90.0), (6, 95.0)];
         let results = curve
             .into_iter()
             .map(|(workers, fps)| {
@@ -741,26 +785,23 @@ fn tui_screens() -> Vec<Screen> {
                     2..=5 => (true, None),
                     _ => (false, Some("Threshold not met".to_owned())),
                 };
-                (
-                    workers,
-                    WorkerStatus {
-                        started:       now - duration,
-                        finished:      Some(now),
-                        added,
-                        failed_reason,
-                        current_frame: sample,
-                        total_frames:  sample,
-                    },
-                )
+                (workers, WorkerStatus {
+                    started: now - duration,
+                    finished: Some(now),
+                    added,
+                    failed_reason,
+                    current_frame: sample,
+                    total_frames: sample,
+                })
             })
             .collect();
         app.on_snapshot(BenchmarkerState {
             results,
         });
         screens.push(Screen {
-            slug: "benchmarker",
+            slug:    "benchmarker",
             command: "benchmark",
-            buf:  capture(|f| app.render(f)),
+            buf:     capture(|f| app.render(f)),
         });
     }
 
@@ -781,9 +822,9 @@ fn tui_screens() -> Vec<Screen> {
         // Backdate after on_snapshot (which resets the pass timer) so FPS ~24.
         backdate_for_frames(&mut app.pass_started, 6040, 24.0);
         screens.push(Screen {
-            slug: "target-quality-encoding",
+            slug:    "target-quality-encoding",
             command: "target-quality",
-            buf:  capture(|f| app.render(f)),
+            buf:     capture(|f| app.render(f)),
         });
     }
 
@@ -804,9 +845,9 @@ fn tui_screens() -> Vec<Screen> {
         // Backdate after on_snapshot so FPS ~110.
         backdate_for_frames(&mut app.pass_started, 7190, 110.0);
         screens.push(Screen {
-            slug: "target-quality-comparing",
+            slug:    "target-quality-comparing",
             command: "target-quality",
-            buf:  capture(|f| app.render(f)),
+            buf:     capture(|f| app.render(f)),
         });
     }
 
@@ -872,9 +913,9 @@ fn tui_screens() -> Vec<Screen> {
         // Overall aggregate ~90 FPS across the active workers since resume.
         backdate_for_frames(&mut app.started, delta, 90.0);
         screens.push(Screen {
-            slug: "parallel-encoder",
+            slug:    "parallel-encoder",
             command: "encode",
-            buf:  capture(|f| app.render(f)),
+            buf:     capture(|f| app.render(f)),
         });
     }
 
@@ -883,12 +924,12 @@ fn tui_screens() -> Vec<Screen> {
         let mut app = SceneConcatenatorApp::new(ci, 48, ConcatMethod::Ivf);
         backdate(&mut app.started, 33);
         app.on_snapshot(SceneConcatenatorState {
-            percent: 72.0,
+            percent: 72.0
         });
         screens.push(Screen {
-            slug: "scene-concatenator",
+            slug:    "scene-concatenator",
             command: "concatenate",
-            buf:  capture(|f| app.render(f)),
+            buf:     capture(|f| app.render(f)),
         });
     }
 
@@ -1020,7 +1061,7 @@ fn ansi_lines(text: &str) -> Vec<Line<'static>> {
                         flush!();
                         style = apply_sgr(style, &seq);
                     }
-                }
+                },
                 // OSC (e.g. `ESC]8;;URL` hyperlinks): consume up to BEL or the
                 // ST (`ESC \`) sequence so no escape bytes leak as text.
                 Some(&']') => {
@@ -1034,11 +1075,11 @@ fn ansi_lines(text: &str) -> Vec<Line<'static>> {
                             break;
                         }
                     }
-                }
+                },
                 // Any other escape: drop the escape and the byte that follows.
                 _ => {
                     chars.next();
-                }
+                },
             },
             _ => pending.push(ch),
         }
@@ -1065,7 +1106,10 @@ fn session_buf(screen: &Screen, theme: Theme) -> Buffer {
         Span::styled("PS ", Style::default().fg(theme.dim)),
         Span::styled("C:\\Condor> ", Style::default().fg(prompt_fg)),
         Span::styled(".\\condor.exe", Style::default().fg(theme.main)),
-        Span::styled(format!(" {}", screen.command), Style::default().fg(prompt_fg)),
+        Span::styled(
+            format!(" {}", screen.command),
+            Style::default().fg(prompt_fg),
+        ),
     ];
     canvas.set_style(
         Rect::new(0, 0, COLS, 1),
@@ -1097,7 +1141,7 @@ fn boxed_screen(
     Screen {
         slug: Box::leak(slug.into_boxed_str()),
         command,
-        buf:  capture(move |f| {
+        buf: capture(move |f| {
             let area = f.area();
             f.render_widget(para, area);
         }),
@@ -1176,7 +1220,12 @@ fn version_screens() -> Vec<Screen> {
         // Rendered by the same function the CLI prints, so the image cannot
         // drift from real output.
         let text = render_version(verbose).expect("render --version");
-        boxed_screen(slug.to_owned(), command, title.to_owned(), ansi_lines(&text))
+        boxed_screen(
+            slug.to_owned(),
+            command,
+            title.to_owned(),
+            ansi_lines(&text),
+        )
     })
     .collect()
 }
@@ -1221,10 +1270,7 @@ pub fn generate_all(out_dir: &Path) -> anyhow::Result<Vec<(String, u32, u32)>> {
     for mode in [ThemeMode::Dark, ThemeMode::Light] {
         let theme = Theme::for_mode(mode);
         let _guard = Theme::set_mode(mode);
-        let screens = tui_screens()
-            .into_iter()
-            .chain(help_screens())
-            .chain(version_screens());
+        let screens = tui_screens().into_iter().chain(help_screens()).chain(version_screens());
         for screen in screens {
             let img = rasterize(&session_buf(&screen, theme), theme, &font);
             let name = format!("{}-{}.avif", screen.slug, suffix(mode));
@@ -1259,8 +1305,9 @@ pub fn verify_all() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ansi_lines, draw_tiling_char};
     use ratatui::{style::Color, text::Span};
+
+    use super::{ansi_lines, draw_tiling_char};
 
     /// A run of box-drawing or block glyphs must paint every pixel of the
     /// band it belongs to — no gaps between cells — or borders render as
@@ -1272,11 +1319,8 @@ mod tests {
             ('\u{2501}', "heavy horizontal"),
             ('\u{2588}', "full block"),
         ] {
-            let mut img = super::Canvas::from_pixel(
-                super::CELL_W * 3,
-                super::CELL_H,
-                [0, 0, 0, 255],
-            );
+            let mut img =
+                super::Canvas::from_pixel(super::CELL_W * 3, super::CELL_H, [0, 0, 0, 255]);
             for cell in 0..3 {
                 assert!(
                     draw_tiling_char(&mut img, ch, cell * super::CELL_W, 0, (255, 255, 255)),
@@ -1311,11 +1355,7 @@ mod tests {
     /// A double line is two hairlines, each seamless across cell borders.
     #[test]
     fn double_lines_tile_without_gaps() {
-        let mut img = super::Canvas::from_pixel(
-            super::CELL_W * 3,
-            super::CELL_H,
-            [0, 0, 0, 255],
-        );
+        let mut img = super::Canvas::from_pixel(super::CELL_W * 3, super::CELL_H, [0, 0, 0, 255]);
         for cell in 0..3 {
             assert!(draw_tiling_char(
                 &mut img,
@@ -1340,11 +1380,7 @@ mod tests {
     /// Vertical runs tile top-to-bottom the same way.
     #[test]
     fn vertical_box_drawing_tiles_without_gaps() {
-        let mut img = super::Canvas::from_pixel(
-            super::CELL_W,
-            super::CELL_H * 3,
-            [0, 0, 0, 255],
-        );
+        let mut img = super::Canvas::from_pixel(super::CELL_W, super::CELL_H * 3, [0, 0, 0, 255]);
         for cell in 0..3 {
             assert!(draw_tiling_char(
                 &mut img,
@@ -1354,7 +1390,8 @@ mod tests {
                 (255, 255, 255)
             ));
         }
-        let xmid = super::CELL_W / 2;            for y in 0..super::CELL_H * 3 {
+        let xmid = super::CELL_W / 2;
+        for y in 0..super::CELL_H * 3 {
             for x in xmid - 1..xmid + 1 {
                 assert_eq!(
                     img.get_pixel(x, y),
@@ -1378,9 +1415,9 @@ mod tests {
         assert_eq!(lines[0].spans[0].content.as_ref(), "link");
     }
 
-    /// The real `condor --version --verbose` report (rendered by ironmark, which
-    /// emits OSC 8 hyperlinks) must not leak escape bytes like `]8;;` into the
-    /// buffer — the reported screenshot bug.
+    /// The real `condor --version --verbose` report (rendered by ironmark,
+    /// which emits OSC 8 hyperlinks) must not leak escape bytes like `]8;;`
+    /// into the buffer — the reported screenshot bug.
     #[test]
     fn version_report_has_no_escape_leak() {
         let text = super::render_version(true).expect("render --version --verbose");

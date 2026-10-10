@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use andean_condor::{
     metrics::{MetricLibraryInfo, libraries},
     models::encoder::{Encoder, EncoderBase},
@@ -20,7 +22,6 @@ use andean_condor::{
 };
 use anyhow::Result;
 use ironmark::{ParseOptions, render_ansi_terminal};
-use std::fmt::Write as _;
 
 /// The coloured installed/absent marker used by every section.
 ///
@@ -179,9 +180,14 @@ Commit Date:  {}",
         .unwrap_or(0)
         + 1;
 
-    let _ = writeln!(out, "\nVapourSynth Plugins Installed\n{}", "-".repeat(max_width));
+    let _ = writeln!(
+        out,
+        "\nVapourSynth Plugins Installed\n{}",
+        "-".repeat(max_width)
+    );
     for plugin_info in plugin_infos {
-        let _ = writeln!(out,
+        let _ = writeln!(
+            out,
             "{} {}",
             marker(plugin_info.installed),
             render(&if verbose && let Some(docs) = plugin_info.docs {
@@ -195,7 +201,8 @@ Commit Date:  {}",
     let _ = writeln!(out, "\nEncoders Installed\n{}", "-".repeat(max_width));
     for (base, encoder) in encoders {
         let installed = encoder.validate().is_ok();
-        let _ = writeln!(out,
+        let _ = writeln!(
+            out,
             "{} {} ({}){}",
             marker(installed),
             render(&format!("**{}**", base.friendly_name())),

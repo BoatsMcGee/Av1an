@@ -76,7 +76,8 @@ impl ProgressBar {
                 } else {
                     elapsed.as_secs_f64() / done as f64
                 };
-                let remaining_time = self.total.saturating_sub(self.completed) as f64 * elapsed_per_unit;
+                let remaining_time =
+                    self.total.saturating_sub(self.completed) as f64 * elapsed_per_unit;
                 let eta = elapsed.as_secs_f64() + remaining_time;
                 let elapsed_hms = seconds_to_hms(elapsed.as_secs(), false);
                 let remaining_hms = seconds_to_hms(remaining_time as u64, false);

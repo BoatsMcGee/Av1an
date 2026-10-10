@@ -438,18 +438,12 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair == ["--audio-tracks", "!1"]));
         assert!(args.windows(2).any(|pair| pair == ["--language", "2:jpn"]));
         assert!(args.windows(2).any(|pair| pair == ["--color-primaries", "0:9"]));
-        let input_position = args
-            .iter()
-            .position(|arg| arg == "in.mkv")
-            .expect("input path");
-        let primaries_position = args
-            .iter()
-            .position(|arg| arg == "--color-primaries")
-            .expect("color primaries");
+        let input_position = args.iter().position(|arg| arg == "in.mkv").expect("input path");
+        let primaries_position =
+            args.iter().position(|arg| arg == "--color-primaries").expect("color primaries");
         assert!(
             primaries_position > input_position,
             "video options apply to the scene group after the input source"
         );
     }
 }
-
