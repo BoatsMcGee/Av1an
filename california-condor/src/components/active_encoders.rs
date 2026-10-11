@@ -19,12 +19,9 @@ use crate::{
 /// Takes a reference to the full `SceneEncoder` map (no clone on render) so
 /// that each worker's area can display both the per-scene encoder parameters
 /// (top half) and a full progress bar with FPS/elapsed/remaining (bottom half).
-///
-/// The panels divide the available space between the *active* encoders, not
-/// the configured worker count: with 16 workers but four scenes left, four
-/// full-width panels read better than four cramped ones above twelve blanks.
 pub struct ActiveEncoders<'a> {
     pub color:          Color,
+    pub workers:        u8,
     pub parent_encoder: Encoder,
     pub active_scenes:  &'a BTreeMap<u64, SceneEncoder>,
 }
@@ -37,7 +34,7 @@ impl Widget for ActiveEncoders<'_> {
         let worker_areas = Layout::default()
             .constraints(std::iter::repeat_n(
                 Constraint::Fill(1),
-                self.active_scenes.len().max(1),
+                self.workers.max(1) as usize,
             ))
             .split(area);
         for (worker_area, (scene_index, scene_encoder)) in
@@ -90,13 +87,126 @@ impl<'a> ActiveEncoders<'a> {
     #[inline]
     pub fn new(
         color: Color,
+        workers: u8,
         parent_encoder: Encoder,
         active_scenes: &'a BTreeMap<u64, SceneEncoder>,
     ) -> Self {
         Self {
             color,
+            workers,
             parent_encoder,
             active_scenes,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use andean_condor::{ffmpeg::FFPixelFormat, models::encoder::EncoderBase};
+
+    use super::*;
+    use crate::test_helpers::TestVideo;
+
+    /// Forty rows over four workers: one ten-row slot apiece.
+    const AREA: Rect = Rect::new(0, 0, 60, 40);
+    const SLOT: u16 = AREA.height / 4;
+
+    fn encoder() -> Encoder {
+        Encoder::default_from_base(&EncoderBase::SVTAV1, false)
+    }
+
+    /// The given scenes mid-encode, keyed the way progress reports them.
+    fn active(scenes: &[u64]) -> BTreeMap<u64, SceneEncoder> {
+        let video = TestVideo {
+            path:         PathBuf::new(),
+            width:        1920,
+            height:       1080,
+            frames:       400,
+            fps_rational: (24000, 1001),
+            format:       FFPixelFormat::YUV420P,
+            scenes:       vec![(0, 100), (100, 200), (200, 300), (300, 400)],
+        };
+        let scene = video.mock_scenes(&encoder()).remove(0);
+        scenes
+            .iter()
+            .map(|&index| {
+                (index, SceneEncoder {
+                    scene:            scene.clone(),
+                    started:          std::time::Instant::now(),
+                    current_pass:     1,
+                    total_passes:     2,
+                    frames_processed: 40,
+                    total_frames:     100,
+                })
+            })
+            .collect()
+    }
+
+    fn render(workers: u8, active: &BTreeMap<u64, SceneEncoder>) -> Buffer {
+        let mut buf = Buffer::empty(AREA);
+        ActiveEncoders::new(Color::Gray, workers, encoder(), active).render(AREA, &mut buf);
+        buf
+    }
+
+    /// The row a panel's title sits on, or `None` when no panel claims it.
+    fn title_row(buf: &Buffer, scene: u64) -> Option<u16> {
+        let needle = format!("Scene {scene} Pass");
+        (0..AREA.height).find(|&y| {
+            let row: String = (0..AREA.width).map(|x| buf[(x, y)].symbol()).collect();
+            row.contains(&needle)
+        })
+    }
+
+    /// Every row holding any part of a panel.
+    fn drawn_rows(buf: &Buffer) -> Vec<u16> {
+        (0..AREA.height)
+            .filter(|&y| (0..AREA.width).any(|x| buf[(x, y)].symbol() != " "))
+            .collect()
+    }
+
+    /// Fewer active encoders than workers: the panels take the bottom slots
+    /// only, the latest worker sits lowest and the earliest directly above it.
+    /// Stretching them over the whole area instead would hide how much of the
+    /// worker pool is still idle.
+    #[test]
+    fn panels_fill_the_worker_slots_from_the_bottom_up() {
+        let buf = render(4, &active(&[3, 5]));
+
+        assert_eq!(
+            title_row(&buf, 3),
+            Some(2 * SLOT),
+            "the earliest worker sits above the latest"
+        );
+        assert_eq!(
+            title_row(&buf, 5),
+            Some(3 * SLOT),
+            "the latest worker takes the lowest slot"
+        );
+        let drawn = drawn_rows(&buf);
+        assert!(
+            drawn.iter().all(|&y| y >= 2 * SLOT),
+            "the slots above the active panels stay blank, got rows {drawn:?}"
+        );
+    }
+
+    /// Every worker busy: all slots taken, earliest worker at the top.
+    #[test]
+    fn a_full_pool_of_workers_fills_every_slot() {
+        let buf = render(4, &active(&[0, 1, 2, 3]));
+
+        assert_eq!(title_row(&buf, 0), Some(0));
+        assert_eq!(title_row(&buf, 3), Some(3 * SLOT));
+        assert_eq!(drawn_rows(&buf).len(), AREA.height as usize);
+    }
+
+    /// Nothing encoding yet: an empty area, not a stray panel in slot zero.
+    #[test]
+    fn no_active_encoder_draws_nothing() {
+        let buf = render(4, &active(&[]));
+
+        assert!(drawn_rows(&buf).is_empty(), "an idle pool draws no panels");
+        assert_eq!(title_row(&buf, 0), None);
     }
 }

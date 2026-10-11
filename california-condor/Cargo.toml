@@ -68,6 +68,7 @@ screenshots = ["dep:ab_glyph", "dep:av-format"]
 
 [dev-dependencies]
 assert_cmd = "2.1.1"
+av-format = "0.7"
 serial_test = "4.0"
 tempfile = { workspace = true }
 

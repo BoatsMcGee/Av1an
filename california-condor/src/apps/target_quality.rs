@@ -35,6 +35,9 @@ pub struct TargetQualityApp {
     pub encoder:                    Encoder,
     pub clip_info:                  ClipInfo,
     pub pass_started:               std::time::Instant,
+    /// The stopped clock of a pass whose frames are all done, held so the
+    /// progress bar's FPS stops moving through the gap before the next pass.
+    pass_completed:                 Option<std::time::Instant>,
     attempted_cancel:               bool,
     shared_progress:                SharedProgress<TargetQualityState>,
     cached_state:                   TargetQualityState,
@@ -242,6 +245,7 @@ impl TuiApp for TargetQualityApp {
         if new_encode_phase || new_compare_phase || pass_changed {
             self.pass_started = std::time::Instant::now();
         }
+        Self::stop_clock_at_completion(&snapshot, &mut self.pass_completed);
         self.cached_state = snapshot;
     }
 
@@ -331,30 +335,62 @@ impl TuiApp for TargetQualityApp {
             } else {
                 format!("Comparing Pass {}", state.current_pass)
             },
-            completed_title:     if self.attempted_cancel {
-                "Target Quality Aborted".to_owned()
-            } else {
-                "Target Quality Completed".to_owned()
-            },
+            completed_title:     Self::completed_title(state, self.attempted_cancel),
             top_right_title:     String::new(),
             bottom_center_title: String::new(),
             unit_per_second:     "FPS".to_owned(),
             unit:                "Frame".to_owned(),
             initial_completed:   0,
-            completed:           if state.frames_encoded < state.total_frames {
-                state.frames_encoded
-            } else {
-                state.frames_compared
-            },
+            completed:           Self::completed(state),
             total:               state.total_frames,
             show_label:          true,
         };
-        let progress_bar = progress_bar.generate(Some(self.pass_started));
+        // A finished pass keeps its clock stopped, so the FPS it measured stays
+        // on screen instead of being recomputed against the gap that follows.
+        let clock = self.pass_completed.unwrap_or(self.pass_started);
+        let progress_bar = progress_bar.generate(Some(clock));
         frame.render_widget(progress_bar, layout[2]);
     }
 }
 
 impl TargetQualityApp {
+    /// The bar's top-left title once every frame it tracks is done.
+    #[inline]
+    fn completed_title(state: &TargetQualityState, attempted_cancel: bool) -> String {
+        if attempted_cancel {
+            "Target Quality Aborted".to_owned()
+        } else {
+            format!("Comparing Pass {} Complete", state.current_pass)
+        }
+    }
+
+    /// The frames the progress bar measures, and therefore the count a rate
+    /// would be derived from: the encode's frames while encoding, the compare's
+    /// once every frame is encoded.
+    #[inline]
+    fn completed(state: &TargetQualityState) -> u64 {
+        if state.frames_encoded < state.total_frames {
+            state.frames_encoded
+        } else {
+            state.frames_compared
+        }
+    }
+
+    /// Stops the clock once a pass has produced every frame the bar shows, and
+    /// releases it again when the next pass reports progress.
+    fn stop_clock_at_completion(
+        snapshot: &TargetQualityState,
+        pass_completed: &mut Option<std::time::Instant>,
+    ) {
+        if Self::completed(snapshot) >= snapshot.total_frames {
+            if pass_completed.is_none() {
+                *pass_completed = Some(std::time::Instant::now());
+            }
+        } else {
+            *pass_completed = None;
+        }
+    }
+
     pub fn new(
         clip_info: ClipInfo,
         scenes: Vec<Scene<CliSequenceData>>,
@@ -397,6 +433,7 @@ impl TargetQualityApp {
             encoder,
             clip_info,
             pass_started: std::time::Instant::now(),
+            pass_completed: None,
             attempted_cancel: false,
             shared_progress: SharedProgress::new(state.clone()),
             cached_state: state,
@@ -430,4 +467,107 @@ pub struct QualityPass {
     pub(crate) quantizer:    f64,
     pub(crate) score:        f64,
     pub(crate) bitrate:      f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{TargetQualityApp, TargetQualityState};
+
+    const TOTAL: u64 = 14386;
+
+    fn state(current_pass: u8, frames_encoded: u64, frames_compared: u64) -> TargetQualityState {
+        TargetQualityState {
+            quality_passes: BTreeMap::new(),
+            current_pass,
+            frames_encoded,
+            frames_compared,
+            total_frames: TOTAL,
+        }
+    }
+
+    /// A pass that has compared every frame is finished, so its clock stops
+    /// and the FPS it measured is what stays on screen.
+    #[test]
+    fn a_finished_pass_stops_the_clock() {
+        let mut pass_completed = None;
+
+        TargetQualityApp::stop_clock_at_completion(&state(2, TOTAL, TOTAL), &mut pass_completed);
+
+        assert!(
+            pass_completed.is_some(),
+            "a pass with every frame compared has finished"
+        );
+    }
+
+    /// Frames still arriving mean the pass is running: the clock belongs to it
+    /// and must keep ticking.
+    #[test]
+    fn frames_still_coming_in_keep_the_clock_running() {
+        let mut pass_completed = None;
+
+        TargetQualityApp::stop_clock_at_completion(&state(2, 6040, 0), &mut pass_completed);
+        assert!(
+            pass_completed.is_none(),
+            "an encoding pass is still running"
+        );
+
+        TargetQualityApp::stop_clock_at_completion(&state(2, TOTAL, 7190), &mut pass_completed);
+        assert!(
+            pass_completed.is_none(),
+            "a comparing pass is still running"
+        );
+    }
+
+    /// The snapshot that announces the next pass arrives before any of its
+    /// frames, so the counters still read the finished pass. The clock must
+    /// stay stopped through it — this is the snapshot the FPS used to spike on.
+    #[test]
+    fn the_next_pass_announcement_leaves_the_clock_stopped() {
+        let mut pass_completed = None;
+        TargetQualityApp::stop_clock_at_completion(&state(2, TOTAL, TOTAL), &mut pass_completed);
+        let stopped = pass_completed.expect("the finished pass stops the clock");
+
+        TargetQualityApp::stop_clock_at_completion(&state(3, TOTAL, TOTAL), &mut pass_completed);
+
+        assert_eq!(
+            pass_completed,
+            Some(stopped),
+            "no frames of the next pass have been reported yet"
+        );
+    }
+
+    /// The first frames of the next pass hand the clock back to it.
+    #[test]
+    fn the_next_pass_resumes_the_clock() {
+        let mut pass_completed = None;
+        TargetQualityApp::stop_clock_at_completion(&state(2, TOTAL, TOTAL), &mut pass_completed);
+
+        TargetQualityApp::stop_clock_at_completion(&state(3, 1, 0), &mut pass_completed);
+
+        assert!(
+            pass_completed.is_none(),
+            "the next pass is encoding, so its own clock runs"
+        );
+    }
+
+    /// A finished compare ends a probe pass, and another pass usually follows,
+    /// so the title names that pass instead of claiming the whole run is done.
+    #[test]
+    fn a_finished_compare_titles_its_own_pass() {
+        assert_eq!(
+            TargetQualityApp::completed_title(&state(2, TOTAL, TOTAL), false),
+            "Comparing Pass 2 Complete"
+        );
+    }
+
+    /// Cancelling takes over the title, whatever the pass counters say.
+    #[test]
+    fn cancelling_titles_the_abort() {
+        assert_eq!(
+            TargetQualityApp::completed_title(&state(2, TOTAL, TOTAL), true),
+            "Target Quality Aborted"
+        );
+    }
 }

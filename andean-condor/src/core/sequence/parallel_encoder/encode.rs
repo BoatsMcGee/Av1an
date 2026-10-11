@@ -58,16 +58,16 @@ pub(super) fn spawn_filter(
 }
 
 /// A finished scene encode, and whether it is usable.
-struct SceneOutcome {
-    temp_output: std::path::PathBuf,
-    bytes:       u64,
-    usable:      bool,
+pub(super) struct SceneOutcome {
+    pub(super) temp_output: std::path::PathBuf,
+    pub(super) bytes:       u64,
+    pub(super) usable:      bool,
 }
 
 /// Renames a usable encode to its final path, or discards it and flags the
 /// error. A failed filter truncates the stream, so a short encode must not
 /// survive as the scene's output.
-fn finalize_scene(
+pub(super) fn finalize_scene(
     outcome: SceneOutcome,
     output: &std::path::Path,
     scene: usize,
@@ -366,5 +366,91 @@ impl ParallelEncoder {
 
             Ok(encoder_results)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A usable scene reports its size on the progress channel — the event the
+    /// interface turns into the finished-scene counter and the size estimate —
+    /// and is renamed to its final output.
+    #[test]
+    fn a_usable_scene_reports_its_size() {
+        let dir = std::env::temp_dir().join(format!("cc-finalize-scene-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir should be created");
+        let temp_output = dir.join("0.temp.ivf");
+        let output = dir.join("0.ivf");
+        std::fs::write(&temp_output, vec![7_u8; 42]).expect("temp file should be written");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let errored = AtomicBool::new(false);
+
+        finalize_scene(
+            SceneOutcome {
+                temp_output: temp_output.clone(),
+                bytes:       42,
+                usable:      true,
+            },
+            &output,
+            3,
+            &tx,
+            &errored,
+        )
+        .expect("finalize should succeed");
+
+        match rx.try_recv().expect("the size event is sent") {
+            SequenceStatus::Whole(Status::Processing {
+                id,
+                completion:
+                    SequenceCompletion::Custom {
+                        name,
+                        completed,
+                        total,
+                    },
+            }) => {
+                assert_eq!(id, "3");
+                assert_eq!(name, "size");
+                assert_eq!(completed, 42.0);
+                assert_eq!(total, 42.0);
+            },
+            other => panic!("unexpected status: {other:?}"),
+        }
+        assert!(output.exists(), "the encode is renamed to its final output");
+        assert!(!temp_output.exists(), "the temp file is gone");
+        assert!(!errored.load(Ordering::Relaxed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An unusable encode is discarded without reporting a size — an estimate
+    /// built on it would claim bytes that do not exist — and flags the error.
+    #[test]
+    fn an_unusable_scene_is_discarded_without_a_size() {
+        let dir = std::env::temp_dir().join(format!("cc-finalize-drop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir should be created");
+        let temp_output = dir.join("1.temp.ivf");
+        let output = dir.join("1.ivf");
+        std::fs::write(&temp_output, vec![7_u8; 42]).expect("temp file should be written");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let errored = AtomicBool::new(false);
+
+        finalize_scene(
+            SceneOutcome {
+                temp_output: temp_output.clone(),
+                bytes:       42,
+                usable:      false,
+            },
+            &output,
+            1,
+            &tx,
+            &errored,
+        )
+        .expect("finalize should succeed");
+
+        assert!(rx.try_recv().is_err(), "a discarded scene reports no size");
+        assert!(!output.exists(), "a discarded scene produces no output");
+        assert!(!temp_output.exists(), "the temp output is removed");
+        assert!(errored.load(Ordering::Relaxed), "the error is flagged");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

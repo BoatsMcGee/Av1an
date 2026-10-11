@@ -220,6 +220,7 @@ impl TuiApp for ParallelEncoderApp {
 
         let active_encoders = ActiveEncoders::new(
             main,
+            self.workers,
             self.encoder.clone(),
             &self.cached_state.active_encoders,
         );
@@ -367,4 +368,170 @@ pub struct SceneProgress {
     total_passes:  u8,
     current_frame: u64,
     total_frames:  u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, path::PathBuf};
+
+    use andean_condor::{
+        core::{
+            input::{
+                clip_info::{ClipInfo, TransferFunction},
+                pixel_format::PixelFormat,
+            },
+            sequence::{SequenceCompletion, SequenceStatus, Status},
+        },
+        ffmpeg::FFPixelFormat,
+        models::{
+            encoder::{Encoder, EncoderBase},
+            scene::Scene,
+        },
+    };
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+
+    use super::{ParallelEncoderApp, SceneEncoder};
+    use crate::{apps::TuiApp, configuration::CliSequenceData, test_helpers::TestVideo};
+
+    const FRAMES: usize = 400;
+
+    fn encoder() -> Encoder {
+        Encoder::default_from_base(&EncoderBase::SVTAV1, false)
+    }
+
+    fn clip_info() -> ClipInfo {
+        ClipInfo {
+            num_frames:               FRAMES,
+            format_info:              PixelFormat::VapourSynth {
+                bit_depth: 10
+            },
+            frame_rate:               av_format::rational::Rational64::new(24000, 1001),
+            resolution:               (1920, 1080),
+            color_range:              None,
+            transfer_characteristics: TransferFunction::SMPTE2084,
+        }
+    }
+
+    fn scenes() -> BTreeMap<u64, (u64, Scene<CliSequenceData>)> {
+        let video = TestVideo {
+            path:         PathBuf::new(),
+            width:        1920,
+            height:       1080,
+            frames:       FRAMES,
+            fps_rational: (24000, 1001),
+            format:       FFPixelFormat::YUV420P,
+            scenes:       vec![(0, 100), (100, 200), (200, 300), (300, FRAMES)],
+        };
+        video
+            .mock_scenes(&encoder())
+            .into_iter()
+            .enumerate()
+            .map(|(index, scene)| (index as u64, (0, scene)))
+            .collect()
+    }
+
+    /// The size event a finished scene emits is what fills the bar: the count
+    /// of finished scenes at the bottom, and the bitrate and estimated size in
+    /// the corner. Without it the bar has nothing to show.
+    #[test]
+    fn a_finished_scene_updates_the_counter_and_the_estimate() {
+        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let state = app.cached_state_mut();
+        assert_eq!(state.completed_scenes_count, 0);
+        assert_eq!(state.estimated_bytes, 0);
+
+        let event = SequenceStatus::Whole(Status::Processing {
+            id:         "1".to_owned(),
+            completion: SequenceCompletion::Custom {
+                name:      "size".to_owned(),
+                completed: 2_000_000.0,
+                total:     2_000_000.0,
+            },
+        });
+        assert!(ParallelEncoderApp::map_progress(event, state));
+
+        assert_eq!(state.completed_scenes_count, 1);
+        assert!(
+            state.estimated_bytes > 0,
+            "the estimate projects the clip from the finished scene"
+        );
+        assert!(state.estimated_bitrate > 0.0);
+    }
+
+    /// The counter tracks scenes with a measured size, not scenes whose
+    /// encoder merely exited: a completion without a size must not count a
+    /// scene as finished, or the estimate would claim bytes that do not exist.
+    #[test]
+    fn a_completed_scene_without_a_size_is_not_counted() {
+        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let state = app.cached_state_mut();
+
+        let completed = SequenceStatus::Subprocess {
+            parent: Status::Processing {
+                id:         "Parallel Encoder".to_owned(),
+                completion: SequenceCompletion::Frames {
+                    completed: 0,
+                    total:     FRAMES as u64,
+                },
+            },
+            child:  Status::Completed {
+                id: "2".to_owned()
+            },
+        };
+        assert!(ParallelEncoderApp::map_progress(completed, state));
+
+        assert_eq!(state.completed_scenes_count, 0);
+        assert_eq!(state.estimated_bytes, 0);
+    }
+
+    /// The row a worker panel's title sits on, or `None` when no panel
+    /// claims it.
+    fn title_row(buf: &Buffer, scene: u64) -> Option<u16> {
+        let needle = format!("Scene {scene} Pass");
+        (0..40).find(|&y| {
+            let row: String = (0..60).map(|x| buf[(x, y)].symbol()).collect();
+            row.contains(&needle)
+        })
+    }
+
+    /// The screen keeps one slot per *configured* worker rather than one per
+    /// running encoder: with four workers and two scenes encoding, the panels
+    /// take the bottom two slots of the middle region — latest worker lowest,
+    /// earliest directly above — and the idle half stays blank. This is the
+    /// seam the screenshot refactor broke; the widget cannot tell on its own
+    /// whether the right slot count reached it.
+    #[test]
+    fn the_screen_reserves_a_slot_per_worker_and_fills_from_the_bottom() {
+        let mut app = ParallelEncoderApp::new(4, encoder(), scenes(), clip_info());
+        let all = scenes();
+        for index in [1_u64, 2] {
+            let state = app.cached_state_mut();
+            state.active_encoders.insert(index, SceneEncoder {
+                scene:            all[&index].1.clone(),
+                started:          std::time::Instant::now(),
+                current_pass:     1,
+                total_passes:     2,
+                frames_processed: 40,
+                total_frames:     100,
+            });
+        }
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(60, 40)).expect("test terminal should be created");
+        terminal.draw(|frame| app.render(frame)).expect("draw should succeed");
+        let buf = terminal.backend().buffer();
+
+        assert_eq!(
+            title_row(buf, 2),
+            Some(29),
+            "the latest worker takes the lowest slot"
+        );
+        assert_eq!(
+            title_row(buf, 1),
+            Some(22),
+            "the earliest worker sits directly above the latest"
+        );
+        let idle_half = (8..22).all(|y| (0..60).all(|x| buf[(x, y)].symbol() == " "));
+        assert!(idle_half, "the idle worker slots above stay blank");
+    }
 }

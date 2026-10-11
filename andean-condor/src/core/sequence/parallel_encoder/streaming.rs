@@ -17,7 +17,7 @@ use tracing::{debug, error};
 
 use super::{
     ParallelEncoder,
-    encode::{FilteredFrames, spawn_filter},
+    encode::{FilteredFrames, SceneOutcome, finalize_scene, spawn_filter},
     error::ParallelEncoderError,
     progress::relay_progress,
     task::{ParallelEncoderResult, ResultStream, Task},
@@ -145,11 +145,17 @@ impl ParallelEncoder {
                                         task.original_index
                                     );
                                 }
-                                if result.status.success() {
-                                    fs::rename(&temp_output, &task.output)?;
-                                } else {
-                                    errored.store(true, Ordering::Relaxed);
-                                }
+                                finalize_scene(
+                                    SceneOutcome {
+                                        temp_output,
+                                        bytes,
+                                        usable: result.status.success(),
+                                    },
+                                    &task.output,
+                                    task.original_index,
+                                    &progress_tx,
+                                    errored,
+                                )?;
                                 let parallel_result = ParallelEncoderResult {
                                     scene: task.original_index,
                                     started,
