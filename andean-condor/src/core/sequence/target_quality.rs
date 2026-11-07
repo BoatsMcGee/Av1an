@@ -794,7 +794,6 @@ impl TargetQuality {
         let pass_directory = target_quality_directory.join(pass.to_string());
         let output = concat_method.with_extension(&target_quality_directory.join(pass.to_string()));
         let framerate = input.clip_info()?.frame_rate;
-        // Seconds per frame, for a probe encoded by an earlier run.
         let fps = *framerate.numer() as f64 / *framerate.denom() as f64;
 
         // An aborted pass leaves scene files encoded at an unsaved quantizer,
@@ -1394,7 +1393,7 @@ impl TargetQuality {
                 let bitrate = results.get(&task.original_index).map_or_else(
                     || {
                         let bytes = task.output.metadata().map_or(0, |meta| meta.len());
-                        (bytes * 8) as f64 / (task.frame_indices.len() as f64 * fps)
+                        (bytes * 8) as f64 / (task.frame_indices.len() as f64 / fps)
                     },
                     |result| result.bitrate,
                 );

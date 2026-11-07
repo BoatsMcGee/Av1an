@@ -263,7 +263,7 @@ impl ParallelEncoder {
                     let ended = std::time::SystemTime::now();
                     let framerate =
                         *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
-                    let scene_seconds = task.frame_indices.len() as f64 * framerate;
+                    let scene_seconds = task.frame_indices.len() as f64 / framerate;
                     let bytes = temp_output.metadata().ok().map_or(0, |meta| meta.len());
                     let bitrate = (bytes * 8) as f64 / scene_seconds;
                     let filter_failed =
