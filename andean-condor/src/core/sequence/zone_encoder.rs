@@ -412,6 +412,8 @@ fn apply_zone_options(
                 .with_context(|| format!("failed to write {}", path.display()))?;
             insert("webm", "0");
             insert("config", &path.display().to_string());
+            // Force keyframes to ensure ivf splits contain all header data.
+            insert("keyint", "-1");
             zone_files.push(path);
         },
         _ => unreachable!("zoning eligibility restricts the base"),
@@ -621,11 +623,75 @@ enum Codec {
     H265,
 }
 
-/// Byte offset of the IVF header's frame count field.
-const IVF_NFRAME_OFFSET: usize = 22;
+/// Byte offset of the IVF header's frame count field: `DKIF`, version, header
+/// length, fourcc, width, height, rate, scale, then the count.
+const IVF_NFRAME_OFFSET: usize = 24;
+
+/// One OBU at `position`: its type, its total encoded length, the start of its
+/// payload, and where the next OBU begins.
+///
+/// Only the header and the size field are read; the payload is not interpreted.
+/// `None` means the bytes do not form a complete OBU, which makes the caller
+/// treat the frame as carrying no usable prefix rather than failing the split.
+fn obu_at(bytes: &[u8], position: usize) -> Option<(u8, usize, usize, usize)> {
+    let header = *bytes.get(position)?;
+    let obu_type = (header >> 3) & 0x0F;
+    let mut cursor = position + 1;
+    if header & 0x04 != 0 {
+        // Extension header, present only on reserved layers.
+        cursor += 1;
+    }
+    let mut size = 0usize;
+    let mut shift = 0;
+    if header & 0x02 != 0 {
+        loop {
+            let byte = *bytes.get(cursor)?;
+            cursor += 1;
+            size |= usize::from(byte & 0x7F) << shift;
+            shift += 7;
+            if byte & 0x80 == 0 {
+                break;
+            }
+            if shift > 28 {
+                return None;
+            }
+        }
+    }
+    let end = cursor.checked_add(size)?;
+    if end > bytes.len() {
+        return None;
+    }
+    Some((obu_type, end - position, cursor, end))
+}
+
+/// The OBUs a part needs before any coded frame: the temporal delimiter,
+/// sequence header and metadata plus whether they carry the sequence header.
+///
+/// A decoder cannot open a stream that lacks a sequence header, and only the
+/// first frame of a zone-encoded pass is guaranteed to repeat one.
+fn leading_obus(payload: &[u8]) -> (Vec<u8>, bool) {
+    let mut position = 0usize;
+    let mut prefix_end = 0usize;
+    let mut sequence_header = false;
+    while let Some((obu_type, _, _, end)) = obu_at(payload, position) {
+        match obu_type {
+            // Temporal delimiter, sequence header, metadata.
+            1 | 2 | 5 => {
+                sequence_header |= obu_type == 2;
+                position = end;
+                prefix_end = end;
+            },
+            _ => break,
+        }
+    }
+    (payload[..prefix_end].to_vec(), sequence_header)
+}
 
 /// Splits a whole-pass IVF file into one file per task, each with the shared
 /// 32-byte file header. Returns `(bytes, frames)` per task.
+///
+/// A part that does not start with a sequence header inherits the stream's
+/// leading OBUs, so it decodes on its own.
 fn split_ivf(whole_output: &Path, tasks: &[Task], extension: &str) -> Result<Vec<(u64, usize)>> {
     let mut reader = BufReader::new(
         fs::File::open(whole_output)
@@ -642,8 +708,9 @@ fn split_ivf(whole_output: &Path, tasks: &[Task], extension: &str) -> Result<Vec
         );
     }
 
+    let mut stream_prefix: Vec<u8> = Vec::new();
     let mut parts: Vec<(PathBuf, u64, usize)> = Vec::with_capacity(tasks.len());
-    for task in tasks {
+    for (part_index, task) in tasks.iter().enumerate() {
         let expected = task.frame_indices.len();
         // Each part declares only its own frames: the whole-pass count would be
         // summed as duration when the scenes are concatenated back together.
@@ -666,15 +733,31 @@ fn split_ivf(whole_output: &Path, tasks: &[Task], extension: &str) -> Result<Vec
                 )
             })?;
             let size = u32::from_le_bytes(frame_header[..4].try_into().expect("4 bytes"));
-            output.write_all(&frame_header)?;
-            let copied = std::io::copy(&mut reader.by_ref().take(size.into()), &mut output)?;
-            if copied != u64::from(size) {
-                bail!(
+            let mut payload = vec![0u8; size as usize];
+            reader.read_exact(&mut payload).with_context(|| {
+                format!(
                     "zone output is truncated in frame {frames} of scene {}",
                     task.original_index
-                );
+                )
+            })?;
+            let mut inherited: &[u8] = &[];
+            if frames == 0 {
+                let (prefix, carries_sequence_header) = leading_obus(&payload);
+                if part_index == 0 {
+                    stream_prefix = prefix;
+                } else if !carries_sequence_header && !stream_prefix.is_empty() {
+                    inherited = &stream_prefix;
+                }
             }
-            bytes += 12 + u64::from(size);
+            // The part's first frame grows by the inherited prefix, so its IVF size field
+            // has to describe what is actually written or the next header is misread.
+            let declared =
+                u32::try_from(payload.len().saturating_add(inherited.len())).unwrap_or(u32::MAX);
+            frame_header[..4].copy_from_slice(&declared.to_le_bytes());
+            output.write_all(&frame_header)?;
+            output.write_all(inherited)?;
+            output.write_all(&payload)?;
+            bytes += 12 + u64::from(declared);
             frames += 1;
         }
         output.flush()?;
@@ -1236,6 +1319,33 @@ mod tests {
             panic!("qpfile option should be a string");
         };
         assert_eq!(qpfile_value, &zone_files[0].display().to_string());
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    /// SVT-AV1 drops `ForceKeyFrames` unless the key interval is infinite, and
+    /// a dropped forced keyframe leaves the zone boundary inside a GOP: the
+    /// part split there would reference frames that live in another part.
+    #[test]
+    fn svt_zone_options_force_an_infinite_key_interval() {
+        let directory = temp_directory("svt-keyint");
+        let zones = ZonePlan::from_tasks(&[task(0, 5, svt_av1(20.0)), task(1, 3, svt_av1(30.0))])
+            .expect("zones built");
+        let plan = ZonePlan {
+            zone_option: String::new(),
+            qpfile_content: String::new(),
+            config_content: "Zones : 0,4,20;5,7,30\nForceKeyFrames : 5f\n".to_owned(),
+            zones,
+        };
+        let mut encoder = svt_av1(20.0);
+        apply_zone_options(&mut encoder, &plan, &directory).expect("options applied");
+        let keyint = encoder.parameters().get("keyint").expect("keyint option");
+        let CLIParameter::String {
+            value, ..
+        } = keyint
+        else {
+            panic!("keyint option should be a string");
+        };
+        assert_eq!(value, "-1");
         let _ = fs::remove_dir_all(&directory);
     }
 
@@ -1827,15 +1937,28 @@ mod tests {
 
     /// A whole-pass IVF file, with the frame count the encoder writes into the
     /// header covering every frame of the pass.
+    /// The leading OBUs a real stream starts with: a temporal delimiter and a
+    /// sequence header four bytes long.
+    fn stream_prefix() -> [u8; 8] {
+        [0x12, 0x00, 0x0A, 0x04, 0x2A, 0x2A, 0x2A, 0x2A]
+    }
+
     fn synthetic_ivf(frame_sizes: &[u32]) -> Vec<u8> {
         let mut ivf = vec![0u8; 32];
         ivf[..4].copy_from_slice(b"DKIF");
+        ivf[16..20].copy_from_slice(&24_000u32.to_le_bytes());
+        ivf[20..24].copy_from_slice(&1_001u32.to_le_bytes());
         ivf[IVF_NFRAME_OFFSET..IVF_NFRAME_OFFSET + 4]
             .copy_from_slice(&(frame_sizes.len() as u32).to_le_bytes());
         for (index, size) in frame_sizes.iter().enumerate() {
+            let mut payload = vec![0xAB; *size as usize];
+            if index == 0 {
+                // Only the stream's first frame carries the sequence header.
+                payload[..stream_prefix().len()].copy_from_slice(&stream_prefix());
+            }
             ivf.extend_from_slice(&size.to_le_bytes());
             ivf.extend_from_slice(&(index as u64).to_le_bytes());
-            ivf.extend(std::iter::repeat_n(0xAB, *size as usize));
+            ivf.extend_from_slice(&payload);
         }
         ivf
     }
@@ -1853,8 +1976,9 @@ mod tests {
     fn ivf_output_splits_into_per_scene_files() {
         let directory = temp_directory("ivf");
         let whole = directory.join("zone-pass.temp.ivf");
-        // Frames: scene 0 gets 2, scene 1 gets 3, scene 2 gets 1.
-        fs::write(&whole, synthetic_ivf(&[3, 5, 7, 2, 9, 4])).expect("ivf written");
+        // Frames: scene 0 gets 2, scene 1 gets 3, scene 2 gets 1. The first frame is
+        // big enough to hold the leading OBUs a real stream starts with.
+        fs::write(&whole, synthetic_ivf(&[10, 5, 7, 2, 9, 4])).expect("ivf written");
         let tasks = vec![
             Task {
                 original_index: 0,
@@ -1882,19 +2006,29 @@ mod tests {
             },
         ];
         let split = split_ivf(&whole, &tasks, "ivf").expect("split");
-        // 32-byte header + frame headers + payloads.
+        // 32-byte header + frame headers + payloads, plus the inherited leading OBUs on
+        // every part that did not start with a sequence header of its own.
         assert_eq!(split, vec![
-            (32 + 12 + 3 + 12 + 5, 2),
-            (32 + 12 + 7 + 12 + 2 + 12 + 9, 3),
-            (32 + 12 + 4, 1)
+            (32 + 12 + 10 + 12 + 5, 2),
+            (32 + 12 + 7 + 12 + 2 + 12 + 9 + 8, 3),
+            (32 + 12 + 4 + 8, 1)
         ]);
         for task in &tasks {
             assert!(task.output.exists(), "{} saved", task.output.display());
         }
-        // Each part starts with the IVF header.
+        // Each part starts with the IVF header, and keeps the stream's timebase: only
+        // the frame count field belongs to the part.
         let head = fs::read(&tasks[1].output).expect("scene1 read");
         assert_eq!(&head[..4], b"DKIF");
+        assert_eq!(&head[16..20], &24_000u32.to_le_bytes());
+        assert_eq!(&head[20..24], &1_001u32.to_le_bytes());
         assert_eq!(head.len() as u64, split[1].0);
+        // Every part opens with the sequence header, so it decodes standalone.
+        assert_eq!(
+            &head[32 + 12..32 + 12 + stream_prefix().len()],
+            &stream_prefix(),
+            "scene 1 must repeat the stream's leading OBUs"
+        );
         // Each part declares its own frame count, not the whole pass's: the
         // scene concatenator sums these headers to rebuild the duration.
         assert_eq!(
