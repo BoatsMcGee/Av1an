@@ -43,6 +43,9 @@ pub use string_or_bytes::StringOrBytes;
 
 const NULL_OUTPUT: &str = if cfg!(windows) { "nul" } else { "/dev/null" };
 
+/// How often the encoder's CPU and memory are sampled while it runs.
+const SAMPLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 impl Encoder {
     #[inline]
     pub fn validate(&self) -> Result<()> {
@@ -517,7 +520,7 @@ impl Encoder {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let pid = encoder.id();
+        let pid = sysinfo::Pid::from_u32(encoder.id());
 
         // Data produced and consumed throughout
         let mut frames_decoded = 0;
@@ -534,23 +537,36 @@ impl Encoder {
         let encoder_stderr_thread = thread::spawn(move || -> Result<_> {
             let mut reader = BufReader::new(stderr);
             let mut buf = Vec::with_capacity(BUFFER_CAPACITY);
+            let mut last_usage = EncodeResourceUsage::default();
+            let mut last_sample = Instant::now() - SAMPLE_INTERVAL;
 
             loop {
                 match reader.read_until(b'\r', &mut buf) {
                     Ok(0) => break,
                     Ok(_) => {
                         let line = buf.clone();
-                        system.refresh_all();
-                        let usage = system.process(sysinfo::Pid::from_u32(pid)).map_or_else(
-                            || EncodeResourceUsage {
-                                cpu:    0.0,
-                                memory: 0,
-                            },
-                            |process| EncodeResourceUsage {
-                                cpu:    process.cpu_usage(),
-                                memory: process.memory(),
-                            },
-                        );
+                        // Sampling the encoder's CPU and memory walks the system's process table,
+                        // which is  expensive. Only sample once a second.
+                        let now = Instant::now();
+                        if now.duration_since(last_sample) >= SAMPLE_INTERVAL {
+                            system.refresh_processes_specifics(
+                                sysinfo::ProcessesToUpdate::Some(&[pid]),
+                                true,
+                                sysinfo::ProcessRefreshKind::nothing().with_cpu().with_memory(),
+                            );
+                            last_usage = system.process(pid).map_or_else(
+                                || EncodeResourceUsage {
+                                    cpu:    0.0,
+                                    memory: 0,
+                                },
+                                |process| EncodeResourceUsage {
+                                    cpu:    process.cpu_usage(),
+                                    memory: process.memory(),
+                                },
+                            );
+                            last_sample = now;
+                        }
+                        let usage = last_usage;
 
                         if let Ok(line) = simdutf8::basic::from_utf8(&line) {
                             // This needs to be done before parse_encoded_frames, as it potentially
