@@ -508,6 +508,13 @@ fn clamp_u16(value: f32) -> u16 {
     value.round().clamp(0.0, 65535.0) as u16
 }
 
+/// Source-code scaling into the matrix's 8-bit-equivalent domain.
+#[derive(Debug, Clone, Copy)]
+struct SampleScale {
+    gain: f32,
+    chroma_center: f32,
+}
+
 /// Where one plane's samples live, resolved once per row rather than per pixel.
 #[derive(Debug, Clone, Copy)]
 struct RowPlanes {
@@ -566,10 +573,15 @@ impl RowPlanes {
     ///
     /// The pointers must be readable for the samples read.
     #[inline]
-    unsafe fn sample(self, x: usize, chroma_width: [usize; 2]) -> (f32, f32, f32) {
+    unsafe fn sample(
+        self,
+        x: usize,
+        chroma_width: [usize; 2],
+        scale: SampleScale,
+    ) -> (f32, f32, f32) {
         // SAFETY: delegated to the caller of `yuv_to_rgb`.
         unsafe {
-            let y = read_normalized(self.luma.add(x * self.bytes), self.bytes);
+            let y = read_normalized(self.luma.add(x * self.bytes), self.bytes, 0.0, scale.gain);
 
             // The midpoint of the chroma cell containing this luma sample, as a
             // shift and a conditional rather than a division: this runs per
@@ -586,7 +598,14 @@ impl RowPlanes {
                 // may be narrower still than this midpoint
                 // suggests for odd sizes.
                 let px = cx.min(chroma_width[index].saturating_sub(1));
-                offsets[index] = read_normalized(pointer.add(px * self.bytes), self.bytes);
+                // Center in source codes first: full-range midpoint is not half
+                // the peak, and the matrix expects neutral chroma at 128.
+                offsets[index] = read_normalized(
+                    pointer.add(px * self.bytes),
+                    self.bytes,
+                    scale.chroma_center,
+                    scale.gain,
+                ) + 128.0;
             }
 
             (y, offsets[0], offsets[1])
@@ -594,29 +613,25 @@ impl RowPlanes {
     }
 }
 
-/// Read one sample and normalise it to the 0-255 scale.
+/// Read and center one sample before scaling to 8-bit-equivalent units.
 ///
 /// # Safety
 ///
-/// `pointer` must be readable for the width implied by `bytes`.
+/// `pointer` must be readable for `bytes`, which must be 1 or 2.
 #[inline]
-unsafe fn read_normalized(pointer: *const u8, bytes: usize) -> f32 {
-    match bytes {
+unsafe fn read_normalized(pointer: *const u8, bytes: usize, center: f32, gain: f32) -> f32 {
+    let raw = match bytes {
         1 => {
             // SAFETY: delegated to the caller; one byte is read.
-            unsafe { *pointer.cast::<u8>() as f32 }
+            unsafe { *pointer as f32 }
         },
         2 => {
             // SAFETY: delegated to the caller; a `u16` is read unaligned.
-            let raw = unsafe { pointer.cast::<u16>().read_unaligned() } as u32;
-            raw as f32 * (255.0 / u16::MAX as f32)
+            unsafe { pointer.cast::<u16>().read_unaligned() as f32 }
         },
-        _ => {
-            // SAFETY: as above, for a wider sample read as `u16`.
-            let raw = unsafe { pointer.cast::<u16>().read_unaligned() } as u32;
-            raw as f32 * (255.0 / u16::MAX as f32)
-        },
-    }
+        _ => unreachable!("sample widths are validated before conversion"),
+    };
+    (raw - center) * gain
 }
 
 /// Convert a planar YUV frame to interleaved RGB.
@@ -639,6 +654,27 @@ pub unsafe fn yuv_to_rgb(
     info: &ColorInfo,
     max_sample: u32,
 ) -> Result<RgbImage, FmetricsError> {
+    let expected_peak = info.max_sample()?;
+    if max_sample != expected_peak {
+        return Err(FmetricsError::UnsupportedFormat {
+            reason: format!(
+                "{}-bit input requires peak {expected_peak}, got {max_sample}",
+                info.bit_depth
+            ),
+        });
+    }
+    let expected_bytes = if info.needs_wide_samples() { 2 } else { 1 };
+    for (index, plane) in planes.iter().enumerate() {
+        if plane.bytes_per_sample != expected_bytes {
+            return Err(FmetricsError::MalformedFrame {
+                reason: format!(
+                    "plane {index} has {}-byte samples; {}-bit input requires {expected_bytes}",
+                    plane.bytes_per_sample, info.bit_depth
+                ),
+            });
+        }
+    }
+
     let luma = &planes[0];
     let width = luma.width;
     let height = luma.height;
@@ -650,9 +686,17 @@ pub unsafe fn yuv_to_rgb(
     }
 
     let coefficients = Coefficients::for_range(info.matrix, info.range);
+    let scale = SampleScale {
+        gain: match info.range {
+            SampleRange::Full => 255.0 / max_sample as f32,
+            // Nominal endpoints are exact shifts of 8-bit codes, not peak ratios.
+            SampleRange::Limited => 1.0 / (1u32 << (info.bit_depth - 8)) as f32,
+        },
+        chroma_center: (1u32 << (info.bit_depth - 1)) as f32,
+    };
 
     // Truncating a wider source to 8-bit would discard precision it has.
-    let wide = info.needs_wide_samples() || max_sample > u32::from(u8::MAX);
+    let wide = info.needs_wide_samples();
 
     // `read_normalized` already brings every depth onto the 0-255 scale, so
     // only the output scale differs between the two formats.
@@ -671,13 +715,22 @@ pub unsafe fn yuv_to_rgb(
         convert_rows::<true>(
             planes,
             coefficients,
+            scale,
             chroma_width,
             &mut data,
             stride,
             out_gain,
         );
     } else {
-        convert_rows::<false>(planes, coefficients, chroma_width, &mut data, stride, 1.0);
+        convert_rows::<false>(
+            planes,
+            coefficients,
+            scale,
+            chroma_width,
+            &mut data,
+            stride,
+            1.0,
+        );
     }
 
     Ok(RgbImage {
@@ -696,6 +749,7 @@ pub unsafe fn yuv_to_rgb(
 fn convert_rows<const WIDE: bool>(
     planes: &PlaneSet,
     coefficients: Coefficients,
+    scale: SampleScale,
     chroma_width: [usize; 2],
     data: &mut [u8],
     stride: usize,
@@ -715,7 +769,7 @@ fn convert_rows<const WIDE: bool>(
 
         for column in 0..width {
             // SAFETY: as above; the row is inside the allocation.
-            let (y, u, v) = unsafe { row_planes.sample(column, chroma_width) };
+            let (y, u, v) = unsafe { row_planes.sample(column, chroma_width, scale) };
 
             let (r, g, b) = coefficients.apply(y, u, v);
 
@@ -901,6 +955,265 @@ mod tests {
         }
     }
 
+    fn m02_convert_pixel<T: v_frame::pixel::Pixel>(
+        samples: [T; 3],
+        bit_depth: usize,
+        matrix: YuvMatrix,
+        range: SampleRange,
+    ) -> RgbImage {
+        let bytes = std::mem::size_of::<T>();
+        let planes = PlaneSet {
+            planes: samples.each_ref().map(|sample| PlaneSource {
+                width: 1,
+                height: 1,
+                stride: bytes as isize,
+                data_origin: 0,
+                data: std::ptr::from_ref(sample).cast(),
+                bytes_per_sample: bytes,
+            }),
+        };
+        let info = ColorInfo {
+            matrix,
+            range,
+            bit_depth,
+            hdr: false,
+        };
+        // SAFETY: each plane borrows one typed sample, live through conversion.
+        unsafe { yuv_to_rgb(&planes, &info, info.max_sample().unwrap()).unwrap() }
+    }
+
+    #[test]
+    fn m02_full_range_neutral_uses_meaningful_midpoint_and_peak() {
+        for (depth, midpoint, cases) in [
+            (
+                10,
+                512u16,
+                [(0, 0), (256, 16400), (512, 32800), (1023, 65535)],
+            ),
+            (
+                12,
+                2048,
+                [(0, 0), (1024, 16388), (2048, 32776), (4095, 65535)],
+            ),
+        ] {
+            for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
+                for (y, gray) in cases {
+                    let image = m02_convert_pixel(
+                        [y, midpoint, midpoint],
+                        depth,
+                        matrix,
+                        SampleRange::Full,
+                    );
+                    assert!(image.is_wide(), "{depth}-bit input needs wide output");
+                    assert_eq!(image.stride(), 6);
+                    // Independent gray reference: round(Y * 65535 / source peak).
+                    assert_eq!(
+                        image.pixel(0, 0),
+                        (gray, gray, gray),
+                        "{depth}-bit {matrix:?} Y={y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m02_limited_range_nominal_endpoints_shift_exactly() {
+        for (depth, midpoint, cases) in [
+            (
+                10,
+                512u16,
+                [(64, 0), (502, 32768), (512, 33516), (940, 65535)],
+            ),
+            (
+                12,
+                2048,
+                [(256, 0), (2008, 32768), (2048, 33516), (3760, 65535)],
+            ),
+        ] {
+            for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
+                for (y, gray) in cases {
+                    let image = m02_convert_pixel(
+                        [y, midpoint, midpoint],
+                        depth,
+                        matrix,
+                        SampleRange::Limited,
+                    );
+                    // Nominal Y=16/235 and neutral C=128 are shifted, not peak-scaled.
+                    assert_eq!(
+                        image.pixel(0, 0),
+                        (gray, gray, gray),
+                        "{depth}-bit {matrix:?} Y={y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "keep the independent inverse-luma reference equation directly readable"
+    )]
+    fn m02_chroma_endpoints_match_independent_inverse_luma_reference() {
+        for (depth, range, black, white, low, midpoint, high) in [
+            (10, SampleRange::Full, 0u16, 1023, 0, 512, 1023),
+            (12, SampleRange::Full, 0, 4095, 0, 2048, 4095),
+            (10, SampleRange::Limited, 64, 940, 64, 512, 960),
+            (12, SampleRange::Limited, 256, 3760, 256, 2048, 3840),
+        ] {
+            for (matrix, kr, kb) in [
+                (YuvMatrix::Bt601, 0.299, 0.114),
+                (YuvMatrix::Bt709, 0.2126, 0.0722),
+                (YuvMatrix::Bt2020, 0.2627, 0.0593),
+            ] {
+                for (u, v) in [(low, midpoint), (high, midpoint), (midpoint, low), (midpoint, high)]
+                {
+                    let image = m02_convert_pixel([midpoint, u, v], depth, matrix, range);
+                    // Reference works in unit RGB, reconstructing G from the luma identity
+                    // rather than reusing the production matrix or normalization helpers.
+                    let y = f64::from(midpoint - black) / f64::from(white - black);
+                    let cb = (f64::from(u) - f64::from(midpoint)) / f64::from(high - low);
+                    let cr = (f64::from(v) - f64::from(midpoint)) / f64::from(high - low);
+                    let r = y + 2.0 * (1.0 - kr) * cr;
+                    let b = y + 2.0 * (1.0 - kb) * cb;
+                    let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
+                    let expected =
+                        [r, g, b].map(|c| (c * 65535.0).round().clamp(0.0, 65535.0) as u32);
+                    let actual = image.pixel(0, 0);
+                    for (actual, expected) in
+                        [actual.0, actual.1, actual.2].into_iter().zip(expected)
+                    {
+                        assert!(
+                            actual.abs_diff(expected) <= 1,
+                            "{depth}-bit {range:?} {matrix:?} U={u} V={v}: {actual} != {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m02_equivalent_colors_agree_across_depths() {
+        // Full-range Y follows the peak ratio; chroma differences follow that
+        // ratio around the integer midpoint. These are rounded source codes.
+        let full = [
+            ([0u8, 128, 128], [0u16, 512, 512], [0u16, 2048, 2048]),
+            ([128, 128, 128], [514, 512, 512], [2056, 2048, 2048]),
+            ([255, 128, 128], [1023, 512, 512], [4095, 2048, 2048]),
+            ([96, 112, 152], [385, 448, 608], [1542, 1791, 2433]),
+            ([160, 152, 112], [642, 608, 448], [2569, 2433, 1791]),
+        ];
+        for range in [SampleRange::Full, SampleRange::Limited] {
+            for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
+                for (narrow, ten, twelve) in full {
+                    let baseline = m02_convert_pixel(narrow, 8, matrix, range).pixel(0, 0);
+                    for (depth, samples) in [(10, ten), (12, twelve)] {
+                        let samples = if range == SampleRange::Limited {
+                            narrow.map(|s| u16::from(s) << (depth - 8))
+                        } else {
+                            samples
+                        };
+                        let actual = m02_convert_pixel(samples, depth, matrix, range).pixel(0, 0);
+                        for (actual, expected) in [actual.0, actual.1, actual.2]
+                            .into_iter()
+                            .zip([baseline.0, baseline.1, baseline.2])
+                        {
+                            assert!(
+                                actual.abs_diff(expected * 257) <= 257,
+                                "{depth}-bit {range:?} {matrix:?}: {actual} != {expected} * 257 (one 8-bit code tolerance)"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m02_adjacent_high_depth_codes_retain_sub_eight_bit_precision() {
+        for (depth, midpoint, expected) in
+            [(10, 512u16, [32800, 32864]), (12, 2048u16, [32776, 32792])]
+        {
+            let actual = [midpoint, midpoint + 1].map(|y| {
+                m02_convert_pixel(
+                    [y, midpoint, midpoint],
+                    depth,
+                    YuvMatrix::Bt709,
+                    SampleRange::Full,
+                )
+                .pixel(0, 0)
+            });
+            assert_eq!(
+                actual,
+                expected.map(|gray| (gray, gray, gray)),
+                "adjacent {depth}-bit images must not collapse or quantize to 8-bit"
+            );
+        }
+    }
+
+    #[test]
+    fn m02_inconsistent_sample_widths_are_rejected() {
+        let samples = [512u16; 3];
+        for depth in [8, 10, 12] {
+            let expected_bytes = if depth == 8 { 1 } else { 2 };
+            for plane in 0..3 {
+                for bytes in [0, 1, 2, 3, 4].into_iter().filter(|&bytes| bytes != expected_bytes) {
+                    let mut planes = PlaneSet {
+                        planes: samples.each_ref().map(|sample| PlaneSource {
+                            width: 1,
+                            height: 1,
+                            stride: 2,
+                            data_origin: 0,
+                            data: std::ptr::from_ref(sample).cast(),
+                            bytes_per_sample: expected_bytes,
+                        }),
+                    };
+                    planes.planes[plane].bytes_per_sample = bytes;
+                    let info = ColorInfo {
+                        bit_depth: depth,
+                        ..full_range(YuvMatrix::Bt709)
+                    };
+                    // SAFETY: live u16 buffers also accommodate the old reader's
+                    // invalid-width fallback; rejection must precede any reads.
+                    let result = unsafe { yuv_to_rgb(&planes, &info, info.max_sample().unwrap()) };
+                    assert!(
+                        matches!(result, Err(FmetricsError::MalformedFrame { .. })),
+                        "{depth}-bit plane {plane} with {bytes}-byte samples must fail: {result:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m02_inconsistent_peak_and_unsupported_depth_are_rejected() {
+        let samples = [512u16; 3];
+        for (depth, peak) in [(8, 1023), (10, 255), (10, 4095), (12, 1023), (16, 65535)] {
+            let planes = PlaneSet {
+                planes: samples.each_ref().map(|sample| PlaneSource {
+                    width: 1,
+                    height: 1,
+                    stride: 2,
+                    data_origin: 0,
+                    data: std::ptr::from_ref(sample).cast(),
+                    bytes_per_sample: if depth == 8 { 1 } else { 2 },
+                }),
+            };
+            let info = ColorInfo {
+                bit_depth: depth,
+                ..full_range(YuvMatrix::Bt709)
+            };
+            // SAFETY: all samples are live and readable; metadata is rejected before use.
+            let result = unsafe { yuv_to_rgb(&planes, &info, peak) };
+            assert!(
+                matches!(result, Err(FmetricsError::UnsupportedFormat { .. })),
+                "{depth}-bit peak {peak} must fail: {result:?}"
+            );
+        }
+    }
+
     #[test]
     fn neutral_chroma_yields_grey() {
         // With U and V centred the output must be achromatic; any colour cast
@@ -1083,31 +1396,6 @@ mod tests {
     }
 
     #[test]
-    fn ten_bit_input_up_converts_rather_than_truncating() {
-        let info = ColorInfo {
-            matrix: YuvMatrix::Bt709,
-            range: SampleRange::Full,
-            bit_depth: 10,
-            hdr: false,
-        };
-        // SAFETY: leaked buffers of the stated size.
-        let image = unsafe {
-            yuv_to_rgb(
-                &frame444(2, 2, vec![128u8; 4], vec![128u8; 4], vec![128u8; 4]),
-                &info,
-                1023,
-            )
-            .unwrap()
-        };
-        assert!(image.is_wide(), "10-bit must produce 16-bit samples");
-        assert_eq!(image.stride(), 12);
-
-        let (r, g, b) = pixel(&image, 0, 0);
-        assert_eq!((r, g, b), (r, r, r), "still achromatic at depth");
-        assert!(r > 0, "mid-grey must not be black, got {r}");
-    }
-
-    #[test]
     fn eight_bit_input_produces_narrow_samples() {
         // SAFETY: leaked buffers of the stated size.
         let image = unsafe {
@@ -1155,15 +1443,19 @@ mod tests {
             bit_depth: 10,
             hdr: true,
         };
-        // SAFETY: leaked buffers of the stated size.
-        let image = unsafe {
-            yuv_to_rgb(
-                &frame444(2, 2, vec![128u8; 4], vec![128u8; 4], vec![128u8; 4]),
-                &info,
-                1023,
-            )
-            .unwrap()
+        let samples = [512u16; 3];
+        let planes = PlaneSet {
+            planes: samples.each_ref().map(|sample| PlaneSource {
+                width: 1,
+                height: 1,
+                stride: 2,
+                data_origin: 0,
+                data: std::ptr::from_ref(sample).cast(),
+                bytes_per_sample: 2,
+            }),
         };
+        // SAFETY: each plane borrows one live u16 sample.
+        let image = unsafe { yuv_to_rgb(&planes, &info, 1023).unwrap() };
         let img = image.as_img(FmetricsColorspace::Srgb, true);
         assert!(img.hdr, "the hdr flag must survive");
         assert_eq!(img.colorspace, FmetricsColorspace::Srgb);
