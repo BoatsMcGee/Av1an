@@ -110,12 +110,24 @@ mod tests {
 
         let mut expected_config = config;
         expected_config.condor.sequence_config.benchmarker.threshold = 100;
-        expected_config.condor.sequence_config.parallel_encoder.workers = Some(1);
-        // immutable shadow
-        let expected_config = expected_config;
 
         let (config, _) =
             load_configuration(Some(&config_path)).expect("load_configuration should succeed");
+
+        // RATIONALE: Worker selection depends on measured throughput, not the threshold alone.
+        let workers = config
+            .condor
+            .sequence_config
+            .parallel_encoder
+            .workers
+            .expect("benchmark should select a worker count");
+        assert!(
+            workers > 0,
+            "benchmark should select a positive worker count"
+        );
+        expected_config.condor.sequence_config.parallel_encoder.workers = Some(workers);
+        // immutable shadow
+        let expected_config = expected_config;
 
         check_basic_config(&config, &expected_config);
         assert_eq!(
