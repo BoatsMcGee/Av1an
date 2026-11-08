@@ -57,6 +57,9 @@ jobs:
           7z x ffms2.7z
           Move-Item -Path "ffms2-5.0-msvc" -Destination "C:\ffms2"
 
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
       # rust-cache prunes `target/`, so it runs before anything is staged there.
       - uses: Swatinem/rust-cache@v2
 
