@@ -115,6 +115,68 @@ fn availability_probe_is_consistent() {
     }
 }
 
+/// Shared by the pure sensitivity check and the actual backend gate.
+fn m07_upload_fixture(padded: bool, distorted: bool) -> [Vec<u16>; 3] {
+    std::array::from_fn(|plane| {
+        let (width, height, pitch) = [(65, 49, 68), (33, 25, 36), (33, 25, 36)][plane];
+        let pitch = if padded { pitch } else { width };
+        let mut data =
+            vec![1000 + plane as u16 * 2 + u16::from(distorted); (height - 1) * pitch + width];
+        for row in 0..height {
+            for column in 0..width {
+                let value = 128
+                    + ((column * (17 + plane * 4) + row * (29 + plane * 6) + plane * 101) % 640);
+                let difference = if distorted {
+                    1 + (column + row * 3 + plane * 7) % 23
+                } else {
+                    0
+                };
+                data[row * pitch + column] = (value + difference) as u16;
+            }
+        }
+        data
+    })
+}
+
+#[test]
+fn m07_gpu_fixture_detects_ignored_stride_without_a_gpu() {
+    for distorted in [false, true] {
+        let packed = m07_upload_fixture(false, distorted);
+        let padded = m07_upload_fixture(true, distorted);
+        assert_eq!(packed.each_ref().map(Vec::len), [3185, 825, 825]);
+        assert_eq!(padded.each_ref().map(Vec::len), [3329, 897, 897]);
+        for (plane, (width, height, pitch, sentinel)) in
+            [(65, 49, 68, 1000), (33, 25, 36, 1002), (33, 25, 36, 1004)]
+                .into_iter()
+                .enumerate()
+        {
+            for row in 0..height {
+                assert_eq!(
+                    &packed[plane][row * width..(row + 1) * width],
+                    &padded[plane][row * pitch..row * pitch + width]
+                );
+            }
+            assert_eq!(padded[plane][width], sentinel + u16::from(distorted));
+            assert_ne!(
+                padded[plane][width], packed[plane][width],
+                "ignored pitch must read padding"
+            );
+            assert_ne!(&padded[plane][..width * height], packed[plane].as_slice());
+            assert_ne!(
+                packed[plane][0], packed[plane][1],
+                "visible pixels must not be flat"
+            );
+        }
+    }
+    let reference = m07_upload_fixture(false, false);
+    let distorted = m07_upload_fixture(false, true);
+    assert_eq!(reference.each_ref().map(|p| p[0]), [128, 229, 330]);
+    assert_eq!(distorted.each_ref().map(|p| p[0]), [129, 237, 345]);
+    for plane in 0..3 {
+        assert_ne!(reference[plane], distorted[plane]);
+    }
+}
+
 /// Hardware gate: ABI sinks cannot prove backend upload completion or accuracy.
 #[test]
 fn m07_gpu_padded_uploads_and_typed_mismatch() {
@@ -147,36 +209,43 @@ fn m07_gpu_padded_uploads_and_typed_mismatch() {
     let format = VideoFormat::from_details(&details(65, 49, 10, ChromaSubsampling::Yuv420));
     let mut scorer =
         VshipScorer::new(config_for(VshipMetric::Ssimulacra2), format, format, None).unwrap();
-    // Positive padding, including the exact final visible sample but no final
-    // row padding; two inputs differ in luma only. Compare with contiguous input
-    // on the SAME real backend instead of inventing a numerical ideal.
-    let y = vec![400u16; 68 * 48 + 65];
-    let d = vec![410u16; 68 * 48 + 65];
-    let uv = vec![512u16; 36 * 24 + 33];
-    let padded = |luma| {
+    let reference = m07_upload_fixture(false, false);
+    let distorted = m07_upload_fixture(false, true);
+    let padded_reference = m07_upload_fixture(true, false);
+    let padded_distorted = m07_upload_fixture(true, true);
+    fn planes(data: &[Vec<u16>; 3], padded: bool) -> PlaneSet<'_> {
         [
-            PlaneSource::from_u16(luma, 65, 49, 136, 0).unwrap(),
-            PlaneSource::from_u16(&uv, 33, 25, 72, 0).unwrap(),
-            PlaneSource::from_u16(&uv, 33, 25, 72, 0).unwrap(),
+            PlaneSource::from_u16(&data[0], 65, 49, if padded { 136 } else { 130 }, 0).unwrap(),
+            PlaneSource::from_u16(&data[1], 33, 25, if padded { 72 } else { 66 }, 0).unwrap(),
+            PlaneSource::from_u16(&data[2], 33, 25, if padded { 72 } else { 66 }, 0).unwrap(),
         ]
-    };
-    let score = scorer.submit_pair_raw(padded(&y), padded(&d)).unwrap().score.unwrap();
-    let y = vec![400u16; 65 * 49];
-    let d = vec![410u16; 65 * 49];
-    let uv = vec![512u16; 33 * 25];
-    let contiguous = |luma| {
-        [
-            PlaneSource::from_u16(luma, 65, 49, 130, 0).unwrap(),
-            PlaneSource::from_u16(&uv, 33, 25, 66, 0).unwrap(),
-            PlaneSource::from_u16(&uv, 33, 25, 66, 0).unwrap(),
-        ]
-    };
-    let baseline = scorer.submit_pair_raw(contiguous(&y), contiguous(&d)).unwrap().score.unwrap();
-    assert!(score.is_finite() && baseline.is_finite());
-    assert!(
-        (score - baseline).abs() <= 1e-6,
-        "padded={score}, contiguous={baseline}"
-    );
+    }
+    let baseline = scorer
+        .submit_pair_raw(planes(&reference, false), planes(&distorted, false))
+        .unwrap()
+        .score
+        .unwrap();
+    assert!(baseline.is_finite());
+    // Change only ONE side's layout at a time so wrong reads cannot cancel.
+    for (side, a, b) in [
+        (
+            "reference",
+            planes(&padded_reference, true),
+            planes(&distorted, false),
+        ),
+        (
+            "distorted",
+            planes(&reference, false),
+            planes(&padded_distorted, true),
+        ),
+    ] {
+        let score = scorer.submit_pair_raw(a, b).unwrap().score.unwrap();
+        assert!(score.is_finite());
+        assert!(
+            (score - baseline).abs() <= 1e-6,
+            "{side} padded={score}, packed={baseline}"
+        );
+    }
 }
 
 /// Constructing a scorer must never panic, whether or not libvship is present.

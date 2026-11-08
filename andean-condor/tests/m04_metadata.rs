@@ -134,15 +134,15 @@ mod tests {
             "typed mismatch must not call ComputeHandler or Reset"
         );
 
-        // Deliberately odd origin/stride and exact last-visible extent, with no
+        // Odd host origin, sample-aligned pitch and exact last-visible extent, with no
         // final trailing padding. First/last visible samples prove origin folding.
-        let mut y = [0u8; 25];
-        let mut u = [0u8; 12];
-        let mut v = [0u8; 12];
+        let mut y = [0u8; 27];
+        let mut u = [0u8; 13];
+        let mut v = [0u8; 13];
         for (data, width, height, stride, value) in [
-            (&mut y[..], 3, 3, 9, 100u16),
-            (&mut u[..], 2, 2, 7, 140u16),
-            (&mut v[..], 2, 2, 7, 160u16),
+            (&mut y[..], 3, 3, 10, 100u16),
+            (&mut u[..], 2, 2, 8, 140u16),
+            (&mut v[..], 2, 2, 8, 160u16),
         ] {
             for row in 0..height {
                 for column in 0..width {
@@ -152,11 +152,11 @@ mod tests {
             }
         }
         let planes = [
-            PlaneSource::from_bytes(&y, 3, 3, 9, 1, 2).unwrap(),
-            PlaneSource::from_bytes(&u, 2, 2, 7, 1, 2).unwrap(),
+            PlaneSource::from_bytes(&y, 3, 3, 10, 1, 2).unwrap(),
+            PlaneSource::from_bytes(&u, 2, 2, 8, 1, 2).unwrap(),
             // SAFETY: v is one live initialized allocation with exactly this
             // span, unchanged until all synchronous submissions below return.
-            unsafe { PlaneSource::from_raw_parts(v.as_ptr(), v.len(), 2, 2, 7, 1, 2) }.unwrap(),
+            unsafe { PlaneSource::from_raw_parts(v.as_ptr(), v.len(), 2, 2, 8, 1, 2) }.unwrap(),
         ];
         // Every plane on BOTH sides must be checked before counters/native state.
         for side in 0..2 {
@@ -194,7 +194,7 @@ mod tests {
             scorer.submit_pair_raw(planes, planes).unwrap().score,
             Some(42.0)
         );
-        assert_eq!(calls(), "3 3 5 9 7 7 9 7 7\n");
+        assert_eq!(calls(), "3 3 5 10 8 8 10 8 8\n");
         assert_eq!(scorer.submitted().unwrap(), 1);
         assert_eq!(
             scorer.submit_pair_raw_with_reset(planes, planes, true).unwrap().score,
@@ -202,26 +202,50 @@ mod tests {
         );
         assert_eq!(
             calls(),
-            "3 3 5 9 7 7 9 7 7\nreset\nreset\n3 3 5 9 7 7 9 7 7\n"
+            "3 3 5 10 8 8 10 8 8\nreset\nreset\n3 3 5 10 8 8 10 8 8\n"
         );
 
         // The real typed adapter also preserves padded u16 strides.
-        let mut frame =
-            FrameBuilder::new(4, 4, ChromaSubsampling::Yuv420, 10).build::<u16>().unwrap();
-        frame.y_plane.data_mut().fill(100);
-        frame.u_plane.as_mut().unwrap().data_mut().fill(140);
-        frame.v_plane.as_mut().unwrap().data_mut().fill(160);
+        let mut frame = FrameBuilder::new(4, 4, ChromaSubsampling::Yuv420, 10)
+            .luma_padding_left(2)
+            .luma_padding_right(4)
+            .luma_padding_top(2)
+            .luma_padding_bottom(2)
+            .build::<u16>()
+            .unwrap();
+        assert!(
+            frame.y_plane.geometry().data_origin() > 0,
+            "typed fixture must actually have padding"
+        );
+        for (plane, value, origin, stride) in [
+            (&mut frame.y_plane, 100, 44, 20),
+            (frame.u_plane.as_mut().unwrap(), 140, 12, 10),
+            (frame.v_plane.as_mut().unwrap(), 160, 12, 10),
+        ] {
+            let geometry = plane.geometry();
+            let (width, height, pitch, start) = (
+                geometry.width(),
+                geometry.height(),
+                geometry.stride(),
+                geometry.data_origin(),
+            );
+            plane.data_mut().fill(1023);
+            for row in 0..height {
+                plane.data_mut()[start + row * pitch..start + row * pitch + width].fill(value);
+            }
+            let view = PlaneSource::from_plane(plane).unwrap();
+            assert_eq!((view.data_origin(), view.stride()), (origin, stride));
+            assert!(view.stride() as usize > view.width() * 2);
+        }
         assert_eq!(
             typed_scorer.submit_pair(&frame, &frame).unwrap().score,
             Some(42.0)
         );
-        let strides: Vec<_> =
-            [&frame.y_plane, frame.u_plane.as_ref().unwrap(), frame.v_plane.as_ref().unwrap()]
-                .map(|p| (p.geometry().stride() * 2).to_string())
-                .into_iter()
-                .collect();
-        let expected = format!("4 4 5 {} {}\n", strides.join(" "), strides.join(" "));
-        assert!(calls().ends_with(&expected), "{}", calls());
+        assert!(
+            calls().ends_with("4 4 5 20 10 10 20 10 10\n"),
+            "{}",
+            calls()
+        );
 
         // No GPU double above the ABI: actual VS frames -> shared probe -> metric
         // adapter -> submit_pair_raw. Retain integer 8/10/12 metadata support.

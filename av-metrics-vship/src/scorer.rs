@@ -202,6 +202,7 @@ impl VideoFormat {
 /// Dimensions count samples; stride, origin and readable length count bytes.
 /// libvship uploads inter-row gaps but not the final row's trailing padding.
 /// Foreign padding need not be an initialized Rust slice.
+/// Positive row pitch must be sample-aligned; the host byte origin need not be.
 ///
 /// A safe frame view cannot escape its owner:
 /// ```compile_fail,E0597
@@ -251,7 +252,7 @@ impl<'a> PlaneSource<'a> {
     ///
     /// # Errors
     /// Rejects zero/nonnative dimensions, sample sizes other than 1/2, nonpositive
-    /// or short strides, short spans, and overflowing signed/native offsets.
+    /// or short/sample-unaligned strides, short spans, and overflowing signed/native offsets.
     #[inline]
     pub fn from_bytes(
         data: &'a [u8],
@@ -369,6 +370,14 @@ impl<'a> PlaneSource<'a> {
             return Err(malformed(
                 "invalid native plane dimensions, sample width, pointer, stride or span",
             ));
+        }
+        // WORKAROUND: Pinned Vulkan dispatch inverts the shader's byte-copy flag:
+        // https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/Vulkan/gpuColorToLinear/anyDepthToFloat.hpp#L26
+        // https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/Vulkan/gpuColorToLinear/shaders/anyDepthToFloat.slang#L48-L78
+        // Require aligned pitch on all backends until corrected Vulkan dispatch
+        // is the supported minimum and odd-pitch uploads pass the real GPU gate.
+        if stride % bytes_per_sample as isize != 0 {
+            return Err(malformed("native upload pitch must be sample-aligned"));
         }
         // HIP's int launch expression is (width*height + 255)/256.
         if width.checked_mul(height).is_none_or(|n| n > (c_int::MAX - 255) as usize) {
@@ -1586,14 +1595,38 @@ mod tests {
     }
 
     #[test]
+    fn m07_wide_pitch_must_be_sample_aligned_but_byte_pitch_may_be_odd() {
+        let storage = [0u8; 32];
+        let words = [0u16; 16];
+        for stride in [3, 7, 9] {
+            assert!(matches!(
+                PlaneSource::from_bytes(&storage, 1, 2, stride, 1, 2),
+                Err(VshipError::MalformedFrame { .. })
+            ));
+            assert!(matches!(
+                PlaneSource::from_u16(&words, 1, 2, stride, 1),
+                Err(VshipError::MalformedFrame { .. })
+            ));
+            assert!(matches!(
+                // SAFETY: actual live allocation; a rejected layout is never uploaded.
+                unsafe {
+                    PlaneSource::from_raw_parts(storage.as_ptr(), storage.len(), 1, 2, stride, 1, 2)
+                },
+                Err(VshipError::MalformedFrame { .. })
+            ));
+        }
+        assert!(PlaneSource::from_bytes(&storage, 2, 2, 3, 1, 1).is_ok());
+    }
+
+    #[test]
     fn m07_exact_last_visible_prefix_and_unaligned_origin_are_valid() {
-        // origin 1 + two row gaps of 9 + six final visible bytes = 25.
-        let storage = [0u8; 25];
-        let plane = PlaneSource::from_bytes(&storage, 3, 3, 9, 1, 2).unwrap();
+        // origin 1 + two row gaps of 10 + six final visible bytes = 27.
+        let storage = [0u8; 27];
+        let plane = PlaneSource::from_bytes(&storage, 3, 3, 10, 1, 2).unwrap();
         let arguments = plane_arguments(&[plane; 3]).unwrap();
         assert_eq!(arguments.pointers, [storage[1..].as_ptr(); 3]);
-        assert_eq!(arguments.strides, [9; 3]);
-        assert!(PlaneSource::from_bytes(&storage[..24], 3, 3, 9, 1, 2).is_err());
+        assert_eq!(arguments.strides, [10; 3]);
+        assert!(PlaneSource::from_bytes(&storage[..26], 3, 3, 10, 1, 2).is_err());
         let samples = [512u16; 12];
         assert!(PlaneSource::from_u16(&samples, 3, 3, 8, 0).is_ok());
     }

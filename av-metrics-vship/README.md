@@ -57,7 +57,8 @@ Width/height count samples; stride, origin and span count bytes. Uploads require
 positive dimensions and stride, `stride >= width * bytes_per_sample`, and
 `origin + (height - 1) * stride + row_bytes <= readable_len`. Inter-row padding
 is uploaded; final-row trailing padding is **not** required. Bottom-up/negative
-strides are rejected. Host origin/stride need not be sample-aligned.
+strides are rejected. Row pitch must be sample-aligned (`stride % bytes_per_sample == 0`),
+including for raw constructors on every backend. Odd host byte origins remain valid.
 Dimensions/stride must fit native C `int`; the HIP launch expression additionally
 requires `width * height <= INT_MAX - 255` per plane.
 
@@ -69,13 +70,20 @@ Callers tracking external frame gaps can use `submit_pair_raw_with_reset` to
 request the same history reset only after both sides pass preflight; Av1an uses
 this to preserve its existing discontinuity policy without resetting invalid pairs.
 
-The prefix and misaligned-stride contracts are pinned to Vship
+The prefix contract is pinned to Vship
 [`5a627933` HIP upload](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/HIP/gpuColorToLinear/vshipColor.hpp),
 [Vulkan upload](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/Vulkan/gpuColorToLinear/vshipColor.hpp)
 and [HIP sample conversion](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/HIP/gpuColorToLinear/anyDepthToFloat.hpp).
+Although HIP handles odd wide pitch, this revision's
+[Vulkan dispatch](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/Vulkan/gpuColorToLinear/anyDepthToFloat.hpp#L26)
+inverts the flag consumed by its
+[sample shader](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/Vulkan/gpuColorToLinear/shaders/anyDepthToFloat.slang#L48-L78).
+Wide odd pitches are therefore conservatively rejected until a corrected Vulkan
+dispatch is the supported minimum and odd-pitch uploads pass the real GPU gate.
 Pure checks and C ABI sinks run without a GPU; they do not prove GPU upload
 completion or metric accuracy. On a supported GPU host, run `just test-gpu`;
-`m07_gpu_padded_uploads_and_typed_mismatch` compares padded/contiguous uploads
+`m07_gpu_padded_uploads_and_typed_mismatch` compares packed uploads against each
+side padded separately, using nonflat Y/U/V patterns and distinct padding sentinels,
 and fails, rather than skipping, when required mode has no working runtime.
 
 Check availability before constructing one, if the outcome is not already known:
