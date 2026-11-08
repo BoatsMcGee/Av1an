@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::{
@@ -167,7 +167,12 @@ impl AndeanCondor<DefaultSequenceData, DefaultSequenceConfig>
             return Ok(None);
         }
         let data = std::fs::read_to_string(save_file_path)?;
-        let data = serde_json::from_str(&data).expect("Failed to deserialize Condor data");
+        let data = serde_json::from_str(&data).with_context(|| {
+            format!(
+                "Failed to deserialize Condor data from {}",
+                save_file_path.display()
+            )
+        })?;
         Ok(Some(data))
     }
 
@@ -179,7 +184,12 @@ impl AndeanCondor<DefaultSequenceData, DefaultSequenceConfig>
         cancelled: Arc<AtomicBool>,
     ) -> Result<((), SequenceWarningsTuple)> {
         let index = processor_index.unwrap_or(0);
-        let processor = &mut self.sequences[index];
+        let sequence_count = self.sequences.len();
+        let processor = self.sequences.get_mut(index).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Sequence index {index} is out of range. There are only {sequence_count} sequences"
+            )
+        })?;
         let details = processor.details();
 
         // Processors could have their own Inputs, Outputs, Encoders, and Scenes that

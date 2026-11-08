@@ -379,7 +379,9 @@ pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> R
                 clip_info: None,
             })
         },
-        _ => panic!("expected `Input::VapourSynth` or `Input::VapourSynthScript`"),
+        _ => bail!(InputError::NotAVapourSynthScript(
+            data.path().map(std::path::Path::to_owned).unwrap_or_default()
+        )),
     }
 }
 

@@ -178,16 +178,30 @@ where
                 let previous_end = AtomicUsize::new(last_frame);
                 let keyframes_count = AtomicUsize::new(1);
                 let scenes = sync::Arc::new(Mutex::new(condor.scenes.clone()));
+                // Store the error until detection returns
+                let callback_error: sync::Arc<Mutex<Option<anyhow::Error>>> =
+                    sync::Arc::new(Mutex::new(None));
                 let cb = |frames_analyzed, keyframes| {
-                    progress_tx
-                        .send(SequenceStatus::Whole(Status::Processing {
+                    let record = |error: anyhow::Error| {
+                        let mut slot = callback_error
+                            .lock()
+                            .expect("callback error mutex should acquire lock");
+                        if slot.is_none() {
+                            *slot = Some(error);
+                        }
+                    };
+                    if let Err(error) =
+                        progress_tx.send(SequenceStatus::Whole(Status::Processing {
                             id:         DETAILS.name.to_owned(),
                             completion: SequenceCompletion::Frames {
                                 completed: (last_frame + frames_analyzed) as u64,
                                 total:     frames as u64,
                             },
                         }))
-                        .expect("failed to send progres");
+                    {
+                        record(error.into());
+                        return;
+                    }
                     if keyframes == keyframes_count.load(Ordering::Relaxed) {
                         return;
                     }
@@ -205,8 +219,8 @@ where
                         encoder:       condor.encoder.clone(),
                         sequence_data: DataHandler::default(),
                     });
-                    progress_tx
-                        .send(SequenceStatus::Whole(Status::Processing {
+                    if let Err(error) =
+                        progress_tx.send(SequenceStatus::Whole(Status::Processing {
                             id:         DETAILS.name.to_owned(),
                             completion: SequenceCompletion::Custom {
                                 name:      "new-scene".to_owned(),
@@ -214,11 +228,16 @@ where
                                 total:     end as f64,
                             },
                         }))
-                        .expect("failed to send progress");
+                    {
+                        record(error.into());
+                        return;
+                    }
 
                     let mut data = condor_data.clone();
                     data.scenes = scenes_lock.clone();
-                    (condor.save_callback)(data).expect("failed to save data");
+                    if let Err(error) = (condor.save_callback)(data) {
+                        record(error);
+                    }
                 };
 
                 let results = if input.clip_info()?.format_info.as_bit_depth()? > 8 {
@@ -238,6 +257,13 @@ where
                         Some(Arc::clone(&cancelled)),
                     )
                 }?;
+
+                // Handle stored error that happened in callback
+                let callback_error =
+                    callback_error.lock().expect("callback error mutex should acquire lock").take();
+                if let Some(error) = callback_error {
+                    return Err(error);
+                }
 
                 let scores = &results.scores;
                 append_detected_scenes(

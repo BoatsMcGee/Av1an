@@ -583,7 +583,7 @@ where
             pass += 1;
             let mut data = condor_data.clone();
             data.scenes = condor.scenes.clone();
-            (condor.save_callback)(data).expect("failed to save data");
+            (condor.save_callback)(data)?;
 
             if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                 break;

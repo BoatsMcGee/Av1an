@@ -233,7 +233,7 @@ where
 
         let mut data = condor.as_data();
         data.scenes = condor.scenes.clone();
-        (condor.save_callback)(data).expect("failed to save data");
+        (condor.save_callback)(data)?;
 
         Ok(((), warnings))
     }

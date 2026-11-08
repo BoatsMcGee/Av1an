@@ -1,4 +1,7 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -53,6 +56,28 @@ fn stream_concurrently_default() -> bool {
 }
 
 impl Input {
+    /// The path to the Video or VapourSynth file, or `None` for a script given
+    /// as text.
+    #[inline]
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        match self {
+            Input::Video {
+                path, ..
+            }
+            | Input::VapourSynth {
+                path, ..
+            } => Some(path),
+            Input::VapourSynthScript {
+                source: VapourSynthScriptSource::Path(path),
+                ..
+            } => Some(path),
+            Input::VapourSynthScript {
+                ..
+            } => None,
+        }
+    }
+
     /// This input's VapourSynth filters, or an empty slice for a native input.
     ///
     /// Native filters are a different type, so a native input reports none here
@@ -249,6 +274,35 @@ impl Input {
 mod tests {
     use super::*;
     use crate::{ffmpeg::FFPixelFormat, vapoursynth::plugins::resize::Scaler};
+
+    /// Every input variant that names a file reports it, and a script given as
+    /// text reports none. Error messages for a wrong-variant call rely on this.
+    #[test]
+    fn path_reports_the_file_every_variant_names() {
+        let video = video_input(Vec::new());
+        assert_eq!(video.path(), Some(Path::new("input.mkv")));
+
+        let vapoursynth = vapoursynth_input(Vec::new());
+        assert_eq!(vapoursynth.path(), Some(Path::new("input.mkv")));
+
+        let scripted = Input::VapourSynthScript {
+            source:              VapourSynthScriptSource::Path("script.vpy".into()),
+            variables:           HashMap::new(),
+            index:               0,
+            filters:             Vec::new(),
+            stream_concurrently: true,
+        };
+        assert_eq!(scripted.path(), Some(Path::new("script.vpy")));
+
+        let inline = Input::VapourSynthScript {
+            source:              VapourSynthScriptSource::Text("core.std.BlankClip()".to_owned()),
+            variables:           HashMap::new(),
+            index:               0,
+            filters:             Vec::new(),
+            stream_concurrently: true,
+        };
+        assert_eq!(inline.path(), None);
+    }
 
     fn vapoursynth_input(filters: Vec<VapourSynthFilter>) -> Input {
         Input::VapourSynth {

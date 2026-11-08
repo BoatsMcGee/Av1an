@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use av_decoders::{Decoder, Ffms2Decoder};
 use av_format::rational::Rational64;
 
@@ -87,7 +87,9 @@ pub fn from_video(data: &InputModel) -> Result<Input> {
         filters,
     } = data
     else {
-        panic!("expected `Input::Video`");
+        bail!(InputError::NotAVideoFile(
+            data.path().map(Path::to_owned).unwrap_or_default()
+        ));
     };
 
     Input::validate(data)?;
