@@ -19,10 +19,7 @@
 //! A temporal scorer is [`Send`] but not [`Sync`], since its frames must pass
 //! through one accumulator in order.
 
-use std::{
-    ffi::c_int,
-    sync::atomic::{AtomicUsize, Ordering},
-};
+use std::{ffi::c_int, sync::Mutex};
 
 use crate::{
     config::{ColorInfo, FmetricsConfig, FmetricsMetric},
@@ -132,9 +129,6 @@ const fn matches_if(metric: FmetricsMetric, wanted: FmetricsMetric, value: f64) 
 struct Workspace {
     /// The library's handle.
     handle: FmetricsWorkspace,
-    /// The next free index, or [`WorkspacePool::NONE`]. A free-list link, not
-    /// workspace state.
-    next: AtomicUsize,
 }
 
 impl Workspace {
@@ -155,10 +149,7 @@ impl Workspace {
                 message: "returned a null workspace".to_owned(),
             });
         }
-        Ok(Self {
-            handle,
-            next: AtomicUsize::new(WorkspacePool::NONE),
-        })
+        Ok(Self { handle })
     }
 }
 
@@ -175,66 +166,56 @@ impl Drop for Workspace {
     }
 }
 
-/// The workspaces, handed out as a free list.
-///
-/// The invariant is that a workspace is never in two hands at once, because
-/// sharing one corrupts fmetrics' scratch silently rather than failing. A "next
-/// index" counter cannot guarantee it -- two threads more than `len` apart are
-/// handed the same handle. A free list does: the head names only workspaces
-/// nobody is using, so a claim is exclusive by construction.
-///
-/// The nodes live in the pool, so claiming neither allocates nor blocks.
+/// Free indices only; native ownership stays with `WorkspacePool`.
 #[derive(Debug)]
-struct WorkspacePool {
-    /// One workspace per worker, each holding the index of the next free node.
-    workspaces: Vec<Workspace>,
-    /// The head of the free list, or [`WorkspacePool::NONE`] when all are in
-    /// use.
-    free: AtomicUsize,
+struct FreeSlots {
+    free: Mutex<Vec<usize>>,
 }
 
-impl WorkspacePool {
-    /// The sentinel meaning "no workspace is free".
-    const NONE: usize = usize::MAX;
-
-    /// Take a workspace for exclusive use, or report that all are in use.
-    ///
-    /// The caller must return it with [`WorkspacePool::release`] on every path.
-    /// `None` rather than blocking: an oversubscribed caller is told so rather
-    /// than made to wait behind work it cannot see.
-    fn claim(&self) -> Option<FmetricsWorkspace> {
-        let mut head = self.free.load(Ordering::Acquire);
-        loop {
-            if head == Self::NONE {
-                return None;
-            }
-            let next = self.workspaces[head].next.load(Ordering::Relaxed);
-            match self.free.compare_exchange_weak(head, next, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return Some(self.workspaces[head].handle),
-                // The head moved under us; re-read it and try the new one.
-                Err(observed) => head = observed,
-            }
+impl FreeSlots {
+    fn new(count: usize) -> Self {
+        Self {
+            free: Mutex::new((0..count).rev().collect()),
         }
     }
 
-    /// Return a workspace, putting it back at the head of the free list.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `workspace` is not a handle from this pool, since mapping a
-    /// handle back to its list node is what keeps the list well formed.
-    fn release(&self, workspace: FmetricsWorkspace) {
-        let index = self
-            .workspaces
-            .iter()
-            .position(|candidate| candidate.handle == workspace)
-            .unwrap_or_else(|| panic!("released a workspace that is not in this pool"));
+    fn claim(&self) -> Option<SlotLease<'_>> {
+        // Preserve the recorded free set on poison; rebuilding it would lend
+        // indices that are still in use. No callbacks run under this lock.
+        let index = self.free.lock().unwrap_or_else(|poison| poison.into_inner()).pop()?;
+        Some(SlotLease { slots: self, index })
+    }
+}
 
-        // Pushed, so the workspace just used is the next one claimed and its
-        // scratch stays hot in cache.
-        self.workspaces[index]
-            .next
-            .store(self.free.swap(index, Ordering::AcqRel), Ordering::Relaxed);
+/// A non-Copy claim that returns exactly its own index, including on unwind.
+#[derive(Debug)]
+struct SlotLease<'a> {
+    slots: &'a FreeSlots,
+    index: usize,
+}
+
+impl Drop for SlotLease<'_> {
+    fn drop(&mut self) {
+        self.slots
+            .free
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(self.index);
+    }
+}
+
+/// Owns each native workspace until all borrowing leases have ended.
+#[derive(Debug)]
+struct WorkspacePool {
+    workspaces: Vec<Workspace>,
+    slots: FreeSlots,
+}
+
+impl WorkspacePool {
+    /// Claim an index without waiting for an in-use workspace to finish.
+    /// The allocator lock is released before returning the lease.
+    fn claim(&self) -> Option<SlotLease<'_>> {
+        self.slots.claim()
     }
 
     /// How many workspaces are held.
@@ -353,23 +334,10 @@ impl FmetricsScorer {
                 pool.push(Workspace::new(api)?);
             }
 
-            // Thread the free list through the workspaces in index order.
-            for (index, workspace) in pool.iter_mut().enumerate() {
-                let successor = index + 1;
-                workspace.next.store(
-                    if successor < count {
-                        successor
-                    } else {
-                        WorkspacePool::NONE
-                    },
-                    Ordering::Relaxed,
-                );
-            }
-
             Inner::PerPair {
                 pool: WorkspacePool {
                     workspaces: pool,
-                    free: AtomicUsize::new(0),
+                    slots: FreeSlots::new(count),
                 },
             }
         };
@@ -494,8 +462,8 @@ impl FmetricsScorer {
 
     /// Run `score` with a workspace held exclusively, returning it afterwards.
     ///
-    /// The release lives here rather than at each call site so an early return
-    /// or a `?` cannot leak a workspace and starve the pool.
+    /// The lease returns the index on success, error or unwind. Native scoring
+    /// runs after the allocator lock has been released.
     ///
     /// # Errors
     ///
@@ -507,7 +475,7 @@ impl FmetricsScorer {
         pool: &WorkspacePool,
         score: impl FnOnce(FmetricsWorkspace) -> Result<T, FmetricsError>,
     ) -> Result<T, FmetricsError> {
-        let Some(workspace) = pool.claim() else {
+        let Some(lease) = pool.claim() else {
             return Err(FmetricsError::PoolExhausted {
                 workspaces: pool.len(),
                 reason: "every workspace is in use; the scorer needs one workspace per thread \
@@ -516,11 +484,7 @@ impl FmetricsScorer {
             });
         };
 
-        // The result is bound before the release so the workspace goes back
-        // even if `score` fails.
-        let result = score(workspace);
-        pool.release(workspace);
-        result
+        score(pool.workspaces[lease.index].handle)
     }
 
     /// Score one pair of planar frames.
@@ -1168,8 +1132,7 @@ mod tests {
 
         let scorer = std::sync::Arc::new(scorer);
         // Four threads for four workspaces: oversubscribing would be reported
-        // Four threads for four workspaces: oversubscribing would be reported
-        // as exhaustion by design, which the pool test above covers.
+        // as exhaustion by design, which the allocator tests below cover.
         let results: Vec<FrameScore> = std::thread::scope(|scope| {
             (0..4)
                 .map(|_| {
@@ -1190,57 +1153,216 @@ mod tests {
     }
 
     #[test]
-    fn a_pool_hands_each_workspace_out_exactly_once() {
-        // The property the free list exists to provide. Claiming every
-        // workspace must yield each handle once and then refuse, rather
-        // than wrapping round to a workspace already in use -- a
-        // counter-based pool does exactly that, and the resulting
-        // scores are wrong without any error to notice.
-        let Ok(api) = FmetricsApi::load() else {
-            return;
-        };
-        let mut workspaces = Vec::new();
-        for _ in 0..3 {
-            workspaces.push(Workspace::new(api).unwrap());
+    fn m08_slots_release_exactly_one_and_restore_every_wave() {
+        assert!(FreeSlots::new(0).claim().is_none());
+        let slots = FreeSlots::new(3);
+        for _ in 0..32 {
+            let mut leases: Vec<_> = (0..3).map(|_| slots.claim().unwrap()).collect();
+            let mut indices: Vec<_> = leases.iter().map(|lease| lease.index).collect();
+            indices.sort_unstable();
+            assert_eq!(indices, [0, 1, 2]);
+            assert!(slots.claim().is_none(), "all slots are held");
+
+            let released = leases.remove(1);
+            let index = released.index;
+            drop(released);
+            let replacement = slots.claim().unwrap();
+            assert_eq!(replacement.index, index, "return exactly the released slot");
+            assert!(slots.claim().is_none(), "the other slots are still held");
         }
-        for (index, workspace) in workspaces.iter_mut().enumerate() {
-            let successor = index + 1;
-            workspace.next.store(
-                if successor < 3 {
-                    successor
-                } else {
-                    WorkspacePool::NONE
-                },
-                Ordering::Relaxed,
-            );
-        }
-        let pool = WorkspacePool {
-            workspaces,
-            free: AtomicUsize::new(0),
+    }
+
+    #[test]
+    fn m08_oversubscribed_claims_are_exclusive_across_release_waves() {
+        use std::{
+            collections::HashSet,
+            sync::{Barrier, Mutex},
         };
 
-        let mut claimed = Vec::new();
-        while let Some(handle) = pool.claim() {
+        let slots = FreeSlots::new(3);
+        let start = Barrier::new(8);
+        let attempted = Barrier::new(8);
+        let active = Mutex::new(HashSet::new());
+        let results = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut waves = Vec::new();
+                        for _ in 0..32 {
+                            start.wait();
+                            let lease = slots.claim();
+                            let observation = lease.as_ref().map(|lease| {
+                                (lease.index, active.lock().unwrap().insert(lease.index))
+                            });
+                            // Every contender must attempt before any slot is returned.
+                            attempted.wait();
+                            if let Some(lease) = &lease {
+                                active.lock().unwrap().remove(&lease.index);
+                            }
+                            drop(lease);
+                            waves.push(observation);
+                        }
+                        waves
+                    })
+                })
+                .collect();
+            threads.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>()
+        });
+
+        for wave in 0..32 {
+            let claims: Vec<_> = results.iter().filter_map(|thread| thread[wave]).collect();
+            assert_eq!(
+                claims.len(),
+                3,
+                "excess contenders must refuse, wave {wave}"
+            );
             assert!(
-                !claimed.contains(&handle),
-                "the same workspace was handed out twice"
+                claims.iter().all(|(_, unique)| *unique),
+                "active slot duplicated"
             );
-            claimed.push(handle);
+            let mut indices: Vec<_> = claims.iter().map(|(index, _)| *index).collect();
+            indices.sort_unstable();
+            assert_eq!(
+                indices,
+                [0, 1, 2],
+                "the original full set must return each wave"
+            );
         }
-        assert_eq!(claimed.len(), 3, "every workspace should be claimable once");
+    }
 
-        // With everything in use the pool refuses rather than double-lending.
-        assert!(pool.claim().is_none(), "an exhausted pool must refuse");
-
-        // Releasing makes exactly one claimable again, and the freed one is
-        // next.
-        let released = claimed[1];
-        pool.release(released);
-        assert_eq!(
-            pool.claim(),
-            Some(released),
-            "the released workspace is next"
+    #[test]
+    fn m08_error_and_unwind_return_capacity() {
+        let slots = FreeSlots::new(1);
+        let score = || -> Result<(), &str> {
+            let _lease = slots.claim().unwrap();
+            Err("injected scoring failure")
+        };
+        assert_eq!(score(), Err("injected scoring failure"));
+        let panic = std::panic::catch_unwind(|| {
+            let _lease = slots.claim().expect("error returned the slot");
+            panic!("injected scoring panic");
+        });
+        assert!(panic.is_err(), "the scoring panic must propagate");
+        let lease = slots.claim().expect("unwind returned the slot");
+        assert_eq!(lease.index, 0);
+        assert!(
+            slots.claim().is_none(),
+            "returning a slot must not duplicate it"
         );
-        assert!(pool.claim().is_none(), "the rest are still held");
+    }
+
+    #[test]
+    fn m08_poison_recovery_does_not_free_a_held_slot() {
+        let slots = FreeSlots::new(2);
+        let held = slots.claim().unwrap();
+        std::thread::scope(|scope| {
+            let panic = scope
+                .spawn(|| {
+                    let _lock = slots.free.lock().unwrap();
+                    panic!("inject allocator lock poisoning");
+                })
+                .join();
+            assert!(panic.is_err());
+        });
+        let remaining = slots.claim().expect("preserve recorded free indices on poison");
+        assert_ne!(remaining.index, held.index);
+        assert!(
+            slots.claim().is_none(),
+            "poisoning must not invent free slots"
+        );
+        drop(held);
+        drop(remaining);
+        let leases = [slots.claim().unwrap(), slots.claim().unwrap()];
+        assert_ne!(leases[0].index, leases[1].index);
+        assert!(slots.claim().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn m08_callback_unwind_returns_capacity() {
+        // Isolate the loader OnceLock and use genuinely allocated/freed handles,
+        // even when a system fmetrics library is installed or unavailable.
+        if std::env::var_os("M08_NATIVE_CHILD").is_none() {
+            let directory = tempfile::tempdir().expect("temporary native ABI sink");
+            let library = directory.path().join(ffi::library_names()[0]);
+            let output = std::process::Command::new("cc")
+                .args(["-shared", "-fPIC", "-o"])
+                .arg(&library)
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../andean-condor/tests/fixtures/m04_native.c"
+                ))
+                .output()
+                .expect("M08 native ownership check requires cc");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "scorer::tests::m08_callback_unwind_returns_capacity",
+                    "--nocapture",
+                ])
+                .env("M08_NATIVE_CHILD", "1")
+                .env("FMETRICS_LIB_PATH", directory.path())
+                .output()
+                .expect("run isolated M08 callback regression");
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let scorer = FmetricsScorer::new(
+            FmetricsConfig::new(FmetricsMetric::Ssimulacra2).with_threads(2),
+            color(8),
+        )
+        .expect("the native ABI sink must load");
+        let Inner::PerPair { pool } = &scorer.inner else {
+            panic!("expected a per-pair pool");
+        };
+        let held = pool.claim().unwrap();
+        assert!(matches!(
+            scorer.with_workspace(pool, |_| scorer.with_workspace(pool, |_| Ok(()))),
+            Err(FmetricsError::PoolExhausted { workspaces: 2, .. })
+        ));
+        assert!(matches!(
+            scorer.with_workspace(pool, |_| Err::<(), _>(FmetricsError::UnsupportedFormat {
+                reason: "injected scoring failure".to_owned(),
+            })),
+            Err(FmetricsError::UnsupportedFormat { .. })
+        ));
+        let panic = std::panic::catch_unwind(|| {
+            scorer.with_workspace(pool, |_| -> Result<(), FmetricsError> {
+                panic!("injected scoring panic");
+            })
+        });
+        assert!(panic.is_err(), "the scoring panic must propagate");
+        assert!(
+            scorer.with_workspace(pool, |_| Ok(())).is_ok(),
+            "a scoring panic must not permanently exhaust the pool"
+        );
+        drop(held);
+
+        let overlap = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..2)
+                .map(|_| {
+                    scope.spawn(|| {
+                        scorer.with_workspace(pool, |_| {
+                            overlap.wait();
+                            Ok(())
+                        })
+                    })
+                })
+                .collect();
+            for thread in threads {
+                assert!(thread.join().unwrap().is_ok());
+            }
+        });
     }
 }
