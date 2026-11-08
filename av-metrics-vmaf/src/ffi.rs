@@ -252,7 +252,8 @@ type VmafUseFeaturesFromModel = unsafe extern "C" fn(*mut VmafContext, *mut Vmaf
 type VmafUseFeature =
     unsafe extern "C" fn(*mut VmafContext, *const c_char, *mut VmafFeatureDictionary) -> c_int;
 type CudaStateInit = unsafe extern "C" fn(*mut *mut VmafCudaState, VmafCudaConfiguration) -> c_int;
-type CudaRelease = unsafe extern "C" fn(*mut VmafCudaState);
+pub(crate) type CudaRelease = unsafe extern "C" fn(*mut VmafCudaState) -> c_int;
+pub(crate) type CudaStateFree = unsafe extern "C" fn(*mut c_void);
 type CudaImportState = unsafe extern "C" fn(*mut VmafContext, *mut VmafCudaState) -> c_int;
 type CudaPreallocatePictures =
     unsafe extern "C" fn(*mut VmafContext, VmafCudaPictureConfiguration) -> c_int;
@@ -262,6 +263,8 @@ type CudaPreallocatePictures =
 pub(crate) struct CudaSymbols {
     pub(crate) state_init: Option<CudaStateInit>,
     pub(crate) release: Option<CudaRelease>,
+    /// Frees the original malloc wrapper, NOT its copied CUDA resources.
+    pub(crate) free_state: Option<CudaStateFree>,
     pub(crate) import_state: Option<CudaImportState>,
     pub(crate) preallocate_pictures: Option<CudaPreallocatePictures>,
 }
@@ -362,6 +365,7 @@ impl VmafApi {
     pub const fn cuda_available(&self) -> bool {
         self.cuda.state_init.is_some()
             && self.cuda.release.is_some()
+            && self.cuda.free_state.is_some()
             && self.cuda.import_state.is_some()
             && self.cuda.preallocate_pictures.is_some()
     }
@@ -493,11 +497,25 @@ fn resolve() -> Result<VmafApi, VmafError> {
             cuda: CudaSymbols {
                 state_init: optional(library, b"vmaf_cuda_state_init\0"),
                 release: optional(library, b"vmaf_cuda_release\0"),
+                free_state: cuda_state_free(library),
                 import_state: optional(library, b"vmaf_cuda_import_state\0"),
                 preallocate_pictures: optional(library, b"vmaf_cuda_preallocate_pictures\0"),
             },
         })
     }
+}
+
+/// Linux dlsym searches the loaded object's dependency scope, including its C
+/// allocator. Never substitute Rust's allocator or a guessed Windows CRT.
+#[cfg(target_os = "linux")]
+fn cuda_state_free(library: &Library) -> Option<CudaStateFree> {
+    optional(library, b"free\0")
+}
+
+/// No allocator-matched deallocator has been verified on these platforms.
+#[cfg(not(target_os = "linux"))]
+fn cuda_state_free(_library: &Library) -> Option<CudaStateFree> {
+    None
 }
 
 /// Resolve a required symbol.

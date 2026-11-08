@@ -51,15 +51,32 @@ pub(crate) struct Geometry {
 pub(crate) struct Context {
     /// The context pointer owned by libvmaf.
     pub(crate) raw: *mut crate::ffi::VmafContext,
-    /// CUDA state imported into `raw`, released on drop when non-null.
-    ///
-    /// libvmaf copies the state during `vmaf_cuda_import_state`, but the
-    /// original allocation is ours to free, so the pointer is retained
-    /// here.
-    cuda_state: *mut VmafCudaState,
     api: &'static VmafApi,
     /// The backend this context was created on.
     pub(crate) backend: Backend,
+}
+
+/// Owns the C allocation independently of the CUDA resources it describes.
+/// Import transfers only resource cleanup to the native context's copied state.
+struct CudaState {
+    raw: *mut VmafCudaState,
+    release: Option<crate::ffi::CudaRelease>,
+    free: crate::ffi::CudaStateFree,
+}
+
+impl Drop for CudaState {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            // SAFETY: state_init returns an owned, initialized allocation even
+            // on returned errors. Only unimported states retain release duty.
+            unsafe {
+                if let Some(release) = self.release {
+                    release(self.raw);
+                }
+                (self.free)(self.raw.cast());
+            }
+        }
+    }
 }
 
 /// One successful pool checkout, until returned or transferred to libvmaf.
@@ -92,16 +109,6 @@ impl Drop for Context {
             // SAFETY: `raw` came from `vmaf_init` and is closed exactly once,
             // here, when the owning handle drops.
             unsafe { (self.api.close)(self.raw) };
-        }
-
-        // Release the CUDA state after the context that imported it. A CPU
-        // context leaves this null and skips this entirely.
-        if !self.cuda_state.is_null()
-            && let Some(release) = self.api.cuda.release
-        {
-            // SAFETY: `cuda_state` came from `vmaf_cuda_state_init` and is
-            // released exactly once, here.
-            unsafe { release(self.cuda_state) };
         }
     }
 }
@@ -214,7 +221,6 @@ impl Context {
 
         Ok(Self {
             raw,
-            cuda_state: std::ptr::null_mut(),
             api,
             backend: Backend::Cpu,
         })
@@ -237,6 +243,14 @@ impl Context {
                 status: -1,
             });
         };
+        let release = api.cuda.release.ok_or_else(|| VmafError::SymbolNotFound {
+            symbol: "vmaf_cuda_release".to_owned(),
+            message: "CUDA requires vmaf_cuda_release before allocating state; use CpuOnly or a compatible libvmaf build".to_owned(),
+        })?;
+        let free = api.cuda.free_state.ok_or_else(|| VmafError::SymbolNotFound {
+            symbol: "free".to_owned(),
+            message: "CUDA requires allocator-matched native free (currently verified on Linux only); use CpuOnly or Auto".to_owned(),
+        })?;
         let Some(import_state) = api.cuda.import_state else {
             return Err(VmafError::CallFailed {
                 function: "vmaf_cuda_import_state",
@@ -250,24 +264,18 @@ impl Context {
             });
         };
 
-        // SAFETY: `state` is a valid out-pointer; a null `cu_ctx` asks libvmaf
-        // to create its own context.
-        let mut state: *mut VmafCudaState = std::ptr::null_mut();
-        // SAFETY: `state` is a valid out-pointer and a null `cu_ctx` asks
-        // libvmaf to create its own context.
-        unsafe {
-            crate::ffi::check(
-                state_init(
-                    &mut state,
-                    VmafCudaConfiguration {
-                        cu_ctx: std::ptr::null_mut(),
-                    },
-                ),
-                "vmaf_cuda_state_init",
-            )?;
-        }
+        // Install cleanup before the call: returned errors can populate `raw`.
+        let mut state = CudaState {
+            raw: std::ptr::null_mut(),
+            release: Some(release),
+            free,
+        };
+        // SAFETY: `raw` is a valid out-pointer; a null cu_ctx asks libvmaf to
+        // retain its primary context, not reset or own any external GPU user.
+        let status = unsafe { state_init(&mut state.raw, VmafCudaConfiguration::default()) };
+        crate::ffi::check(status, "vmaf_cuda_state_init")?;
 
-        if state.is_null() {
+        if state.raw.is_null() {
             return Err(VmafError::CallFailed {
                 function: "vmaf_cuda_state_init",
                 status: 0,
@@ -277,17 +285,27 @@ impl Context {
         let mut raw: *mut crate::ffi::VmafContext = std::ptr::null_mut();
         // SAFETY: as `new_cpu`, plus `state` which was just initialised.
         let status = unsafe { (api.init)(&mut raw, configuration) };
-        if let Err(error) = crate::ffi::check(status, "vmaf_init") {
-            // SAFETY: `state` is valid and owned by this scope.
-            unsafe { (api.cuda.release.expect("checked above"))(state) };
-            return Err(error);
+        crate::ffi::check(status, "vmaf_init")?;
+        if raw.is_null() {
+            return Err(VmafError::CallFailed {
+                function: "vmaf_init",
+                status: 0,
+            });
         }
+        let context = Self {
+            raw,
+            api,
+            backend: Backend::Cuda,
+        };
 
         // SAFETY: both pointers are valid and non-null; `import_state` copies
-        // the CUDA state into the context, which then owns its use of
-        // it.
-        let imported = unsafe {
-            import_state(raw, state);
+        // the state only on success. Failure leaves resource ownership here.
+        let status = unsafe { import_state(raw, state.raw) };
+        crate::ffi::check(status, "vmaf_cuda_import_state")?;
+        state.release = None;
+
+        // SAFETY: the live context now owns the imported CUDA resources.
+        let status = unsafe {
             preallocate(
                 raw,
                 crate::ffi::VmafCudaPictureConfiguration {
@@ -302,24 +320,9 @@ impl Context {
             )
         };
 
-        if imported != 0 {
-            // SAFETY: `raw` and `state` are both valid and owned by this scope.
-            unsafe {
-                (api.close)(raw);
-                (api.cuda.release.expect("checked above"))(state);
-            }
-            return Err(VmafError::CallFailed {
-                function: "vmaf_cuda_preallocate_pictures",
-                status: imported,
-            });
-        }
-
-        Ok(Self {
-            raw,
-            cuda_state: state,
-            api,
-            backend: Backend::Cuda,
-        })
+        crate::ffi::check(status, "vmaf_cuda_preallocate_pictures")?;
+        // The original wrapper is freed here; close owns only the copied state.
+        Ok(context)
     }
 }
 
@@ -345,7 +348,10 @@ pub(crate) fn initialise(
 ) -> Result<Context, VmafError> {
     let try_cuda = match preference {
         BackendPreference::CpuOnly => false,
-        BackendPreference::Auto | BackendPreference::RequireCuda => api.cuda_available(),
+        BackendPreference::Auto => api.cuda_available(),
+        // Resolve required cleanup explicitly so missing allocator support is
+        // actionable, without ever calling state_init on unsupported platforms.
+        BackendPreference::RequireCuda => true,
     };
 
     if try_cuda {
@@ -364,11 +370,6 @@ pub(crate) fn initialise(
                 );
             },
         }
-    } else if preference == BackendPreference::RequireCuda {
-        return Err(VmafError::CallFailed {
-            function: "vmaf_cuda_state_init",
-            status: -1,
-        });
     }
 
     let context = Context::new_cpu(api, configuration, geometry)?;
@@ -400,6 +401,10 @@ const fn picture_pool_size(n_threads: u32) -> u32 {
 
 /// libvmaf log levels, used to keep the C library quiet by default.
 pub(crate) const LOG_LEVEL_ERROR: c_int = 1;
+
+#[cfg(all(test, unix))]
+#[path = "cuda_tests.rs"]
+mod cuda_tests;
 
 #[cfg(test)]
 mod tests {

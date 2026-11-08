@@ -406,6 +406,21 @@ what the Docker image relies on, so Linux needs no download at all.
 GPU acceleration is available **only on Linux with a CUDA-enabled libvmaf**. See
 `BackendPreference` to require a specific backend or to skip the CUDA attempt.
 
+CUDA setup also requires `vmaf_cuda_release` and an allocator-matched native
+`free` before allocating any state. On Linux, `free` is resolved through the
+loaded library's dependency scope. Other platforms, including custom Windows
+CUDA DLLs, currently fail closed: `Auto` uses CPU and `RequireCuda` reports the
+missing cleanup support. A process CRT, MSVCRT or UCRT is not guessed; `CpuOnly`
+does not allocate CUDA state or call CUDA cleanup.
+
+The ownership contract was checked against [libvmaf 3.2.1's CUDA implementation]
+and [state import/close implementation]: import copies the descriptor, after which
+the native context alone releases its CUDA resources. Rust frees the original C
+wrapper once; before import succeeds, Rust releases the unimported resources too.
+Native release is not a wrapper deallocator. Returned state-init errors with an
+allocated output are cleaned up; upstream driver assertions are not recoverable
+Rust errors, and upstream CUDA function-loader allocations are not fixed here.
+
 Which of the nine models a build can use depends on its feature extractors: the
 `float` and BOUND models need options that no packaged build enables. See
 [which models work](#which-models-work).
@@ -429,6 +444,15 @@ transfer without relying on caller-descriptor zeroing, worker-reference retentio
 and failed fetch/read cleanup; it does not execute real CUDA or a native thread
 pool. `m09_native_cpu_threaded_matches_serial` separately exercises installed
 libvmaf's CPU workers when available.
+
+On Unix, `m10_cuda_ownership` always runs isolated production `Context` paths
+against a C ABI fixture, checking state-init, context-init, import and pool
+failures, missing cleanup symbols, CPU fallback and successful teardown. It
+counts wrapper allocations/frees separately from resource releases; it does not
+execute a CUDA driver. Hardware acceptance still requires repeated real CUDA
+construction/teardown while another independent GPU user remains active, with
+no abort or disruption to that user, plus native sanitizer checks. Those gates
+must be run on suitable hardware; passing the fixture does not establish them.
 
 A successful native submission consumes its picture pair. If acquiring the next
 pair fails, discard the scorer and create a new one: retrying or reading partial
@@ -461,6 +485,8 @@ carry its license text.
 
 [libvmaf]: https://github.com/Netflix/vmaf
 [models]: https://github.com/Netflix/vmaf/tree/v3.2.1/model "libvmaf model files"
+[libvmaf 3.2.1's CUDA implementation]: https://github.com/Netflix/vmaf/blob/f85a853692a8c730d0270cd733c8bb30b5b93b7c/libvmaf/src/cuda/common.c#L104-L154
+[state import/close implementation]: https://github.com/Netflix/vmaf/blob/f85a853692a8c730d0270cd733c8bb30b5b93b7c/libvmaf/src/libvmaf.c#L187-L195
 [`av-decoders`]: https://github.com/rust-av/av-decoders
 [`VmafScorer::backend`]: https://docs.rs/av-metrics-vmaf/latest/av_metrics_vmaf/struct.VmafScorer.html#method.backend
 [`VmafScorer::score_decoders`]: https://docs.rs/av-metrics-vmaf/latest/av_metrics_vmaf/struct.VmafScorer.html#method.score_decoders
