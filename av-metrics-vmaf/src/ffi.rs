@@ -75,13 +75,13 @@ pub enum VmafPixelFormat {
 
 /// A single picture handed to libvmaf.
 ///
-/// The `data` pointers borrow caller-owned plane memory. libvmaf does not take
-/// ownership, so the caller must keep the buffers alive across the
-/// `vmaf_read_pictures` call that submits them.
+/// Pool-allocated `data`, `ref_` and `priv_` belong to a native refcounted
+/// allocation, not borrowed caller planes. A successful `vmaf_read_pictures`
+/// consumes the caller's reference even when it leaves this descriptor nonzero.
 ///
 /// Layout mirrors `libvmaf/include/libvmaf/picture.h`. Note that `w` and `h`
 /// are per-plane arrays rather than single scalars, `stride` is signed, `data`
-/// is `void *`, and a trailing `priv` pointer must be zero-initialised.
+/// is `void *`, and the trailing `priv` pointer is populated by native allocation.
 #[repr(C)]
 pub struct VmafPicture {
     /// Pixel format.
@@ -96,9 +96,9 @@ pub struct VmafPicture {
     pub stride: [isize; 3],
     /// Pointers to the Y, U and V plane data.
     pub data: [*mut c_void; 3],
-    /// Reference picture to compare against, if any.
+    /// Native reference-count handle for this allocation.
     pub ref_: *mut VmafRef,
-    /// libvmaf-owned private data. Must be zero-initialised.
+    /// Native private allocation/release metadata; never infer ownership from it.
     pub priv_: *mut c_void,
 }
 
@@ -280,7 +280,8 @@ pub struct VmafApi {
     pub init: VmafInit,
     /// Releases a scoring context.
     pub close: VmafClose,
-    /// Submits a reference/distorted pair, or nulls to flush.
+    /// Submits and consumes a reference/distorted pair on success, or nulls to
+    /// flush. Caller descriptors need not be zeroed after consumption.
     pub read_pictures: VmafReadPictures,
     /// Reads the model score for a frame index.
     pub score_at_index: VmafScoreAtIndex,

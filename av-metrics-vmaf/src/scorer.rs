@@ -381,10 +381,9 @@ pub struct VmafScorer {
     model: *mut VmafModelHandle,
     /// Feature keys used to read pooled values back, e.g. `psnr_y`.
     feature_names: Vec<CString>,
-    /// Reference picture, pooled from libvmaf and reused across frames.
-    reference_picture: VmafPicture,
-    /// Distorted picture, pooled from libvmaf and reused across frames.
-    distorted_picture: VmafPicture,
+    /// Checked-out pair. None after transfer until both replacements succeed;
+    /// a failed replacement leaves the scorer terminal, never half-owned.
+    pictures: Option<(backend::PooledPicture, backend::PooledPicture)>,
     /// Scratch buffers for the C strings handed to `vmaf_init`.
     _model_spec: CString,
     scored: usize,
@@ -398,8 +397,7 @@ impl Drop for VmafScorer {
         // Return the pooled pictures and release the model. This runs before
         // the struct's fields are dropped, so `self.context` is still
         // live here.
-        self.context.release_picture(&mut self.reference_picture);
-        self.context.release_picture(&mut self.distorted_picture);
+        drop(self.pictures.take());
 
         if !self.model.is_null() {
             // SAFETY: `model` came from `vmaf_model_load` or
@@ -574,9 +572,8 @@ impl VmafScorer {
             }
         }
 
-        // Hold one picture pair for the whole run, as libvmaf's own CLI does.
-        // Fetching per frame also works, but reusing matches the reference flow
-        // and avoids a pool round-trip per frame.
+        // Locals drop in reverse order on failure: any first checkout returns
+        // before the context closes if the second fetch fails.
         let reference_picture = context.pooled_picture()?;
         let distorted_picture = context.pooled_picture()?;
 
@@ -587,8 +584,7 @@ impl VmafScorer {
             model,
             feature_names,
             _model_spec: model_spec,
-            reference_picture,
-            distorted_picture,
+            pictures: Some((reference_picture, distorted_picture)),
             scored: 0,
             _not_sync: PhantomData,
         })
@@ -798,10 +794,8 @@ impl VmafScorer {
 
     /// Submit one frame pair to libvmaf.
     ///
-    /// The pictures are the ones pooled at construction, reused across frames
-    /// as libvmaf's own CLI does. Only their pixel data is rewritten; the
-    /// geometry and buffers stay libvmaf's, which is what makes this safe
-    /// to call repeatedly.
+    /// Each successful submission transfers its checked-out picture pair and
+    /// acquires a new pair from the pool.
     fn submit<T: Pixel>(
         &mut self,
         reference: &v_frame::frame::Frame<T>,
@@ -848,9 +842,12 @@ impl VmafScorer {
         reference: PlaneSet<'_>,
         distorted: PlaneSet<'_>,
     ) -> Result<(), VmafError> {
+        self.ensure_active()?;
+        let (reference_picture, distorted_picture) =
+            self.pictures.as_mut().expect("active scorer owns a complete pair");
         Self::fill_pictures(
-            &mut self.reference_picture,
-            &mut self.distorted_picture,
+            &mut reference_picture.raw,
+            &mut distorted_picture.raw,
             &reference,
             &distorted,
             self.format.pixel_format(),
@@ -862,23 +859,41 @@ impl VmafScorer {
         let status = unsafe {
             (self.context.api().read_pictures)(
                 self.context.raw,
-                raw_mut(&mut self.reference_picture),
-                raw_mut(&mut self.distorted_picture),
+                raw_mut(&mut reference_picture.raw),
+                raw_mut(&mut distorted_picture.raw),
                 index,
             )
         };
 
-        // libvmaf retains submitted pictures internally, so they cannot be
-        // reused verbatim for the next frame. Return them to the pool
-        // and take a fresh pair. The pool is sized from the thread
-        // count so libvmaf can still be reading the previous pair while
-        // this happens.
-        self.context.release_picture(&mut self.reference_picture);
-        self.context.release_picture(&mut self.distorted_picture);
-        self.reference_picture = self.context.pooled_picture()?;
-        self.distorted_picture = self.context.pooled_picture()?;
+        // Audited v3.2.1 valid-pool-input errors (including enqueue rejection)
+        // precede caller consumption. Preserve both guards and the read error.
+        ffi::check(status, "vmaf_read_pictures")?;
 
-        ffi::check(status, "vmaf_read_pictures")
+        // Success consumes both refs. CUDA-compiled CPU extraction unrefs local
+        // aliases, so caller descriptor zeroing/pointer presence proves nothing.
+        let (reference, distorted) = self.pictures.take().expect("submitted pair");
+        reference.transfer();
+        distorted.transfer();
+
+        // Publish only a complete pair. A failed second fetch drops the first
+        // local guard; None keeps all subsequent calls off stale inputs/indices.
+        let reference = self.context.pooled_picture()?;
+        let distorted = self.context.pooled_picture()?;
+        self.pictures = Some((reference, distorted));
+        Ok(())
+    }
+
+    /// Replacement failure follows a native submission, so partial scores must
+    /// not be presented as a successful run or retried at a duplicate index.
+    fn ensure_active(&self) -> Result<(), VmafError> {
+        if self.pictures.is_none() {
+            return Err(VmafError::InvalidConfiguration {
+                reason:
+                    "scorer is unusable after a picture replacement failure; create a new scorer"
+                        .to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// Preflight the whole pair before either host picture is touched.
@@ -1011,6 +1026,7 @@ impl VmafScorer {
 
     /// Flush libvmaf's sliding window.
     fn flush(&mut self) -> Result<(), VmafError> {
+        self.ensure_active()?;
         // SAFETY: libvmaf documents null pictures as the flush signal.
         let status = unsafe {
             (self.context.api().read_pictures)(
@@ -1101,6 +1117,8 @@ impl VmafScorer {
     /// disagrees with the configuration (u8 for 8-bit; u16 for 10/12/16-bit),
     /// before copying/submitting either frame. Also reports malformed layouts
     /// and native errors. Failed submissions do not advance the scored count.
+    /// If replacement acquisition fails after native acceptance, this scorer
+    /// becomes unusable; create a new scorer instead of retrying or reading scores.
     #[inline]
     pub fn submit_pair<T: Pixel>(
         &mut self,
@@ -1131,6 +1149,7 @@ impl VmafScorer {
     /// [`VmafError::InvalidConfiguration`] if no pair was submitted.
     #[inline]
     pub fn finish(&mut self) -> Result<Vec<f64>, VmafError> {
+        self.ensure_active()?;
         if self.scored == 0 {
             return Err(VmafError::InvalidConfiguration {
                 reason: "no frame pairs were given to score".to_owned(),
@@ -1176,6 +1195,7 @@ impl VmafScorer {
     /// Returns [`VmafError::CallFailed`] if libvmaf rejects the read.
     #[inline]
     pub fn drain_scores(&mut self, from: usize) -> Result<Vec<f64>, VmafError> {
+        self.ensure_active()?;
         let total = u32::try_from(self.scored).map_err(|_| VmafError::InvalidConfiguration {
             reason: "too many frame pairs to index".to_owned(),
         })?;
@@ -1211,7 +1231,8 @@ impl VmafScorer {
     /// configuration (1 byte for 8-bit, 2 for 10/12/16-bit) before any copy.
     /// Returns [`VmafError::InputMismatch`] on disagreement, malformed-picture
     /// errors, or [`VmafError::CallFailed`] if libvmaf rejects the pair.
-    /// Errors do not advance the scored count.
+    /// Errors do not advance the scored count. Replacement acquisition failure
+    /// after native acceptance makes the scorer unusable, including score reads.
     #[inline]
     pub fn submit_pair_raw(
         &mut self,
@@ -1242,6 +1263,7 @@ impl VmafScorer {
         reason = "a cold reporting path that would bloat every call site"
     )]
     pub fn pooled_features(&self) -> Result<Vec<(String, f64)>, VmafError> {
+        self.ensure_active()?;
         if self.scored == 0 {
             return Ok(Vec::new());
         }

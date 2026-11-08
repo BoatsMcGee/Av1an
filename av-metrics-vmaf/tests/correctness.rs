@@ -53,6 +53,45 @@ fn small_pair(distortion: Distortion) -> SyntheticPair {
 }
 
 #[test]
+fn m09_native_cpu_threaded_matches_serial() {
+    require_libvmaf!();
+    let pair = small_pair(Distortion::Mild);
+    let format = VideoFormat {
+        width: 64,
+        height: 48,
+        bit_depth: 8,
+        chroma_sampling: ChromaSubsampling::Yuv420,
+    };
+    let score = |threads| {
+        let mut scorer = VmafScorer::new(
+            model_config().with_backend(BackendPreference::CpuOnly).with_threads(threads),
+            format,
+        )
+        .expect("native CPU scorer");
+        assert_eq!(scorer.backend(), Backend::Cpu);
+        let mut reference = pair.reference.decoder();
+        let mut distorted = pair.distorted.decoder();
+        scorer
+            .score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {})
+            .expect("native CPU scoring, flush, and drop")
+    };
+    let serial = score(0);
+    let threaded = score(2);
+    assert_eq!(serial.len(), 12, "all submitted indices must survive");
+    assert_eq!(
+        threaded.len(),
+        serial.len(),
+        "native worker-held references must drain"
+    );
+    for (serial, threaded) in serial.iter().zip(&threaded) {
+        assert!(
+            serial.score.is_finite() && (serial.score - threaded.score).abs() < 1e-8,
+            "threading must preserve native scores: {serial:?} vs {threaded:?}"
+        );
+    }
+}
+
+#[test]
 fn m06_cpu_rejects_typed_u8_and_either_raw_side_for_ten_bit() {
     require_libvmaf!();
     let format = VideoFormat {

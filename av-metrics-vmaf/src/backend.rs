@@ -62,6 +62,29 @@ pub(crate) struct Context {
     pub(crate) backend: Backend,
 }
 
+/// One successful pool checkout, until returned or transferred to libvmaf.
+/// The enclosing scorer must drop this before closing its context/pool.
+pub(crate) struct PooledPicture {
+    pub(crate) raw: crate::ffi::VmafPicture,
+    api: &'static VmafApi,
+}
+
+impl PooledPicture {
+    /// Disarm after a successful `vmaf_read_pictures`, even if C left `raw` nonzero.
+    pub(crate) fn transfer(self) {
+        // Only the native reference needs cleanup; libvmaf now owns that cleanup.
+        std::mem::forget(self);
+    }
+}
+
+impl Drop for PooledPicture {
+    fn drop(&mut self) {
+        // SAFETY: only successful checkouts get guards, and transfer disarms
+        // them. The enclosing owner keeps the API and context/pool alive.
+        unsafe { (self.api.picture_unref)(raw_mut_picture(&mut self.raw)) };
+    }
+}
+
 impl Drop for Context {
     #[inline]
     fn drop(&mut self) {
@@ -94,28 +117,27 @@ impl Context {
     ///
     /// The pool is sized during construction, so the returned picture's `data`,
     /// `w`, `h` and `stride` are authoritative and match the scorer's format.
-    /// Callers must release it with [`Self::release_picture`].
+    /// The returned guard releases it unless submission transfers ownership.
+    /// Callers must drop all guards before closing this context.
     ///
     /// # Errors
     ///
-    /// Returns [`VmafError::CallFailed`] if the pool is exhausted, which would
-    /// mean more pictures are held than were preallocated.
-    pub(crate) fn pooled_picture(&self) -> Result<crate::ffi::VmafPicture, VmafError> {
+    /// Pool exhaustion can block until a picture returns. Allocation/setup
+    /// failures return [`VmafError::CallFailed`].
+    pub(crate) fn pooled_picture(&self) -> Result<PooledPicture, VmafError> {
         let mut picture = crate::ffi::VmafPicture::zeroed();
         // SAFETY: `picture` is a valid out-parameter and `raw` is a live
         // context whose pool was sized during construction.
         let status = unsafe {
             (self.api.fetch_preallocated_picture)(self.raw, raw_mut_picture(&mut picture))
         };
+        // A failed fetch rolls its slot back but may leave dangling fields in
+        // the output. Only successful fetches acquire an owning guard.
         crate::ffi::check(status, "vmaf_fetch_preallocated_picture")?;
-        Ok(picture)
-    }
-
-    /// Return a pooled picture to libvmaf.
-    pub(crate) fn release_picture(&self, picture: &mut crate::ffi::VmafPicture) {
-        // SAFETY: `picture` was obtained from `pooled_picture` on this context,
-        // and the scorer releases each exactly once.
-        unsafe { (self.api.picture_unref)(raw_mut_picture(picture)) };
+        Ok(PooledPicture {
+            raw: picture,
+            api: self.api,
+        })
     }
 }
 

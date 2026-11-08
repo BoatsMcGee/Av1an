@@ -422,7 +422,19 @@ cargo test -p av-metrics-vmaf
 ```
 
 Tests that require libvmaf skip themselves when it is unavailable, so the suite is
-green in any environment.
+green without a native installation. On Unix, `m09_picture_ownership` always
+compiles a self-contained C ABI fixture with `cc` and runs isolated child tests
+through the public constructor, submission, and drop paths. It checks ownership
+transfer without relying on caller-descriptor zeroing, worker-reference retention,
+and failed fetch/read cleanup; it does not execute real CUDA or a native thread
+pool. `m09_native_cpu_threaded_matches_serial` separately exercises installed
+libvmaf's CPU workers when available.
+
+A successful native submission consumes its picture pair. If acquiring the next
+pair fails, discard the scorer and create a new one: retrying or reading partial
+scores is rejected. Validation failures before submission retain the pair and do
+not advance the frame index. Pool exhaustion may block until a picture returns;
+it is not a reliable exhaustion error.
 
 Not every libvmaf build embeds the stock VMAF models. When yours does not, point
 `VMAF_TEST_MODEL` at a model JSON (for example `model/vmaf_v0.6.1.json` from the
