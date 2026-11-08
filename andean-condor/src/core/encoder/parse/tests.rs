@@ -193,3 +193,54 @@ fn aom_vpx_parsing() {
         assert_eq!(parse_aom_vpx_frames(s), ans);
     }
 }
+
+#[test]
+fn vvc_parsing() {
+    let test_cases =
+        [
+            // With a frame limit, which is what Condor always passes: the count is
+            // `frame= <n>/<max>`. Formats taken from vvenc's Stats.h.
+            (
+                "vvenc [info]: stats:  50.0% frame=  120/240 fps=  12.9 avg_fps=  11.9 bitrate=  \
+                 12345.67 kbps avg_bitrate= 12000.00 kbps elapsed= 00h:00m:10s left= 00h:00m:10s",
+                Some(120),
+            ),
+            (
+                "vvenc [info]: stats: 100.0% frame= 1234/1234 fps=  12.9 avg_fps=  11.9 bitrate=  \
+                 12345.67 kbps avg_bitrate= 12000.00 kbps elapsed= 00h:01m:35s",
+                Some(1234),
+            ),
+            // A frame count wide enough that the columns shift.
+            (
+                "vvenc [info]: stats:  12.3% frame= 123456/1000000 fps=  12.9 avg_fps=  11.9 \
+                 bitrate=  12345.67 kbps avg_bitrate= 12000.00 kbps elapsed= 02h:46m:40s left= \
+                 19h:37m:20s",
+                Some(123_456),
+            ),
+            // Without a frame limit there is no percentage and no `/max`.
+            (
+                "vvenc [info]: stats:  frame=   60 fps=   2.9 avg_fps=   2.9 bitrate= 29173.77 \
+                 kbps avg_bitrate= 29173.77 kbps elapsed= 0",
+                Some(60),
+            ),
+            (
+                "vvenc [info]: stats:  frame=    1 fps=   2.9 avg_fps=   2.9 bitrate= 29173.77 \
+                 kbps avg_bitrate= 29173.77 kbps elapsed= 0",
+                Some(1),
+            ),
+            // The final summary line uses the same `frame=` key.
+            (
+                "vvenc [info]: stats summary: frame= 240/240 avg_fps=  11.9 avg_bitrate= 12000.00 \
+                 kbps",
+                Some(240),
+            ),
+            ("invalid data", None),
+            ("", None),
+            // A different vvenc log level must not be mistaken for a stats line.
+            ("vvenc [info]: Encoding  YUV video", None),
+        ];
+
+    for (s, ans) in test_cases {
+        assert_eq!(parse_vvc_frames(s), ans);
+    }
+}

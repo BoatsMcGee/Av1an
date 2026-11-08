@@ -267,14 +267,25 @@ pub fn parse_x26x_frames(s: &str) -> Option<u64> {
 
 #[inline]
 pub fn parse_vvc_frames(s: &str) -> Option<u64> {
-    // vvenc [info]: stats:  frame=   60 fps=   2.9 avg_fps=   2.9 bitrate= 29173.77
-    // kbps avg_bitrate= 29173.77 kbps elapsed= 0
-    const VVENC_PREFIX: &str = "vvenc [info]: stats:  frame=";
+    // vvenc [info]: stats:  50.0% frame=  120/240 fps=  12.9 avg_fps=  11.9
+    // bitrate=  12345.67 kbps avg_bitrate= 12000.00 kbps elapsed= 00h:00m:10s
+    // left= 00h:00m:10s
+    //
+    // Without a frame limit the percentage and the `/max` suffix are absent:
+    // vvenc [info]: stats:  frame=   60 fps=   2.9 avg_fps=   2.9 bitrate=
+    // 29173.77 kbps avg_bitrate= 29173.77 kbps elapsed= 0
+    const VVENC_PREFIX: &str = "vvenc [info]: stats";
     if !s.starts_with(VVENC_PREFIX) {
         return None;
     }
 
-    s.split_ascii_whitespace().nth(5).and_then(|s| s.parse().ok())
+    // The frame count is the value of the `frame=` key. With a frame limit it
+    // is `frame= <n>/<max>`, so the count is the part before the slash.
+    s.split_ascii_whitespace()
+        .skip_while(|token| *token != "frame=")
+        .nth(1)
+        .map(|value| value.split_once('/').map_or(value, |(count, _)| count))
+        .and_then(|count| count.parse().ok())
 }
 
 #[inline]
