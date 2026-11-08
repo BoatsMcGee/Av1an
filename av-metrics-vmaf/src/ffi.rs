@@ -360,6 +360,8 @@ impl VmafApi {
     ///
     /// True only when every entry point the CUDA path needs resolved. A libvmaf
     /// built without `-Denable_cuda=true` exports none of them.
+    /// Cleanup also needs the process-default Linux allocator; other platforms
+    /// remain unavailable until allocator-matched cleanup is verified.
     #[inline]
     #[must_use]
     pub const fn cuda_available(&self) -> bool {
@@ -497,7 +499,7 @@ fn resolve() -> Result<VmafApi, VmafError> {
             cuda: CudaSymbols {
                 state_init: optional(library, b"vmaf_cuda_state_init\0"),
                 release: optional(library, b"vmaf_cuda_release\0"),
-                free_state: cuda_state_free(library),
+                free_state: cuda_state_free(),
                 import_state: optional(library, b"vmaf_cuda_import_state\0"),
                 preallocate_pictures: optional(library, b"vmaf_cuda_preallocate_pictures\0"),
             },
@@ -505,16 +507,21 @@ fn resolve() -> Result<VmafApi, VmafError> {
     }
 }
 
-/// Linux dlsym searches the loaded object's dependency scope, including its C
-/// allocator. Never substitute Rust's allocator or a guessed Windows CRT.
+/// Ordinary Linux relocations bind process-global allocators first, including
+/// LD_PRELOAD overrides. Handle-local lookup can select a different free.
+/// Assumes no DEEPBIND or symbolic/private allocator binding in libvmaf.
 #[cfg(target_os = "linux")]
-fn cuda_state_free(library: &Library) -> Option<CudaStateFree> {
-    optional(library, b"free\0")
+fn cuda_state_free() -> Option<CudaStateFree> {
+    static PROCESS: OnceLock<libloading::os::unix::Library> = OnceLock::new();
+    let process = PROCESS.get_or_init(libloading::os::unix::Library::this);
+    // SAFETY: free has this C signature; keep the process mapping for the
+    // callback's lifetime, just as resolve retains the native library mapping.
+    unsafe { process.get::<CudaStateFree>(b"free\0").ok().map(|symbol| *symbol) }
 }
 
 /// No allocator-matched deallocator has been verified on these platforms.
 #[cfg(not(target_os = "linux"))]
-fn cuda_state_free(_library: &Library) -> Option<CudaStateFree> {
+fn cuda_state_free() -> Option<CudaStateFree> {
     None
 }
 
@@ -699,6 +706,48 @@ mod tests {
     use std::mem::{align_of, size_of};
 
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn m10_cleanup_uses_process_allocator_scope() {
+        let directory = tempfile::tempdir().expect("temporary allocator-scope fixture");
+        let path = directory.path().join("libm10_allocator_scope.so");
+        let output = std::process::Command::new("cc")
+            .args(["-shared", "-fPIC", "-std=c99", "-Wall", "-Wextra", "-Werror", "-o"])
+            .arg(&path)
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/m10_allocator_scope.c"
+            ))
+            .output()
+            .expect("M10 allocator-scope regression requires cc");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // SAFETY: our fixture has no initializers. Library::new uses RTLD_LOCAL
+        // without DEEPBIND, so its decoy cannot interpose on other loaded code.
+        let library = unsafe { Library::new(&path) }.expect("load local decoy fixture");
+        // SAFETY: exact fixture signatures; all mappings stay live. Compare
+        // addresses only: neither the decoy nor selected free receives a pointer.
+        let (decoy, bound) = unsafe {
+            let decoy = *library.get::<CudaStateFree>(b"free\0").expect("local decoy free");
+            let getter = library
+                .get::<unsafe extern "C" fn() -> CudaStateFree>(b"m10_bound_free\0")
+                .expect("ordinary relocation getter");
+            (decoy, getter())
+        };
+        assert_ne!(
+            decoy as usize, bound as usize,
+            "fixture must distinguish handle and global binding"
+        );
+        let selected = cuda_state_free().expect("supported Linux resolves native free");
+        assert_eq!(
+            selected as usize, bound as usize,
+            "production cleanup must match ordinary process-global allocator binding, not the local decoy"
+        );
+    }
 
     #[test]
     fn bare_library_names_are_always_offered() {

@@ -407,10 +407,15 @@ GPU acceleration is available **only on Linux with a CUDA-enabled libvmaf**. See
 `BackendPreference` to require a specific backend or to skip the CUDA attempt.
 
 CUDA setup also requires `vmaf_cuda_release` and an allocator-matched native
-`free` before allocating any state. On Linux, `free` is resolved through the
-loaded library's dependency scope. Other platforms, including custom Windows
+`free` before allocating any state. On Linux, `free` is resolved in process-global
+scope, matching ordinary libvmaf allocator bindings, including coherent
+`LD_PRELOAD` allocator overrides. Looking it up only in libvmaf's dependency scope
+can select a different allocator. CUDA is unsupported for libvmaf loaded with
+`RTLD_DEEPBIND` or built with symbolic/private allocator bindings; use `CpuOnly`
+for those builds. This loader does not request deep binding and cannot detect
+custom allocator bindings. Other platforms, including custom Windows
 CUDA DLLs, currently fail closed: `Auto` uses CPU and `RequireCuda` reports the
-missing cleanup support. A process CRT, MSVCRT or UCRT is not guessed; `CpuOnly`
+missing cleanup support. No Windows process CRT, MSVCRT or UCRT is guessed; `CpuOnly`
 does not allocate CUDA state or call CUDA cleanup.
 
 The ownership contract was checked against [libvmaf 3.2.1's CUDA implementation]
@@ -449,7 +454,10 @@ On Unix, `m10_cuda_ownership` always runs isolated production `Context` paths
 against a C ABI fixture, checking state-init, context-init, import and pool
 failures, missing cleanup symbols, CPU fallback and successful teardown. It
 counts wrapper allocations/frees separately from resource releases; it does not
-execute a CUDA driver. Hardware acceptance still requires repeated real CUDA
+execute a CUDA driver. On Linux, `m10_cleanup_uses_process_allocator_scope`
+separately checks the production allocator resolver against a local decoy `free`
+and an ordinary global relocation, comparing addresses without calling either.
+Hardware acceptance still requires repeated real CUDA
 construction/teardown while another independent GPU user remains active, with
 no abort or disruption to that user, plus native sanitizer checks. Those gates
 must be run on suitable hardware; passing the fixture does not establish them.
