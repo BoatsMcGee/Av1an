@@ -2,7 +2,7 @@
 //!
 //! Tests that need libvmaf are skipped when it is unavailable, so the suite
 //! stays green in environments without it. Everything that does not require
-//! libvmaf always runs.
+//! libvmaf always runs. CI sets `AV_METRICS_REQUIRE_CPU` to require native inputs.
 
 // Test code asserts and unwraps freely: a failure panics with a readable message,
 // which is exactly what a test wants.
@@ -54,6 +54,23 @@ fn small_pair(distortion: Distortion) -> SyntheticPair {
 
 #[test]
 fn availability_probe_is_consistent() {
+    if std::env::var_os("AV_METRICS_REQUIRE_CPU").is_some() {
+        assert!(is_available(), "required CPU-native checks need libvmaf");
+        for variable in ["VMAF_TEST_MODEL", "VMAF_TEST_Y4M"] {
+            let path = std::env::var(variable)
+                .unwrap_or_else(|_| panic!("required CPU-native checks need {variable}"));
+            assert!(
+                Path::new(&path).is_file(),
+                "{variable} is not a file: {path}"
+            );
+        }
+        let directory = std::env::var("VMAF_MODEL_PATH")
+            .expect("required CPU-native checks need VMAF_MODEL_PATH");
+        assert!(
+            Path::new(&directory).is_dir(),
+            "VMAF_MODEL_PATH is not a directory: {directory}"
+        );
+    }
     match is_available() {
         true => assert!(
             libvmaf_version().is_some(),

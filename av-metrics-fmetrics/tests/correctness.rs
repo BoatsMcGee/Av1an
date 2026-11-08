@@ -1,6 +1,6 @@
 //! Verifies the crate loads the fmetrics built from the fork and scores through
 //! it. Each test skips itself when the library is absent, so this is harmless
-//! on a machine without it.
+//! on a machine without it. CI sets `AV_METRICS_REQUIRE_CPU` to forbid that skip.
 
 use std::sync::Mutex;
 
@@ -111,6 +111,12 @@ fn small_images(size: u32) -> (Vec<u8>, Vec<u8>, FmetricsImg, FmetricsImg) {
 
 #[test]
 fn loads_and_reports_its_version() {
+    if std::env::var_os("AV_METRICS_REQUIRE_CPU").is_some() {
+        assert!(
+            is_available(),
+            "required CPU-native checks need libfmetrics"
+        );
+    }
     if !is_available() {
         eprintln!("skipping: fmetrics is not available");
         return;

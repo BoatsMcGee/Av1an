@@ -3,7 +3,8 @@
 //! Tests that need libvship are skipped when it is unavailable, so the suite
 //! stays green in environments without it. That includes CI: there is no GPU
 //! and no libvship binary there, so the skip is the expected outcome rather
-//! than a failure. Everything that does not require libvship always runs.
+//! than a failure. `just test-gpu` makes availability mandatory on a GPU host.
+//! Everything that does not require libvship always runs.
 
 // Test code asserts and unwraps freely: a failure panics with a readable
 // message, which is exactly what a test wants.
@@ -101,6 +102,12 @@ fn grey_frame() -> (Vec<u8>, Vec<u8>) {
 /// A machine without libvship must report unavailability rather than panicking.
 #[test]
 fn availability_probe_is_consistent() {
+    if std::env::var_os("AV_METRICS_REQUIRE_GPU").is_some() {
+        assert!(
+            is_available(),
+            "required GPU checks need libvship and a device passing GPUFullCheck"
+        );
+    }
     if is_available() {
         assert!(
             libvship_version().is_some(),

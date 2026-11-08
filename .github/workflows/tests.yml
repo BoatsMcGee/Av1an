@@ -36,6 +36,7 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     env:
+      AV_METRICS_REQUIRE_CPU: '1'
       # Include Arch's rebuilt plugins after the system upgrade.
       VAPOURSYNTH_EXTRA_PLUGIN_PATH: /usr/lib/vapoursynth
     container:
@@ -49,11 +50,11 @@ jobs:
         with:
           components: clippy
 
-      - name: Setup Clang, NASM, VapourSynth, and libvmaf
+      - name: Setup CPU-native test dependencies
         run: |
           # Arch requires a full upgrade when refreshing package databases.
           # Provision jq so install-action does not bootstrap it with a partial upgrade.
-          pacman -Syu --noconfirm --needed clang nasm vapoursynth vmaf ffmpeg jq python-pip
+          pacman -Syu --noconfirm --needed git gcc clang nasm vapoursynth vmaf ffmpeg jq python-pip
 
           # WNNM integration tests need VSZip; keep Arch's VapourSynth installation.
           python -m pip install --no-cache-dir --break-system-packages \
@@ -63,6 +64,7 @@ jobs:
           # than compiling them in. All nine upstream models are there, so point
           # VMAF_MODEL_PATH at them and skip a download entirely.
           echo "VMAF_MODEL_PATH=/usr/share/model" >> "$GITHUB_ENV"
+          echo "VMAF_TEST_MODEL=/usr/share/model/vmaf_v0.6.1.json" >> "$GITHUB_ENV"
 
           # A short real clip for the tests that compare against libvmaf's own CLI
           # and FFmpeg's libvmaf filter. Generated rather than committed, so no
@@ -70,6 +72,20 @@ jobs:
           ffmpeg -v error -f lavfi -i "testsrc2=size=320x240:rate=24:duration=2" \
             -pix_fmt yuv420p -y /tmp/vmaf-test.y4m
           echo "VMAF_TEST_Y4M=/tmp/vmaf-test.y4m" >> "$GITHUB_ENV"
+
+      - name: Zig setup for fmetrics
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Install pinned CPU fmetrics
+        run: |
+          set -a
+          . .github/.env
+          set +a
+          bash av-metrics-fmetrics/scripts/install-fmetrics-linux.sh \
+            -Destination "$RUNNER_TEMP/fmetrics" -Quiet
+          echo "FMETRICS_LIB_DIR=$RUNNER_TEMP/fmetrics" >> "$GITHUB_ENV"
 
       - name: Install cargo-msrv
         uses: taiki-e/install-action@v2
@@ -89,6 +105,13 @@ jobs:
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Validate required CPU-native prerequisites
+        run: |
+          cargo +stable test --profile ci -p av-metrics-fmetrics --test correctness \
+            loads_and_reports_its_version -- --exact --nocapture
+          cargo +stable test --profile ci -p av-metrics-vmaf --test correctness \
+            availability_probe_is_consistent -- --exact --nocapture
 
       - name: Build Condor
         run: |
@@ -115,13 +138,13 @@ jobs:
 
       # The runner has no GPU and no vship binary is installed, so the crate's
       # GPU-gated tests skip themselves; its non-GPU tests still run.
+      # Required GPU coverage is a separate manual gate: `just test-gpu`.
       - name: Testing av-metrics-vship
         working-directory: ./av-metrics-vship
         run: |
           cargo test --profile ci
 
-      # No fmetrics binary is installed on the runner, so the tests that need one
-      # skip themselves rather than exercising the FFI paths.
+      # libfmetrics is required above; these tests exercise its real CPU API.
       - name: Testing av-metrics-fmetrics
         working-directory: ./av-metrics-fmetrics
         run: |
@@ -141,6 +164,7 @@ jobs:
     needs: [formatting, unit-tests]
     runs-on: ubuntu-latest
     env:
+      AV_METRICS_REQUIRE_CPU: '1'
       # Include Arch's rebuilt plugins after the system upgrade.
       VAPOURSYNTH_EXTRA_PLUGIN_PATH: /usr/lib/vapoursynth
     container:
@@ -154,14 +178,14 @@ jobs:
         with:
           components: llvm-tools-preview
 
-      - name: Setup Git, Clang, NASM, VapourSynth, and libvmaf
+      - name: Setup CPU-native test dependencies
         run: |
           # `vmaf` is needed for coverage, not just for tests. Without it the
           # crate still compiles but reports scoring as unavailable, so every
           # line in the scorer and the libvmaf FFI would be reported uncovered.
           # Arch requires a full upgrade when refreshing package databases.
           # Provision jq so install-action does not bootstrap it with a partial upgrade.
-          pacman -Syu --noconfirm --needed git clang nasm vapoursynth vmaf jq python-pip
+          pacman -Syu --noconfirm --needed git gcc clang nasm vapoursynth vmaf ffmpeg jq python-pip
 
           # WNNM integration tests need VSZip; keep Arch's VapourSynth installation.
           python -m pip install --no-cache-dir --break-system-packages \
@@ -171,6 +195,24 @@ jobs:
           # crate searches on its own. Set this anyway so coverage does not
           # depend on that search-path ordering.
           echo "VMAF_MODEL_PATH=/usr/share/model" >> "$GITHUB_ENV"
+          echo "VMAF_TEST_MODEL=/usr/share/model/vmaf_v0.6.1.json" >> "$GITHUB_ENV"
+          ffmpeg -v error -f lavfi -i "testsrc2=size=320x240:rate=24:duration=2" \
+            -pix_fmt yuv420p -y /tmp/vmaf-test.y4m
+          echo "VMAF_TEST_Y4M=/tmp/vmaf-test.y4m" >> "$GITHUB_ENV"
+
+      - name: Zig setup for fmetrics
+        uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+
+      - name: Install pinned CPU fmetrics
+        run: |
+          set -a
+          . .github/.env
+          set +a
+          bash av-metrics-fmetrics/scripts/install-fmetrics-linux.sh \
+            -Destination "$RUNNER_TEMP/fmetrics" -Quiet
+          echo "FMETRICS_LIB_DIR=$RUNNER_TEMP/fmetrics" >> "$GITHUB_ENV"
 
       - name: Validate executables
         run: |
@@ -190,6 +232,13 @@ jobs:
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
+
+      - name: Validate required CPU-native prerequisites
+        run: |
+          cargo +stable test --profile ci -p av-metrics-fmetrics --test correctness \
+            loads_and_reports_its_version -- --exact --nocapture
+          cargo +stable test --profile ci -p av-metrics-vmaf --test correctness \
+            availability_probe_is_consistent -- --exact --nocapture
 
       - name: Generate code coverage
         run: cargo llvm-cov --profile ci --workspace --lcov --output-path lcov.log --ignore-filename-regex tests\.rs
