@@ -432,7 +432,7 @@ struct Coefficients {
     /// Upper luma bound. Divided per pixel rather than used as a
     /// precomputed reciprocal, for reproducibility.
     y_max: f32,
-    /// Offset subtracted from chroma before scaling.
+    /// Lower chroma bound, used with `c_max` to resolve the range gain.
     c_min: f32,
     /// Upper chroma bound, for the same reason as `y_max`.
     c_max: f32,
@@ -455,6 +455,7 @@ impl Coefficients {
             YuvMatrix::Bt709 => (0.2126, 0.0722),
             YuvMatrix::Bt2020 => (0.2627, 0.0593),
         };
+        let kg = 1.0 - kr - kb;
 
         // (y_min, y_max, chroma_min, chroma_max)
         let (y_min, y_max, c_min, c_max) = match range {
@@ -468,8 +469,8 @@ impl Coefficients {
             c_min,
             c_max,
             r_v: 2.0 * (1.0 - kr),
-            g_u: 2.0 * kr * (1.0 - kr) / kb,
-            g_v: 2.0 * (1.0 - kb) * (1.0 - kb) / kb,
+            g_u: 2.0 * kb * (1.0 - kb) / kg,
+            g_v: 2.0 * kr * (1.0 - kr) / kg,
             b_u: 2.0 * (1.0 - kb),
         }
     }
@@ -483,10 +484,9 @@ impl Coefficients {
     fn apply(self, y: f32, u: f32, v: f32) -> (f32, f32, f32) {
         let y_lin = (y - self.y_min) * (255.0 / (self.y_max - self.y_min));
 
-        // Chroma is rescaled to its own span and centred, since the matrix
-        // coefficients assume a full -0.5..0.5 swing.
-        let u_off = (u - self.c_min) * (255.0 / (self.c_max - self.c_min)) - 128.0;
-        let v_off = (v - self.c_min) * (255.0 / (self.c_max - self.c_min)) - 128.0;
+        // Centre before range expansion so code 128 stays neutral in limited range.
+        let u_off = (u - 128.0) * (255.0 / (self.c_max - self.c_min));
+        let v_off = (v - 128.0) * (255.0 / (self.c_max - self.c_min));
 
         let red = self.r_v * v_off + y_lin;
         let blue = self.b_u * u_off + y_lin;
@@ -809,6 +809,98 @@ mod tests {
         }
     }
 
+    fn m01_convert_pixel(
+        samples: [u8; 3],
+        matrix: YuvMatrix,
+        range: SampleRange,
+    ) -> (u32, u32, u32) {
+        let planes = PlaneSet {
+            planes: samples.each_ref().map(|sample| PlaneSource {
+                width: 1,
+                height: 1,
+                stride: 1,
+                data_origin: 0,
+                data: std::ptr::from_ref(sample),
+                bytes_per_sample: 1,
+            }),
+        };
+        let info = ColorInfo {
+            matrix,
+            range,
+            bit_depth: 8,
+            hdr: false,
+        };
+        // SAFETY: each plane borrows one byte of `samples`, live through conversion.
+        let image = unsafe { yuv_to_rgb(&planes, &info, 255).unwrap() };
+        pixel(&image, 0, 0)
+    }
+
+    #[test]
+    fn m01_matrix_reference_vectors() {
+        let samples = [[128, 144, 128], [128, 128, 144], [96, 112, 152], [160, 152, 112]];
+        // Independent inverse-luma reference: R=Y+2(1-Kr)Cr, B=Y+2(1-Kb)Cb,
+        // G=(Y-Kr*R-Kb*B)/(1-Kr-Kb), rounded once. Limited Y uses 255/219,
+        // Cb/Cr use (sample-128)*255/224. All reference channels are unclipped.
+        let expected = [
+            (
+                YuvMatrix::Bt601,
+                SampleRange::Full,
+                [(128, 122, 156), (150, 117, 128), (130, 84, 68), (138, 163, 203)],
+            ),
+            (
+                YuvMatrix::Bt601,
+                SampleRange::Limited,
+                [(130, 124, 163), (156, 117, 130), (131, 80, 61), (142, 171, 216)],
+            ),
+            (
+                YuvMatrix::Bt709,
+                SampleRange::Full,
+                [(128, 125, 158), (153, 121, 128), (134, 88, 66), (135, 163, 205)],
+            ),
+            (
+                YuvMatrix::Bt709,
+                SampleRange::Limited,
+                [(130, 127, 164), (159, 122, 130), (136, 84, 59), (139, 171, 218)],
+            ),
+            (
+                YuvMatrix::Bt2020,
+                SampleRange::Full,
+                [(128, 125, 158), (152, 119, 128), (131, 85, 66), (136, 165, 205)],
+            ),
+            (
+                YuvMatrix::Bt2020,
+                SampleRange::Limited,
+                [(130, 127, 165), (157, 120, 130), (133, 81, 59), (141, 174, 219)],
+            ),
+        ];
+        let actual = expected.map(|(matrix, range, _)| {
+            (
+                matrix,
+                range,
+                samples.map(|samples| m01_convert_pixel(samples, matrix, range)),
+            )
+        });
+        assert_eq!(actual, expected, "matrix/range reference RGB values");
+    }
+
+    #[test]
+    fn m01_neutral_chroma_preserves_gray_and_endpoints() {
+        for matrix in [YuvMatrix::Bt601, YuvMatrix::Bt709, YuvMatrix::Bt2020] {
+            for (range, cases) in [
+                (SampleRange::Full, [(0, 0), (128, 128), (255, 255)]),
+                (SampleRange::Limited, [(16, 0), (128, 130), (235, 255)]),
+            ] {
+                for (y, gray) in cases {
+                    assert_eq!(
+                        m01_convert_pixel([y, 128, 128], matrix, range),
+                        (gray, gray, gray),
+                        "{matrix:?} {range:?} neutral Y={y}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn neutral_chroma_yields_grey() {
         // With U and V centred the output must be achromatic; any colour cast
@@ -834,9 +926,8 @@ mod tests {
         // A wrapped value would appear as a small number where saturation is
         // expected, so this catches a missing clamp.
         //
-        // Green is *not* expected to stay neutral: it is the channel both
-        // chroma differences subtract from, so extreme U and V drive it
-        // up. What matters is that it saturates rather than wrapping.
+        // Green stays in range: the independent BT.709 inverse-luma equation
+        // gives 164.129724, even though red and blue need clamping.
         // SAFETY: leaked buffers of the stated size.
         let image = unsafe {
             yuv_to_rgb(
@@ -849,7 +940,7 @@ mod tests {
         let (r, g, b) = pixel(&image, 0, 0);
         assert_eq!(b, 255, "blue must saturate high, not wrap");
         assert_eq!(r, 0, "red must saturate low, not wrap");
-        assert_eq!(g, 255, "green must saturate high, not wrap");
+        assert_eq!(g, 164, "green must retain its unclipped BT.709 value");
     }
 
     #[test]
