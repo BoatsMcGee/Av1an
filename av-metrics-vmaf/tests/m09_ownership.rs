@@ -154,7 +154,7 @@ fn check_scenario(scenario: &str) {
         expected_read = 0;
         expected_transfer = 0;
         expected_return = expected_checkout;
-        // Model cleanup on constructor failure remains M12, not this task.
+        // M11's whole-attempt guard also releases the model on initial-fetch failure.
     } else {
         let mut scorer = result.expect("production constructor");
         let bytes = [128u8; 64];

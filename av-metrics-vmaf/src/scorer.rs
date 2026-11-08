@@ -424,6 +424,19 @@ impl VmafScorer {
         reason = "inlining the scorer would duplicate the whole body at every call site"
     )]
     pub fn new(config: VmafConfig, format: VideoFormat) -> Result<Self, VmafError> {
+        Self::new_with_loader(config, format, ffi::VmafApi::load)
+    }
+
+    // Keep input validation before dynamic loading, including in boundary tests.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "each fallible backend attempt needs an owned copy of the requested configuration"
+    )]
+    fn new_with_loader(
+        config: VmafConfig,
+        format: VideoFormat,
+        load_api: impl FnOnce() -> Result<&'static ffi::VmafApi, VmafError>,
+    ) -> Result<Self, VmafError> {
         let pixel_format = format.validate()?;
 
         // Resolve the model first so a bad path fails before libvmaf is
@@ -448,7 +461,7 @@ impl VmafScorer {
             .map(|name| CString::new(name).expect("static feature names contain no nulls"))
             .collect();
 
-        let api = ffi::VmafApi::load()?;
+        let api = load_api()?;
 
         let configuration = VmafConfiguration {
             log_level: backend::LOG_LEVEL_ERROR,
@@ -473,7 +486,41 @@ impl VmafScorer {
         // picture pool, then the model, then the feature extractors that model
         // requires. `vmaf_read_pictures` assumes every registered extractor has
         // a live context, so ordering here is not incidental.
-        let context = backend::initialise(api, configuration, config.backend, geometry)?;
+        backend::initialise(api, configuration, config.backend, geometry, |context| {
+            Self::complete_attempt(
+                context,
+                config.clone(),
+                format,
+                model_spec.clone(),
+                feature_names.clone(),
+                &extractor_names,
+            )
+        })
+    }
+
+    fn complete_attempt(
+        context: Context,
+        config: VmafConfig,
+        format: VideoFormat,
+        model_spec: CString,
+        feature_names: Vec<CString>,
+        extractor_names: &[CString],
+    ) -> Result<Self, VmafError> {
+        // An incomplete scorer is the attempt's guard: pictures, then the model,
+        // then the native context drop on every error before Auto retries.
+        let mut scorer = Self {
+            context,
+            config,
+            format,
+            model: std::ptr::null_mut(),
+            feature_names,
+            pictures: None,
+            _model_spec: model_spec,
+            scored: 0,
+            _not_sync: PhantomData,
+        };
+        let api = scorer.context.api();
+        let config = &scorer.config;
 
         // Built-in models and on-disk models use separate loaders; each rejects
         // the other's input with `EINVAL`.
@@ -487,7 +534,7 @@ impl VmafScorer {
         let mut model: *mut VmafModelHandle = std::ptr::null_mut();
 
         let load_from_path = config.model.is_path();
-        let mut load_spec = model_spec.clone();
+        let mut load_spec = scorer._model_spec.clone();
 
         // SAFETY: `model` is a valid out-pointer, `model_config` a valid
         // mutable config, and `load_spec` a NUL-terminated string that
@@ -515,6 +562,9 @@ impl VmafScorer {
                 "the built-in VMAF model is unavailable; using the model file on disk"
             );
             load_spec = spec;
+            // A failed loader may leave a plausible but non-owned output.
+            // Never adopt or pass that stale output to the file loader.
+            model = std::ptr::null_mut();
             // SAFETY: as above, with `load_spec` now holding the file path and
             // the caller having supplied a configuration libvmaf
             // accepted.
@@ -546,8 +596,20 @@ impl VmafScorer {
             });
         }
 
+        if model.is_null() {
+            return Err(VmafError::CallFailed {
+                function: if load_from_path || load_spec != scorer._model_spec {
+                    "vmaf_model_load_from_path"
+                } else {
+                    "vmaf_model_load"
+                },
+                status: 0,
+            });
+        }
+        scorer.model = model;
+
         // SAFETY: both handles came from libvmaf and the context is live.
-        let status = unsafe { (api.use_features_from_model)(context.raw, model) };
+        let status = unsafe { (api.use_features_from_model)(scorer.context.raw, model) };
         if status != 0 {
             return Err(VmafError::CallFailed {
                 function: "vmaf_use_features_from_model",
@@ -558,11 +620,12 @@ impl VmafScorer {
         // Register any additional feature extractors the caller asked for.
         // These are optional extras, so a rejection is logged rather
         // than fatal.
-        for name in &extractor_names {
+        for name in extractor_names {
             // SAFETY: `name` is a valid NUL-terminated string, and a null
             // options dictionary selects the extractor's defaults.
-            let status =
-                unsafe { (api.use_feature)(context.raw, name.as_ptr(), std::ptr::null_mut()) };
+            let status = unsafe {
+                (api.use_feature)(scorer.context.raw, name.as_ptr(), std::ptr::null_mut())
+            };
             if status != 0 {
                 tracing::warn!(
                     feature = name.to_string_lossy().into_owned(),
@@ -574,20 +637,11 @@ impl VmafScorer {
 
         // Locals drop in reverse order on failure: any first checkout returns
         // before the context closes if the second fetch fails.
-        let reference_picture = context.pooled_picture()?;
-        let distorted_picture = context.pooled_picture()?;
+        let reference_picture = scorer.context.pooled_picture()?;
+        let distorted_picture = scorer.context.pooled_picture()?;
 
-        Ok(Self {
-            context,
-            config,
-            format,
-            model,
-            feature_names,
-            _model_spec: model_spec,
-            pictures: Some((reference_picture, distorted_picture)),
-            scored: 0,
-            _not_sync: PhantomData,
-        })
+        scorer.pictures = Some((reference_picture, distorted_picture));
+        Ok(scorer)
     }
 
     /// The backend this scorer ended up on.
@@ -1311,6 +1365,10 @@ fn raw_mut_model(model: &mut *mut VmafModelHandle) -> *mut *mut VmafModelHandle 
 fn raw_mut_config(config: &mut VmafModelConfig) -> *mut VmafModelConfig {
     config as *mut VmafModelConfig
 }
+
+#[cfg(all(test, unix))]
+#[path = "setup_tests.rs"]
+mod setup_tests;
 
 #[cfg(test)]
 #[expect(

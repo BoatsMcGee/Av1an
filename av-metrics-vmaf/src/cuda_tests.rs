@@ -110,9 +110,15 @@ fn check_scenario() {
         pixel_format: crate::ffi::VmafPixelFormat::Yuv420p,
     };
     let result = match scenario {
-        11 => initialise(api, configuration, BackendPreference::CpuOnly, geometry),
-        12 | 15 => initialise(api, configuration, BackendPreference::Auto, geometry),
-        13 | 14 => initialise(api, configuration, BackendPreference::RequireCuda, geometry),
+        11 => initialise(api, configuration, BackendPreference::CpuOnly, geometry, Ok),
+        12 | 15 => initialise(api, configuration, BackendPreference::Auto, geometry, Ok),
+        13 | 14 => initialise(
+            api,
+            configuration,
+            BackendPreference::RequireCuda,
+            geometry,
+            Ok,
+        ),
         _ => Context::new_cuda(api, configuration, geometry),
     };
     let (backend, error) = match result {
@@ -132,7 +138,8 @@ fn check_scenario() {
     // Order: init_state, alloc, free, original_release, resource_release,
     // context_release, import, CUDA_pool, close, init_context, CPU_pool, duplicate, bad_call.
     let expected = match scenario {
-        0 | 7 => [1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0],
+        0 => [1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0],
+        7 => [1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0],
         1 | 3 => [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         2 => [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         4 | 5 => [1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0],

@@ -173,7 +173,6 @@ impl Context {
         configuration: crate::ffi::VmafConfiguration,
         geometry: Geometry,
     ) -> Result<Self, VmafError> {
-        let pool_size = picture_pool_size(configuration.n_threads);
         let mut raw: *mut crate::ffi::VmafContext = std::ptr::null_mut();
         // SAFETY: `&mut raw` is a valid out-pointer of the expected type, and
         // `configuration` is passed by value with no borrowed pointers.
@@ -187,6 +186,17 @@ impl Context {
             });
         }
 
+        let context = Self {
+            raw,
+            api,
+            backend: Backend::Cpu,
+        };
+        context.preallocate_host(geometry, configuration.n_threads)?;
+        Ok(context)
+    }
+
+    /// The generic fetch/copy path requires a HOST pool, even with CUDA enabled.
+    fn preallocate_host(&self, geometry: Geometry, n_threads: u32) -> Result<(), VmafError> {
         // The picture pool must be sized before
         // `vmaf_fetch_preallocated_picture` can hand out buffers;
         // without it the fetch fails. The size matters as much as the
@@ -197,8 +207,8 @@ impl Context {
         // SAFETY: `raw` is a live context and `geometry` describes the frames
         // that will be submitted.
         let status = unsafe {
-            (api.preallocate_pictures)(
-                raw,
+            (self.api.preallocate_pictures)(
+                self.raw,
                 crate::ffi::VmafPictureConfiguration {
                     pic_params: crate::ffi::VmafPictureConfigPictureParams {
                         w: geometry.width,
@@ -206,35 +216,20 @@ impl Context {
                         bpc: geometry.bit_depth,
                         pix_fmt: geometry.pixel_format,
                     },
-                    pic_cnt: pool_size,
+                    pic_cnt: picture_pool_size(n_threads),
                 },
             )
         };
-        if status != 0 {
-            // SAFETY: closing a context that failed to configure its pool.
-            unsafe { (api.close)(raw) };
-            return Err(VmafError::CallFailed {
-                function: "vmaf_preallocate_pictures",
-                status,
-            });
-        }
-
-        Ok(Self {
-            raw,
-            api,
-            backend: Backend::Cpu,
-        })
+        crate::ffi::check(status, "vmaf_preallocate_pictures")
     }
 
     /// Create a CUDA scoring context.
     ///
-    /// The CUDA state is created first and imported into the context. libvmaf
-    /// rejects models whose feature extractors have no CUDA implementation, so
-    /// a failure here is expected for the stock models and the caller falls
-    /// back to [`Self::new_cpu`].
+    /// Import CUDA state, then configure separate DEVICE and HOST pools.
+    /// Model/feature compatibility is checked later, within the same attempt.
     fn new_cuda(
         api: &'static VmafApi,
-        configuration: crate::ffi::VmafConfiguration,
+        mut configuration: crate::ffi::VmafConfiguration,
         geometry: Geometry,
     ) -> Result<Self, VmafError> {
         let Some(state_init) = api.cuda.state_init else {
@@ -282,6 +277,10 @@ impl Context {
             });
         }
 
+        // WORKAROUND: v3.2.1 libvmaf.c:898–936 returns from the threaded branch
+        // before unref'ing translated device pictures. Use its serial path for
+        // CUDA only, until a native fix is verified. CPU retries keep the request.
+        configuration.n_threads = 0;
         let mut raw: *mut crate::ffi::VmafContext = std::ptr::null_mut();
         // SAFETY: as `new_cpu`, plus `state` which was just initialised.
         let status = unsafe { (api.init)(&mut raw, configuration) };
@@ -321,31 +320,30 @@ impl Context {
         };
 
         crate::ffi::check(status, "vmaf_cuda_preallocate_pictures")?;
+        // CUDA preallocation sizes only its upload ring. Generic picture fetch
+        // must still return host-writable buffers; libvmaf handles device upload.
+        context.preallocate_host(geometry, configuration.n_threads)?;
         // The original wrapper is freed here; close owns only the copied state.
         Ok(context)
     }
 }
 
-/// Initialise a context on the best available backend.
-///
-/// Backend choice is decided by *actually constructing* a context rather than
-/// by probing for devices, because libvmaf rejects models whose feature
-/// extractors have no implementation for the requested backend. The stock VMAF
-/// models need PSNR and MS-SSIM, which upstream does not provide on CUDA, so a
-/// CUDA initialisation can legitimately fail even on a machine with a capable
-/// GPU.
+/// Choose a backend only after its entire scorer attempt succeeds.
+/// `complete` owns the context and must release all attempt resources on error,
+/// before a fresh CPU attempt starts. Required model features decide compatibility.
 ///
 /// # Errors
 ///
 /// Returns the last error seen when the requested backend cannot be
 /// initialised. With [`BackendPreference::RequireCuda`] no fallback is
 /// attempted.
-pub(crate) fn initialise(
+pub(crate) fn initialise<T>(
     api: &'static VmafApi,
     configuration: crate::ffi::VmafConfiguration,
     preference: BackendPreference,
     geometry: Geometry,
-) -> Result<Context, VmafError> {
+    mut complete: impl FnMut(Context) -> Result<T, VmafError>,
+) -> Result<T, VmafError> {
     let try_cuda = match preference {
         BackendPreference::CpuOnly => false,
         BackendPreference::Auto => api.cuda_available(),
@@ -355,10 +353,10 @@ pub(crate) fn initialise(
     };
 
     if try_cuda {
-        match Context::new_cuda(api, configuration, geometry) {
-            Ok(context) => {
+        match Context::new_cuda(api, configuration, geometry).and_then(&mut complete) {
+            Ok(scorer) => {
                 tracing::info!("VMAF using the CUDA backend");
-                return Ok(context);
+                return Ok(scorer);
             },
             Err(error) => {
                 if preference == BackendPreference::RequireCuda {
@@ -372,9 +370,9 @@ pub(crate) fn initialise(
         }
     }
 
-    let context = Context::new_cpu(api, configuration, geometry)?;
+    let scorer = complete(Context::new_cpu(api, configuration, geometry)?)?;
     tracing::info!("VMAF using the CPU backend");
-    Ok(context)
+    Ok(scorer)
 }
 
 /// Picture-pool size for a context with `n_threads` workers.

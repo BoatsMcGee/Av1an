@@ -52,6 +52,56 @@ fn small_pair(distortion: Distortion) -> SyntheticPair {
     SyntheticPair::generate(64, 48, 8, ChromaSubsampling::Yuv420, 12, distortion)
 }
 
+/// Manual hardware gate: no absence skip once explicitly requested.
+#[test]
+fn m11_required_cuda_matches_cpu_on_same_clip() {
+    if std::env::var_os("AV_METRICS_REQUIRE_CUDA").is_none() {
+        eprintln!("UNEXECUTED hardware gate: set AV_METRICS_REQUIRE_CUDA=1 on a CUDA host");
+        return;
+    }
+    assert!(is_available(), "required CUDA acceptance needs libvmaf");
+    // Generate once: both backends receive exactly the same reference/distortion.
+    let pair = small_pair(Distortion::Moderate);
+    let format = VideoFormat {
+        width: 64,
+        height: 48,
+        bit_depth: 8,
+        chroma_sampling: ChromaSubsampling::Yuv420,
+    };
+    let config = model_config().with_threads(2);
+    let score = |preference, expected_backend| {
+        let mut scorer = VmafScorer::new(config.clone().with_backend(preference), format)
+            .expect("required backend must fully initialize, never silently fall back");
+        assert_eq!(
+            scorer.backend(),
+            expected_backend,
+            "required backend selection"
+        );
+        let mut reference = pair.reference.decoder();
+        let mut distorted = pair.distorted.decoder();
+        scorer
+            .score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {})
+            .expect("native scoring, flush and teardown")
+    };
+    let cpu = score(BackendPreference::CpuOnly, Backend::Cpu);
+    let cuda = score(BackendPreference::RequireCuda, Backend::Cuda);
+    assert_eq!(cpu.len(), 12, "all native CPU scores");
+    assert_eq!(cuda.len(), cpu.len(), "all required-CUDA scores");
+    for (index, (cpu, cuda)) in cpu.iter().zip(&cuda).enumerate() {
+        // Allow 0.01 absolute points (0.01% of VMAF's 100-point scale) for
+        // CPU/CUDA kernel rounding, not a broad quality or golden-score tolerance.
+        // This acceptance bound needs hardware execution; it is not a measured claim.
+        assert!(
+            cpu.score.is_finite()
+                && cuda.score.is_finite()
+                && (cpu.score - cuda.score).abs() <= 0.01,
+            "frame {index}: CPU={} CUDA={}",
+            cpu.score,
+            cuda.score
+        );
+    }
+}
+
 #[test]
 fn m09_native_cpu_threaded_matches_serial() {
     require_libvmaf!();

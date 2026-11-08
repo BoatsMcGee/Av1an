@@ -14,7 +14,7 @@ VapourSynth script without this crate knowing which.
 - **Per-frame scores**, streamed as frames are decoded. Unlike the stock VapourSynth
   VMAF plugin, nothing is written to disk and no result is available only at the end.
 - **CUDA when it works, CPU otherwise.** The backend is chosen by actually
-  constructing a scoring context, then reported via [`VmafScorer::backend`], so a
+  constructing a complete scorer, then reported via [`VmafScorer::backend`], so a
   silent fallback can never be mistaken for GPU acceleration.
 - **Optional dependency.** libvmaf is opened with `dlopen` at runtime, so the crate
   compiles on machines that do not have it. Scoring reports
@@ -406,6 +406,27 @@ what the Docker image relies on, so Linux needs no download at all.
 GPU acceleration is available **only on Linux with a CUDA-enabled libvmaf**. See
 `BackendPreference` to require a specific backend or to skip the CUDA attempt.
 
+`Auto` selects CUDA only after context creation, both picture pools, model load,
+required model features and both initial host-picture checkouts succeed. A failed
+attempt is fully released before fresh CPU setup, including reloading the same
+model and registering its features again. `RequireCuda` returns the setup error
+without retrying CPU; `CpuOnly` never initializes CUDA. Rejected optional additional
+extractors still warn and continue. Required features, not model-name guesses,
+decide compatibility; the model and scoring options are never substituted.
+
+Rust copies only into the ordinary **host** picture pool. CUDA's separate
+**device** ring is for libvmaf's own upload/extraction path, never a CPU row-copy
+destination. In the audited [native setup and submission implementation],
+`vmaf_cuda_preallocate_pictures` does not create the host pool used by
+`vmaf_fetch_preallocated_picture`, so CUDA scorers configure both pools.
+
+**libvmaf 3.2.1 workaround:** CUDA attempts set native `n_threads=0`. The threaded
+submission branch returns before releasing translated device pictures; the native
+serial path reaches that cleanup. CPU attempts/fallback keep the caller's requested
+worker count, and the public configuration is not rewritten. This is not a claim
+that native threaded CUDA is safe; remove the workaround only after verifying a
+native fix.
+
 CUDA setup also requires `vmaf_cuda_release` and an allocator-matched native
 `free` before allocating any state. On Linux, `free` is resolved in process-global
 scope, matching ordinary libvmaf allocator bindings, including coherent
@@ -462,6 +483,24 @@ construction/teardown while another independent GPU user remains active, with
 no abort or disruption to that user, plus native sanitizer checks. Those gates
 must be run on suitable hardware; passing the fixture does not establish them.
 
+`m11_complete_backend_attempts` adds non-skipping full-constructor C-boundary checks
+for each setup failure under all three preferences, fresh CPU retry, model/picture
+cleanup, separate host/device allocation and untouched device canaries. Its marker
+scores prove submission/flush routing, **not** CPU/CUDA numerical equivalence.
+The real comparison gate is compiled in ordinary suites but explicitly reports
+itself unexecuted without the environment flag. Run it on a supported CUDA host:
+
+```bash
+AV_METRICS_REQUIRE_CUDA=1 cargo +stable test --profile ci -p av-metrics-vmaf \
+  m11_required_cuda_matches_cpu_on_same_clip -- --nocapture
+```
+
+Set `VMAF_TEST_MODEL` if needed. The gate uses the same freshly generated 12-frame
+clip and model on CPU and required CUDA, checks backend selection and every score
+within 0.01 absolute VMAF points to allow kernel rounding, and fails if CUDA is
+missing or rejects the model. Hardware execution of this tolerance remains pending;
+the ABI double cannot validate it.
+
 A successful native submission consumes its picture pair. If acquiring the next
 pair fails, discard the scorer and create a new one: retrying or reading partial
 scores is rejected. Validation failures before submission retain the pair and do
@@ -495,6 +534,7 @@ carry its license text.
 [models]: https://github.com/Netflix/vmaf/tree/v3.2.1/model "libvmaf model files"
 [libvmaf 3.2.1's CUDA implementation]: https://github.com/Netflix/vmaf/blob/f85a853692a8c730d0270cd733c8bb30b5b93b7c/libvmaf/src/cuda/common.c#L104-L154
 [state import/close implementation]: https://github.com/Netflix/vmaf/blob/f85a853692a8c730d0270cd733c8bb30b5b93b7c/libvmaf/src/libvmaf.c#L187-L195
+[native setup and submission implementation]: https://github.com/Netflix/vmaf/blob/f85a853692a8c730d0270cd733c8bb30b5b93b7c/libvmaf/src/libvmaf.c#L161-L936
 [`av-decoders`]: https://github.com/rust-av/av-decoders
 [`VmafScorer::backend`]: https://docs.rs/av-metrics-vmaf/latest/av_metrics_vmaf/struct.VmafScorer.html#method.backend
 [`VmafScorer::score_decoders`]: https://docs.rs/av-metrics-vmaf/latest/av_metrics_vmaf/struct.VmafScorer.html#method.score_decoders

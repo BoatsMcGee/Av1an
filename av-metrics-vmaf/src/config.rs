@@ -138,11 +138,9 @@ impl VmafModel {
 
     /// Whether this model can be used on the CUDA backend.
     ///
-    /// libvmaf's CUDA feature extractors currently cover integer ADM, integer
-    /// motion and integer VIF only. The stock models additionally require PSNR
-    /// and MS-SSIM, which have no CUDA implementation, so none of them are
-    /// expected to initialise on CUDA. The scorer still probes at runtime
-    /// rather than trusting this.
+    /// Conservative legacy hint, currently always false. The scorer does not
+    /// use this hint: actual required-feature registration against the installed
+    /// libvmaf build decides compatibility, including for stock models.
     #[inline]
     #[must_use]
     pub const fn cuda_supported(&self) -> bool {
@@ -465,14 +463,16 @@ pub struct VmafConfig {
     pub model: VmafModel,
     /// Additional feature extractors to compute.
     pub features: Vec<VmafFeature>,
-    /// Number of worker threads libvmaf should use. `0` lets libvmaf decide.
+    /// Number of native CPU worker threads; `0` uses the serial path.
+    /// CUDA attempts use zero workers to avoid a libvmaf 3.2.1 device-reference
+    /// leak in its threaded path. CPU fallback preserves this requested value.
     pub n_threads: u32,
     /// Backend selection strategy.
     pub backend: BackendPreference,
 }
 
 impl VmafConfig {
-    /// A configuration using the default model and libvmaf's own thread count.
+    /// A configuration using the default model and serial native extraction.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -501,7 +501,7 @@ impl VmafConfig {
         self
     }
 
-    /// Set libvmaf's worker thread count.
+    /// Set libvmaf's CPU worker thread count. CUDA uses the native serial path.
     #[inline]
     #[must_use]
     pub fn with_threads(mut self, n_threads: u32) -> Self {
