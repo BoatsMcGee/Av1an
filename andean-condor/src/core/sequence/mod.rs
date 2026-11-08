@@ -22,6 +22,9 @@ pub mod speed_scaler;
 pub mod target_quality;
 pub mod zone_encoder;
 
+#[cfg(test)]
+mod metric_fallback_tests;
+
 pub trait Sequence<DataHandler, ConfigHandler>
 where
     DataHandler: SequenceDataHandler,

@@ -1063,12 +1063,7 @@ impl TargetQuality {
                 Err(error) => {
                     // The engine is named because the failure is usually
                     // library-specific and the fallback is otherwise silent.
-                    error!(
-                        %error,
-                        engine = ?engine.map(Engine::as_str),
-                        metric = config.metric.friendly_name(),
-                        "native metric scoring failed, falling back to the VapourSynth plugin"
-                    );
+                    log_native_fallback(&error, engine, &config.metric);
                     None
                 },
             }
@@ -1523,6 +1518,20 @@ pub enum TargetQualityError {
     PreviousPassDataNotFound,
     #[error("Failed to measure quality")]
     QualityMeasurementFailed,
+}
+
+pub(super) fn log_native_fallback(
+    error: &anyhow::Error,
+    engine: Option<Engine>,
+    metric: &QualityMetric,
+) {
+    // The unsupported field/value may be hidden behind several anyhow contexts.
+    error!(
+        error = %format_args!("{error:#}"),
+        engine = ?engine.map(Engine::as_str),
+        metric = metric.friendly_name(),
+        "native metric scoring failed, falling back to the VapourSynth plugin"
+    );
 }
 
 #[cfg(test)]

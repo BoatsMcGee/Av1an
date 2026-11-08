@@ -51,6 +51,16 @@ pub struct QualityCheck {
     pub input: Option<Input>,
 }
 
+pub(super) fn log_native_fallback(error: &anyhow::Error, engine: Engine, metric: &QualityMetric) {
+    // The unsupported field/value may be hidden behind several anyhow contexts.
+    error!(
+        error = %format_args!("{error:#}"),
+        engine = engine.as_str(),
+        metric = metric.friendly_name(),
+        "native metric scoring failed, falling back to the VapourSynth plugin"
+    );
+}
+
 impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for QualityCheck
 where
     DataHandler: SequenceDataHandler + QualityCheckDataHandler,
@@ -429,12 +439,7 @@ impl QualityCheck {
             Err(error) => {
                 // The engine is named because the failure is usually
                 // library-specific and the fallback is otherwise silent.
-                error!(
-                    %error,
-                    engine = engine.as_str(),
-                    metric = config.metric.friendly_name(),
-                    "native metric scoring failed, falling back to the VapourSynth plugin"
-                );
+                log_native_fallback(&error, engine, &config.metric);
                 return Ok(None);
             },
         };
