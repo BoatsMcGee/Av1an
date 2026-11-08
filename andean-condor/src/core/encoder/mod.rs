@@ -464,14 +464,14 @@ impl Encoder {
                     stdout:     StringOrBytes::from(Vec::new()),
                     stderr:     StringOrBytes::from(Vec::new()),
                 };
-                for pass in 1..total {
+                for pass in Self::pass_sequence(total) {
                     let progress_tx = progress_tx.clone();
                     result = self.encode_pass_with_input(
                         input,
                         output,
                         start_frame,
                         end_frame,
-                        (pass, total),
+                        pass,
                         progress_tx,
                     )?;
                 }
@@ -479,6 +479,16 @@ impl Encoder {
                 Ok(result)
             },
         }
+    }
+
+    /// The `(pass, total)` pairs a multi-pass encode runs, in order.
+    ///
+    /// Every pass from 1 through `total` must run, with the last one writing
+    /// the output.
+    #[inline]
+    #[must_use]
+    pub fn pass_sequence(total: u8) -> Vec<(u8, u8)> {
+        (1..=total).map(|pass| (pass, total)).collect()
     }
 
     #[inline]
@@ -1769,5 +1779,29 @@ mod tests {
             !parameters.iter().any(|argument| argument == "bt2020"),
             "the appended value must be replaced rather than duplicated"
         );
+    }
+
+    /// A multi-pass encode must run its final pass, because that is the one
+    /// that writes the output file. Stopping one short returns success with no
+    /// file at all.
+    #[test]
+    fn a_multi_pass_encode_runs_every_pass_including_the_last() {
+        assert_eq!(Encoder::pass_sequence(1), vec![(1, 1)]);
+        assert_eq!(Encoder::pass_sequence(2), vec![(1, 2), (2, 2)]);
+        assert_eq!(Encoder::pass_sequence(3), vec![(1, 3), (2, 3), (3, 3)]);
+
+        for total in 1..=u8::MAX {
+            let sequence = Encoder::pass_sequence(total);
+            assert_eq!(
+                sequence.len(),
+                usize::from(total),
+                "every pass must run exactly once"
+            );
+            assert_eq!(
+                sequence.last().copied(),
+                Some((total, total)),
+                "the final pass must be the one that writes the output"
+            );
+        }
     }
 }
