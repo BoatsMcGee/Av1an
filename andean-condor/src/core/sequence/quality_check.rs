@@ -111,9 +111,9 @@ where
         } else {
             &mut condor.input
         };
-        // Initialize input by getting clip_info. For VapourSynth inputs, this may begin
-        // a lengthy caching process, hence the separation between validate and
-        // initialize.
+        // Initialize input by getting clip_info. For VapourSynth inputs, this
+        // may begin a lengthy caching process, hence the separation
+        // between validate and initialize.
         progress_tx.send(SequenceStatus::Whole(Status::Processing {
             id:         DETAILS.name.to_owned(),
             completion: SequenceCompletion::Custom {
@@ -188,9 +188,9 @@ where
         }
 
         // VMAF scores decoded frames through libvmaf rather than a VapourSynth
-        // filter graph, so it takes a separate path. Every other metric runs as a
-        // plugin over the nodes built by `measure`, unless a native engine takes
-        // it first.
+        // filter graph, so it takes a separate path. Every other metric runs as
+        // a plugin over the nodes built by `measure`, unless a native
+        // engine takes it first.
         let measurements = if matches!(config.metric, QualityMetric::VMAF { .. }) {
             Self::measure_vmaf(
                 input,
@@ -843,7 +843,8 @@ impl QualityCheck {
                     ..Default::default()
                 };
                 let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                // XPSNR returns a score per plane, combine them into the weighted XPSNR score.
+                // XPSNR returns a score per plane, combine them into the
+                // weighted XPSNR score.
                 XPSNR::collect_frame_values(&node, compare_progress_tx, on_frame, |frame| {
                     let plane_scores = XPSNR::PROPERTY_NAMES
                         .iter()

@@ -74,7 +74,8 @@ where
         _cancelled: Arc<AtomicBool>,
     ) -> anyhow::Result<((), Vec<anyhow::Error>)> {
         let speed_quantizers = &condor.sequence_config.speed_scaler()?.speed_quantizers;
-        // Ensure we have at least 2 pairs for interpolation and scenes is not empty
+        // Ensure we have at least 2 pairs for interpolation and scenes is not
+        // empty
         if speed_quantizers.len() < 2 || condor.scenes.is_empty() {
             return Ok(((), vec![]));
         }

@@ -182,8 +182,8 @@ impl AndeanCondor<DefaultSequenceData, DefaultSequenceConfig>
         let processor = &mut self.sequences[index];
         let details = processor.details();
 
-        // Processors could have their own Inputs, Outputs, Encoders, and Scenes that
-        // should be validated
+        // Processors could have their own Inputs, Outputs, Encoders, and Scenes
+        // that should be validated
         let (_, validation_warnings) = processor.validate(&mut self.condor)?;
         // Processors could have their own Inputs that should be initialized
         let (progress_tx, progress_rx) = std::sync::mpsc::channel();
@@ -204,7 +204,8 @@ impl AndeanCondor<DefaultSequenceData, DefaultSequenceConfig>
         let _ = initialization_progress_thread
             .join()
             .expect("progress event thread should join");
-        // Finally, process the Processor (But who processes the process processor?)
+        // Finally, process the Processor (But who processes the process
+        // processor?)
         let (progress_tx, progress_rx) = std::sync::mpsc::channel();
         let process_progress_thread = std::thread::spawn(move || -> Result<()> {
             for progress in progress_rx {
@@ -271,8 +272,8 @@ impl AndeanCondor<DefaultSequenceData, DefaultSequenceConfig>
             scene.encoder.validate()?;
         }
 
-        // Processors could have their own Inputs, Outputs, Encoders, and Scenes that
-        // should be validated
+        // Processors could have their own Inputs, Outputs, Encoders, and Scenes
+        // that should be validated
         for processor in &mut self.sequences {
             let (_, process_warnings) = processor.validate(&mut self.condor)?;
 

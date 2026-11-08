@@ -55,7 +55,8 @@ fn candidate_directories() -> Vec<PathBuf> {
     if cfg!(target_os = "windows") {
         if let Ok(root) = env::var("VCPKG_ROOT") {
             let root = PathBuf::from(root);
-            // No vcpkg port currently supports Windows; checked for completeness.
+            // No vcpkg port currently supports Windows; checked for
+            // completeness.
             for triplet in ["x64-windows", "x64-windows-static"] {
                 candidates.push(root.join("installed").join(triplet).join("lib"));
             }
@@ -91,8 +92,8 @@ fn main() {
             println!("cargo:rustc-env=VMAF_LIB_DIR={}", directory.display());
         },
         None => {
-            // Not fatal. The crate loads libvmaf lazily and reports unavailability
-            // at runtime if it cannot be found.
+            // Not fatal. The crate loads libvmaf lazily and reports
+            // unavailability at runtime if it cannot be found.
             println!(
                 "cargo:warning=libvmaf not found at build time; VMAF scoring will report as \
                  unavailable unless libvmaf is installed at runtime"

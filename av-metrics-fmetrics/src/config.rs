@@ -453,8 +453,9 @@ mod tests {
     fn the_default_pnorm_stays_inside_the_range_the_library_can_compute() {
         // The library computes `pow(d, pnorm)` and reads `pnorm <= 0` as 3.0.
         // An earlier default of `i32::MAX` -- intended as an "infinity norm" --
-        // overflowed that exponentiation and returned non-finite scores on every
-        // frame. The infinity norm is simply not expressible through this API.
+        // overflowed that exponentiation and returned non-finite scores on
+        // every frame. The infinity norm is simply not expressible
+        // through this API.
         let options = FmetricsConfig::new(FmetricsMetric::Butteraugli).butteraugli_options();
         assert_eq!(options.pnorm, DEFAULT_PNORM);
         assert!(
@@ -539,10 +540,11 @@ mod tests {
 
     #[test]
     fn absent_norm_selects_the_library_default() {
-        // Previously `i32::MAX`, on the theory that an infinity norm needs a large
-        // exponent. The library evaluates `pow(d, pnorm)`, so that overflowed and
-        // returned non-finite scores for every frame -- this test asserted the
-        // sentinel without ever checking that the library could compute it.
+        // Previously `i32::MAX`, on the theory that an infinity norm needs a
+        // large exponent. The library evaluates `pow(d, pnorm)`, so
+        // that overflowed and returned non-finite scores for every
+        // frame -- this test asserted the sentinel without ever
+        // checking that the library could compute it.
         let config = FmetricsConfig::new(FmetricsMetric::Butteraugli);
         assert_eq!(config.butteraugli_options().pnorm, DEFAULT_PNORM);
     }

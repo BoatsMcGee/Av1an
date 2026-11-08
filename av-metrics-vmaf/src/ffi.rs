@@ -492,8 +492,8 @@ fn resolve() -> Result<VmafApi, VmafError> {
             // symbol address is enough to identify the module.
             let _ =
                 MODULE_DIRECTORY.set(windows_module_directory_from(vmaf_version as *const c_void));
-            // SAFETY: `vmaf_version` returns a static NUL-terminated string that
-            // lives as long as the library.
+            // SAFETY: `vmaf_version` returns a static NUL-terminated string
+            // that lives as long as the library.
             let raw = vmaf_version();
             if raw.is_null() {
                 return Err(VmafError::SymbolNotFound {
@@ -658,9 +658,9 @@ fn open_library() -> Result<Library, VmafError> {
     let mut failures = Vec::new();
 
     for candidate in library_candidates() {
-        // SAFETY: loading an arbitrary shared library executes its initialisers.
-        // This is the intended way to use libvmaf, and the candidate paths are
-        // constrained to libvmaf file names.
+        // SAFETY: loading an arbitrary shared library executes its
+        // initialisers. This is the intended way to use libvmaf, and
+        // the candidate paths are constrained to libvmaf file names.
         match unsafe { Library::new(&candidate) } {
             Ok(library) => {
                 // A bare file name says nothing about where the loader found

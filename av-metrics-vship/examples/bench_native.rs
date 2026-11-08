@@ -30,11 +30,11 @@ fn main() {
     let encode_path = args.next().expect("an encode path is required");
     let metric_name = args.next().expect("a metric name is required");
 
-    // libvship performs no geometry-equality check between the two sides: it fails
-    // `Vship_InitHandler` with `DifferingInputType` unless both colorspaces resolve
-    // to the same size. Scaling is therefore explicit, and FFVship's behaviour --
-    // always scale the encode to the source -- is the default here. Pass `none` to
-    // leave both sides unscaled.
+    // libvship performs no geometry-equality check between the two sides: it
+    // fails `Vship_InitHandler` with `DifferingInputType` unless both
+    // colorspaces resolve to the same size. Scaling is therefore explicit,
+    // and FFVship's behaviour -- always scale the encode to the source --
+    // is the default here. Pass `none` to leave both sides unscaled.
     let target: Option<(u32, u32)> = match args.next().as_deref() {
         None | Some("auto") => None,
         Some("none") => Some((0, 0)),
@@ -70,8 +70,8 @@ fn main() {
     let reference_details = *reference.get_video_details();
     let distorted_details = *distorted.get_video_details();
 
-    // `auto` scales the encode to the source, which is what FFVship does and what
-    // makes a differently-sized encode scoreable at all.
+    // `auto` scales the encode to the source, which is what FFVship does and
+    // what makes a differently-sized encode scoreable at all.
     let target_resolution = match target {
         Some((0, 0)) => None,
         Some(size) => Some(size),
@@ -93,8 +93,9 @@ fn main() {
         config
     };
 
-    // CVVDP's display model implies a resolution of its own, and rescaling to it
-    // is far cheaper than scoring the source frames at their native size.
+    // CVVDP's display model implies a resolution of its own, and rescaling to
+    // it is far cheaper than scoring the source frames at their native
+    // size.
     let config = if std::env::var_os("BENCH_RESIZE_TO_DISPLAY").is_some() {
         config.with_resize_to_display(true)
     } else {

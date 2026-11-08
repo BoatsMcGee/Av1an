@@ -844,12 +844,13 @@ fn tui_screens() -> Vec<Screen> {
     // A resumed 4-worker encode. `initial_map` is the state at app construction
     // (4 scenes already done); the snapshot is later, with 20 scenes done and 4
     // more actively encoding. The progress-bar FPS is derived from the frames
-    // completed between those two points, so it reads as a real ~90 FPS aggregate.
+    // completed between those two points, so it reads as a real ~90 FPS
+    // aggregate.
     {
         let scenes = mock_scenes();
         let total: u64 = scenes.iter().map(|s| (s.end_frame - s.start_frame) as u64).sum();
-        // Build a scene->completed map: fully done below `complete_to`, half-done
-        // for the active window, zero otherwise.
+        // Build a scene->completed map: fully done below `complete_to`,
+        // half-done for the active window, zero otherwise.
         let mk_map = |complete_to: usize, active: std::ops::Range<usize>| {
             scenes
                 .iter()

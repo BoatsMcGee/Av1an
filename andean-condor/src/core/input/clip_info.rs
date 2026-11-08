@@ -66,8 +66,8 @@ impl ClipInfo {
         }
         if enc_params.iter().any(|p| {
             let p = p.to_ascii_lowercase();
-            // If the user specified an SDR transfer characteristic, assume they want to
-            // encode to SDR.
+            // If the user specified an SDR transfer characteristic, assume they
+            // want to encode to SDR.
             p.ends_with("bt709")
                 || p.ends_with("bt.709")
                 || p.ends_with("bt601")

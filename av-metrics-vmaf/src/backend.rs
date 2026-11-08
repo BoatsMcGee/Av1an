@@ -71,8 +71,8 @@ impl Drop for Context {
             unsafe { (self.api.close)(self.raw) };
         }
 
-        // Release the CUDA state after the context that imported it. A CPU context
-        // leaves this null and skips this entirely.
+        // Release the CUDA state after the context that imported it. A CPU
+        // context leaves this null and skips this entirely.
         if !self.cuda_state.is_null()
             && let Some(release) = self.api.cuda.release
         {
@@ -102,8 +102,8 @@ impl Context {
     /// mean more pictures are held than were preallocated.
     pub(crate) fn pooled_picture(&self) -> Result<crate::ffi::VmafPicture, VmafError> {
         let mut picture = crate::ffi::VmafPicture::zeroed();
-        // SAFETY: `picture` is a valid out-parameter and `raw` is a live context
-        // whose pool was sized during construction.
+        // SAFETY: `picture` is a valid out-parameter and `raw` is a live
+        // context whose pool was sized during construction.
         let status = unsafe {
             (self.api.fetch_preallocated_picture)(self.raw, raw_mut_picture(&mut picture))
         };
@@ -113,8 +113,8 @@ impl Context {
 
     /// Return a pooled picture to libvmaf.
     pub(crate) fn release_picture(&self, picture: &mut crate::ffi::VmafPicture) {
-        // SAFETY: `picture` was obtained from `pooled_picture` on this context, and
-        // the scorer releases each exactly once.
+        // SAFETY: `picture` was obtained from `pooled_picture` on this context,
+        // and the scorer releases each exactly once.
         unsafe { (self.api.picture_unref)(raw_mut_picture(picture)) };
     }
 }
@@ -159,14 +159,15 @@ impl Context {
             });
         }
 
-        // The picture pool must be sized before `vmaf_fetch_preallocated_picture`
-        // can hand out buffers; without it the fetch fails. The size matters as
-        // much as the existence: libvmaf's own auto-sizing (`n_threads * 2 + 2`,
-        // see [`picture_pool_size`]) is skipped when a pool already exists here,
-        // so undersizing it would starve the thread pool and serialise
-        // extraction regardless of `n_threads`.
-        // SAFETY: `raw` is a live context and `geometry` describes the frames that
-        // will be submitted.
+        // The picture pool must be sized before
+        // `vmaf_fetch_preallocated_picture` can hand out buffers;
+        // without it the fetch fails. The size matters as much as the
+        // existence: libvmaf's own auto-sizing (`n_threads * 2 + 2`,
+        // see [`picture_pool_size`]) is skipped when a pool already exists
+        // here, so undersizing it would starve the thread pool and
+        // serialise extraction regardless of `n_threads`.
+        // SAFETY: `raw` is a live context and `geometry` describes the frames
+        // that will be submitted.
         let status = unsafe {
             (api.preallocate_pictures)(raw, crate::ffi::VmafPictureConfiguration {
                 pic_params: crate::ffi::VmafPictureConfigPictureParams {
@@ -225,11 +226,11 @@ impl Context {
             });
         };
 
-        // SAFETY: `state` is a valid out-pointer; a null `cu_ctx` asks libvmaf to
-        // create its own context.
-        let mut state: *mut VmafCudaState = std::ptr::null_mut();
-        // SAFETY: `state` is a valid out-pointer and a null `cu_ctx` asks libvmaf
+        // SAFETY: `state` is a valid out-pointer; a null `cu_ctx` asks libvmaf
         // to create its own context.
+        let mut state: *mut VmafCudaState = std::ptr::null_mut();
+        // SAFETY: `state` is a valid out-pointer and a null `cu_ctx` asks
+        // libvmaf to create its own context.
         unsafe {
             crate::ffi::check(
                 state_init(&mut state, VmafCudaConfiguration {
@@ -255,8 +256,9 @@ impl Context {
             return Err(error);
         }
 
-        // SAFETY: both pointers are valid and non-null; `import_state` copies the
-        // CUDA state into the context, which then owns its use of it.
+        // SAFETY: both pointers are valid and non-null; `import_state` copies
+        // the CUDA state into the context, which then owns its use of
+        // it.
         let imported = unsafe {
             import_state(raw, state);
             preallocate(raw, crate::ffi::VmafCudaPictureConfiguration {

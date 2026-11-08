@@ -329,11 +329,12 @@ fn plane_source<T: Pixel>(
 
     // SAFETY: `Plane::data` is the plane's own allocation, and the geometry's
     // stride and origin describe exactly that allocation. The `PlaneSource` is
-    // built and consumed inside the same submit call, so the borrow outlives it.
+    // built and consumed inside the same submit call, so the borrow outlives
+    // it.
     //
-    // `v_frame` reports stride and origin in samples, so both are scaled to bytes
-    // here. The stride is widened rather than cast, because the field is signed
-    // to allow bottom-up planes from other frame sources.
+    // `v_frame` reports stride and origin in samples, so both are scaled to
+    // bytes here. The stride is widened rather than cast, because the field
+    // is signed to allow bottom-up planes from other frame sources.
     unsafe {
         PlaneSource::new(
             geometry.width(),
@@ -401,7 +402,8 @@ impl FrameScore {
     #[inline]
     #[must_use]
     pub fn primary(&self) -> Option<f64> {
-        // `Option::or` is not const, so the first present value is found by hand.
+        // `Option::or` is not const, so the first present value is found by
+        // hand.
         if self.score.is_some() {
             self.score
         } else {
@@ -523,7 +525,8 @@ impl MetricHandler {
                     gpu_id,
                 };
                 // SAFETY: as above, for the CVVDP layout. Both string pointers
-                // are NUL-terminated and outlive the call through `CvvdpStrings`.
+                // are NUL-terminated and outlive the call through
+                // `CvvdpStrings`.
                 unsafe {
                     (api.init_handler)(
                         &raw mut handle,
@@ -558,8 +561,8 @@ impl MetricHandler {
         validate_planes(&reference, &self.src_colorspace, "reference")?;
         validate_planes(&distorted, &self.dis_colorspace, "distorted")?;
 
-        // libvship reads three plane pointers and two line-size arrays per side,
-        // all of which must stay live for the call.
+        // libvship reads three plane pointers and two line-size arrays per
+        // side, all of which must stay live for the call.
         let (srcp1, line_size) = plane_arguments(&reference);
         let (srcp2, line_size2) = plane_arguments(&distorted);
 
@@ -569,9 +572,10 @@ impl MetricHandler {
             VshipMetric::Ssimulacra2 => {
                 let mut out = VshipScoreSsimulacra2::default();
                 // SAFETY: the argument arrays are live locals of exactly the
-                // pointer and `i64` types the signature names, `out` is a writable
-                // score struct whose discriminator matches the metric, and the
-                // handler is owned by `self`.
+                // pointer and `i64` types the signature names, `out` is a
+                // writable score struct whose discriminator
+                // matches the metric, and the handler is owned
+                // by `self`.
                 let status = unsafe {
                     (api.compute_handler)(
                         self.handle,
@@ -586,8 +590,9 @@ impl MetricHandler {
                 score.score = Some(out.score);
             },
             VshipMetric::Butteraugli => {
-                // `dstp` stays null, which the C header defines as never copying
-                // the distortion map back from the device.
+                // `dstp` stays null, which the C header defines as never
+                // copying the distortion map back from the
+                // device.
                 let mut out = VshipScoreButteraugli::default();
                 // SAFETY: as above, for the Butteraugli score layout.
                 let status = unsafe {
@@ -670,10 +675,11 @@ fn plane_arguments(planes: &PlaneSet) -> ([*const u8; 3], [i64; 3]) {
 
     for (index, plane) in planes.iter().enumerate() {
         // Row 0 is the first row libvship reads, and its offset from the base
-        // pointer is exactly the visible origin. A zero-height plane has no row 0,
-        // so it contributes a null pointer, which libvship treats as absent.
-        // SAFETY: `row` is bounds-checked inside, and the constructor's contract
-        // guarantees the returned pointer addresses a valid visible row.
+        // pointer is exactly the visible origin. A zero-height plane has no row
+        // 0, so it contributes a null pointer, which libvship treats as
+        // absent. SAFETY: `row` is bounds-checked inside, and the
+        // constructor's contract guarantees the returned pointer
+        // addresses a valid visible row.
         pointers[index] = plane.row(0).unwrap_or(ptr::null());
         line_sizes[index] = plane.stride as i64;
     }
@@ -812,13 +818,15 @@ impl VshipScorer {
 
         api.gpu_full_check(config.gpu_id_or_default())?;
 
-        // libvship performs no geometry-equality check between the two sides: it
-        // converts each per its own colorspace and then rejects the pair with
-        // `DifferingInputType` if the results differ in size. Scaling is therefore
-        // explicit, and an explicit target scales both sides to that size. With no
-        // target, a mismatched pair would fail, so the reference size is adopted --
-        // the same choice FFVship makes, which always tells libvship to scale the
-        // encode to the source. Pairs that already match are left untouched.
+        // libvship performs no geometry-equality check between the two sides:
+        // it converts each per its own colorspace and then rejects the
+        // pair with `DifferingInputType` if the results differ in size.
+        // Scaling is therefore explicit, and an explicit target scales
+        // both sides to that size. With no target, a mismatched pair
+        // would fail, so the reference size is adopted --
+        // the same choice FFVship makes, which always tells libvship to scale
+        // the encode to the source. Pairs that already match are left
+        // untouched.
         let target_resolution = target_resolution.or_else(|| {
             (reference.width != encode.width || reference.height != encode.height)
                 .then_some((reference.width, reference.height))
@@ -993,8 +1001,9 @@ impl VshipScorer {
                         });
                     }
 
-                    // A genuine decode failure on one or both sides; surface the
-                    // reference's, falling back to the distorted's.
+                    // A genuine decode failure on one or both sides; surface
+                    // the reference's, falling back to the
+                    // distorted's.
                     let error = match (reference_result, distorted_result) {
                         (Err(error), _) => error,
                         (_, Err(error)) => error,
@@ -1081,8 +1090,9 @@ impl VshipScorer {
     ) -> Result<FrameScore, VshipError> {
         let bytes_per_sample = size_of::<T>();
 
-        // `Frame` exposes chroma planes as `Option`, since monochrome frames have
-        // none. libvship requires chroma, so this is a validation failure.
+        // `Frame` exposes chroma planes as `Option`, since monochrome frames
+        // have none. libvship requires chroma, so this is a validation
+        // failure.
         let (Some(u_plane), Some(v_plane)) = (&reference.u_plane, &reference.v_plane) else {
             return Err(VshipError::UnsupportedFormat {
                 reason: "reference frame has no chroma planes; libvship requires 4:2:0, 4:2:2 or \
@@ -1204,10 +1214,11 @@ impl VshipScorer {
 
         let index = pool.submitted;
 
-        // A temporal handler must see every frame in order, so a jump in the index
-        // means frames it never saw would otherwise follow frames it has. That is
-        // exactly what a scene break looks like from its point of view, and
-        // clearing the history is far cheaper than recreating the handler.
+        // A temporal handler must see every frame in order, so a jump in the
+        // index means frames it never saw would otherwise follow frames
+        // it has. That is exactly what a scene break looks like from
+        // its point of view, and clearing the history is far cheaper
+        // than recreating the handler.
         let discontinuous = pool.last_index.is_some_and(|last| last != index.wrapping_sub(1));
         if discontinuous && self.metric.is_temporal() && self.config.cvvdp().reset_on_discontinuity
         {
@@ -1217,7 +1228,8 @@ impl VshipScorer {
         }
 
         // A non-temporal metric alternates handlers so the device sees parallel
-        // work; a temporal one owns a single handler that always takes the pair.
+        // work; a temporal one owns a single handler that always takes the
+        // pair.
         let slot = if self.metric.is_temporal() {
             0
         } else {
@@ -1390,8 +1402,9 @@ mod tests {
         let luma = [0u8; 16];
         let chroma = [0u8; 4];
 
-        // SAFETY: the origin offset plus the described geometry stays inside the
-        // buffer, and the `PlaneSet` is consumed within this expression.
+        // SAFETY: the origin offset plus the described geometry stays inside
+        // the buffer, and the `PlaneSet` is consumed within this
+        // expression.
         let planes: PlaneSet = unsafe {
             [
                 PlaneSource::new(2, 2, 2, 1, 1, luma.as_ptr()),
@@ -1411,8 +1424,8 @@ mod tests {
         let luma = [0u8; 16 * 16];
         let chroma = [0u8; 8 * 8];
 
-        // SAFETY: each buffer covers exactly the geometry declared for its plane,
-        // and the `PlaneSet` is consumed within this expression.
+        // SAFETY: each buffer covers exactly the geometry declared for its
+        // plane, and the `PlaneSet` is consumed within this expression.
         let correct: PlaneSet = unsafe {
             [
                 PlaneSource::contiguous(16, 16, 1, luma.as_ptr()),
@@ -1484,8 +1497,8 @@ mod tests {
         ];
 
         let mean = VshipScorer::pool(&scores, VshipMetric::Ssimulacra2, PoolMethod::Mean).unwrap();
-        // Compared with a tolerance, since summing binary fractions rarely lands
-        // exactly on 0.8.
+        // Compared with a tolerance, since summing binary fractions rarely
+        // lands exactly on 0.8.
         assert!((mean - 0.8).abs() < 1e-12, "mean was {mean}, expected 0.8");
 
         let mean = VshipScorer::pool(&scores, VshipMetric::Butteraugli, PoolMethod::Mean).unwrap();

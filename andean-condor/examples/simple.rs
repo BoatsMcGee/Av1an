@@ -159,8 +159,8 @@ fn main() -> Result<()> {
         save_callback,
     );
 
-    // Set up DefaultAndeanCondor pipeline with SceneDetector, ParallelEncoder, and
-    // SceneConcatenator
+    // Set up DefaultAndeanCondor pipeline with SceneDetector, ParallelEncoder,
+    // and SceneConcatenator
     let mut andean_condor = DefaultAndeanCondor {
         condor,
         sequences: vec![

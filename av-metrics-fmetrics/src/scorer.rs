@@ -145,8 +145,8 @@ impl Workspace {
     /// Returns an error if the library returns a null handle.
     #[inline]
     fn new(api: &'static FmetricsApi) -> Result<Self, FmetricsError> {
-        // SAFETY: `workspace_create` takes no arguments and returns a handle the
-        // library guarantees to be non-null on success.
+        // SAFETY: `workspace_create` takes no arguments and returns a handle
+        // the library guarantees to be non-null on success.
         let handle = unsafe { (api.workspace_create)() };
         if handle.is_null() {
             return Err(FmetricsError::CallFailed {
@@ -327,8 +327,9 @@ impl FmetricsScorer {
                 height:  0,
             }
         } else {
-            // One workspace per thread that may submit at once, so a caller never
-            // finds the pool exhausted by its own concurrency.
+            // One workspace per thread that may submit at once, so a caller
+            // never finds the pool exhausted by its own
+            // concurrency.
             let count = config.effective_threads() as usize;
             let mut pool = Vec::with_capacity(count);
             for _ in 0..count {
@@ -505,8 +506,8 @@ impl FmetricsScorer {
             });
         };
 
-        // The result is bound before the release so the workspace goes back even
-        // if `score` fails.
+        // The result is bound before the release so the workspace goes back
+        // even if `score` fails.
         let result = score(workspace);
         pool.release(workspace);
         result
@@ -673,8 +674,8 @@ impl FmetricsScorer {
         let mut value = 0f64;
         let metric = self.config.metric;
 
-        // The function called depends only on the metric; every signature takes the
-        // same workspace and image pair.
+        // The function called depends only on the metric; every signature takes
+        // the same workspace and image pair.
         let (function, status) = match metric {
             FmetricsMetric::Ssimulacra2 => {
                 // SAFETY: the pointers match the signatures transcribed from
@@ -743,7 +744,8 @@ impl FmetricsScorer {
         let frame_width = reference_img.width as c_int;
         let frame_height = reference_img.height as c_int;
 
-        // The context is bound to a geometry, so a change of size means recreating it.
+        // The context is bound to a geometry, so a change of size means
+        // recreating it.
         if (*context).is_null() || *width != frame_width || *height != frame_height {
             self.recreate_cvvdp(context, frame_width, frame_height)?;
             *width = frame_width;
@@ -751,8 +753,8 @@ impl FmetricsScorer {
         }
 
         let mut result = FmetricsCvvdpResult::default();
-        // SAFETY: `*context` is a live context created by `cvvdp_create` below or
-        // by an earlier frame, and both images outlive the call.
+        // SAFETY: `*context` is a live context created by `cvvdp_create` below
+        // or by an earlier frame, and both images outlive the call.
         let status = unsafe {
             (api.cvvdp_process_frame)(*context, &reference_img, &distorted_img, &mut result)
         };
@@ -778,7 +780,8 @@ impl FmetricsScorer {
         let api = FmetricsApi::load()?;
 
         if !(*context).is_null() {
-            // SAFETY: the context came from `cvvdp_create` and is released once.
+            // SAFETY: the context came from `cvvdp_create` and is released
+            // once.
             unsafe { (api.cvvdp_destroy)(*context) };
             *context = FmetricsCvvdpCtx(std::ptr::null_mut());
         }
@@ -849,8 +852,8 @@ impl Drop for FmetricsScorer {
             && !context.is_null()
             && let Ok(api) = FmetricsApi::load()
         {
-            // SAFETY: the context was created by `cvvdp_create` and is destroyed
-            // exactly once, here.
+            // SAFETY: the context was created by `cvvdp_create` and is
+            // destroyed exactly once, here.
             unsafe { (api.cvvdp_destroy)(context) };
         }
     }
@@ -967,17 +970,18 @@ mod tests {
 
     #[test]
     fn cvvdp_rejects_a_missing_frame_rate() {
-        // A zero rate accumulates error silently, so it must be refused up front
-        // rather than producing a plausible-looking but wrong number. The check
-        // runs before the library is consulted, so it holds either way.
+        // A zero rate accumulates error silently, so it must be refused up
+        // front rather than producing a plausible-looking but wrong
+        // number. The check runs before the library is consulted, so it
+        // holds either way.
         let config = FmetricsConfig::new(FmetricsMetric::Cvvdp);
         assert!(
             FmetricsScorer::validate_frame_rate(&config).is_err(),
             "a zero rate must be refused"
         );
 
-        // Through the constructor, the error may instead be unavailability if the
-        // library is absent -- but never a successful construction.
+        // Through the constructor, the error may instead be unavailability if
+        // the library is absent -- but never a successful construction.
         if let Err(error) = FmetricsScorer::new(config, color(8)) {
             assert!(
                 matches!(
@@ -1061,8 +1065,8 @@ mod tests {
 
     #[test]
     fn the_multi_scale_metrics_declare_a_minimum_size() {
-        // They would otherwise fail inside the library with a code that does not
-        // explain the cause.
+        // They would otherwise fail inside the library with a code that does
+        // not explain the cause.
         for metric in [FmetricsMetric::Iwssim, FmetricsMetric::Msssim] {
             let minimum = metric.minimum_dimension().expect("multi-scale needs a minimum");
             assert!(minimum >= 16, "{metric:?} minimum should be at least 16");
@@ -1130,10 +1134,11 @@ mod tests {
     fn concurrent_scoring_matches_serial_scoring() {
         // fmetrics' scratch arena is per-workspace, so sharing one workspace
         // between threads corrupts it *silently*: no error is returned, the
-        // scores are just wrong. A "next index" counter hands the same workspace
-        // to two threads once they are far enough apart in the counter, which is
-        // what made this test fail before the pool became a free list. Bit
-        // equality is the only assertion strong enough to catch that.
+        // scores are just wrong. A "next index" counter hands the same
+        // workspace to two threads once they are far enough apart in
+        // the counter, which is what made this test fail before the
+        // pool became a free list. Bit equality is the only assertion
+        // strong enough to catch that.
         let Ok(scorer) = FmetricsScorer::new(
             FmetricsConfig::new(FmetricsMetric::Ssimulacra2).with_threads(4),
             color(8),
@@ -1175,10 +1180,11 @@ mod tests {
 
     #[test]
     fn a_pool_hands_each_workspace_out_exactly_once() {
-        // The property the free list exists to provide. Claiming every workspace
-        // must yield each handle once and then refuse, rather than wrapping round
-        // to a workspace already in use -- a counter-based pool does exactly that,
-        // and the resulting scores are wrong without any error to notice.
+        // The property the free list exists to provide. Claiming every
+        // workspace must yield each handle once and then refuse, rather
+        // than wrapping round to a workspace already in use -- a
+        // counter-based pool does exactly that, and the resulting
+        // scores are wrong without any error to notice.
         let Ok(api) = FmetricsApi::load() else {
             return;
         };
@@ -1215,7 +1221,8 @@ mod tests {
         // With everything in use the pool refuses rather than double-lending.
         assert!(pool.claim().is_none(), "an exhausted pool must refuse");
 
-        // Releasing makes exactly one claimable again, and the freed one is next.
+        // Releasing makes exactly one claimable again, and the freed one is
+        // next.
         let released = claimed[1];
         pool.release(released);
         assert_eq!(

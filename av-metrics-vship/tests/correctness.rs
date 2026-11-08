@@ -415,8 +415,8 @@ fn identical_clips_score_at_the_metrics_ideal() {
     assert!(!scores.is_empty(), "every pair must produce a score");
     for score in &scores {
         let value = score.value(VshipMetric::Ssimulacra2).expect("SSIMULACRA2 sets `score`");
-        // SSIMULACRA2's maximum is 1.0, and identical inputs must reach it within
-        // the metric's numerical slack.
+        // SSIMULACRA2's maximum is 1.0, and identical inputs must reach it
+        // within the metric's numerical slack.
         assert!(
             value > 0.99,
             "identical inputs scored {value}, expected near 1.0"
@@ -492,7 +492,8 @@ fn butteraugli_reports_all_three_norms() {
     assert!(first.norm_inf.is_some(), "Butteraugli sets `norm_inf`");
     assert!(first.score.is_none(), "Butteraugli does not set `score`");
 
-    // Butteraugli is a difference, so two different clips must score above zero.
+    // Butteraugli is a difference, so two different clips must score above
+    // zero.
     let pooled = VshipScorer::pool(&scores, VshipMetric::Butteraugli, PoolMethod::Mean).unwrap();
     assert!(
         pooled > 0.0,
@@ -607,8 +608,8 @@ fn cvvdp_accumulates_across_frames() {
     let scores = scorer.score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {}).unwrap();
 
     assert!(!scores.is_empty());
-    // A temporal metric's score is a running mean over everything it has seen, so
-    // it moves as frames arrive rather than staying per-frame constant.
+    // A temporal metric's score is a running mean over everything it has seen,
+    // so it moves as frames arrive rather than staying per-frame constant.
     let first = scores[0].value(VshipMetric::Cvvdp).unwrap();
     let last = scores[scores.len() - 1].value(VshipMetric::Cvvdp).unwrap();
     assert_ne!(
@@ -768,8 +769,8 @@ fn a_matching_pair_is_not_rescaled_when_no_target_is_given() {
     let scores = scorer.score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {}).unwrap();
 
     // Identical geometry is what makes this equivalent to scoring without any
-    // scaling. Comparing against the same pair given an explicit target equal to
-    // its own size pins that: both must produce identical scores.
+    // scaling. Comparing against the same pair given an explicit target equal
+    // to its own size pins that: both must produce identical scores.
     let mut targeted = VshipScorer::new(
         config_for(VshipMetric::Ssimulacra2),
         format_for(&reference_clip),
@@ -841,8 +842,8 @@ fn submit_pair_raw_accepts_correctly_typed_planes() {
         scorer.submit_pair_raw(planes, planes)
     };
 
-    // Identical pairs must score identically, since a non-temporal metric carries
-    // no state between them.
+    // Identical pairs must score identically, since a non-temporal metric
+    // carries no state between them.
     assert_eq!(
         first.expect("geometry is correct").value(VshipMetric::Ssimulacra2),
         second.expect("geometry is correct").value(VshipMetric::Ssimulacra2)

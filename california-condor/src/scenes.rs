@@ -774,7 +774,8 @@ mod tests {
             .expect("warnings compute");
         assert!(unchanged.is_empty(), "nothing changed: {unchanged:?}");
 
-        // Moving scene 1's cut stales its own results and file, and nothing else.
+        // Moving scene 1's cut stales its own results and file, and nothing
+        // else.
         let mut moved = original.clone();
         moved[1].end_frame = 200;
         let warnings =

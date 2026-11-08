@@ -228,11 +228,11 @@ fn every_exposed_metric_produces_a_score() {
 
     let _guard = library!();
     let api = FmetricsApi::load().expect("available means loadable");
-    // The buffers must stay bound for the life of this test: `reference_img` and
-    // `distorted_img` are pointers *into* them, so dropping either at the end of
-    // this statement leaves the descriptors dangling for every call below. Naming
-    // them `_reference`/`_distorted` would drop them at the end of the `let`,
-    // which reads as harmless and is not.
+    // The buffers must stay bound for the life of this test: `reference_img`
+    // and `distorted_img` are pointers *into* them, so dropping either at
+    // the end of this statement leaves the descriptors dangling for every
+    // call below. Naming them `_reference`/`_distorted` would drop them at
+    // the end of the `let`, which reads as harmless and is not.
     let (reference, distorted, reference_img, distorted_img) = images();
     let _keep = (&reference, &distorted);
     let options = FmetricsButteraugliOptions::default();
@@ -274,8 +274,8 @@ fn every_exposed_metric_produces_a_score() {
     };
     assert_eq!(status, FmetricsErr::Ok, "butteraugli must succeed");
     // Butteraugli is a distance, and a large one saturates to infinity rather
-    // than overflowing to a misleading finite value. Both are valid outcomes, so
-    // only NaN is rejected.
+    // than overflowing to a misleading finite value. Both are valid outcomes,
+    // so only NaN is rejected.
     assert!(
         !butteraugli.is_nan(),
         "butteraugli must not be NaN, got {butteraugli}"
@@ -297,8 +297,9 @@ fn multi_scale_metrics_reject_an_image_below_their_minimum() {
 
     // IW-SSIM refuses an image below its five-scale floor, and names the cause
     // rather than returning a meaningless number. MS-SSIM has a lower floor, so
-    // only IW-SSIM is asserted here; the point is that the library rejects rather
-    // than scores, and `minimum_dimension` lets a caller avoid reaching it.
+    // only IW-SSIM is asserted here; the point is that the library rejects
+    // rather than scores, and `minimum_dimension` lets a caller avoid
+    // reaching it.
     let minimum = FmetricsMetric::Iwssim.minimum_dimension().expect("declared") as u32;
     let too_small = minimum - 1;
     let (reference, distorted, reference_img, distorted_img) = small_images(too_small);
@@ -306,8 +307,8 @@ fn multi_scale_metrics_reject_an_image_below_their_minimum() {
     let _keep = (&reference, &distorted);
 
     let mut value = 0f64;
-    // SAFETY: the workspace is created and released here, and both images outlive
-    // the call.
+    // SAFETY: the workspace is created and released here, and both images
+    // outlive the call.
     let workspace = unsafe { (api.workspace_create)() };
     // SAFETY: as above.
     let status = unsafe { (api.iwssim_cmp)(workspace, &reference_img, &distorted_img, &mut value) };

@@ -133,8 +133,9 @@ mod tests {
             .to_path_buf();
         let mut configuration =
             default_config(&test_video, &temp.path().join("out.mkv"), &temp_abs);
-        // `Encoder::executable` falls back to the base's default name for a path
-        // that does not exist, so the zone's binary has to be a real file.
+        // `Encoder::executable` falls back to the base's default name for a
+        // path that does not exist, so the zone's binary has to be a
+        // real file.
         let binary = std::env::current_exe().expect("the test binary has a path");
 
         configure_zoner(&mut configuration, &[format!(

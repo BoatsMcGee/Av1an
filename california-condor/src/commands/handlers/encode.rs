@@ -83,9 +83,10 @@ pub fn configure_parallel_encoder(
     vs_args: Option<&[String]>,
     workers: Option<u8>,
 ) -> Result<()> {
-    // `--filters` describes the input being encoded, not the parallel encoder's own
-    // override, so it always applies to the main input. Applying it first lets an
-    // override built below inherit the filters via `adopt_filters`.
+    // `--filters` describes the input being encoded, not the parallel encoder's
+    // own override, so it always applies to the main input. Applying it
+    // first lets an override built below inherit the filters via
+    // `adopt_filters`.
     if let Some(filters) = filters {
         apply_input_filters(&mut configuration.condor.input, filters);
     }

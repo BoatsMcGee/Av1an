@@ -122,8 +122,10 @@ where
 
             let relative_noise_level =
                 (noise_level - config.threshold) / (max_noise_level - config.threshold);
-            let scaler = config.minimum_scaler
-                + (relative_noise_level * (config.maximum_scaler - config.minimum_scaler));
+            let scaler = relative_noise_level.mul_add(
+                config.maximum_scaler - config.minimum_scaler,
+                config.minimum_scaler,
+            );
             debug!("Scaling Scene {} Photon Noise by {:.2}", index, scaler);
 
             scene_photon_noise.iso = (scene_photon_noise.iso as f64 * scaler).round() as u32;

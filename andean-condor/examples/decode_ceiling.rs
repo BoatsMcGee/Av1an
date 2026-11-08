@@ -115,8 +115,8 @@ fn main() -> anyhow::Result<()> {
     let started = Instant::now();
     let workers = 8usize;
     let sources = input.frame_sources(workers)?;
-    // Split the indices so each worker decodes its own contiguous share, which is
-    // how a real pass distributes scenes across workers.
+    // Split the indices so each worker decodes its own contiguous share, which
+    // is how a real pass distributes scenes across workers.
     let per_worker = indices.len().div_ceil(workers);
     let counted = std::thread::scope(|scope| -> usize {
         let mut counted = 0usize;
@@ -142,8 +142,9 @@ fn main() -> anyhow::Result<()> {
                         count
                     });
                     reader.y4m_frames(&sender, &share, 8).expect("frame source reads");
-                    // `y4m_frames` borrows the sender, so it has to be dropped here;
-                    // otherwise the consumer waits for a disconnect that never comes.
+                    // `y4m_frames` borrows the sender, so it has to be dropped
+                    // here; otherwise the consumer waits
+                    // for a disconnect that never comes.
                     drop(sender);
                     consumer.join().expect("consumer thread should join")
                 })

@@ -155,8 +155,8 @@ impl<'decoder> Side<'decoder> {
     pub fn open(decoder: &'decoder mut av_decoders::Decoder, bit_depth: usize) -> Result<Self> {
         // Probed first, in a borrow that ends at the end of the call. Asking
         // `open` for the node directly would not work: `Node<'decoder>` in the
-        // return type forces the decoder's borrow to outlive the function, which
-        // overlaps the `&mut` the native path needs.
+        // return type forces the decoder's borrow to outlive the function,
+        // which overlaps the `&mut` the native path needs.
         if is_vapoursynth(decoder) {
             let impl_ = decoder
                 .get_vapoursynth_impl()
@@ -165,8 +165,8 @@ impl<'decoder> Side<'decoder> {
             return Ok(Self::Node(node));
         }
 
-        // Seeking to frame 0 is a no-op for a backend that supports seeking, and
-        // an error for one that does not.
+        // Seeking to frame 0 is a no-op for a backend that supports seeking,
+        // and an error for one that does not.
         let seekable = decoder
             .seek_to_frame(0)
             .or_else(|error| {
@@ -266,8 +266,9 @@ impl<'decoder> Side<'decoder> {
                 .seek_to_frame(target)
                 .map_err(|error| anyhow::anyhow!("failed to seek to frame {target}: {error}"))?;
         } else if target > *next {
-            // Decode and discard the frames in between. Skipped frames are still
-            // decoded, just never scored, so the planes go to a no-op.
+            // Decode and discard the frames in between. Skipped frames are
+            // still decoded, just never scored, so the planes go to
+            // a no-op.
             for skipped in *next..target {
                 with_native_planes(decoder, *bit_depth, skipped, |_| Ok(()))?;
             }
@@ -347,8 +348,8 @@ where
 
         // SAFETY: `Plane::data` is the plane's own allocation, and `geometry`'s
         // stride and origin describe exactly that allocation. The sources are
-        // consumed within the `submit` call that receives them, while `frame` is
-        // still alive.
+        // consumed within the `submit` call that receives them, while `frame`
+        // is still alive.
         //
         // `v_frame` reports stride and origin in samples, so both are scaled to
         // bytes here. The stride is widened rather than cast, because the field
@@ -493,9 +494,9 @@ pub fn probe_selected_frames<T, R>(
         })?;
 
         // Both sides are read inside nested calls so each frame's planes stay
-        // valid until the metric has copied them. The decoders are never borrowed
-        // in the same expression, because a VapourSynth node borrows its
-        // decoder.
+        // valid until the metric has copied them. The decoders are never
+        // borrowed in the same expression, because a VapourSynth node
+        // borrows its decoder.
         results.push(
             distorted_side.with_planes(output_index, |distorted_planes| {
                 reference_side.with_planes(source_index, |reference_planes| {
@@ -526,9 +527,10 @@ fn check_seekable_selection(
     selected: &[usize],
     indexing: OutputIndexing,
 ) -> Result<()> {
-    // Each side is addressed in its own index space. A compacted output is read by
-    // position, so it ascends by construction; only an aligned output follows
-    // the reference into the source frame numbers and can step back.
+    // Each side is addressed in its own index space. A compacted output is read
+    // by position, so it ascends by construction; only an aligned output
+    // follows the reference into the source frame numbers and can step
+    // back.
     let backwards = (!reference.is_seekable() && steps_backwards(selected.iter().copied()))
         || (!distorted.is_seekable()
             && indexing == OutputIndexing::Aligned

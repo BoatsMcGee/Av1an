@@ -86,9 +86,9 @@ where
         }
         // let encoder = self.encoder.as_ref().map_or(&condor.encoder, |e| e);
         if let Some(input) = &mut self.input {
-            // Initialize input by getting clip_info. For VapourSynth inputs, this may begin
-            // a lengthy caching process, hence the separation between validate and
-            // initialize.
+            // Initialize input by getting clip_info. For VapourSynth inputs,
+            // this may begin a lengthy caching process, hence the
+            // separation between validate and initialize.
             input.clip_info()?;
         }
 
@@ -128,7 +128,8 @@ where
                 let elapsed = now - start_time;
                 let frames_encoded = reports.len();
                 let fps = frames_encoded as f64 / elapsed.as_secs_f64();
-                // let eta = elapsed * (total_frames as f64 / frames_encoded as f64) - elapsed;
+                // let eta = elapsed * (total_frames as f64 / frames_encoded as
+                // f64) - elapsed;
                 let cpu_usage = {
                     let usage: Vec<f64> = reports
                         .iter()

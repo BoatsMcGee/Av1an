@@ -118,8 +118,9 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<Fmetrics
             if let Some(display_model) = display_model {
                 config = config.with_display_model(display_model_for(*display_model));
             }
-            // The C API has no `disableTemporal` argument, only a reset, so this
-            // maps onto the inverse: disabling the temporal model keeps history.
+            // The C API has no `disableTemporal` argument, only a reset, so
+            // this maps onto the inverse: disabling the temporal
+            // model keeps history.
             if let Some(disable_temporal) = *disable_temporal {
                 config = config.with_disable_temporal(disable_temporal);
             }
@@ -199,8 +200,9 @@ pub fn score_probed_frames(
     let fmetrics_config = scorer_config(config, frame_rate)?;
     let metric = fmetrics_config.metric();
 
-    // Which Butteraugli norm is the headline depends on the configuration, not the
-    // metric, and `target_range` is calibrated against the plugin's choice.
+    // Which Butteraugli norm is the headline depends on the configuration, not
+    // the metric, and `target_range` is calibrated against the plugin's
+    // choice.
     let butteraugli_uses_q_norm = matches!(config, QualityMetric::BUTTERAUGLI {
         norm: Some(_),
         ..
@@ -418,8 +420,8 @@ mod tests {
             gpu_id:               None,
         };
 
-        // Each metric must produce one score per selected frame. CVVDP is the case
-        // that distinguishes the two submit entry points.
+        // Each metric must produce one score per selected frame. CVVDP is the
+        // case that distinguishes the two submit entry points.
         for metric in [ssimulacra2(None), butteraugli, cvvdp()] {
             let scores = score_pair(&metric, 30).unwrap_or_else(|error| {
                 panic!("{} failed to score: {error:#}", metric.friendly_name())
@@ -548,8 +550,8 @@ mod tests {
 
     #[test]
     fn availability_follows_the_metric_and_the_library() {
-        // Availability follows the library, so the assertion mirrors it rather than
-        // assuming either answer.
+        // Availability follows the library, so the assertion mirrors it rather
+        // than assuming either answer.
         assert_eq!(
             native_supported(&ssimulacra2(None)),
             av_metrics_fmetrics::is_available(),
@@ -582,15 +584,15 @@ mod tests {
         let config = scorer_config(&cvvdp(), 23.976).unwrap();
         assert!((config.frame_rate() - 23.976).abs() < 1e-3);
 
-        // A source reporting no rate leaves zero, which the scorer refuses rather than
-        // scoring with it.
+        // A source reporting no rate leaves zero, which the scorer refuses
+        // rather than scoring with it.
         assert_eq!(scorer_config(&cvvdp(), 0.0).unwrap().frame_rate(), 0.0);
     }
 
     #[test]
     fn every_display_model_maps_to_a_distinct_fmetrics_model() {
-        // A silent fall-through would score HDR content against an SDR model, so the
-        // mapping must be total and injective.
+        // A silent fall-through would score HDR content against an SDR model,
+        // so the mapping must be total and injective.
         let models = [
             DisplayModel::Standard4K,
             DisplayModel::StandardFHD,
@@ -633,9 +635,9 @@ mod tests {
 
     #[test]
     fn disable_temporal_inverts_the_discontinuity_reset() {
-        // Upstream `disableTemporal` clears the context, so the two are opposites.
-        // Reading it the wrong way round would silently give the opposite
-        // behaviour.
+        // Upstream `disableTemporal` clears the context, so the two are
+        // opposites. Reading it the wrong way round would silently give
+        // the opposite behaviour.
         let disabled = cvvdp_with(Some(true));
         assert!(
             !scorer_config(&disabled, 24.0).unwrap().reset_on_discontinuity,

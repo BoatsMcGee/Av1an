@@ -136,9 +136,9 @@ where
         } else {
             None
         };
-        // Initialize input by getting clip_info. For VapourSynth inputs, this may begin
-        // a lengthy caching process, hence the separation between validate and
-        // initialize.
+        // Initialize input by getting clip_info. For VapourSynth inputs, this
+        // may begin a lengthy caching process, hence the separation
+        // between validate and initialize.
         progress_tx.send(SequenceStatus::Whole(Status::Processing {
             id:         DETAILS.name.to_owned(),
             completion: SequenceCompletion::Custom {
@@ -544,8 +544,9 @@ where
                     },
                 )?;
 
-                // Update Scene Encoder quantizer. A probe that met the target is used as
-                // is; only scenes without one fall back to the prediction.
+                // Update Scene Encoder quantizer. A probe that met the target
+                // is used as is; only scenes without one fall
+                // back to the prediction.
                 let final_quantizer =
                     TargetQuality::verified_quantizer(&config.metric, &quantizer_score_history)
                         .unwrap_or(predicted_quantizer);
@@ -941,25 +942,25 @@ impl TargetQuality {
 
         let metric_input = metric_input.unwrap_or(input);
         // VMAF is scored by libvmaf over decoded frames, and its decoder borrow
-        // would conflict with the one the node graph below needs. Score it first,
-        // while `metric_input` is still free.
+        // would conflict with the one the node graph below needs. Score it
+        // first, while `metric_input` is still free.
         //
         // The VapourSynth VMAF plugin cannot be used here at all: it emits no
         // per-frame scores and requires writing to and reading back a log file.
         //
-        // Only the frames this pass actually probes are decoded and scored, matching
-        // the plugin path, which trims each frame out of the graph so VapourSynth
-        // never decodes the skipped ones.
+        // Only the frames this pass actually probes are decoded and scored,
+        // matching the plugin path, which trims each frame out of the
+        // graph so VapourSynth never decodes the skipped ones.
         //
-        // A native failure yields `None` and falls through to the plugin branches;
-        // VMAF has no such branch and propagates its error.
+        // A native failure yields `None` and falls through to the plugin
+        // branches; VMAF has no such branch and propagates its error.
         let is_vmaf = matches!(config.metric, QualityMetric::VMAF { .. });
         let engine = metrics::engine(&config.metric, !matches!(metric_input, Input::Video { .. }));
         let native = is_vmaf || engine.is_some();
 
-        // Created and relayed here, before scoring, so the native path reports compare
-        // progress through the same relay the plugin branches use and the UI shows
-        // the same shape whichever path ran.
+        // Created and relayed here, before scoring, so the native path reports
+        // compare progress through the same relay the plugin branches
+        // use and the UI shows the same shape whichever path ran.
         let (compare_progress_tx, compare_progress_rx) = sync::mpsc::channel();
         let progress_tx_clone = progress_tx.clone();
         let compare_thread = thread::spawn(move || -> Result<()> {
@@ -997,10 +998,11 @@ impl TargetQuality {
             Ok(())
         });
 
-        // Set when a cancellation reached scoring. The probe is scored across all
-        // scenes as one unit, so a cancelled compare leaves the pass incomplete
-        // and is not a failure. Checked before joining the relay thread, which
-        // would otherwise wait on the sender this scope owns.
+        // Set when a cancellation reached scoring. The probe is scored across
+        // all scenes as one unit, so a cancelled compare leaves the
+        // pass incomplete and is not a failure. Checked before joining
+        // the relay thread, which would otherwise wait on the sender
+        // this scope owns.
         let mut scoring_cancelled = false;
 
         let mut native_scores = if native {
@@ -1019,10 +1021,11 @@ impl TargetQuality {
                 filters:       Vec::new(),
             })?;
 
-            // The probe encode contains only the frames this pass selected, so it
-            // is compacted and is read by position within the selection.
-            // The metric reports each frame's score as it is produced. Target Quality
-            // reduces those to a per-scene statistic and has no per-frame
+            // The probe encode contains only the frames this pass selected, so
+            // it is compacted and is read by position within the
+            // selection. The metric reports each frame's score as
+            // it is produced. Target Quality reduces those to a
+            // per-scene statistic and has no per-frame
             // view, so only the position is used: it drives the progress bar
             // through the same relay the plugin branches report through.
             //
@@ -1068,8 +1071,9 @@ impl TargetQuality {
                     report,
                 )
             } else {
-                // A name with no entry point here yields an error rather than a `return`, so it
-                // takes the same path as any other native failure and the progress
+                // A name with no entry point here yields an error rather than a
+                // `return`, so it takes the same path as any
+                // other native failure and the progress
                 // relay is joined on the way out.
                 match engine {
                     Some(Engine::Vship) => metrics::score_vship_frames(
@@ -1146,16 +1150,18 @@ impl TargetQuality {
             return Ok((Vec::new(), warnings));
         }
 
-        // The relay thread spawned above ends only once every sender is dropped. Each
-        // plugin branch moves its sender into `get_scores`, so the channel
-        // disconnects as soon as that call returns. The branch that reuses the
-        // native scores sends a final completion and drops its sender instead;
-        // holding it across the `join` below would leave the relay thread waiting
+        // The relay thread spawned above ends only once every sender is
+        // dropped. Each plugin branch moves its sender into
+        // `get_scores`, so the channel disconnects as soon as that call
+        // returns. The branch that reuses the native scores sends a
+        // final completion and drops its sender instead; holding it
+        // across the `join` below would leave the relay thread waiting
         // forever.
         let started = SystemTime::now();
-        // A metric scored natively above reuses those scores; otherwise the plugin
-        // branches below run. For the vship metrics the plugin branch is reached
-        // only when libvship was unavailable or failed.
+        // A metric scored natively above reuses those scores; otherwise the
+        // plugin branches below run. For the vship metrics the plugin
+        // branch is reached only when libvship was unavailable or
+        // failed.
         let mut scores = if native_scores.is_some() {
             let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Completed {
                 id: "Compare".to_owned(),
@@ -1163,11 +1169,12 @@ impl TargetQuality {
             drop(compare_progress_tx);
             native_scores.take().expect("native scores were just taken")
         } else {
-            // The branches below score over a VapourSynth graph built from the metric
-            // input, so everything here - the graph itself, and for a natively decoded
-            // input the VapourSynth script it is converted into - is created only on
-            // this path. A host without VapourSynth scores every metric with a native
-            // engine without touching it at all.
+            // The branches below score over a VapourSynth graph built from the
+            // metric input, so everything here - the graph itself,
+            // and for a natively decoded input the VapourSynth
+            // script it is converted into - is created only on this
+            // path. A host without VapourSynth scores every metric with a
+            // native engine without touching it at all.
             //
             // Owned, so it outlives the `&mut v_input` borrow taken below.
             let mut v_input_owned = if matches!(metric_input, Input::Video { .. }) {
@@ -1327,7 +1334,8 @@ impl TargetQuality {
                         ..Default::default()
                     };
                     let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                    // XPSNR returns a score per plane, combine them into the weighted XPSNR score.
+                    // XPSNR returns a score per plane, combine them into the
+                    // weighted XPSNR score.
                     XPSNR::get_multiple_scores(&node, XPSNR::PROPERTY_NAMES, compare_progress_tx)?
                         .into_iter()
                         .map(|plane_scores| match plane_scores.as_slice() {
@@ -1375,10 +1383,11 @@ impl TargetQuality {
         compare_thread.join().expect("compare progress thread should join")?;
         drop(progress_tx);
 
-        // `results` covers only the tasks encoded this run and is indexed by that
-        // subset, so its positions name no scene. `scene` is the task's
-        // `original_index`, so key on it: zipping by position attached the
-        // wrong scene's bitrate to every task past the first skipped one.
+        // `results` covers only the tasks encoded this run and is indexed by
+        // that subset, so its positions name no scene. `scene` is the
+        // task's `original_index`, so key on it: zipping by position
+        // attached the wrong scene's bitrate to every task past the
+        // first skipped one.
         let results = results
             .into_iter()
             .flatten()
@@ -1389,8 +1398,9 @@ impl TargetQuality {
             .iter()
             .map(|task| {
                 let mut completed_task = task.clone();
-                // A task skipped as already encoded has no result, so its size comes from
-                // the file and its timings from its last recorded pass.
+                // A task skipped as already encoded has no result, so its size
+                // comes from the file and its timings from its
+                // last recorded pass.
                 let bitrate = results.get(&task.original_index).map_or_else(
                     || {
                         let bytes = task.output.metadata().map_or(0, |meta| meta.len());

@@ -517,15 +517,16 @@ pub trait MetricPluginFunction: PluginFunction {
 
         let extract = Arc::new(extract);
         let on_frame = Arc::new(on_frame);
-        // `Value` is only known to be `Send`, so the slots cannot be preallocated
-        // with a default value the way a `Vec<f64>` could be.
+        // `Value` is only known to be `Send`, so the slots cannot be
+        // preallocated with a default value the way a `Vec<f64>` could
+        // be.
         let values: Arc<Mutex<Vec<Option<Value>>>> = Arc::new(Mutex::new(
             repeat_with(|| None).take(total_frames).collect(),
         ));
         let frame_semaphore = Arc::new(Semaphore::new(concurrency));
         let state = Arc::new((Mutex::new(0usize), Condvar::new()));
-        // First error reported by any frame callback. Once set, no further frame
-        // requests are issued and this error is returned.
+        // First error reported by any frame callback. Once set, no further
+        // frame requests are issued and this error is returned.
         let first_error = Arc::new(Mutex::new(None::<VapourSynthError>));
         let aborted = Arc::new(AtomicBool::new(false));
 

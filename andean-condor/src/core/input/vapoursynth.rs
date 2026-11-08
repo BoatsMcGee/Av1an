@@ -266,8 +266,9 @@ pub fn index_source(
 pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> Result<Input> {
     Input::validate(data)?;
 
-    // `VapoursynthDecoder::new()` panics without the library, and the core API is
-    // reached through VSScript, so this is the same test that constructor does.
+    // `VapoursynthDecoder::new()` panics without the library, and the core API
+    // is reached through VSScript, so this is the same test that
+    // constructor does.
     get_api().map_err(|_| {
         anyhow::anyhow!(
             "VapourSynth is not available; it is required for VapourSynth inputs and the \
@@ -316,10 +317,11 @@ pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> R
             }
             let call = SourceCall::new(import_method);
 
-            // Created once, in a fixed script: a `ModifyNode` runs again for every
-            // frame, so building the source inside one would reopen the file and
-            // reload its index each time. Paths and options are script
-            // variables, so they are never interpreted as code.
+            // Created once, in a fixed script: a `ModifyNode` runs again for
+            // every frame, so building the source inside one would
+            // reopen the file and reload its index each time. Paths
+            // and options are script variables, so they are never
+            // interpreted as code.
             let mut script = String::from("from vapoursynth import core\nkwargs = {}\n");
             let mut variables = HashMap::from([(
                 "condor_source".to_owned(),

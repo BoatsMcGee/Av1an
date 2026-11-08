@@ -93,9 +93,9 @@ where
         } else {
             &mut condor.input
         };
-        // Initialize input by getting clip_info. For VapourSynth inputs, this may begin
-        // a lengthy caching process, hence the separation between validate and
-        // initialize.
+        // Initialize input by getting clip_info. For VapourSynth inputs, this
+        // may begin a lengthy caching process, hence the separation
+        // between validate and initialize.
         progress_tx.send(SequenceStatus::Whole(Status::Processing {
             id:         DETAILS.name.to_owned(),
             completion: SequenceCompletion::Custom {
@@ -190,7 +190,8 @@ where
             if current_result.frames_per_second()
                 < (previous_result.frames_per_second() * (1.0 + (config.threshold as f64 / 100.0)))
             {
-                // Speed did not increase by threshold, revert to previous amount of workers
+                // Speed did not increase by threshold, revert to previous
+                // amount of workers
                 condor.sequence_config.parallel_encoder_mut()?.workers =
                     Some(previous_result.workers);
 

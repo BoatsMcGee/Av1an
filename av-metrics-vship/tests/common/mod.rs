@@ -488,7 +488,8 @@ mod tests {
         assert_eq!(details.height, clip.height);
         assert_eq!(details.bit_depth, usize::from(clip.effective_bit_depth()));
         assert_eq!(details.chroma_sampling, clip.chroma_sampling);
-        // y4m carries no frame count in its header, so the decoder reports `None`.
+        // y4m carries no frame count in its header, so the decoder reports
+        // `None`.
         assert_eq!(details.total_frames, None);
     }
 

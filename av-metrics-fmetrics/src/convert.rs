@@ -279,9 +279,10 @@ impl PlaneSet {
     fn describe<T>(plane: &v_frame::plane::Plane<T>, bytes_per_sample: usize) -> PlaneSource {
         let geometry = plane.geometry();
 
-        // SAFETY: `Plane::data` is the plane's own allocation, and the geometry's
-        // stride and origin describe exactly that allocation. The `PlaneSource` is
-        // built and consumed inside the same submit call, so the borrow outlives
+        // SAFETY: `Plane::data` is the plane's own allocation, and the
+        // geometry's stride and origin describe exactly that
+        // allocation. The `PlaneSource` is built and consumed inside
+        // the same submit call, so the borrow outlives
         // it, and `yuv_to_rgb` reads only within what these values describe.
         PlaneSource {
             width: geometry.width(),
@@ -539,8 +540,8 @@ impl RowPlanes {
             let mut chroma = [luma.data; 2];
             for (index, plane) in planes.iter().enumerate().skip(1) {
                 // A subsampled plane has fewer rows than luma; sampling by luma
-                // row unclamped would read past the end of a 4:2:0 plane, so the
-                // last row repeats instead.
+                // row unclamped would read past the end of a 4:2:0 plane, so
+                // the last row repeats instead.
                 let chroma_row = row.min(plane.height.saturating_sub(1));
                 let offset = plane.data_origin + (chroma_row as isize * plane.stride) as usize;
                 chroma[index - 1] = plane.data.add(offset);
@@ -571,7 +572,8 @@ impl RowPlanes {
             let y = read_normalized(self.luma.add(x * self.bytes), self.bytes);
 
             // The midpoint of the chroma cell containing this luma sample, as a
-            // shift and a conditional rather than a division: this runs per pixel.
+            // shift and a conditional rather than a division: this runs per
+            // pixel.
             #[expect(
                 clippy::manual_is_multiple_of,
                 reason = "`is_multiple_of` is clearer but this is the hot path"
@@ -580,8 +582,9 @@ impl RowPlanes {
 
             let mut offsets = [0f32; 2];
             for (index, pointer) in self.chroma.iter().enumerate() {
-                // Clamp into the plane, which is narrower when subsampled and may
-                // be narrower still than this midpoint suggests for odd sizes.
+                // Clamp into the plane, which is narrower when subsampled and
+                // may be narrower still than this midpoint
+                // suggests for odd sizes.
                 let px = cx.min(chroma_width[index].saturating_sub(1));
                 offsets[index] = read_normalized(pointer.add(px * self.bytes), self.bytes);
             }
@@ -651,8 +654,8 @@ pub unsafe fn yuv_to_rgb(
     // Truncating a wider source to 8-bit would discard precision it has.
     let wide = info.needs_wide_samples() || max_sample > u32::from(u8::MAX);
 
-    // `read_normalized` already brings every depth onto the 0-255 scale, so only
-    // the output scale differs between the two formats.
+    // `read_normalized` already brings every depth onto the 0-255 scale, so
+    // only the output scale differs between the two formats.
     let out_gain = if wide { 65535.0 / 255.0 } else { 1.0 };
 
     let channels = if wide { 6 } else { 3 };
@@ -706,7 +709,8 @@ fn convert_rows<const WIDE: bool>(
         // plane is a live allocation spanning its rows.
         let row_planes = unsafe { RowPlanes::at(planes, row) };
 
-        // SAFETY: `row * stride` is within `data`, which is `stride * height` long.
+        // SAFETY: `row * stride` is within `data`, which is `stride * height`
+        // long.
         let out = unsafe { data.as_mut_ptr().add(row * stride) };
 
         for column in 0..width {
@@ -716,8 +720,8 @@ fn convert_rows<const WIDE: bool>(
             let (r, g, b) = coefficients.apply(y, u, v);
 
             if WIDE {
-                // SAFETY: `column < width`, so `column * 6 + 6 <= stride`, within
-                // this row.
+                // SAFETY: `column < width`, so `column * 6 + 6 <= stride`,
+                // within this row.
                 unsafe {
                     let pixel = out.add(column * 6).cast::<u16>();
                     pixel.write_unaligned(clamp_u16(r * out_gain).to_le());
@@ -830,9 +834,9 @@ mod tests {
         // A wrapped value would appear as a small number where saturation is
         // expected, so this catches a missing clamp.
         //
-        // Green is *not* expected to stay neutral: it is the channel both chroma
-        // differences subtract from, so extreme U and V drive it up. What matters
-        // is that it saturates rather than wrapping.
+        // Green is *not* expected to stay neutral: it is the channel both
+        // chroma differences subtract from, so extreme U and V drive it
+        // up. What matters is that it saturates rather than wrapping.
         // SAFETY: leaked buffers of the stated size.
         let image = unsafe {
             yuv_to_rgb(
@@ -909,9 +913,9 @@ mod tests {
 
     #[test]
     fn matrix_changes_the_result_for_saturated_colour() {
-        // BT.601 and BT.709 differ in chroma gain. A fully saturated sample would clamp
-        // to 255 under both and hide the difference, so the chroma is set far
-        // enough off neutral to stay in range.
+        // BT.601 and BT.709 differ in chroma gain. A fully saturated sample
+        // would clamp to 255 under both and hide the difference, so the
+        // chroma is set far enough off neutral to stay in range.
         let neutral = vec![128u8; 4];
         let convert = |matrix| {
             // SAFETY: leaked buffers of the stated size.
@@ -930,7 +934,8 @@ mod tests {
 
         // The matrix must actually be applied, and must not be ignored.
         assert_ne!(bt601, bt709, "the matrix must affect the output");
-        // Sanity: a mid-luma reddish sample stays mid-range rather than clamping.
+        // Sanity: a mid-luma reddish sample stays mid-range rather than
+        // clamping.
         assert!(
             bt601.0 < 255 && bt601.2 < 255,
             "the probe must not clamp, got {bt601:?}"
@@ -939,10 +944,11 @@ mod tests {
 
     #[test]
     fn subsampled_chroma_rows_are_clamped_to_the_plane() {
-        // A 4:2:0 plane has half as many rows as luma, so sampling chroma by luma row
-        // unclamped reads past the end of the plane on the bottom half. Every row
-        // has a distinct luma value, so a clamped row shows up as the last row's
-        // chroma repeating rather than as a crash alone.
+        // A 4:2:0 plane has half as many rows as luma, so sampling chroma by
+        // luma row unclamped reads past the end of the plane on the
+        // bottom half. Every row has a distinct luma value, so a
+        // clamped row shows up as the last row's chroma repeating
+        // rather than as a crash alone.
         let width = 4;
         let height = 8;
         let luma: Vec<u8> = (0..width * height).map(|i| (i * 8) as u8).collect();

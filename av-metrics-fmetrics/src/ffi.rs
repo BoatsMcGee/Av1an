@@ -663,8 +663,8 @@ pub fn library_candidates() -> Vec<PathBuf> {
         }
     }
 
-    // 2. Beside the running executable, where a staged release puts it and which is
-    //    on no loader search path.
+    // 2. Beside the running executable, where a staged release puts it and
+    //    which is on no loader search path.
     if let Ok(exe) = std::env::current_exe()
         && let Some(directory) = exe.parent()
     {
@@ -676,9 +676,9 @@ pub fn library_candidates() -> Vec<PathBuf> {
         candidates.extend(names.iter().map(|name| directory.join(name)));
     }
 
-    // 4. Bare names, so the platform loader's own search path applies. A parentless
-    //    candidate is the signal that the loader, not this crate, decides where the
-    //    library comes from.
+    // 4. Bare names, so the platform loader's own search path applies. A
+    //    parentless candidate is the signal that the loader, not this crate,
+    //    decides where the library comes from.
     candidates.extend(names.iter().map(PathBuf::from));
 
     candidates
@@ -696,9 +696,10 @@ pub fn library_candidates() -> Vec<PathBuf> {
 #[must_use]
 fn system_directories() -> Vec<PathBuf> {
     if cfg!(target_os = "windows") {
-        // Native System32 first, then the WOW64 directory. A 32-bit process asking
-        // for System32 is redirected to SysWOW64, which is the directory it can
-        // really load from, so both entry points are worth asking.
+        // Native System32 first, then the WOW64 directory. A 32-bit process
+        // asking for System32 is redirected to SysWOW64, which is the
+        // directory it can really load from, so both entry points are
+        // worth asking.
         let mut directories = Vec::with_capacity(2);
         directories.extend(windows_system_directory(true));
         directories.extend(windows_system_directory(false));
@@ -740,8 +741,8 @@ fn windows_system_directory(native_system: bool) -> Option<PathBuf> {
         GetSystemWow64DirectoryW
     };
 
-    // A return equal to the buffer size means the path was truncated, so grow and
-    // ask again rather than using a partial directory.
+    // A return equal to the buffer size means the path was truncated, so grow
+    // and ask again rather than using a partial directory.
     let mut buffer = vec![0u16; 260];
     loop {
         let capacity = buffer.len();
@@ -791,14 +792,15 @@ fn resolve() -> Result<FmetricsApi, std::io::Error> {
     let mut last = "no fmetrics candidate could be loaded".to_owned();
 
     for candidate in library_candidates() {
-        // SAFETY: every path handled here is either an explicit user override or
-        // a conventional library location; loading a shared object from a trusted
-        // path is the intended use of this crate.
+        // SAFETY: every path handled here is either an explicit user override
+        // or a conventional library location; loading a shared object
+        // from a trusted path is the intended use of this crate.
         match unsafe { Library::new(&candidate) } {
             Ok(library) => {
-                // Leaked deliberately: dropping it would `dlclose` the library and
-                // leave every pointer below dangling, so the fault would appear at
-                // the first call rather than here. There is nothing to reclaim at
+                // Leaked deliberately: dropping it would `dlclose` the library
+                // and leave every pointer below dangling, so
+                // the fault would appear at the first call
+                // rather than here. There is nothing to reclaim at
                 // exit anyway, since fmetrics is resolved once per process.
                 // SAFETY: each `get` is checked against the signature
                 // transcribed from `fmetrics.h`, and a missing symbol is an
@@ -974,8 +976,8 @@ mod tests {
 
     #[test]
     fn butteraugli_defaults_to_the_infinity_norm() {
-        // The p-norm is an int, so "infinity" is encoded as i32::MAX rather than
-        // reached by casting an infinite float.
+        // The p-norm is an int, so "infinity" is encoded as i32::MAX rather
+        // than reached by casting an infinite float.
         let options = FmetricsButteraugliOptions::default();
         assert_eq!(options.pnorm, i32::MAX);
         assert!((options.intensity_target - 203.0).abs() < f32::EPSILON);
@@ -985,8 +987,9 @@ mod tests {
     fn system_directories_are_real_and_not_assumed_to_be_on_c() {
         // Windows can be installed to another drive or relocated, so the system
         // directory has to come from the OS. A hardcoded `C:\Windows` silently
-        // names a directory that does not exist there, and the failure looks like
-        // "fmetrics is not installed" rather than "the search path was wrong".
+        // names a directory that does not exist there, and the failure looks
+        // like "fmetrics is not installed" rather than "the search path
+        // was wrong".
         let directories = system_directories();
 
         if cfg!(target_os = "windows") {
@@ -1020,7 +1023,8 @@ mod tests {
         }
 
         // A 64-bit process cannot load from SysWOW64, so this only matters on a
-        // 32-bit one -- but asking costs nothing and the answer is authoritative.
+        // 32-bit one -- but asking costs nothing and the answer is
+        // authoritative.
         let directories = system_directories();
         if let Some(wow64) = windows_directory("SysWOW64")
             && wow64.is_dir()

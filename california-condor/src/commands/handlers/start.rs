@@ -289,7 +289,8 @@ mod tests {
             .as_path()
             .to_path_buf();
 
-        // Must run inside the temp directory so the default config path resolves there
+        // Must run inside the temp directory so the default config path
+        // resolves there
         let _cwd_guard = CwdGuard::set(temp.path());
 
         let expected_config = default_config(&test_video, &output, &temp_abs);

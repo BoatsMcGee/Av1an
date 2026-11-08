@@ -67,7 +67,8 @@ impl ParallelEncoder {
                         (&headers, &errored, &cancelled, &total_final, &clip_info);
                     handles.push(s.spawn(
                         move || -> Result<Vec<(usize, ParallelEncoderResult)>> {
-                            // Native decoders must be opened on the reading thread.
+                            // Native decoders must be opened on the reading
+                            // thread.
                             let mut reader = source.open()?;
                             let mut done = Vec::new();
                             while let Ok(task) = task_rx.recv() {

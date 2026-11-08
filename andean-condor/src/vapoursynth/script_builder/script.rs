@@ -37,8 +37,8 @@ impl std::fmt::Display for VapourSynthScript {
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // let mut sorted_imports: Vec<_> = self.imports.iter().collect();
-        // sorted_imports.sort_by(|(package_a, modules_a), (package_b, modules_b)| {
-        //     if package_a == package_b {
+        // sorted_imports.sort_by(|(package_a, modules_a), (package_b,
+        // modules_b)| {     if package_a == package_b {
         //         std::cmp::Ordering::Equal
         //     } else {
         //         package_a.cmp(package_b)

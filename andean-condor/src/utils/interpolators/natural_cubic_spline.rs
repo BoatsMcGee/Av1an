@@ -7,9 +7,9 @@ pub fn natural_cubic_spline(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
         return None;
     }
 
-    // Noramally, no bounds check is needed - we're interpolating, not extrapolating
-    // The target (xi) is a score value we're looking for, not restricted to input
-    // range
+    // Noramally, no bounds check is needed - we're interpolating, not
+    // extrapolating The target (xi) is a score value we're looking for, not
+    // restricted to input range
 
     // Verify xi is within the observed range (it should be by algorithm design)
     if xi < x[0] || xi > x[n - 1] {

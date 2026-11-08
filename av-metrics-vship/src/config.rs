@@ -484,9 +484,9 @@ impl VshipConfig {
         }
 
         if self.metric == VshipMetric::Butteraugli {
-            // Butteraugli's norms are defined for positive integer exponents, and
-            // a zero or negative `Qnorm` would make libvship's `powq` call
-            // meaningless rather than fail cleanly.
+            // Butteraugli's norms are defined for positive integer exponents,
+            // and a zero or negative `Qnorm` would make libvship's
+            // `powq` call meaningless rather than fail cleanly.
             if self.butteraugli.q_norm <= 0 {
                 return Err(VshipError::InvalidConfiguration {
                     reason: format!(
@@ -820,8 +820,8 @@ mod tests {
         let config = VshipConfig::new();
 
         assert_eq!(config.metric(), VshipMetric::Ssimulacra2);
-        // A default configuration leaves the device unset so the scorer can pick a
-        // discrete GPU at run time; `gpu_id()` reports that, and
+        // A default configuration leaves the device unset so the scorer can
+        // pick a discrete GPU at run time; `gpu_id()` reports that, and
         // `gpu_id_or_default()` resolves it.
         assert!(!config.has_explicit_gpu_id());
         assert!(config.gpu_id_or_default() < u32::MAX);
@@ -883,8 +883,8 @@ mod tests {
 
     #[test]
     fn display_model_builders_reject_an_interior_nul() {
-        // Each builder takes `self` by value, so a fresh config is used per case
-        // rather than cloning one.
+        // Each builder takes `self` by value, so a fresh config is used per
+        // case rather than cloning one.
         assert!(
             VshipConfig::new()
                 .with_display_model("standard\0_fhd")

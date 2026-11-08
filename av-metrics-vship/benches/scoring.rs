@@ -142,8 +142,8 @@ fn per_metric(criterion: &mut Criterion) {
     );
 
     for metric in VshipMetric::all() {
-        // A temporal metric builds one handler whatever this asks for, so one is
-        // requested throughout to keep the comparison like-for-like.
+        // A temporal metric builds one handler whatever this asks for, so one
+        // is requested throughout to keep the comparison like-for-like.
         let config = VshipConfig::new().with_metric(metric).with_handler_threads(1);
         let label = metric.as_str().to_lowercase();
 
@@ -151,8 +151,9 @@ fn per_metric(criterion: &mut Criterion) {
         group.throughput(Throughput::Elements(BENCH_FRAMES as u64));
         group.bench_function("score", |bencher| {
             bencher.iter(|| {
-                // A machine whose device cannot build this metric contributes no
-                // measurement rather than a failing benchmark.
+                // A machine whose device cannot build this metric contributes
+                // no measurement rather than a failing
+                // benchmark.
                 let Some((mut scorer, mut reference, mut distorted)) =
                     scorer_for(&pair, config.clone())
                 else {

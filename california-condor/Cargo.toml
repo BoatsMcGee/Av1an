@@ -27,8 +27,8 @@ required-features = ["screenshots"]
 [dependencies]
 anyhow = { workspace = true }
 andean-condor = { workspace = true }
-clap = { version = "4.5.53", features = ["derive"] }
-clap_complete = "4.5.61"
+clap = { version = "4.5.60", features = ["derive"] }
+clap_complete = "4.5.66"
 nom = "8.0.0"
 num-traits = { workspace = true }
 once_cell = { workspace = true }

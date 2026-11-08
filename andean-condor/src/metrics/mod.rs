@@ -127,9 +127,9 @@ fn engine_order(
     input_is_vapoursynth: bool,
     available: Availability,
 ) -> Option<Engine> {
-    // The mappings are consulted here rather than folded into `Availability`, so
-    // that this function is what guarantees a metric is never routed to an engine
-    // that cannot serve it.
+    // The mappings are consulted here rather than folded into `Availability`,
+    // so that this function is what guarantees a metric is never routed to
+    // an engine that cannot serve it.
     if available.vship && vship::vship_metric_for(metric).is_some() {
         return Some(Engine::Vship);
     }
@@ -264,7 +264,8 @@ mod tests {
             engine_order(&ssimulacra2(), false, no_plugin),
             Some(Engine::Fmetrics)
         );
-        // VapourSynth: the plugin when there is one, fmetrics when there is not.
+        // VapourSynth: the plugin when there is one, fmetrics when there is
+        // not.
         assert_eq!(engine_order(&ssimulacra2(), true, both), None);
         assert_eq!(
             engine_order(&ssimulacra2(), true, no_plugin),
@@ -300,8 +301,8 @@ mod tests {
 
     #[test]
     fn the_real_availability_matches_what_the_ordering_expects() {
-        // The path production takes, which must report libvship first when it can
-        // run.
+        // The path production takes, which must report libvship first when it
+        // can run.
         if vship::native_supported(&ssimulacra2()) {
             assert_eq!(engine(&ssimulacra2(), true), Some(Engine::Vship));
             assert_eq!(engine(&ssimulacra2(), false), Some(Engine::Vship));
@@ -321,8 +322,8 @@ mod tests {
         assert!(plugin_available(&ssimulacra2()));
         assert!(plugin_available(&butteraugli()));
         assert!(plugin_available(&xpsnr()));
-        // VMAF's caller is special-cased and has no plugin branch, so listing it
-        // here would promise a fallback that does not exist.
+        // VMAF's caller is special-cased and has no plugin branch, so listing
+        // it here would promise a fallback that does not exist.
         assert!(!plugin_available(&QualityMetric::VMAF {
             target_range: (85.0, 95.0),
             resolution:   None,

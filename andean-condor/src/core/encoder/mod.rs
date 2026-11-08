@@ -543,8 +543,10 @@ impl Encoder {
                         );
 
                         if let Ok(line) = simdutf8::basic::from_utf8(&line) {
-                            // This needs to be done before parse_encoded_frames, as it potentially
-                            // mutates the string - Not sure if this applies anymore -Boats
+                            // This needs to be done before
+                            // parse_encoded_frames, as it potentially
+                            // mutates the string - Not sure if this applies
+                            // anymore -Boats
                             let mut stderr_output_lock =
                                 stderr_output_clone.lock().expect("mutex should acquire lock");
                             stderr_output_lock.push_str(line);
@@ -742,8 +744,8 @@ impl Encoder {
         let base_encoder = self.base();
         let base_encoder_clone = base_encoder;
 
-        // println!("Encoding with params: {:?}", self.parameters(pass, output));
-        // let mut system = sysinfo::System::new();
+        // println!("Encoding with params: {:?}", self.parameters(pass,
+        // output)); let mut system = sysinfo::System::new();
         let mut encoder = Command::new(self.executable())
             .args(self.parameters_with_output(pass, output, clip_info))
             .stdin(Stdio::piped())
@@ -834,7 +836,8 @@ impl Encoder {
                         let line = buf.clone();
                         // let pid = sysinfo::Pid::from_u32(pid);
                         // let refresh_kind =
-                        //     sysinfo::ProcessRefreshKind::nothing().with_cpu().with_memory();
+                        //     sysinfo::ProcessRefreshKind::nothing().
+                        // with_cpu().with_memory();
                         // system.refresh_processes_specifics(
                         //     sysinfo::ProcessesToUpdate::Some(&[pid]),
                         //     true,
@@ -856,8 +859,10 @@ impl Encoder {
                         };
 
                         if let Ok(line) = simdutf8::basic::from_utf8(&line) {
-                            // This needs to be done before parse_encoded_frames, as it potentially
-                            // mutates the string - Not sure if this applies anymore -Boats
+                            // This needs to be done before
+                            // parse_encoded_frames, as it potentially
+                            // mutates the string - Not sure if this applies
+                            // anymore -Boats
                             let mut stderr_output_lock =
                                 stderr_output_clone.lock().expect("mutex should acquire lock");
                             // println!("STDERR: {}", line);

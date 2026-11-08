@@ -79,8 +79,8 @@ where
     ) -> Result<((), Vec<anyhow::Error>)> {
         let mut warnings = vec![];
 
-        // Getting clip_info may be a long running process, so do it after data/config
-        // validation but before execution
+        // Getting clip_info may be a long running process, so do it after
+        // data/config validation but before execution
         if let Some(input) = &mut self.input {
             progress_tx.send(SequenceStatus::Whole(Status::Processing {
                 id:         Self::DETAILS.name.to_owned(),

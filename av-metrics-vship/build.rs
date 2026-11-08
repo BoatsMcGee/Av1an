@@ -120,13 +120,13 @@ fn windows_system_directories() -> Vec<PathBuf> {
     }
 
     fn query(entry: unsafe extern "system" fn(*mut u16, u32) -> u32) -> Option<PathBuf> {
-        // A return equal to the buffer size means the path was truncated, so grow
-        // and ask again rather than using a partial directory.
+        // A return equal to the buffer size means the path was truncated, so
+        // grow and ask again rather than using a partial directory.
         let mut buffer = vec![0u16; 260];
         loop {
             let capacity = buffer.len();
-            // SAFETY: `buffer` is writable for `capacity` units, which is the size
-            // passed alongside it.
+            // SAFETY: `buffer` is writable for `capacity` units, which is the
+            // size passed alongside it.
             let written = unsafe { entry(buffer.as_mut_ptr(), capacity as u32) };
             if written == 0 {
                 return None;
@@ -141,8 +141,9 @@ fn windows_system_directories() -> Vec<PathBuf> {
     }
 
     let mut directories = Vec::with_capacity(2);
-    // Native System32 first, then WOW64. A 32-bit process asking for System32 is
-    // redirected to SysWOW64, which is the directory it can really load from.
+    // Native System32 first, then WOW64. A 32-bit process asking for System32
+    // is redirected to SysWOW64, which is the directory it can really load
+    // from.
     directories.extend(query(GetSystemDirectoryW));
     directories.extend(query(GetSystemWow64DirectoryW));
     directories.extend(

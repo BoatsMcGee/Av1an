@@ -199,8 +199,8 @@ fn library_only(
         color = ColorInfo::from_details(&details)?;
         peak = color.max_sample()?;
 
-        // Deliberately outside every timed region below: this is our cost, not the
-        // library's.
+        // Deliberately outside every timed region below: this is our cost, not
+        // the library's.
         let (width, height) = (details.width, details.height);
         let mut frames = Vec::with_capacity(wanted);
         for _ in 0..wanted {
@@ -236,16 +236,16 @@ fn library_only(
         color,
     )?);
 
-    // A serial pass first: both the reference score and the wall time the parallel
-    // runs are compared against.
+    // A serial pass first: both the reference score and the wall time the
+    // parallel runs are compared against.
     let started = Instant::now();
     let serial: Vec<f64> =
         prepared.iter().map(|frame| frame.score(&scorer)).collect::<Result<_, _>>()?;
     let serial_wall = started.elapsed().as_secs_f64();
 
     // Per-call latency is recorded alongside wall time: unchanged latency with
-    // falling throughput means the calls are queueing, while latency rising with
-    // thread count means they are contending for a shared resource.
+    // falling throughput means the calls are queueing, while latency rising
+    // with thread count means they are contending for a shared resource.
     let (parallel, identical, worst_call_ms) = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads)
             .map(|_| {
@@ -271,8 +271,9 @@ fn library_only(
         for handle in handles {
             let (elapsed, scores, worst) = handle.join().expect("worker")?;
             slowest = slowest.max(elapsed);
-            // Bit-identical, not approximately equal: a difference would mean the
-            // library's results depend on which workspace ran them.
+            // Bit-identical, not approximately equal: a difference would mean
+            // the library's results depend on which workspace ran
+            // them.
             all_match &= scores.iter().zip(&serial).all(|(a, b)| a.to_bits() == b.to_bits());
             worst_latency = worst_latency.max(worst);
         }

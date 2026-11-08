@@ -100,8 +100,8 @@ mod tests {
             "no scene is split"
         );
 
-        // The test video's scenes are (0, 121), (121, 240), (240, 480), (480, 528),
-        // (528, 720).
+        // The test video's scenes are (0, 121), (121, 240), (240, 480), (480,
+        // 528), (528, 720).
         let expected = [
             x265(18.0),
             x265(18.0),

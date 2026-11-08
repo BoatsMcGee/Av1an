@@ -307,8 +307,8 @@ mod tests {
         // geometry `FrameBuilder` actually built.
         let chroma_dims = subsampling.subsample_ratio().map(|(x, y)| {
             (
-                width / NonZeroUsize::from(x).get(),
-                height / NonZeroUsize::from(y).get(),
+                width / NonZeroUsize::from(x),
+                height / NonZeroUsize::from(y),
             )
         });
         for plane in [&frame.u_plane, &frame.v_plane].into_iter().flatten() {
@@ -360,7 +360,8 @@ mod tests {
 
     #[test]
     fn box_average_downscales_by_two() {
-        // 2×2 blocks average to one output pixel; half the plane is 0, half 128.
+        // 2×2 blocks average to one output pixel; half the plane is 0, half
+        // 128.
         let mut data = vec![0u8; 96 * 54];
         for (index, value) in data.iter_mut().enumerate() {
             let x = index % 96;

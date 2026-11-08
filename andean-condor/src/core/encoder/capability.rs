@@ -116,8 +116,8 @@ fn svt_av1_supports_quarter_step_crf(executable: &Path) -> bool {
     };
 
     if let Some(stdin) = child.stdin.take() {
-        // Writing may fail if the encoder rejects arguments before reading input;
-        // that's fine — we only care about the exit status.
+        // Writing may fail if the encoder rejects arguments before reading
+        // input; that's fine — we only care about the exit status.
         let _ = generate_y4m_stream(stdin, 320, 240, 10);
     }
 

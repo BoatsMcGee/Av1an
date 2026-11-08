@@ -41,7 +41,8 @@ fn restore_discovery_env(saved: Vec<(String, OsString)>) {
     // with_vsscript_path)
     for var in DISCOVERY_ENV_VARS {
         if *var != "VSSCRIPT_PATH" {
-            // SAFETY: no other thread exists in this test binary while this runs
+            // SAFETY: no other thread exists in this test binary while this
+            // runs
             unsafe {
                 env::remove_var(var);
             }
@@ -50,7 +51,8 @@ fn restore_discovery_env(saved: Vec<(String, OsString)>) {
     // Then restore saved values except VSSCRIPT_PATH
     for (var, val) in saved {
         if var != "VSSCRIPT_PATH" {
-            // SAFETY: no other thread exists in this test binary while this runs
+            // SAFETY: no other thread exists in this test binary while this
+            // runs
             unsafe {
                 env::set_var(var, val);
             }
@@ -106,7 +108,8 @@ fn with_vsscript_path<T>(script: Option<&str>, body: impl FnOnce() -> T) -> T {
 #[test]
 fn the_vapoursynth_plugin_directory_is_a_candidate() {
     let saved = clear_discovery_env();
-    // Use a temporary directory structure that mimics a VapourSynth installation
+    // Use a temporary directory structure that mimics a VapourSynth
+    // installation
     let temp_dir = tempfile::tempdir().unwrap();
     let runtime_dir = temp_dir.path().join("vapoursynth");
     let plugins_dir = runtime_dir.join("plugins");
@@ -134,7 +137,8 @@ fn the_vapoursynth_plugin_directory_is_a_candidate() {
 #[test]
 fn the_plugin_directory_yields_a_library_file_name() {
     let saved = clear_discovery_env();
-    // Use a temporary directory structure that mimics a VapourSynth installation
+    // Use a temporary directory structure that mimics a VapourSynth
+    // installation
     let temp_dir = tempfile::tempdir().unwrap();
     let runtime_dir = temp_dir.path().join("vapoursynth");
     let plugins_dir = runtime_dir.join("plugins");
@@ -249,9 +253,9 @@ fn the_extra_plugin_path_list_is_expanded() {
 #[test]
 fn the_build_records_a_hint_without_failing() {
     let saved = clear_discovery_env();
-    // A build that failed in `build.rs` would not have produced a test binary at
-    // all, so reaching this assertion is itself the check. What can be inspected
-    // is the hint's shape when one was recorded.
+    // A build that failed in `build.rs` would not have produced a test binary
+    // at all, so reaching this assertion is itself the check. What can be
+    // inspected is the hint's shape when one was recorded.
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     assert!(
         manifest.join("build.rs").is_file(),

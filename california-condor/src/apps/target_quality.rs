@@ -237,7 +237,8 @@ impl TuiApp for TargetQualityApp {
     }
 
     fn on_snapshot(&mut self, snapshot: Self::State) {
-        // Reset the pass timer when entering a new encode/compare phase or pass.
+        // Reset the pass timer when entering a new encode/compare phase or
+        // pass.
         let new_encode_phase = snapshot.frames_encoded == 0 && snapshot.frames_compared == 0;
         let new_compare_phase =
             snapshot.frames_compared > 0 && self.cached_state.frames_compared == 0;

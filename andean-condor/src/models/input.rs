@@ -237,8 +237,8 @@ impl Input {
             Input::Video {
                 ..
             } => {
-                // A native input has no time-altering filters to append, and its
-                // own are left untouched.
+                // A native input has no time-altering filters to append, and
+                // its own are left untouched.
                 Err(InputFilterError::WrongKind)
             },
         }

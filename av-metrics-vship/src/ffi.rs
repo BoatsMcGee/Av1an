@@ -945,9 +945,10 @@ fn resolve() -> Result<VshipApi, VshipException> {
     // below are only valid while it is loaded.
     let library = Box::leak(Box::new(library));
 
-    // Each `required` call checks for the symbol's presence before its result is
-    // dereferenced, and `T` is written to match the C signature of `name`. The
-    // leaked `library` above keeps the code these point at mapped.
+    // Each `required` call checks for the symbol's presence before its result
+    // is dereferenced, and `T` is written to match the C signature of
+    // `name`. The leaked `library` above keeps the code these point at
+    // mapped.
     Ok(VshipApi {
         get_version:                     required(library, b"Vship_GetVersion\0")?,
         get_device_count:                required(library, b"Vship_GetDeviceCount\0")?,
@@ -987,9 +988,9 @@ fn open_library() -> Result<Library, VshipException> {
     let mut failures = Vec::new();
 
     for candidate in library_candidates() {
-        // SAFETY: loading an arbitrary shared library executes its initialisers.
-        // This is the intended way to use libvship, and the candidate paths are
-        // constrained to libvship file names.
+        // SAFETY: loading an arbitrary shared library executes its
+        // initialisers. This is the intended way to use libvship, and
+        // the candidate paths are constrained to libvship file names.
         match unsafe { Library::new(&candidate) } {
             Ok(library) => return Ok(library),
             Err(error) => failures.push(format!("{}: {error}", candidate.display())),
@@ -1021,8 +1022,8 @@ pub fn library_candidates() -> Vec<PathBuf> {
         }
     }
 
-    // 2. The VapourSynth runtime that owns the plugin. `VSSCRIPT_PATH` names the
-    //    script DLL, so the plugin directory is its sibling `plugins`.
+    // 2. The VapourSynth runtime that owns the plugin. `VSSCRIPT_PATH` names
+    //    the script DLL, so the plugin directory is its sibling `plugins`.
     if let Ok(script) = std::env::var("VSSCRIPT_PATH")
         && !script.is_empty()
         && let Some(runtime) = Path::new(&script).parent()
@@ -1050,9 +1051,9 @@ pub fn library_candidates() -> Vec<PathBuf> {
         candidates.extend(names.iter().map(|name| directory.join(name)));
     }
 
-    // 5. Bare names, so the platform loader's own search path applies. A parentless
-    //    candidate is the signal that the loader, not this crate, decides where the
-    //    library is.
+    // 5. Bare names, so the platform loader's own search path applies. A
+    //    parentless candidate is the signal that the loader, not this crate,
+    //    decides where the library is.
     candidates.extend(names.iter().map(PathBuf::from));
 
     candidates
@@ -1076,9 +1077,9 @@ fn system_directories() -> Vec<PathBuf> {
         return Vec::new();
     }
 
-    // Native System32 first, then the WOW64 directory. A 32-bit process asking for
-    // System32 is redirected to SysWOW64, which is the directory it can really load
-    // from, so both entry points are worth asking.
+    // Native System32 first, then the WOW64 directory. A 32-bit process asking
+    // for System32 is redirected to SysWOW64, which is the directory it can
+    // really load from, so both entry points are worth asking.
     let mut directories = Vec::with_capacity(2);
     directories.extend(windows_system_directory(true));
     directories.extend(windows_system_directory(false));
@@ -1107,8 +1108,8 @@ fn windows_system_directory(native_system: bool) -> Option<PathBuf> {
         GetSystemWow64DirectoryW
     };
 
-    // A return equal to the buffer size means the path was truncated, so grow and
-    // ask again rather than using a partial directory.
+    // A return equal to the buffer size means the path was truncated, so grow
+    // and ask again rather than using a partial directory.
     let mut buffer = vec![0u16; 260];
     loop {
         let capacity = buffer.len();
@@ -1326,8 +1327,9 @@ mod tests {
     fn system_directories_are_real_and_not_assumed_to_be_on_c() {
         // Windows can be installed to another drive or relocated, so the system
         // directory has to come from the OS. A hardcoded `C:\Windows` silently
-        // names a directory that does not exist there, and the failure looks like
-        // "libvship is not installed" rather than "the search path was wrong".
+        // names a directory that does not exist there, and the failure looks
+        // like "libvship is not installed" rather than "the search path
+        // was wrong".
         for directory in system_directories() {
             assert!(directory.is_absolute(), "{directory:?} should be absolute");
             assert!(
@@ -1563,8 +1565,9 @@ mod tests {
     #[test]
     fn device_info_name_stops_at_the_nul() {
         let mut info = VshipDeviceInfo::default();
-        // The C header declares `name` as `char`, which is signed, so each ASCII
-        // byte must be reinterpreted rather than assigned directly.
+        // The C header declares `name` as `char`, which is signed, so each
+        // ASCII byte must be reinterpreted rather than assigned
+        // directly.
         for (slot, byte) in info.name[..5].iter_mut().zip(*b"GeFoo") {
             *slot = byte as c_char;
         }

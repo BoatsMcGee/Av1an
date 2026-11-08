@@ -101,8 +101,9 @@ impl SceneConcatenator {
                 );
                 write_options(&group_args, &group_options_path)?;
 
-                // Paths in the options files are relative to this process's working
-                // directory, so mkvmerge must run from it too.
+                // Paths in the options files are relative to this process's
+                // working directory, so mkvmerge must run from
+                // it too.
                 let mut group_cmd = Command::new("mkvmerge");
                 group_cmd.arg(format!("@{}", fix_path(&group_options_path)));
                 group_cmd.stdin(Stdio::null());

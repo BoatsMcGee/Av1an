@@ -130,8 +130,8 @@ fn vship_devices() -> Vec<MetricDeviceInfo> {
     devices
         .into_iter()
         .map(|device| {
-            // A zero VRAM report is libvship saying nothing, not that the device
-            // has no memory.
+            // A zero VRAM report is libvship saying nothing, not that the
+            // device has no memory.
             let vram_bytes = (device.info.vram_size > 0).then_some(device.info.vram_size);
 
             MetricDeviceInfo {

@@ -281,7 +281,8 @@ pub trait TuiApp: Send + Sync + 'static {
     ) -> Result<()> {
         // Install the render theme for the whole run. Reading an env var keeps
         // the plumbing out of every `new()`; the default (dark) is the
-        // historical look. Headless runs never render, so this is a no-op there.
+        // historical look. Headless runs never render, so this is a no-op
+        // there.
         let _theme_guard = crate::theme::Theme::set_mode(crate::theme::ThemeMode::parse(
             std::env::var("CONDOR_THEME").ok().as_deref(),
         ));

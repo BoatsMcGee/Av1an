@@ -133,8 +133,8 @@ pub fn run_scene_detector_tui(
             ));
         }
 
-        // Try to recover by appending the time altering filters from the input to the
-        // scd input
+        // Try to recover by appending the time altering filters from the input
+        // to the scd input
         warn!(
             "Input and Scene Detector Input have mismatched frames and Scene Detector Input is \
              missing time altering filters such as trim or splice."
@@ -647,9 +647,9 @@ pub fn run_parallel_encoder_tui(
         pe_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    // Joined before propagating either result: a TUI thread still running owns raw
-    // mode and the panic hook, so letting one escape into the next sequence would
-    // hand both to two apps at once.
+    // Joined before propagating either result: a TUI thread still running owns
+    // raw mode and the panic hook, so letting one escape into the next
+    // sequence would hand both to two apps at once.
     let executed = parallel_encoder.execute(condor, progress_tx, cancelled);
 
     let tui_result = tui_handle

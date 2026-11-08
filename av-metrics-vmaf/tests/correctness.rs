@@ -137,13 +137,14 @@ fn identical_clips_score_at_or_near_the_maximum() {
         "scoring identical clips must produce at least one score"
     );
 
-    // Identical clips must score identically at every frame, which is the property
-    // this asserts. The absolute value is *not* 100: libvmaf's motion and temporal
-    // extractors compare consecutive frames, so the first frame has no predecessor
-    // and scores lower, and a high-frequency synthetic pattern can score below 100
-    // on later frames too. Measured against libvmaf's own CLI, an identical pair
-    // scores exactly 100 per frame on smooth content but not on synthetic noise, so
-    // pinning an absolute number here would be pinning our test content rather than
+    // Identical clips must score identically at every frame, which is the
+    // property this asserts. The absolute value is *not* 100: libvmaf's
+    // motion and temporal extractors compare consecutive frames, so the
+    // first frame has no predecessor and scores lower, and a high-frequency
+    // synthetic pattern can score below 100 on later frames too. Measured
+    // against libvmaf's own CLI, an identical pair scores exactly 100 per
+    // frame on smooth content but not on synthetic noise, so pinning an
+    // absolute number here would be pinning our test content rather than
     // the implementation. `matches_the_reference_tools_on_a_real_clip` is what
     // verifies absolute agreement with the reference tools.
     for frame in &scores {
@@ -208,8 +209,9 @@ fn scores_decrease_as_distortion_increases() {
 fn frame_count_is_preserved_exactly() {
     require_libvmaf!();
 
-    // The sliding window means the last score only arrives on flush. This is the
-    // most likely place for an off-by-one, so the count is asserted exactly.
+    // The sliding window means the last score only arrives on flush. This is
+    // the most likely place for an off-by-one, so the count is asserted
+    // exactly.
     for frames in [1usize, 2, 3, 8, 17] {
         let pair = SyntheticPair::generate(
             64,
@@ -307,10 +309,10 @@ fn draining_reports_final_scores_once_and_matches_the_finished_ones() {
             .expect("submitting a pair should succeed");
     }
 
-    // Draining without a flush reports whatever libvmaf has already computed. It
-    // may report nothing, but it must never invent an index, and each score it
-    // does report must be final, because that is what makes an incremental report
-    // safe to show as it arrives.
+    // Draining without a flush reports whatever libvmaf has already computed.
+    // It may report nothing, but it must never invent an index, and each
+    // score it does report must be final, because that is what makes an
+    // incremental report safe to show as it arrives.
     let mut drained = Vec::new();
     loop {
         let batch = scorer.drain_scores(drained.len()).expect("draining scores should succeed");
@@ -328,11 +330,11 @@ fn draining_reports_final_scores_once_and_matches_the_finished_ones() {
     assert_eq!(finished.len(), total, "one score per submitted pair");
 
     // Draining before the flush is what makes the report live. On a clip this
-    // small libvmaf may finish extracting before the first drain, so a zero count
-    // is legitimate; what must not happen is scores appearing only after the
-    // flush. This asserts the weaker, always-true property so the test does not
-    // become flaky on timing, while `redrained` below proves every score is
-    // reachable both before and after the flush.
+    // small libvmaf may finish extracting before the first drain, so a zero
+    // count is legitimate; what must not happen is scores appearing only
+    // after the flush. This asserts the weaker, always-true property so the
+    // test does not become flaky on timing, while `redrained` below proves
+    // every score is reachable both before and after the flush.
     assert!(
         drained.len() <= total,
         "the drain must never report more scores than were submitted"
@@ -347,9 +349,9 @@ fn draining_reports_final_scores_once_and_matches_the_finished_ones() {
         );
     }
 
-    // Once `finish` has flushed, draining from the start yields every score, and
-    // each one matches. This is what lets a caller stop tracking positions once
-    // it has flushed.
+    // Once `finish` has flushed, draining from the start yields every score,
+    // and each one matches. This is what lets a caller stop tracking
+    // positions once it has flushed.
     let redrained = scorer.drain_scores(0).expect("draining after a flush");
     assert_eq!(
         redrained, finished,
@@ -721,10 +723,10 @@ fn matches_the_reference_tools_on_a_real_clip() {
         .score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {})
         .expect("scoring a clip against itself should succeed");
 
-    // Measured with libvmaf 3.2.1's CLI and FFmpeg's libvmaf filter, which agree to
-    // six decimal places: frame 0 scores 97.42837 and every later frame scores
-    // exactly 100. Frame 0 is lower because the motion and temporal extractors
-    // have no previous frame to compare against.
+    // Measured with libvmaf 3.2.1's CLI and FFmpeg's libvmaf filter, which
+    // agree to six decimal places: frame 0 scores 97.42837 and every later
+    // frame scores exactly 100. Frame 0 is lower because the motion and
+    // temporal extractors have no previous frame to compare against.
     for (index, frame) in scores.iter().enumerate() {
         let expected = if index == 0 { 97.42837 } else { 100.0 };
         assert!(
@@ -791,9 +793,9 @@ fn the_frame_path_agrees_with_the_streaming_path() {
     let pairs = decode_pairs(&mut reference, &mut distorted, &wanted);
     let frame_path = scorer.score_frames::<u8>(&pairs).expect("frame-path scoring");
 
-    // The streaming path scores every frame of the clip; the frame path scores only
-    // the selection. The selection is the leading run, so its scores must match the
-    // streaming path's for the same frames.
+    // The streaming path scores every frame of the clip; the frame path scores
+    // only the selection. The selection is the leading run, so its scores
+    // must match the streaming path's for the same frames.
     assert!(
         streaming.len() >= wanted.len(),
         "streaming should score at least the {} selected frames, got {}",
@@ -875,7 +877,8 @@ fn a_stock_model_resolves_from_a_directory() {
         chroma_sampling: details.chroma_sampling,
     };
 
-    // No `with_model_path`, so the stock name is used and must be found on disk.
+    // No `with_model_path`, so the stock name is used and must be found on
+    // disk.
     let mut scorer =
         VmafScorer::new(VmafConfig::new(), format).expect("the model should resolve from disk");
 
@@ -883,8 +886,9 @@ fn a_stock_model_resolves_from_a_directory() {
         .score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {})
         .expect("scoring should succeed");
 
-    // y4m carries no frame count in its header, so the count is whatever the clip
-    // yields; the point is that scoring succeeded and the values are sane.
+    // y4m carries no frame count in its header, so the count is whatever the
+    // clip yields; the point is that scoring succeeded and the values are
+    // sane.
     assert!(!scores.is_empty(), "scoring should produce scores");
     for frame in &scores {
         assert!(

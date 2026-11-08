@@ -202,7 +202,8 @@ fn msys2_root(loaded_from: Option<&Path>) -> Option<PathBuf> {
 fn dll_implied_root(loaded_from: Option<&Path>) -> Option<PathBuf> {
     let bin = loaded_from?;
     let root = bin.parent()?.parent()?;
-    // A root such as `C:\` has nothing above it, so there is no layout to derive.
+    // A root such as `C:\` has nothing above it, so there is no layout to
+    // derive.
     root.parent()?;
     Some(root.to_path_buf())
 }
@@ -683,10 +684,10 @@ mod tests {
     /// directory cannot silently override the distribution's model.
     #[test]
     fn system_model_paths_take_precedence_over_executable_adjacent_ones() {
-        // `VMAF_MODEL_PATH` is an explicit override and is deliberately searched
-        // first, so drop it before comparing orderings. Comparing by value rather
-        // than by position keeps this correct if it is unset, which is the case
-        // in CI.
+        // `VMAF_MODEL_PATH` is an explicit override and is deliberately
+        // searched first, so drop it before comparing orderings.
+        // Comparing by value rather than by position keeps this correct
+        // if it is unset, which is the case in CI.
         let override_path = std::env::var("VMAF_MODEL_PATH").ok();
 
         let paths: Vec<String> = VmafModel::model_search_paths()
@@ -737,8 +738,9 @@ mod tests {
             );
         }
 
-        // The specific inference that regressed: the loaded directory names both a
-        // `share/vmaf/model` and a `model` directory, and the former must win.
+        // The specific inference that regressed: the loaded directory names
+        // both a `share/vmaf/model` and a `model` directory, and the
+        // former must win.
         assert!(
             paths.iter().any(|path| path.contains("share")),
             "the loaded directory should imply a `share/vmaf/model` directory. Candidates are \

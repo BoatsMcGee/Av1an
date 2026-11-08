@@ -464,9 +464,10 @@ mod tests {
 
     #[test]
     fn zero_distortion_ignores_the_seed() {
-        // With no amplitude there is no noise term, so content is fully determined
-        // by geometry. This is what lets a "distorted" clip using `Distortion::None`
-        // be byte-identical to its reference and score at the maximum.
+        // With no amplitude there is no noise term, so content is fully
+        // determined by geometry. This is what lets a "distorted" clip
+        // using `Distortion::None` be byte-identical to its reference
+        // and score at the maximum.
         let first = SyntheticClip::generate_with_seed(
             64,
             48,
@@ -499,7 +500,8 @@ mod tests {
         assert_eq!(details.height, clip.height);
         assert_eq!(details.bit_depth, usize::from(clip.effective_bit_depth()));
         assert_eq!(details.chroma_sampling, clip.chroma_sampling);
-        // y4m carries no frame count in its header, so the decoder reports `None`.
+        // y4m carries no frame count in its header, so the decoder reports
+        // `None`.
         assert_eq!(details.total_frames, None);
     }
 

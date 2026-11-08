@@ -55,7 +55,8 @@ impl Widget for ActiveEncoders<'_> {
             let active_worker_areas = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
                 .split(worker_area_inner);
 
-            // Top half: per-scene encoder parameters (only if different from parent)
+            // Top half: per-scene encoder parameters (only if different from
+            // parent)
             let encoder_info = EncoderInfo::new(
                 scene_encoder.scene.encoder.clone(),
                 Some(self.parent_encoder.clone()),

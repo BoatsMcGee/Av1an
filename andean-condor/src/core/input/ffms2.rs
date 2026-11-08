@@ -105,8 +105,9 @@ pub fn from_video(data: &InputModel) -> Result<Input> {
                 None => Ffms2Decoder::new(path, *index)?,
             };
 
-            // Captured before any filter runs, so a filter's unset fields resolve
-            // against the source rather than the filtered format.
+            // Captured before any filter runs, so a filter's unset fields
+            // resolve against the source rather than the filtered
+            // format.
             let source_details = ffms2_decoder.video_details;
 
             apply_filters(&mut ffms2_decoder, filters)?;
@@ -288,10 +289,12 @@ mod tests {
         fn write_row(stream: &mut Vec<u8>, row: &[u16]) {
             if cfg!(target_endian = "little") {
                 let bytes = unsafe {
-                    // SAFETY: `row` is a live `[u16]`, so `size_of_val(row)` bytes
-                    // are initialised and readable from `row.as_ptr()`, and `u8`
-                    // has an alignment of 1, so the cast is properly aligned. The
-                    // slice is only read and does not outlive `row`.
+                    // SAFETY: `row` is a live `[u16]`, so `size_of_val(row)`
+                    // bytes are initialised and readable
+                    // from `row.as_ptr()`, and `u8`
+                    // has an alignment of 1, so the cast is properly aligned.
+                    // The slice is only read and does not
+                    // outlive `row`.
                     std::slice::from_raw_parts(
                         row.as_ptr().cast::<u8>(),
                         std::mem::size_of_val(row),

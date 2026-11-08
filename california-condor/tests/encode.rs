@@ -71,7 +71,8 @@ mod tests {
             "preset".to_owned(),
             CLIParameter::new_number("--", " ", 8.0),
         );
-        // config.condor.scenes = test_video.mock_scenes(&config.condor.encoder);
+        // config.condor.scenes =
+        // test_video.mock_scenes(&config.condor.encoder);
         config.save(&config_path).expect("configuration save should succeed");
 
         condor_cmd(&temp)
@@ -274,8 +275,9 @@ mod tests {
         );
 
         // The encoded scenes are now on disk, so both concatenation methods can
-        // be exercised against them. Concatenating is far cheaper than encoding,
-        // and it leaves the scene files in place, so this needs no second encode.
+        // be exercised against them. Concatenating is far cheaper than
+        // encoding, and it leaves the scene files in place, so this
+        // needs no second encode.
         for label in ["mkvmerge", "ffmpeg"] {
             // Clear the previous run's output so each method starts clean. The
             // first iteration has none yet, since encoding only writes chunks.
@@ -289,9 +291,10 @@ mod tests {
                 .assert()
                 .success();
 
-            // Switching to a method that is not the current one starts from that
-            // method's defaults; the baseline config is mkvmerge, so the ffmpeg
-            // run lands on default FFmpeg settings.
+            // Switching to a method that is not the current one starts from
+            // that method's defaults; the baseline config is
+            // mkvmerge, so the ffmpeg run lands on default FFmpeg
+            // settings.
             let method = match label {
                 "mkvmerge" => ConcatMethod::MKVMerge(MkvmergeConfig::default()),
                 _ => ConcatMethod::FFmpeg(FfmpegConfig::default()),

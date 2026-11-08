@@ -314,25 +314,25 @@ pub fn score_probed_frames(
     let vship_config = scorer_config(config, frame_rate)?;
     let metric = vship_config.metric();
 
-    // Which Butteraugli norm is the headline depends on the configuration, not on
-    // the metric. The VapourSynth plugin reads `BUTTERAUGLI_INFNorm` unless a norm
-    // is requested and `BUTTERAUGLI_QNorm` when one is, so the native path has to
-    // follow the same rule or the two report different quantities for the same
-    // frames -- and `target_range` is calibrated against whichever the plugin
-    // reported.
+    // Which Butteraugli norm is the headline depends on the configuration, not
+    // on the metric. The VapourSynth plugin reads `BUTTERAUGLI_INFNorm`
+    // unless a norm is requested and `BUTTERAUGLI_QNorm` when one is, so
+    // the native path has to follow the same rule or the two report
+    // different quantities for the same frames -- and `target_range` is
+    // calibrated against whichever the plugin reported.
     let butteraugli_uses_q_norm = butteraugli_uses_q_norm(config);
 
     // The driver resets temporal history at a discontinuity itself, so the
     // configured `disable_temporal` has to gate that reset. Left ungated, the
-    // option would be set on the config and then overridden by the very pass that
-    // is supposed to honour it.
+    // option would be set on the config and then overridden by the very pass
+    // that is supposed to honour it.
     let reset_on_discontinuity = vship_config.cvvdp().reset_on_discontinuity;
 
     let reference_format = VideoFormat::from_details(&reference_details);
     let distorted_format = VideoFormat::from_details(&distorted_details);
 
-    // `resolution` becomes libvship's `target_width`/`target_height` rather than
-    // a rescale: libvship scales each input to it internally.
+    // `resolution` becomes libvship's `target_width`/`target_height` rather
+    // than a rescale: libvship scales each input to it internally.
     let target_resolution = resolution(config);
 
     let mut scorer = VshipScorer::new(
@@ -363,8 +363,9 @@ pub fn score_probed_frames(
 
             // A temporal handler must see every frame in order. When the
             // selection skips frames -- `ProbeStrategy::Skip` or `Subset`, or a
-            // scene boundary -- the handler would otherwise fold a discontinuity
-            // into its motion history, so its history is cleared first.
+            // scene boundary -- the handler would otherwise fold a
+            // discontinuity into its motion history, so its history
+            // is cleared first.
             if metric.is_temporal()
                 && reset_on_discontinuity
                 && previous.is_some_and(|previous| previous.checked_add(1) != Some(source_index))
@@ -668,9 +669,9 @@ mod tests {
             "with no norm the plugin reports the infinity norm, so the native path must too"
         );
 
-        // A norm requested: the plugin reads `BUTTERAUGLI_QNorm`. Note this is the
-        // configured-norm value, not the distortion map's L3 norm, so `butteraugli-3`
-        // selects `norm_q` rather than `norm_3`.
+        // A norm requested: the plugin reads `BUTTERAUGLI_QNorm`. Note this is
+        // the configured-norm value, not the distortion map's L3 norm,
+        // so `butteraugli-3` selects `norm_q` rather than `norm_3`.
         for norm in [2, 3, 5] {
             let configured = QualityMetric::BUTTERAUGLI {
                 target_range:         default.target_range(),

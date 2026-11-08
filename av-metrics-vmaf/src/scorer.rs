@@ -144,13 +144,14 @@ fn plane_source<T: Pixel>(
 ) -> PlaneSource {
     let geometry = plane.geometry();
 
-    // SAFETY: `Plane::data` is the plane's own allocation, and `geometry`'s stride
-    // and origin describe exactly that allocation. The `PlaneSource` is built and
-    // consumed inside the same `submit` call, so the borrow outlives it.
+    // SAFETY: `Plane::data` is the plane's own allocation, and `geometry`'s
+    // stride and origin describe exactly that allocation. The `PlaneSource`
+    // is built and consumed inside the same `submit` call, so the borrow
+    // outlives it.
     //
-    // `v_frame` reports stride and origin in samples, so both are scaled to bytes
-    // here. The stride is widened rather than cast, because the field is signed to
-    // allow bottom-up planes from other frame sources.
+    // `v_frame` reports stride and origin in samples, so both are scaled to
+    // bytes here. The stride is widened rather than cast, because the field
+    // is signed to allow bottom-up planes from other frame sources.
     unsafe {
         PlaneSource::new(
             geometry.width(),
@@ -245,8 +246,9 @@ pub struct VmafScorer {
 impl Drop for VmafScorer {
     #[inline]
     fn drop(&mut self) {
-        // Return the pooled pictures and release the model. This runs before the
-        // struct's fields are dropped, so `self.context` is still live here.
+        // Return the pooled pictures and release the model. This runs before
+        // the struct's fields are dropped, so `self.context` is still
+        // live here.
         self.context.release_picture(&mut self.reference_picture);
         self.context.release_picture(&mut self.distorted_picture);
 
@@ -277,15 +279,16 @@ impl VmafScorer {
     pub fn new(config: VmafConfig, format: VideoFormat) -> Result<Self, VmafError> {
         let pixel_format = format.validate()?;
 
-        // Resolve the model first so a bad path fails before libvmaf is touched.
+        // Resolve the model first so a bad path fails before libvmaf is
+        // touched.
         let model_spec = config.model.as_libvmaf_model()?;
         let model_spec = CString::new(model_spec).map_err(|_| VmafError::InvalidConfiguration {
             reason: "model specification contains an interior null byte".to_owned(),
         })?;
 
-        // Registration uses extractor names (`psnr`), while reading values back uses
-        // feature keys (`psnr_y`). They differ for the per-plane extractors, so both
-        // lists are kept.
+        // Registration uses extractor names (`psnr`), while reading values back
+        // uses feature keys (`psnr_y`). They differ for the per-plane
+        // extractors, so both lists are kept.
         let extractor_names: Vec<CString> = config
             .extractor_names()
             .into_iter()
@@ -321,25 +324,27 @@ impl VmafScorer {
 
         // Follow libvmaf's own initialisation order exactly: context, then its
         // picture pool, then the model, then the feature extractors that model
-        // requires. `vmaf_read_pictures` assumes every registered extractor has a
-        // live context, so ordering here is not incidental.
+        // requires. `vmaf_read_pictures` assumes every registered extractor has
+        // a live context, so ordering here is not incidental.
         let context = backend::initialise(api, configuration, config.backend, geometry)?;
 
-        // Built-in models and on-disk models use separate loaders; each rejects the
-        // other's input with `EINVAL`.
+        // Built-in models and on-disk models use separate loaders; each rejects
+        // the other's input with `EINVAL`.
         //
-        // Not every libvmaf build compiles the models in. When the built-in load
-        // fails for a stock model, look for the same model as a JSON file on disk
-        // before giving up, so a distribution that installs models separately works
-        // without the caller having to say so.
+        // Not every libvmaf build compiles the models in. When the built-in
+        // load fails for a stock model, look for the same model as a
+        // JSON file on disk before giving up, so a distribution that
+        // installs models separately works without the caller having to
+        // say so.
         let mut model_config = VmafModelConfig::new();
         let mut model: *mut VmafModelHandle = std::ptr::null_mut();
 
         let load_from_path = config.model.is_path();
         let mut load_spec = model_spec.clone();
 
-        // SAFETY: `model` is a valid out-pointer, `model_config` a valid mutable
-        // config, and `load_spec` a NUL-terminated string that outlives the call.
+        // SAFETY: `model` is a valid out-pointer, `model_config` a valid
+        // mutable config, and `load_spec` a NUL-terminated string that
+        // outlives the call.
         let mut status = unsafe {
             let loader = if load_from_path {
                 api.model_load_from_path
@@ -363,8 +368,9 @@ impl VmafScorer {
                 "the built-in VMAF model is unavailable; using the model file on disk"
             );
             load_spec = spec;
-            // SAFETY: as above, with `load_spec` now holding the file path and the
-            // caller having supplied a configuration libvmaf accepted.
+            // SAFETY: as above, with `load_spec` now holding the file path and
+            // the caller having supplied a configuration libvmaf
+            // accepted.
             status = unsafe {
                 (api.model_load_from_path)(
                     raw_mut_model(&mut model),
@@ -402,11 +408,12 @@ impl VmafScorer {
             });
         }
 
-        // Register any additional feature extractors the caller asked for. These are
-        // optional extras, so a rejection is logged rather than fatal.
+        // Register any additional feature extractors the caller asked for.
+        // These are optional extras, so a rejection is logged rather
+        // than fatal.
         for name in &extractor_names {
-            // SAFETY: `name` is a valid NUL-terminated string, and a null options
-            // dictionary selects the extractor's defaults.
+            // SAFETY: `name` is a valid NUL-terminated string, and a null
+            // options dictionary selects the extractor's defaults.
             let status =
                 unsafe { (api.use_feature)(context.raw, name.as_ptr(), std::ptr::null_mut()) };
             if status != 0 {
@@ -419,8 +426,8 @@ impl VmafScorer {
         }
 
         // Hold one picture pair for the whole run, as libvmaf's own CLI does.
-        // Fetching per frame also works, but reusing matches the reference flow and
-        // avoids a pool round-trip per frame.
+        // Fetching per frame also works, but reusing matches the reference flow
+        // and avoids a pool round-trip per frame.
         let reference_picture = context.pooled_picture()?;
         let distorted_picture = context.pooled_picture()?;
 
@@ -535,8 +542,9 @@ impl VmafScorer {
         let mut scores = Vec::new();
 
         loop {
-            // `av-decoders` signals end of stream through `DecoderError`, not an
-            // `Option`, so a short read is only distinguishable via its error.
+            // `av-decoders` signals end of stream through `DecoderError`, not
+            // an `Option`, so a short read is only distinguishable
+            // via its error.
             let reference_frame = reference.read_video_frame::<T>();
             let distorted_frame = distorted.read_video_frame::<T>();
 
@@ -560,8 +568,9 @@ impl VmafScorer {
                         });
                     }
 
-                    // A genuine decode failure on one or both sides; surface the
-                    // reference's, falling back to the distorted's.
+                    // A genuine decode failure on one or both sides; surface
+                    // the reference's, falling back to the
+                    // distorted's.
                     let error = match (reference_result, distorted_result) {
                         (Err(error), _) => error,
                         (_, Err(error)) => error,
@@ -578,11 +587,12 @@ impl VmafScorer {
             self.scored += 1;
         }
 
-        // Flushing runs the extractors to completion, after which every index has a
-        // score. libvmaf extracts asynchronously, so scores are not reliably
-        // available mid-stream: `vmaf_score_at_index` reports an error until the
-        // features for that index have been computed. Collecting only after the
-        // flush avoids depending on how far the worker threads have progressed.
+        // Flushing runs the extractors to completion, after which every index
+        // has a score. libvmaf extracts asynchronously, so scores are
+        // not reliably available mid-stream: `vmaf_score_at_index`
+        // reports an error until the features for that index have been
+        // computed. Collecting only after the flush avoids depending on
+        // how far the worker threads have progressed.
         self.flush()?;
 
         let total = self.scored;
@@ -593,8 +603,9 @@ impl VmafScorer {
                 on_score(scores.len() - 1, &score);
             } else {
                 // Compacting here would shift every later score down a slot and
-                // silently misattribute it to the wrong frame, so a missing score
-                // is an error rather than something to skip over.
+                // silently misattribute it to the wrong frame, so a missing
+                // score is an error rather than something to
+                // skip over.
                 return Err(VmafError::MissingScore {
                     index,
                 });
@@ -629,8 +640,9 @@ impl VmafScorer {
                 scores.iter().map(|score| score.score).fold(f64::NEG_INFINITY, f64::max)
             },
             PoolMethod::HarmonicMean => {
-                // n / sum(1/x_i), which for 10, 20, 30 is 3 / (0.1 + 0.05 + 0.0333)
-                // = 18. Matches libvmaf's VMAF_POOL_METHOD_HARMONIC_MEAN.
+                // n / sum(1/x_i), which for 10, 20, 30 is 3 / (0.1 + 0.05 +
+                // 0.0333) = 18. Matches libvmaf's
+                // VMAF_POOL_METHOD_HARMONIC_MEAN.
                 let count = scores.len() as f64;
                 count / scores.iter().map(|score| 1.0 / score.score).sum::<f64>()
             },
@@ -651,8 +663,9 @@ impl VmafScorer {
     ) -> Result<(), VmafError> {
         let bytes_per_sample = size_of::<T>();
 
-        // `Frame` exposes chroma planes as `Option`, since monochrome frames have
-        // none. libvmaf requires chroma, so this is a validation failure.
+        // `Frame` exposes chroma planes as `Option`, since monochrome frames
+        // have none. libvmaf requires chroma, so this is a validation
+        // failure.
         let (Some(u_plane), Some(v_plane)) = (&reference.u_plane, &reference.v_plane) else {
             return Err(VmafError::UnsupportedFormat {
                 reason: "frame has no chroma planes; libvmaf requires 4:2:0, 4:2:2 or 4:4:4 \
@@ -717,10 +730,11 @@ impl VmafScorer {
             )
         };
 
-        // libvmaf retains submitted pictures internally, so they cannot be reused
-        // verbatim for the next frame. Return them to the pool and take a fresh
-        // pair. The pool is sized from the thread count so libvmaf can still be
-        // reading the previous pair while this happens.
+        // libvmaf retains submitted pictures internally, so they cannot be
+        // reused verbatim for the next frame. Return them to the pool
+        // and take a fresh pair. The pool is sized from the thread
+        // count so libvmaf can still be reading the previous pair while
+        // this happens.
         self.context.release_picture(&mut self.reference_picture);
         self.context.release_picture(&mut self.distorted_picture);
         self.reference_picture = self.context.pooled_picture()?;
@@ -745,13 +759,15 @@ impl VmafScorer {
         // Set explicitly rather than relying on the pool having copied it from
         // `vmaf_preallocate_pictures`. libvmaf normalises every sample by
         // `picture.bpc`, and its `validate_pic_params` cross-checks it against
-        // `pic_params.bpc`, so a stale or zero value would silently score 10-bit
-        // content as 8-bit. Writing it here keeps the picture self-describing.
+        // `pic_params.bpc`, so a stale or zero value would silently score
+        // 10-bit content as 8-bit. Writing it here keeps the picture
+        // self-describing.
         picture.bpc = bit_depth;
 
         for (index, source) in planes.iter().enumerate() {
-            // The pooled picture is sized for the scorer's configured geometry, so
-            // a mismatch means the frame disagrees with what the scorer expects.
+            // The pooled picture is sized for the scorer's configured geometry,
+            // so a mismatch means the frame disagrees with what the
+            // scorer expects.
             let expected_width = picture.w[index] as usize;
             let expected_height = picture.h[index] as usize;
             if source.width != expected_width || source.height != expected_height {
@@ -788,9 +804,10 @@ impl VmafScorer {
             }
 
             // SAFETY: `data[index]` is a libvmaf-owned buffer sized for
-            // `expected_height` rows of `picture_stride` bytes, the checks above
-            // established that each source row is exactly `row_bytes` long and
-            // that the destination stride accommodates it, and `PlaneSource::row`
+            // `expected_height` rows of `picture_stride` bytes, the checks
+            // above established that each source row is exactly
+            // `row_bytes` long and that the destination stride
+            // accommodates it, and `PlaneSource::row`
             // returns a pointer to a visible row of the source.
             let destination = picture.data[index].cast::<u8>();
             let picture_stride = picture_stride as usize;
@@ -841,8 +858,8 @@ impl VmafScorer {
             (self.context.api().score_at_index)(self.context.raw, self.model, &mut score, index)
         };
         if status != 0 {
-            // A score that is not ready yet is expected before the flush, and is
-            // reported as `None` rather than an error.
+            // A score that is not ready yet is expected before the flush, and
+            // is reported as `None` rather than an error.
             return Ok(None);
         }
 
@@ -951,9 +968,9 @@ impl VmafScorer {
 
         let mut scores = Vec::with_capacity(self.scored);
         for index in 0..total {
-            // A missing score is an error rather than a skipped entry: omitting it
-            // would return a shorter vector and shift every later score into the
-            // wrong slot.
+            // A missing score is an error rather than a skipped entry: omitting
+            // it would return a shorter vector and shift every
+            // later score into the wrong slot.
             let Some(frame) = self.score_at(index)? else {
                 return Err(VmafError::MissingScore {
                     index,
@@ -1056,9 +1073,9 @@ impl VmafScorer {
 
         for name in &self.feature_names {
             let mut value = 0.0f64;
-            // SAFETY: `name` is a valid NUL-terminated string, the pool method is
-            // valid, the index range covers every submitted frame, and `value` is a
-            // valid out-pointer.
+            // SAFETY: `name` is a valid NUL-terminated string, the pool method
+            // is valid, the index range covers every submitted
+            // frame, and `value` is a valid out-pointer.
             let status = unsafe {
                 (self.context.api().feature_score_pooled)(
                     self.context.raw,

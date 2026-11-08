@@ -576,8 +576,9 @@ mod tests {
             "film-grain".to_owned(),
             CLIParameter::new_number("--", " ", 10.0),
         );
-        // `Encoder::executable` falls back to the base's default name for a path
-        // that does not exist, so the zone's binary has to be a real file.
+        // `Encoder::executable` falls back to the base's default name for a
+        // path that does not exist, so the zone's binary has to be a
+        // real file.
         let binary = std::env::current_exe().expect("the test binary has a path");
         let zone = merge(ZoneEncoderMerge {
             base: Some(EncoderBase::SVTAV1),

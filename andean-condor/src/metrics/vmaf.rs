@@ -217,8 +217,9 @@ pub fn score_probed_frames(
                 .map(|_| ())
                 .map_err(describe_error);
             submitted += submitted_at.elapsed();
-            // Scores are drained only once a pair has been submitted, so a frame
-            // is never reported before libvmaf has seen its reference.
+            // Scores are drained only once a pair has been submitted, so a
+            // frame is never reported before libvmaf has seen its
+            // reference.
             result?;
 
             for score in scorer.drain_scores(reported).map_err(describe_error)? {

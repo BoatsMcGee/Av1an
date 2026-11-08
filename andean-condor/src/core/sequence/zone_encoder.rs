@@ -786,7 +786,8 @@ fn is_frame_start(codec: Codec, segment: &[u8]) -> bool {
     match codec {
         Codec::H264 => {
             // nal_unit_type 1 (non-IDR slice) or 5 (IDR); then the MSB of the
-            // first RBSP byte is first_mb_in_slice == 0 (ue(v) 0 starts with 1).
+            // first RBSP byte is first_mb_in_slice == 0 (ue(v) 0 starts with
+            // 1).
             matches!(segment[3] & 0x1F, 1 | 5) && (segment[4] & 0x80) != 0
         },
         Codec::H265 => {
@@ -1466,8 +1467,9 @@ mod tests {
         let qpfile = directory.join("qpf");
         fs::write(&qpfile, "10 I\n20 I\n").expect("qpfile written");
         let zonefile = directory.join("zonefile");
-        // A zone line for every scene, including the first: without one, x265 leaves
-        // the first zone on the global CRF rather than the scene's.
+        // A zone line for every scene, including the first: without one, x265
+        // leaves the first zone on the global CRF rather than the
+        // scene's.
         let mut zonefile_content = String::new();
         for (index, crf) in crfs.iter().enumerate() {
             let _ = writeln!(zonefile_content, "{} --crf {}", index * 10, crf);

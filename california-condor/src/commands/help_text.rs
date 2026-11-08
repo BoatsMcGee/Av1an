@@ -25,7 +25,8 @@ const fn short_help(s: &str) -> &str {
     while i < bytes.len() {
         if bytes[i] == b'\n' {
             let (first_line, _) = bytes.split_at(i);
-            // SAFETY: `\n` is ASCII, so splitting at it is always a valid UTF-8 boundary.
+            // SAFETY: `\n` is ASCII, so splitting at it is always a valid UTF-8
+            // boundary.
             return unsafe { core::str::from_utf8_unchecked(first_line) };
         }
         i += 1;

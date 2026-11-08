@@ -282,8 +282,8 @@ mod tests {
             "stream_concurrently is false: {input:?}"
         );
 
-        // Setting executable on encode warns when the binary path does not exist,
-        // and still saves the path; reset clears it.
+        // Setting executable on encode warns when the binary path does not
+        // exist, and still saves the path; reset clears it.
         let missing_bin = temp.path().join("no-such-encoder");
         let stderr = condor_cmd(&temp)
             .args(["encode", "set", "executable", path_str(&missing_bin)])
