@@ -205,8 +205,8 @@ pub fn score_probed_frames(
             let submitted_at = Instant::now();
             let result = scorer
                 .submit_pair_raw(
-                    metric_planes(reference_planes),
-                    metric_planes(distorted_planes),
+                    metric_planes(reference_planes)?,
+                    metric_planes(distorted_planes)?,
                 )
                 .map(|_| ())
                 .map_err(describe_error);
@@ -257,27 +257,27 @@ pub fn score_probed_frames(
 
 /// Adapt the driver's plane set to the one `av-metrics-vmaf` submits.
 ///
-/// The two descriptors carry the same fields, so this is a field-by-field copy
-/// rather than a reinterpretation: the pointer still aliases the frame the
-/// driver is holding, and libvmaf copies out of it before the frame is dropped.
+/// Retains the driver's frame borrow and actual span, including when native
+/// padding is uninitialized. Geometry is checked again at the metric boundary.
 #[inline]
-fn metric_planes(planes: PlaneSet<'_>) -> MetricPlaneSet {
-    planes.map(|plane| {
-        // SAFETY: every field is copied unchanged from a `PlaneSource` the
-        // driver produced from a live frame. The driver consumes the set inside
-        // the `submit` call that receives it, so the frame outlives this
-        // reference, and libvmaf only reads the planes before it is dropped.
+fn metric_planes(planes: PlaneSet<'_>) -> Result<MetricPlaneSet<'_>> {
+    let [y, u, v] = planes.map(|plane| {
+        // SAFETY: private driver descriptors carry the actual frame borrow,
+        // known span, immutable geometry and initialized visible samples. The
+        // returned lifetime is the same borrow, not a pointer-derived lifetime.
         unsafe {
-            MetricPlaneSource::new(
+            MetricPlaneSource::from_raw_parts(
+                plane.data_ptr(),
+                plane.readable_len(),
                 plane.width(),
                 plane.height(),
                 plane.stride(),
                 plane.data_origin(),
                 plane.bytes_per_sample(),
-                plane.data_ptr(),
             )
         }
-    })
+    });
+    Ok([y?, u?, v?])
 }
 
 /// Turn a scorer error into a message that says what to do about it.
@@ -299,6 +299,115 @@ fn describe_error(error: VmafError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m06_probe_adapter_retains_real_spans_and_submits_to_cpu_vmaf() {
+        if !av_metrics_vmaf::is_available() {
+            assert!(
+                std::env::var_os("AV_METRICS_REQUIRE_CPU").is_none(),
+                "required CPU-native check needs libvmaf"
+            );
+            eprintln!("skipping: real VMAF probe integration needs libvmaf");
+            return;
+        }
+        // Fresh decoders exercise both native v_frame and VS's padded visible span.
+        for depth in [8, 10] {
+            let fixture = tempfile::Builder::new().suffix(".y4m").tempfile().expect("fresh Y4M");
+            let mut y4m = format!(
+                "YUV4MPEG2 W66 H48 F24:1 Ip A1:1 C{}\nFRAME\n",
+                if depth == 8 { "420jpeg" } else { "420p10" }
+            )
+            .into_bytes();
+            if depth == 8 {
+                y4m.extend_from_slice(&[100; 66 * 48]);
+                y4m.extend_from_slice(&[128; 2 * 33 * 24]);
+            } else {
+                y4m.extend([400u16; 66 * 48].into_iter().flat_map(u16::to_le_bytes));
+                y4m.extend([512u16; 2 * 33 * 24].into_iter().flat_map(u16::to_le_bytes));
+            }
+            std::fs::write(fixture.path(), y4m).expect("write native fixture");
+            for native in [true, false] {
+                let script = format!(
+                    "import vapoursynth as vs\nvs.core.std.BlankClip(width=66, height=48, length=1, format=vs.YUV420P{depth}).set_output()"
+                );
+                let open = || {
+                    if native {
+                        av_decoders::Decoder::from_file(fixture.path()).expect("native decoder")
+                    } else {
+                        av_decoders::Decoder::from_script(&script, Default::default())
+                            .expect("VS decoder")
+                    }
+                };
+                let mut reference = open();
+                let mut distorted = open();
+                let config = std::env::var("VMAF_TEST_MODEL").map_or_else(
+                    |_| ScorerConfig::new(),
+                    |path| ScorerConfig::new().with_model_path(path),
+                );
+                let mut scorer = VmafScorer::new(
+                    config.with_backend(BackendPreference::CpuOnly),
+                    VideoFormat {
+                        width: 66,
+                        height: 48,
+                        bit_depth: depth,
+                        chroma_sampling: av_decoders::v_frame::chroma::ChromaSubsampling::Yuv420,
+                    },
+                )
+                .expect("real CPU VMAF scorer");
+                let indices = probe::probe_selected_frames::<(), _>(
+                    &mut reference,
+                    &mut distorted,
+                    &[0],
+                    OutputIndexing::Aligned,
+                    None,
+                    probe::check_geometry,
+                    |_, reference, distorted| {
+                        if !native {
+                            assert!(
+                                reference.iter().all(|plane| plane.stride() as usize
+                                    > plane.width() * plane.bytes_per_sample()),
+                                "VS fixture must have row padding"
+                            );
+                        }
+                        let expected = reference.each_ref().map(|plane| {
+                            (
+                                plane.data_ptr(),
+                                plane.readable_len(),
+                                plane.width(),
+                                plane.height(),
+                                plane.stride(),
+                                plane.data_origin(),
+                                plane.bytes_per_sample(),
+                            )
+                        });
+                        let reference = metric_planes(reference)?;
+                        for (plane, expected) in reference.iter().zip(expected) {
+                            assert_eq!(
+                                (
+                                    plane.data_ptr(),
+                                    plane.readable_len(),
+                                    plane.width(),
+                                    plane.height(),
+                                    plane.stride(),
+                                    plane.data_origin(),
+                                    plane.bytes_per_sample()
+                                ),
+                                expected
+                            );
+                        }
+                        scorer
+                            .submit_pair_raw(reference, metric_planes(distorted)?)
+                            .map_err(describe_error)
+                    },
+                )
+                .expect("decode/probe/checked VMAF submission");
+                assert_eq!(indices, [0]);
+                let scores = scorer.finish().expect("real VMAF score");
+                assert_eq!(scores.len(), 1);
+                assert!(scores[0].is_finite());
+            }
+        }
+    }
 
     /// A VMAF metric configuration.
     ///

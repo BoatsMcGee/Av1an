@@ -28,87 +28,224 @@ pub struct VideoFormat {
     pub chroma_sampling: ChromaSubsampling,
 }
 
-/// One plane of a frame: a strided block of samples with a visible origin.
+/// A checked, borrowed plane with immutable geometry and a known backing span.
 ///
-/// This is the single description both supported frame sources reduce to. A
-/// VapourSynth `Frame` and a [`v_frame::plane::Plane`] are each just a pointer,
-/// a stride and an origin, so one copy loop serves both and neither source
-/// needs its own path through the scorer.
+/// Width is in samples; stride, origin and span are in BYTES. Negative strides
+/// describe bottom-up storage. Only visible bytes are read, not row padding.
+/// Two-byte samples use native endian storage; byte alignment is sufficient.
+/// Use slice constructors for Rust storage and [`Self::from_raw_parts`] for FFI.
 ///
-/// # Safety
+/// ```compile_fail
+/// use av_metrics_vmaf::PlaneSource;
+/// let bytes = [0u8; 4];
+/// let mut plane = PlaneSource::from_bytes(&bytes, 2, 2, 2, 0, 1).unwrap();
+/// plane.width = 20;
+/// ```
 ///
-/// `data` must be valid for reads covering every visible row, and must stay
-/// valid until the value has been consumed. The type is `Copy`, so keep it
-/// within a single expression rather than storing it.
+/// ```compile_fail
+/// use av_metrics_vmaf::PlaneSource;
+/// let bytes = [0u8; 4];
+/// let mut plane = PlaneSource::from_bytes(&bytes, 2, 2, 2, 0, 1).unwrap();
+/// plane.stride = 0;
+/// ```
+///
+/// The raw constructor requires an explicit unsafe allocation/lifetime promise:
+/// ```compile_fail
+/// use av_metrics_vmaf::PlaneSource;
+/// let bytes = [0u8; 4];
+/// let plane = PlaneSource::from_raw_parts(bytes.as_ptr(), bytes.len(), 2, 2, 2, 0, 1);
+/// ```
+///
+/// Views cannot outlive the frame they borrow:
+/// ```compile_fail
+/// use av_metrics_vmaf::PlaneSource;
+/// use v_frame::{frame::FrameBuilder, chroma::ChromaSubsampling};
+/// let plane;
+/// {
+///     let frame = FrameBuilder::new(2, 2, ChromaSubsampling::Yuv444, 8)
+///         .build::<u8>().unwrap();
+///     plane = PlaneSource::from_bytes(frame.y_plane.data(), 2, 2, 2, 0, 1).unwrap();
+/// }
+/// std::hint::black_box(plane);
+/// ```
 #[derive(Debug, Clone, Copy)]
-pub struct PlaneSource {
-    /// Width in pixels (samples per row, not bytes).
-    pub width: usize,
-    /// Height in pixels.
-    pub height: usize,
-    /// Samples from one row to the next. May be negative for bottom-up images.
-    pub stride: isize,
-    /// Offset of the first visible sample from `data`.
-    pub data_origin: usize,
-    /// Pointer to the start of the underlying allocation.
+pub struct PlaneSource<'a> {
+    width: usize,
+    height: usize,
+    stride: isize,
+    data_origin: usize,
     data: *const u8,
-    /// Bytes per sample, as passed to libvmaf.
     bytes_per_sample: usize,
+    readable_len: usize,
+    _storage: PhantomData<&'a [u8]>,
 }
 
-impl PlaneSource {
-    /// Describe a plane from a raw pointer, stride and origin.
+impl<'a> PlaneSource<'a> {
+    /// Borrow initialized bytes; stride and origin are in BYTES.
     ///
-    /// # Safety
-    ///
-    /// `data` must remain readable for `height` rows at `stride` spacing, and
-    /// `data_origin` must point at the first visible sample of row 0.
+    /// # Errors
+    /// Returns [`VmafError::MalformedFrame`] for zero/nonnative dimensions,
+    /// sample sizes other than 1/2, short
+    /// strides/spans, and overflowing or out-of-bounds signed byte offsets.
     #[inline]
-    #[must_use]
-    pub const unsafe fn new(
+    pub fn from_bytes(
+        data: &'a [u8],
         width: usize,
         height: usize,
         stride: isize,
         data_origin: usize,
         bytes_per_sample: usize,
+    ) -> Result<Self, VmafError> {
+        // SAFETY: the slice proves the actual span, initialization and shared borrow.
+        unsafe {
+            Self::from_raw_parts(
+                data.as_ptr(),
+                data.len(),
+                width,
+                height,
+                stride,
+                data_origin,
+                bytes_per_sample,
+            )
+        }
+    }
+
+    /// Borrow native-endian u16 samples; stride and origin still use BYTES.
+    ///
+    /// # Errors
+    /// Returns the same layout errors as [`Self::from_bytes`].
+    #[inline]
+    pub fn from_u16(
+        data: &'a [u16],
+        width: usize,
+        height: usize,
+        stride: isize,
+        data_origin: usize,
+    ) -> Result<Self, VmafError> {
+        // SAFETY: initialized u16 has no padding; the slice supplies its real span.
+        unsafe {
+            Self::from_raw_parts(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data),
+                width,
+                height,
+                stride,
+                data_origin,
+                2,
+            )
+        }
+    }
+
+    /// Describe foreign storage with an actual declared byte span.
+    /// Stride and origin are in BYTES. No slice over padding is created.
+    ///
+    /// # Errors
+    /// Returns layout errors as in [`Self::from_bytes`], also rejecting null
+    /// pointers and spans larger than `isize::MAX`, without dereferencing.
+    ///
+    /// # Safety
+    /// If validation succeeds, `data` must identify one live allocation covering
+    /// at least `readable_len` bytes. Visible samples must be initialized and
+    /// readable, without mutation for all of `'a`; padding may be uninitialized.
+    /// Bind `'a` to the actual owner. A required extent inferred from geometry
+    /// is not evidence of an allocation's length. Source storage must not overlap
+    /// libvmaf's destination pictures.
+    #[inline]
+    pub unsafe fn from_raw_parts(
         data: *const u8,
-    ) -> Self {
-        Self {
+        readable_len: usize,
+        width: usize,
+        height: usize,
+        stride: isize,
+        data_origin: usize,
+        bytes_per_sample: usize,
+    ) -> Result<Self, VmafError> {
+        let plane = Self {
             width,
             height,
             stride,
             data_origin,
             data,
             bytes_per_sample,
+            readable_len,
+            _storage: PhantomData,
+        };
+        if width == 0
+            || height == 0
+            || !matches!(bytes_per_sample, 1 | 2)
+            || readable_len > isize::MAX as usize
+            || u32::try_from(width).is_err()
+            || u32::try_from(height).is_err()
+        {
+            return Err(malformed("invalid plane dimensions, sample width or span"));
         }
+        let row_bytes = width
+            .checked_mul(bytes_per_sample)
+            .and_then(|n| isize::try_from(n).ok())
+            .ok_or_else(|| malformed("plane row size overflow"))?;
+        let origin =
+            isize::try_from(data_origin).map_err(|_| malformed("plane origin overflow"))?;
+        let last = isize::try_from(height - 1)
+            .ok()
+            .and_then(|n| n.checked_mul(stride))
+            .and_then(|n| origin.checked_add(n))
+            .filter(|&n| n >= 0)
+            .ok_or_else(|| malformed("plane row offset overflow or before allocation"))?;
+        if data.is_null()
+            || stride.checked_abs().is_none_or(|n| n < row_bytes)
+            || origin
+                .max(last)
+                .checked_add(row_bytes)
+                .is_none_or(|end| end as usize > readable_len)
+        {
+            return Err(malformed(
+                "invalid plane pointer, stride or visible byte extent",
+            ));
+        }
+        Ok(plane)
     }
 
-    /// Describe a plane that is contiguous, with no padding.
-    ///
-    /// # Safety
-    ///
-    /// `data` must be valid for reads of `height * width * bytes_per_sample`
-    /// bytes.
+    /// Width in samples.
     #[inline]
     #[must_use]
-    pub const unsafe fn contiguous(
-        width: usize,
-        height: usize,
-        bytes_per_sample: usize,
-        data: *const u8,
-    ) -> Self {
-        // SAFETY: the caller's contract for this constructor is exactly the one
-        // `new` requires.
-        unsafe {
-            Self::new(
-                width,
-                height,
-                (width * bytes_per_sample) as isize,
-                0,
-                bytes_per_sample,
-                data,
-            )
-        }
+    pub const fn width(&self) -> usize {
+        self.width
+    }
+    /// Height in rows.
+    #[inline]
+    #[must_use]
+    pub const fn height(&self) -> usize {
+        self.height
+    }
+    /// Signed row spacing in bytes.
+    #[inline]
+    #[must_use]
+    pub const fn stride(&self) -> isize {
+        self.stride
+    }
+    /// First visible sample's byte offset.
+    #[inline]
+    #[must_use]
+    pub const fn data_origin(&self) -> usize {
+        self.data_origin
+    }
+    /// Sample storage width in bytes.
+    #[inline]
+    #[must_use]
+    pub const fn bytes_per_sample(&self) -> usize {
+        self.bytes_per_sample
+    }
+    /// Declared backing span in bytes; padding may be uninitialized.
+    #[inline]
+    #[must_use]
+    pub const fn readable_len(&self) -> usize {
+        self.readable_len
+    }
+    /// Start of backing storage. Dereferencing requires unsafe code.
+    #[inline]
+    #[must_use]
+    pub const fn data_ptr(&self) -> *const u8 {
+        self.data
     }
 
     /// Pointer to the first visible byte of `row`, or `None` when out of range.
@@ -117,9 +254,19 @@ impl PlaneSource {
         if row >= self.height {
             return None;
         }
-        // SAFETY: the constructor's contract guarantees the allocation spans
-        // `height` rows at `stride` spacing, and `row` is bounds-checked above.
-        Some(unsafe { self.data.add(self.data_origin + (row as isize * self.stride) as usize) })
+        let offset = isize::try_from(row)
+            .ok()?
+            .checked_mul(self.stride)?
+            .checked_add(isize::try_from(self.data_origin).ok()?)?;
+        let offset = usize::try_from(offset).ok()?;
+        // SAFETY: construction checks every visible row against the borrowed span.
+        Some(unsafe { self.data.add(offset) })
+    }
+}
+
+fn malformed(reason: &str) -> VmafError {
+    VmafError::MalformedFrame {
+        reason: reason.to_owned(),
     }
 }
 
@@ -128,34 +275,40 @@ impl PlaneSource {
 /// All three representations a caller might have -- a VapourSynth `Frame`, a
 /// `v_frame::frame::Frame`, or a decoded `Frame` from any backend -- reduce to
 /// this, which is why the scorer needs no per-source special cases.
-pub type PlaneSet = [PlaneSource; 3];
+pub type PlaneSet<'a> = [PlaneSource<'a>; 3];
 
 /// Describe a `v_frame` plane as a [`PlaneSource`].
 ///
 /// This is the only adaptor `v_frame` needs: the plane already exposes a stride
 /// and a data origin, so no copying or per-row walking happens here.
-fn plane_source<T: Pixel>(
-    plane: &v_frame::plane::Plane<T>,
-    bytes_per_sample: usize,
-) -> PlaneSource {
+fn plane_source<T: Pixel>(plane: &v_frame::plane::Plane<T>) -> Result<PlaneSource<'_>, VmafError> {
     let geometry = plane.geometry();
-
-    // SAFETY: `Plane::data` is the plane's own allocation, and `geometry`'s
-    // stride and origin describe exactly that allocation. The `PlaneSource`
-    // is built and consumed inside the same `submit` call, so the borrow
-    // outlives it.
-    //
-    // `v_frame` reports stride and origin in samples, so both are scaled to
-    // bytes here. The stride is widened rather than cast, because the field
-    // is signed to allow bottom-up planes from other frame sources.
+    let bytes_per_sample = size_of::<T>();
+    let stride = geometry
+        .stride()
+        .checked_mul(bytes_per_sample)
+        .and_then(|n| isize::try_from(n).ok())
+        .ok_or_else(|| malformed("frame stride overflow"))?;
+    let origin = geometry
+        .data_origin()
+        .checked_mul(bytes_per_sample)
+        .ok_or_else(|| malformed("frame origin overflow"))?;
+    let readable_len = plane
+        .data()
+        .len()
+        .checked_mul(bytes_per_sample)
+        .ok_or_else(|| malformed("frame allocation byte length overflow"))?;
+    // SAFETY: v_frame 0.7 Pixel is sealed to initialized, padding-free u8/u16.
+    // Plane::data exposes the actual storage borrowed for the returned lifetime.
     unsafe {
-        PlaneSource::new(
+        PlaneSource::from_raw_parts(
+            plane.data().as_ptr().cast(),
+            readable_len,
             geometry.width(),
             geometry.height(),
-            geometry.stride() as isize * bytes_per_sample as isize,
-            geometry.data_origin() * bytes_per_sample,
+            stride,
+            origin,
             bytes_per_sample,
-            plane.data().as_ptr().cast::<u8>(),
         )
     }
 }
@@ -655,8 +808,6 @@ impl VmafScorer {
         distorted: &v_frame::frame::Frame<T>,
         index: u32,
     ) -> Result<(), VmafError> {
-        let bytes_per_sample = size_of::<T>();
-
         // `Frame` exposes chroma planes as `Option`, since monochrome frames
         // have none. libvmaf requires chroma, so this is a validation
         // failure.
@@ -676,15 +827,12 @@ impl VmafScorer {
         };
 
         let reference_planes = [
-            plane_source(&reference.y_plane, bytes_per_sample),
-            plane_source(u_plane, bytes_per_sample),
-            plane_source(v_plane, bytes_per_sample),
+            plane_source(&reference.y_plane)?,
+            plane_source(u_plane)?,
+            plane_source(v_plane)?,
         ];
-        let distorted_planes = [
-            plane_source(&distorted.y_plane, bytes_per_sample),
-            plane_source(d_u, bytes_per_sample),
-            plane_source(d_v, bytes_per_sample),
-        ];
+        let distorted_planes =
+            [plane_source(&distorted.y_plane)?, plane_source(d_u)?, plane_source(d_v)?];
 
         self.submit_planes(index, reference_planes, distorted_planes)
     }
@@ -697,17 +845,13 @@ impl VmafScorer {
     fn submit_planes(
         &mut self,
         index: u32,
-        reference: PlaneSet,
-        distorted: PlaneSet,
+        reference: PlaneSet<'_>,
+        distorted: PlaneSet<'_>,
     ) -> Result<(), VmafError> {
-        Self::fill_picture(
+        Self::fill_pictures(
             &mut self.reference_picture,
-            &reference,
-            self.format.pixel_format(),
-            self.format.bit_depth,
-        )?;
-        Self::fill_picture(
             &mut self.distorted_picture,
+            &reference,
             &distorted,
             self.format.pixel_format(),
             self.format.bit_depth,
@@ -737,28 +881,46 @@ impl VmafScorer {
         ffi::check(status, "vmaf_read_pictures")
     }
 
-    /// Copy plane sources into a pooled picture.
-    ///
-    /// The pooled picture `data`, `w`, `h` and `stride` are authoritative; only
-    /// the pixels are written here.
-    fn fill_picture(
-        picture: &mut VmafPicture,
-        planes: &PlaneSet,
+    /// Preflight the whole pair before either host picture is touched.
+    fn fill_pictures(
+        reference_picture: &mut VmafPicture,
+        distorted_picture: &mut VmafPicture,
+        reference: &PlaneSet<'_>,
+        distorted: &PlaneSet<'_>,
         pixel_format: Option<VmafPixelFormat>,
         bit_depth: u32,
     ) -> Result<(), VmafError> {
-        picture.pix_fmt = pixel_format.ok_or_else(|| VmafError::UnsupportedFormat {
-            reason: "chroma sampling is outside libvmaf's supported set".to_owned(),
-        })?;
-        // Set explicitly rather than relying on the pool having copied it from
-        // `vmaf_preallocate_pictures`. libvmaf normalises every sample by
-        // `picture.bpc`, and its `validate_pic_params` cross-checks it against
-        // `pic_params.bpc`, so a stale or zero value would silently score
-        // 10-bit content as 8-bit. Writing it here keeps the picture
-        // self-describing.
-        picture.bpc = bit_depth;
+        Self::validate_picture(reference_picture, reference, bit_depth)?;
+        Self::validate_picture(distorted_picture, distorted, bit_depth)?;
+        Self::fill_picture(reference_picture, reference, pixel_format, bit_depth)?;
+        Self::fill_picture(distorted_picture, distorted, pixel_format, bit_depth)
+    }
 
+    /// Validate all planes before any row read or destination write.
+    fn validate_picture(
+        picture: &VmafPicture,
+        planes: &PlaneSet<'_>,
+        bit_depth: u32,
+    ) -> Result<(), VmafError> {
+        let bytes_per_sample = match bit_depth {
+            8 => 1,
+            10 | 12 | 16 => 2,
+            _ => {
+                return Err(VmafError::UnsupportedFormat {
+                    reason: format!("unsupported bit depth {bit_depth}"),
+                });
+            },
+        };
         for (index, source) in planes.iter().enumerate() {
+            if source.bytes_per_sample != bytes_per_sample {
+                return Err(VmafError::InputMismatch {
+                    reason: format!(
+                        "plane {index} has {}-byte samples but {bit_depth}-bit scoring requires \
+                         {bytes_per_sample}-byte storage",
+                        source.bytes_per_sample
+                    ),
+                });
+            }
             // The pooled picture is sized for the scorer's configured geometry,
             // so a mismatch means the frame disagrees with what the
             // scorer expects.
@@ -774,12 +936,11 @@ impl VmafScorer {
                 });
             }
 
-            let row_bytes =
-                expected_width.checked_mul(source.bytes_per_sample).ok_or_else(|| {
-                    VmafError::MalformedFrame {
-                        reason: format!("plane {index} row length overflows"),
-                    }
-                })?;
+            let row_bytes = expected_width.checked_mul(bytes_per_sample).ok_or_else(|| {
+                VmafError::MalformedFrame {
+                    reason: format!("plane {index} row length overflows"),
+                }
+            })?;
 
             let picture_stride = picture.stride[index];
             if picture_stride < 0 || (picture_stride as usize) < row_bytes {
@@ -796,17 +957,36 @@ impl VmafScorer {
                     reason: format!("libvmaf returned a null buffer for plane {index}"),
                 });
             }
+            expected_height
+                .checked_sub(1)
+                .and_then(|n| n.checked_mul(picture_stride as usize))
+                .and_then(|n| n.checked_add(row_bytes))
+                .filter(|&n| isize::try_from(n).is_ok())
+                .ok_or_else(|| malformed("libvmaf destination byte offset overflow"))?;
+        }
+        Ok(())
+    }
 
-            // SAFETY: `data[index]` is a libvmaf-owned buffer sized for
-            // `expected_height` rows of `picture_stride` bytes, the checks
-            // above established that each source row is exactly
-            // `row_bytes` long and that the destination stride
-            // accommodates it, and `PlaneSource::row`
-            // returns a pointer to a visible row of the source.
+    /// Copy checked sources into a host picture. Pool geometry is authoritative.
+    fn fill_picture(
+        picture: &mut VmafPicture,
+        planes: &PlaneSet<'_>,
+        pixel_format: Option<VmafPixelFormat>,
+        bit_depth: u32,
+    ) -> Result<(), VmafError> {
+        Self::validate_picture(picture, planes, bit_depth)?;
+        picture.pix_fmt = pixel_format.ok_or_else(|| VmafError::UnsupportedFormat {
+            reason: "chroma sampling is outside libvmaf's supported set".to_owned(),
+        })?;
+        // libvmaf normalizes by bpc; don't rely on pooled metadata retaining it.
+        picture.bpc = bit_depth;
+        for (index, source) in planes.iter().enumerate() {
+            let row_bytes = source.width * source.bytes_per_sample;
+            let picture_stride = picture.stride[index] as usize;
+            // This host-copy path relies on the pool supplying writable host
+            // storage. Geometry validation is not proof of device-pointer safety.
             let destination = picture.data[index].cast::<u8>();
-            let picture_stride = picture_stride as usize;
-
-            for row in 0..expected_height {
+            for row in 0..source.height {
                 let Some(source_row) = source.row(row) else {
                     return Err(VmafError::MalformedFrame {
                         reason: format!("plane {index} does not have row {row}"),
@@ -917,7 +1097,10 @@ impl VmafScorer {
     ///
     /// # Errors
     ///
-    /// Returns an error if libvmaf rejects the pair.
+    /// Returns [`VmafError::InputMismatch`] for geometry or storage width that
+    /// disagrees with the configuration (u8 for 8-bit; u16 for 10/12/16-bit),
+    /// before copying/submitting either frame. Also reports malformed layouts
+    /// and native errors. Failed submissions do not advance the scored count.
     #[inline]
     pub fn submit_pair<T: Pixel>(
         &mut self,
@@ -1023,14 +1206,17 @@ impl VmafScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`VmafError::InputMismatch`] if a plane's geometry disagrees
-    /// with the scorer's configuration, and [`VmafError::CallFailed`] if
-    /// libvmaf rejects the pair.
+    /// Borrows the validated planes only during this call; no source pointer
+    /// is retained. Geometry and sample width on both sides must match the
+    /// configuration (1 byte for 8-bit, 2 for 10/12/16-bit) before any copy.
+    /// Returns [`VmafError::InputMismatch`] on disagreement, malformed-picture
+    /// errors, or [`VmafError::CallFailed`] if libvmaf rejects the pair.
+    /// Errors do not advance the scored count.
     #[inline]
     pub fn submit_pair_raw(
         &mut self,
-        reference: PlaneSet,
-        distorted: PlaneSet,
+        reference: PlaneSet<'_>,
+        distorted: PlaneSet<'_>,
     ) -> Result<u32, VmafError> {
         let index = u32::try_from(self.scored).map_err(|_| VmafError::InvalidConfiguration {
             reason: "too many frame pairs to index".to_owned(),
@@ -1111,6 +1297,348 @@ fn raw_mut_config(config: &mut VmafModelConfig) -> *mut VmafModelConfig {
 )]
 mod tests {
     use super::*;
+
+    // Only host buffers are used: no native library, model, GPU or native ownership.
+    fn m06_host_picture(buffers: &mut [Vec<u8>; 3], width: u32, height: u32) -> VmafPicture {
+        let mut picture = VmafPicture::zeroed();
+        picture.w = [width; 3];
+        picture.h = [height; 3];
+        picture.stride = [isize::try_from(buffers[0].len() / height as usize).unwrap(); 3];
+        picture.data = std::array::from_fn(|index| buffers[index].as_mut_ptr().cast());
+        picture
+    }
+
+    #[test]
+    fn m06_fill_rejects_u8_for_ten_bit_before_copy() {
+        let bytes = [7u8; 4];
+        let source = PlaneSource::from_bytes(&bytes, 2, 2, 2, 0, 1).unwrap();
+        let mut buffers = std::array::from_fn(|_| vec![0xa5; 16]);
+        let mut picture = m06_host_picture(&mut buffers, 2, 2);
+        assert!(matches!(
+            VmafScorer::fill_picture(
+                &mut picture,
+                &[source; 3],
+                Some(VmafPixelFormat::Yuv444p),
+                10
+            ),
+            Err(VmafError::InputMismatch { .. })
+        ));
+        assert!(buffers.iter().flatten().all(|&byte| byte == 0xa5));
+    }
+
+    #[test]
+    fn m06_bottom_up_rows_use_signed_byte_offsets() {
+        let bytes = [1u8, 2, 0, 0, 3, 4, 0, 0];
+        let source = PlaneSource::from_bytes(&bytes, 2, 2, -4, 4, 1).unwrap();
+        let mut buffers = std::array::from_fn(|_| vec![0xa5; 8]);
+        let mut picture = m06_host_picture(&mut buffers, 2, 2);
+        VmafScorer::fill_picture(
+            &mut picture,
+            &[source; 3],
+            Some(VmafPixelFormat::Yuv444p),
+            8,
+        )
+        .unwrap();
+        for buffer in buffers {
+            assert_eq!(buffer, [3, 4, 0xa5, 0xa5, 1, 2, 0xa5, 0xa5]);
+        }
+    }
+
+    #[test]
+    fn m06_fill_padded_and_bottom_up_all_widths_and_storage_depths() {
+        for width in [1usize, 2, 7, 15, 16, 17, 64] {
+            for (depth, sample) in [(8, 1), (10, 2), (12, 2), (16, 2)] {
+                let first = if sample == 1 {
+                    vec![17; width]
+                } else {
+                    [0x123u16].repeat(width).into_iter().flat_map(u16::to_ne_bytes).collect()
+                };
+                let second = if sample == 1 {
+                    vec![51; width]
+                } else {
+                    [0x256u16].repeat(width).into_iter().flat_map(u16::to_ne_bytes).collect()
+                };
+                let row_bytes = width * sample;
+                let stride = row_bytes + 3;
+                // Odd byte origin/stride deliberately exercise unaligned wide copies.
+                let mut bytes = vec![0xee; 1 + stride + row_bytes];
+                bytes[1..1 + row_bytes].copy_from_slice(&first);
+                bytes[1 + stride..].copy_from_slice(&second);
+                for bottom_up in [false, true] {
+                    let (spacing, origin) = if bottom_up {
+                        (-(stride as isize), 1 + stride)
+                    } else {
+                        (stride as isize, 1)
+                    };
+                    let source =
+                        PlaneSource::from_bytes(&bytes, width, 2, spacing, origin, sample).unwrap();
+                    let mut buffers = std::array::from_fn(|_| vec![0xa5; 2 * stride]);
+                    let mut picture = m06_host_picture(&mut buffers, width as u32, 2);
+                    VmafScorer::fill_picture(
+                        &mut picture,
+                        &[source; 3],
+                        Some(VmafPixelFormat::Yuv444p),
+                        depth,
+                    )
+                    .unwrap();
+                    let (row0, row1) = if bottom_up {
+                        (&second, &first)
+                    } else {
+                        (&first, &second)
+                    };
+                    for buffer in buffers {
+                        assert_eq!(&buffer[..row_bytes], row0);
+                        assert_eq!(&buffer[stride..stride + row_bytes], row1);
+                        assert_eq!(&buffer[row_bytes..stride], &[0xa5; 3]);
+                        assert_eq!(&buffer[stride + row_bytes..], &[0xa5; 3]);
+                    }
+                    assert_eq!(picture.bpc, depth);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m06_layout_rejects_short_spans_strides_and_signed_overflow() {
+        let bytes = [0u8; 16];
+        for (len, width, height, stride, origin, sample) in [
+            (5, 2, 2, -4, 4, 1),  // visible extent is 6, not the full padded 8
+            (11, 2, 2, -8, 8, 2), // visible extent is 12, not the full padded 16
+            (5, 2, 2, 4, 0, 1),
+            (11, 2, 2, 8, 0, 2),
+            (16, 2, 2, 1, 0, 1),
+            (16, 2, 2, -3, 4, 2),
+            (16, 2, 2, -4, 3, 1),
+            (16, 2, 2, isize::MIN, 4, 1),
+            (16, 1, 1, isize::MIN, 0, 1),
+            (16, 1, 3, isize::MAX, 0, 1),
+            (16, 1, 2, 1, isize::MAX as usize, 1),
+            (16, 1, 1, 1, usize::MAX, 1),
+            (16, usize::MAX, 1, 2, 0, 2),
+            (16, 1, usize::MAX, 1, 0, 1),
+            (16, 0, 2, 2, 0, 1),
+            (16, 2, 0, 2, 0, 1),
+            (16, 2, 2, 4, 0, 0),
+            (16, 2, 2, 6, 0, 3),
+        ] {
+            assert!(
+                matches!(
+                    PlaneSource::from_bytes(&bytes[..len], width, height, stride, origin, sample),
+                    Err(VmafError::MalformedFrame { .. })
+                ),
+                "layout {len}/{width}/{height}/{stride}/{origin}/{sample}"
+            );
+        }
+        assert!(PlaneSource::from_bytes(&bytes[..6], 2, 2, -4, 4, 1).is_ok());
+        assert!(PlaneSource::from_bytes(&bytes[..12], 2, 2, -8, 8, 2).is_ok());
+        // SAFETY: these invalid declarations must be rejected without any dereference.
+        unsafe {
+            assert!(PlaneSource::from_raw_parts(std::ptr::null(), 4, 2, 2, 2, 0, 1).is_err());
+            assert!(
+                PlaneSource::from_raw_parts(bytes.as_ptr(), usize::MAX, 2, 2, 2, 0, 1).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn m06_fill_validates_every_plane_before_writing_any_plane() {
+        let bytes = [17u8; 16];
+        let good = PlaneSource::from_bytes(&bytes, 2, 2, 2, 0, 1).unwrap();
+        let wide = PlaneSource::from_bytes(&bytes, 2, 2, 4, 0, 2).unwrap();
+        let wrong_width = PlaneSource::from_bytes(&bytes, 1, 2, 2, 0, 1).unwrap();
+        let wrong_height = PlaneSource::from_bytes(&bytes, 2, 1, 2, 0, 1).unwrap();
+        for plane_index in 0..3 {
+            for invalid in [wide, wrong_width, wrong_height] {
+                let mut planes = [good; 3];
+                planes[plane_index] = invalid;
+                let mut buffers = std::array::from_fn(|_| vec![0xa5; 16]);
+                let mut picture = m06_host_picture(&mut buffers, 2, 2);
+                assert!(matches!(
+                    VmafScorer::fill_picture(
+                        &mut picture,
+                        &planes,
+                        Some(VmafPixelFormat::Yuv444p),
+                        8
+                    ),
+                    Err(VmafError::InputMismatch { .. })
+                ));
+                assert!(buffers.iter().flatten().all(|&byte| byte == 0xa5));
+            }
+        }
+        for depth in [10, 12, 16] {
+            for plane_index in 0..3 {
+                let mut planes = [wide; 3];
+                planes[plane_index] = good;
+                let mut buffers = std::array::from_fn(|_| vec![0xa5; 16]);
+                let mut picture = m06_host_picture(&mut buffers, 2, 2);
+                assert!(matches!(
+                    VmafScorer::fill_picture(
+                        &mut picture,
+                        &planes,
+                        Some(VmafPixelFormat::Yuv444p),
+                        depth
+                    ),
+                    Err(VmafError::InputMismatch { .. })
+                ));
+                assert!(buffers.iter().flatten().all(|&byte| byte == 0xa5));
+            }
+        }
+    }
+
+    #[test]
+    fn m06_pair_rejects_either_side_before_copying_either_picture() {
+        let bytes = [17u8; 16];
+        let narrow = PlaneSource::from_bytes(&bytes, 2, 2, 2, 0, 1).unwrap();
+        let wide = PlaneSource::from_bytes(&bytes, 2, 2, 4, 0, 2).unwrap();
+        for depth in [8, 10, 12, 16] {
+            let (good, wrong) = if depth == 8 {
+                (narrow, wide)
+            } else {
+                (wide, narrow)
+            };
+            for side in 0..2 {
+                for index in 0..3 {
+                    let mut inputs = [[good; 3]; 2];
+                    inputs[side][index] = wrong;
+                    let mut reference = std::array::from_fn(|_| vec![0xa5; 16]);
+                    let mut distorted = std::array::from_fn(|_| vec![0xa5; 16]);
+                    let mut reference_picture = m06_host_picture(&mut reference, 2, 2);
+                    let mut distorted_picture = m06_host_picture(&mut distorted, 2, 2);
+                    assert!(matches!(
+                        VmafScorer::fill_pictures(
+                            &mut reference_picture,
+                            &mut distorted_picture,
+                            &inputs[0],
+                            &inputs[1],
+                            Some(VmafPixelFormat::Yuv444p),
+                            depth,
+                        ),
+                        Err(VmafError::InputMismatch { .. })
+                    ));
+                    assert!(reference.iter().chain(&distorted).flatten().all(|&byte| byte == 0xa5));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m06_fill_rejects_malformed_host_destination_without_writes() {
+        let bytes = [17u8; 4];
+        let source = PlaneSource::from_bytes(&bytes, 2, 2, 2, 0, 1).unwrap();
+        for stride in [-1, 1, isize::MAX] {
+            let mut buffers = std::array::from_fn(|_| vec![0xa5; 16]);
+            let mut picture = m06_host_picture(&mut buffers, 2, 2);
+            picture.stride[2] = stride;
+            assert!(matches!(
+                VmafScorer::fill_picture(
+                    &mut picture,
+                    &[source; 3],
+                    Some(VmafPixelFormat::Yuv444p),
+                    8
+                ),
+                Err(VmafError::MalformedFrame { .. })
+            ));
+            assert!(buffers.iter().flatten().all(|&byte| byte == 0xa5));
+        }
+        let mut buffers = std::array::from_fn(|_| vec![0xa5; 16]);
+        let mut picture = m06_host_picture(&mut buffers, 2, 2);
+        picture.data[2] = std::ptr::null_mut();
+        assert!(
+            VmafScorer::fill_picture(
+                &mut picture,
+                &[source; 3],
+                Some(VmafPixelFormat::Yuv444p),
+                8
+            )
+            .is_err()
+        );
+        assert!(buffers.iter().flatten().all(|&byte| byte == 0xa5));
+    }
+
+    #[test]
+    fn m06_padded_u16_frame_scales_nonzero_origin_and_copies_visible_rows() {
+        let mut frame = v_frame::frame::FrameBuilder::new(2, 2, ChromaSubsampling::Yuv444, 10)
+            .luma_padding_left(2)
+            .luma_padding_right(2)
+            .luma_padding_top(2)
+            .luma_padding_bottom(2)
+            .build::<u16>()
+            .unwrap();
+        frame.y_plane.row_mut(0).unwrap().copy_from_slice(&[0x123, 0x234]);
+        frame.y_plane.row_mut(1).unwrap().copy_from_slice(&[0x345, 0x156]);
+        let source = plane_source(&frame.y_plane).unwrap();
+        let geometry = frame.y_plane.geometry();
+        assert!(geometry.data_origin() > 0);
+        assert!(geometry.stride() > 2);
+        assert_eq!(source.data_origin(), geometry.data_origin() * 2);
+        assert_eq!(source.stride() as usize, geometry.stride() * 2);
+        assert_eq!(
+            source.readable_len(),
+            std::mem::size_of_val(frame.y_plane.data())
+        );
+        let mut buffers = std::array::from_fn(|_| vec![0xa5; 16]);
+        let mut picture = m06_host_picture(&mut buffers, 2, 2);
+        VmafScorer::fill_picture(
+            &mut picture,
+            &[source; 3],
+            Some(VmafPixelFormat::Yuv444p),
+            10,
+        )
+        .unwrap();
+        let first: Vec<_> = [0x123u16, 0x234].into_iter().flat_map(u16::to_ne_bytes).collect();
+        let second: Vec<_> = [0x345u16, 0x156].into_iter().flat_map(u16::to_ne_bytes).collect();
+        for buffer in buffers {
+            assert_eq!(&buffer[..4], first);
+            assert_eq!(&buffer[8..12], second);
+            assert_eq!(&buffer[4..8], &[0xa5; 4]);
+            assert_eq!(&buffer[12..], &[0xa5; 4]);
+        }
+    }
+
+    #[test]
+    fn m06_u16_bottom_up_and_uninitialized_foreign_padding() {
+        let words = [1u16, 2, 0, 0, 3, 4, 0, 0];
+        let source = PlaneSource::from_u16(&words, 2, 2, -8, 8).unwrap();
+        let mut buffers = std::array::from_fn(|_| vec![0xa5; 16]);
+        let mut picture = m06_host_picture(&mut buffers, 2, 2);
+        VmafScorer::fill_picture(
+            &mut picture,
+            &[source; 3],
+            Some(VmafPixelFormat::Yuv444p),
+            16,
+        )
+        .unwrap();
+        for buffer in buffers {
+            let first: Vec<_> = [3u16, 4].into_iter().flat_map(u16::to_ne_bytes).collect();
+            let second: Vec<_> = [1u16, 2].into_iter().flat_map(u16::to_ne_bytes).collect();
+            assert_eq!(&buffer[..4], first);
+            assert_eq!(&buffer[8..12], second);
+            assert_eq!(&buffer[4..8], &[0xa5; 4]);
+            assert_eq!(&buffer[12..], &[0xa5; 4]);
+        }
+
+        let mut foreign = [std::mem::MaybeUninit::<u8>::uninit(); 8];
+        for (offset, byte) in [(0, 1), (1, 2), (4, 3), (5, 4)] {
+            foreign[offset].write(byte);
+        }
+        // SAFETY: real 8-byte allocation outlives the view, and only the four
+        // visible bytes are initialized. No slice over uninitialized gaps exists.
+        let source =
+            unsafe { PlaneSource::from_raw_parts(foreign.as_ptr().cast(), 8, 2, 2, -4, 4, 1) }
+                .unwrap();
+        let mut buffers = std::array::from_fn(|_| vec![0xa5; 8]);
+        let mut picture = m06_host_picture(&mut buffers, 2, 2);
+        VmafScorer::fill_picture(
+            &mut picture,
+            &[source; 3],
+            Some(VmafPixelFormat::Yuv444p),
+            8,
+        )
+        .unwrap();
+        for buffer in buffers {
+            assert_eq!(buffer, [3, 4, 0xa5, 0xa5, 1, 2, 0xa5, 0xa5]);
+        }
+    }
 
     #[test]
     fn pixel_format_mapping_matches_libvmaf() {

@@ -13,8 +13,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use av_metrics_vmaf::{
-    Backend, BackendPreference, PoolMethod, VideoFormat, VmafConfig, VmafError, VmafScorer,
-    is_available, libvmaf_version,
+    Backend, BackendPreference, PlaneSource, PoolMethod, VideoFormat, VmafConfig, VmafError,
+    VmafScorer, is_available, libvmaf_version,
 };
 use common::{Distortion, SyntheticPair};
 use v_frame::chroma::ChromaSubsampling;
@@ -50,6 +50,66 @@ fn model_config() -> VmafConfig {
 /// Format a small reference/distorted pair.
 fn small_pair(distortion: Distortion) -> SyntheticPair {
     SyntheticPair::generate(64, 48, 8, ChromaSubsampling::Yuv420, 12, distortion)
+}
+
+#[test]
+fn m06_cpu_rejects_typed_u8_and_either_raw_side_for_ten_bit() {
+    require_libvmaf!();
+    let format = VideoFormat {
+        width: 64,
+        height: 48,
+        bit_depth: 10,
+        chroma_sampling: ChromaSubsampling::Yuv420,
+    };
+    let mut scorer = VmafScorer::new(
+        model_config().with_backend(BackendPreference::CpuOnly),
+        format,
+    )
+    .expect("CPU scorer setup (native allocation/model calls are allowed)");
+    assert_eq!(scorer.backend(), Backend::Cpu);
+    let frame = v_frame::frame::FrameBuilder::new(64, 48, ChromaSubsampling::Yuv420, 8)
+        .build::<u8>()
+        .expect("u8 frame");
+    assert!(matches!(
+        scorer.submit_pair(&frame, &frame),
+        Err(VmafError::InputMismatch { .. })
+    ));
+
+    let bytes = [0u8; 64 * 48];
+    let words = [0u16; 64 * 48];
+    let good = [(64, 48), (32, 24), (32, 24)].map(|(width, height)| {
+        PlaneSource::from_u16(&words, width, height, (width * 2) as isize, 0).unwrap()
+    });
+    let narrow = [(64, 48), (32, 24), (32, 24)].map(|(width, height)| {
+        PlaneSource::from_bytes(&bytes, width, height, width as isize, 0, 1).unwrap()
+    });
+    for side in 0..2 {
+        for plane in 0..3 {
+            let mut bad = good;
+            bad[plane] = narrow[plane];
+            let result = if side == 0 {
+                scorer.submit_pair_raw(bad, good)
+            } else {
+                scorer.submit_pair_raw(good, bad)
+            };
+            assert!(
+                matches!(result, Err(VmafError::InputMismatch { .. })),
+                "side {side}, plane {plane}: {result:?}"
+            );
+        }
+    }
+    assert!(
+        matches!(scorer.finish(), Err(VmafError::InvalidConfiguration { .. })),
+        "rejected frames must not count as submitted"
+    );
+    // No invalid pair reaches vmaf_read_pictures. A valid pair still starts at zero.
+    assert_eq!(
+        scorer.submit_pair_raw(good, good).expect("valid wide pair"),
+        0
+    );
+    let scores = scorer.finish().expect("finish the valid wide pair");
+    assert_eq!(scores.len(), 1);
+    assert!(scores[0].is_finite());
 }
 
 #[test]
