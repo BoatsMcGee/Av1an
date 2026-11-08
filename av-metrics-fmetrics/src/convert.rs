@@ -41,22 +41,22 @@ impl RgbSource for RgbImage {
 
     #[inline]
     fn as_bytes(&self) -> &[u8] {
-        &self.data
+        self.as_bytes()
     }
 
     #[inline]
     fn is_wide(&self) -> bool {
-        self.wide
+        self.is_wide()
     }
 
     #[inline]
     fn as_img(&self, colorspace: FmetricsColorspace, hdr: bool) -> BorrowedImg<'_> {
         rgb_img(
-            &self.data,
+            self.as_bytes(),
             self.width,
             self.height,
             self.stride(),
-            self.wide,
+            self.is_wide(),
             colorspace,
             hdr,
         )
@@ -80,12 +80,14 @@ impl<'a> RgbView<'a> {
     /// Borrow `bytes` as a tightly packed image of `width` by `height`.
     ///
     /// `stride` is `width * 3` for 8-bit samples and `width * 6` for 16-bit
-    /// ones. A `wide` view is little-endian.
+    /// ones. A `wide` view uses native-endian u16 samples and requires a
+    /// u16-aligned starting address, as required by the native readers.
     ///
     /// # Errors
     ///
     /// Rejects zero dimensions, arithmetic overflow, geometry outside native
-    /// `c_uint` limits, and buffers shorter than the complete packed image.
+    /// `c_uint` limits, buffers shorter than the complete packed image, and
+    /// misaligned wide buffers.
     #[inline]
     pub fn new(
         bytes: &'a [u8],
@@ -106,6 +108,10 @@ impl<'a> RgbView<'a> {
             .ok_or_else(|| malformed("RGB extent overflow"))?;
         if extent > bytes.len() {
             return Err(malformed("RGB buffer is too short"));
+        }
+        // CVVDP indexes const uint16_t* rows; packed wide strides preserve base alignment.
+        if wide && !bytes.as_ptr().cast::<u16>().is_aligned() {
+            return Err(malformed("wide RGB buffer must be u16-aligned"));
         }
         Ok(Self {
             data: bytes,
@@ -489,10 +495,17 @@ impl<'a> std::ops::Deref for PlaneSet<'a> {
 #[derive(Debug)]
 pub struct RgbImage {
     /// Interleaved samples, `u8` or `u16` according to [`RgbImage::is_wide`].
-    data: Vec<u8>,
+    data: RgbStorage,
     width: usize,
     height: usize,
-    wide: bool,
+}
+
+// Native RGB_UINT16 readers dereference uint16_t*, so allocation alignment must
+// follow the sample type, not incidental allocator behavior for Vec<u8>.
+#[derive(Debug)]
+enum RgbStorage {
+    Narrow(Vec<u8>),
+    Wide(Vec<u16>),
 }
 
 impl RgbImage {
@@ -500,7 +513,7 @@ impl RgbImage {
     #[inline]
     #[must_use]
     pub const fn stride(&self) -> usize {
-        if self.wide {
+        if self.is_wide() {
             self.width * 6
         } else {
             self.width * 3
@@ -525,17 +538,29 @@ impl RgbImage {
     #[inline]
     #[must_use]
     pub const fn is_wide(&self) -> bool {
-        self.wide
+        matches!(self.data, RgbStorage::Wide(_))
     }
 
     /// The interleaved samples, as bytes.
     ///
-    /// 16-bit samples are little-endian, so hashing or comparing works on
-    /// bytes.
+    /// 16-bit samples use native byte order, matching the C uint16_t ABI;
+    /// these bytes are not an endian-independent serialization.
     #[inline]
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
-        &self.data
+        match &self.data {
+            RgbStorage::Narrow(data) => data,
+            RgbStorage::Wide(data) => {
+                // SAFETY: initialized u16 samples have no padding; the byte view
+                // covers exactly those samples and shares this image's borrow.
+                unsafe {
+                    std::slice::from_raw_parts(
+                        data.as_ptr().cast(),
+                        std::mem::size_of_val(data.as_slice()),
+                    )
+                }
+            },
+        }
     }
 
     /// Read one pixel as `(r, g, b)`.
@@ -553,22 +578,18 @@ impl RgbImage {
             self.height
         );
 
-        let channels = if self.wide { 6 } else { 3 };
-        let offset = y * self.stride() + x * channels;
-
-        if self.wide {
-            let mut out = [0u32; 3];
-            for (index, channel) in out.iter_mut().enumerate() {
-                let start = offset + index * 2;
-                *channel = u16::from_le_bytes([self.data[start], self.data[start + 1]]) as u32;
-            }
-            (out[0], out[1], out[2])
-        } else {
-            (
-                self.data[offset] as u32,
-                self.data[offset + 1] as u32,
-                self.data[offset + 2] as u32,
-            )
+        let offset = (y * self.width + x) * 3;
+        match &self.data {
+            RgbStorage::Wide(data) => (
+                u32::from(data[offset]),
+                u32::from(data[offset + 1]),
+                u32::from(data[offset + 2]),
+            ),
+            RgbStorage::Narrow(data) => (
+                u32::from(data[offset]),
+                u32::from(data[offset + 1]),
+                u32::from(data[offset + 2]),
+            ),
         }
     }
 
@@ -577,11 +598,11 @@ impl RgbImage {
     #[must_use]
     pub fn as_img(&self, colorspace: FmetricsColorspace, hdr: bool) -> BorrowedImg<'_> {
         rgb_img(
-            &self.data,
+            self.as_bytes(),
             self.width,
             self.height,
             self.stride(),
-            self.wide,
+            self.is_wide(),
             colorspace,
             hdr,
         )
@@ -738,16 +759,21 @@ pub fn yuv_to_rgb(
         ))
         .map_err(conversion_error)?
     };
-    let mut data = Vec::with_capacity(stride * height);
+    let mut data = if info.needs_wide_samples() {
+        RgbStorage::Wide(Vec::with_capacity(stride / 2 * height))
+    } else {
+        RgbStorage::Narrow(Vec::with_capacity(stride * height))
+    };
     for row in rgb.into_data().chunks_exact(padded_width).take(height) {
         for pixel in &row[..width] {
             for &value in pixel {
-                if info.needs_wide_samples() {
-                    data.extend_from_slice(
-                        &((value * 65535.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes(),
-                    );
-                } else {
-                    data.push((value * 255.0).round().clamp(0.0, 255.0) as u8);
+                match &mut data {
+                    RgbStorage::Wide(data) => {
+                        data.push((value * 65535.0).round().clamp(0.0, 65535.0) as u16);
+                    },
+                    RgbStorage::Narrow(data) => {
+                        data.push((value * 255.0).round().clamp(0.0, 255.0) as u8);
+                    },
                 }
             }
         }
@@ -756,7 +782,6 @@ pub fn yuv_to_rgb(
         data,
         width,
         height,
-        wide: info.needs_wide_samples(),
     })
 }
 
@@ -857,6 +882,53 @@ unsafe fn convert_owned<T: v_frame::pixel::Pixel>(
 )]
 mod tests {
     use super::*;
+
+    #[repr(align(2))]
+    struct AlignedRgbBytes([u8; 24]);
+
+    #[test]
+    fn m05_wide_rgb_view_rejects_misaligned_storage() {
+        let storage = AlignedRgbBytes([0; 24]);
+        let odd = &storage.0[1..13];
+        assert!(!odd.as_ptr().cast::<u16>().is_aligned());
+        assert!(matches!(
+            RgbView::new(odd, 2, 1, true),
+            Err(FmetricsError::MalformedFrame { .. })
+        ));
+        // Byte RGB has no u16 alignment requirement.
+        assert!(RgbView::new(odd, 2, 2, false).is_ok());
+        let aligned = RgbView::new(&storage.0[..12], 2, 1, true).unwrap();
+        assert!(
+            aligned
+                .as_img(FmetricsColorspace::Srgb, false)
+                .as_raw()
+                .data
+                .cast::<u16>()
+                .is_aligned()
+        );
+    }
+
+    #[test]
+    fn m05_owned_wide_rgb_alignment_and_native_byte_roundtrip() {
+        for (depth, midpoint, gray) in [(10, 512u16, 32800u16), (12, 2048, 32776)] {
+            let image =
+                m02_convert_pixel([midpoint; 3], depth, YuvMatrix::Bt709, SampleRange::Full);
+            let descriptor = image.as_img(FmetricsColorspace::Srgb, false);
+            let raw = descriptor.as_raw();
+            assert!(raw.data.cast::<u16>().is_aligned());
+            assert_eq!(raw.stride, 6);
+            assert_eq!(raw.format, crate::ffi::FmetricsPixFmt::RgbUint16);
+            assert_eq!(
+                image.pixel(0, 0),
+                (u32::from(gray), u32::from(gray), u32::from(gray))
+            );
+            let expected: Vec<_> = [gray; 3].into_iter().flat_map(u16::to_ne_bytes).collect();
+            assert_eq!(image.as_bytes(), expected);
+            assert_eq!(raw.data.cast::<u8>(), image.as_bytes().as_ptr());
+            let view = RgbView::new(image.as_bytes(), 1, 1, true).unwrap();
+            assert_eq!(view.as_bytes(), expected);
+        }
+    }
 
     #[test]
     fn m05_rgb_invalid_geometry_returns_errors_not_panics() {
@@ -978,7 +1050,8 @@ mod tests {
                 Err(FmetricsError::MalformedFrame { .. })
             ));
         }
-        assert!(RgbView::new(&[0; 24], 2, 2, true).is_ok());
+        let aligned = AlignedRgbBytes([0; 24]);
+        assert!(RgbView::new(&aligned.0, 2, 2, true).is_ok());
         // A short slice must not hide native narrowing behind the buffer check.
         if usize::BITS > 32 {
             assert!(matches!(RgbView::new(&[], u32::MAX as usize, 1, false),
@@ -1266,14 +1339,16 @@ mod tests {
             let mut out = [0u32; 3];
             for (index, channel) in out.iter_mut().enumerate() {
                 let start = offset + index * 2;
-                *channel = u16::from_le_bytes([image.data[start], image.data[start + 1]]) as u32;
+                *channel =
+                    u16::from_ne_bytes([image.as_bytes()[start], image.as_bytes()[start + 1]])
+                        as u32;
             }
             (out[0], out[1], out[2])
         } else {
             (
-                image.data[offset] as u32,
-                image.data[offset + 1] as u32,
-                image.data[offset + 2] as u32,
+                image.as_bytes()[offset] as u32,
+                image.as_bytes()[offset + 1] as u32,
+                image.as_bytes()[offset + 2] as u32,
             )
         }
     }
@@ -1990,7 +2065,11 @@ mod tests {
             )
             .unwrap();
             assert_eq!(image.stride(), width * 3, "{width}x{height}");
-            assert_eq!(image.data.len(), width * 3 * height, "{width}x{height}");
+            assert_eq!(
+                image.as_bytes().len(),
+                width * 3 * height,
+                "{width}x{height}"
+            );
         }
     }
 

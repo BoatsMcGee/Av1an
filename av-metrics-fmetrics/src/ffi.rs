@@ -135,7 +135,7 @@ pub enum FmetricsPixFmt {
     RgbUint8 = 1,
     /// 32-bit float samples.
     RgbFloat = 2,
-    /// 16-bit unsigned integer samples.
+    /// Native-endian 16-bit unsigned integer samples, aligned for uint16_t reads.
     RgbUint16 = 3,
 }
 
@@ -210,6 +210,8 @@ impl FmetricsImg {
     ///
     /// 10- and 12-bit sources are up-converted to this rather than truncated
     /// to 8 bits, which would discard precision the source actually has.
+    /// The unsafe C caller must provide native-endian u16 storage with aligned rows;
+    /// this raw descriptor constructor does not validate the storage.
     #[inline]
     #[must_use]
     pub const fn rgb16(

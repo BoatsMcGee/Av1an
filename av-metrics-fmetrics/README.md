@@ -112,7 +112,11 @@ checks depth/storage/peak and chroma agreement, and returns owned `RgbImage`.
 Unsupported color/depth/peak/library conversions return `UnsupportedFormat`.
 
 `RgbView::new(&bytes, width, height, wide)` now returns a `Result`: packed RGB
-must cover every row and fit native `c_uint` geometry. `RgbSource` is sealed.
+must cover every row and fit native `c_uint` geometry. Wide RGB uses native-endian
+u16 samples: borrowed byte slices must be u16-aligned or return `MalformedFrame`;
+owned wide images use `Vec<u16>` to guarantee alignment for native uint16_t reads.
+Their byte views retain native byte order, not a portable little-endian encoding.
+Planar u16 input still supports unaligned origins via unaligned reads. `RgbSource` is sealed.
 `as_img` on an image/view returns `BorrowedImg<'_>`, keeping storage borrowed
 until its last use. `as_raw()` exposes the unchanged `repr(C)` `FmetricsImg` for
 unsafe native interoperability, not for safe submission. Raw plane adapters use
