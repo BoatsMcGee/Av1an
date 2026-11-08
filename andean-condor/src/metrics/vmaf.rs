@@ -261,7 +261,7 @@ pub fn score_probed_frames(
 /// rather than a reinterpretation: the pointer still aliases the frame the
 /// driver is holding, and libvmaf copies out of it before the frame is dropped.
 #[inline]
-fn metric_planes(planes: PlaneSet) -> MetricPlaneSet {
+fn metric_planes(planes: PlaneSet<'_>) -> MetricPlaneSet {
     planes.map(|plane| {
         // SAFETY: every field is copied unchanged from a `PlaneSource` the
         // driver produced from a live frame. The driver consumes the set inside
@@ -269,12 +269,12 @@ fn metric_planes(planes: PlaneSet) -> MetricPlaneSet {
         // reference, and libvmaf only reads the planes before it is dropped.
         unsafe {
             MetricPlaneSource::new(
-                plane.width,
-                plane.height,
-                plane.stride,
-                plane.data_origin,
-                plane.bytes_per_sample,
-                plane.data,
+                plane.width(),
+                plane.height(),
+                plane.stride(),
+                plane.data_origin(),
+                plane.bytes_per_sample(),
+                plane.data_ptr(),
             )
         }
     })

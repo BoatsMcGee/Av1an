@@ -97,6 +97,31 @@ mod tests {
             .expect("independent RGB metadata reaches fmetrics ABI");
             assert_eq!(scores, [42.0]);
         }
+        // M05: exercise native frame allocation spans, not only VS pointers.
+        // Untagged Y4M retains the approved sRGB fallback:
+        // limited Y=29 -> round((29-16)*255/219) = 15, with no transfer conversion.
+        let fixture = tempfile::Builder::new().suffix(".y4m").tempfile().expect("fresh Y4M");
+        let mut y4m = b"YUV4MPEG2 W34 H32 F24:1 Ip A1:1 C420jpeg\nFRAME\n".to_vec();
+        y4m.extend_from_slice(&[29; 34 * 32]);
+        y4m.extend_from_slice(&[128; 2 * 17 * 16]);
+        std::fs::write(fixture.path(), y4m).expect("write native frame fixture");
+        for metric in [&ssimulacra2, &cvvdp] {
+            let mut reference =
+                av_decoders::Decoder::from_file(fixture.path()).expect("native reference");
+            let mut distorted =
+                av_decoders::Decoder::from_file(fixture.path()).expect("native distorted");
+            let scores = fmetrics::score_probed_frames(
+                &mut reference,
+                &mut distorted,
+                metric,
+                &[0],
+                OutputIndexing::Aligned,
+                None,
+                |_, _| {},
+            )
+            .expect("native spans reach fmetrics ABI");
+            assert_eq!(scores, [42.0]);
+        }
         for transfer in [1, 6, 14, 15] {
             let properties = format!("_Range=1, _Matrix=1, _Primaries=1, _Transfer={transfer}");
             let script = format!(

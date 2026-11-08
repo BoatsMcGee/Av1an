@@ -207,8 +207,9 @@ impl ColorInfo {
         self
     }
 
-    /// The peak sample value for this bit depth, which is what the conversion
-    /// normalises against.
+    /// The meaningful code peak for validating the conversion's depth agreement.
+    /// yuvxyb derives normalization from depth/range; limited range uses shifted
+    /// nominal endpoints rather than dividing all samples by this peak.
     ///
     /// # Errors
     ///

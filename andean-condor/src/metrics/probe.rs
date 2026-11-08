@@ -12,6 +12,7 @@
 //! its own `submit` callback instead of the driver depending on that crate.
 
 use std::{
+    marker::PhantomData,
     mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -45,23 +46,70 @@ impl std::error::Error for Cancelled {}
 /// A `PlaneSource` aliases the frame it came from and so is only valid while
 /// that frame is alive. Every producer here hands the set to a callback that
 /// consumes it before the frame is dropped.
-pub struct PlaneSource {
+pub struct PlaneSource<'a> {
     /// Width in pixels (samples per row, not bytes).
-    pub width: usize,
+    width: usize,
     /// Height in pixels.
-    pub height: usize,
-    /// Samples from one row to the next. May be negative for bottom-up images.
-    pub stride: isize,
-    /// Offset of the first visible sample from `data`.
-    pub data_origin: usize,
+    height: usize,
+    /// Bytes from one row to the next. May be negative for bottom-up images.
+    stride: isize,
+    /// Byte offset of the first visible sample from `data`.
+    data_origin: usize,
     /// Pointer to the start of the underlying allocation.
-    pub data: *const u8,
+    data: *const u8,
     /// Bytes per sample.
-    pub bytes_per_sample: usize,
+    bytes_per_sample: usize,
+    readable_len: usize,
+    _frame: PhantomData<&'a [u8]>,
+}
+
+impl PlaneSource<'_> {
+    /// Visible width in samples.
+    #[inline]
+    #[must_use]
+    pub const fn width(&self) -> usize {
+        self.width
+    }
+    /// Visible height in rows.
+    #[inline]
+    #[must_use]
+    pub const fn height(&self) -> usize {
+        self.height
+    }
+    /// Row spacing in bytes.
+    #[inline]
+    #[must_use]
+    pub const fn stride(&self) -> isize {
+        self.stride
+    }
+    /// First visible sample's byte offset.
+    #[inline]
+    #[must_use]
+    pub const fn data_origin(&self) -> usize {
+        self.data_origin
+    }
+    /// Native sample storage size in bytes.
+    #[inline]
+    #[must_use]
+    pub const fn bytes_per_sample(&self) -> usize {
+        self.bytes_per_sample
+    }
+    /// Backing address; only visible sample bytes are guaranteed initialized.
+    #[inline]
+    #[must_use]
+    pub const fn data_ptr(&self) -> *const u8 {
+        self.data
+    }
+    /// Known backing span in bytes, including row gaps but not guessed final padding.
+    #[inline]
+    #[must_use]
+    pub const fn readable_len(&self) -> usize {
+        self.readable_len
+    }
 }
 
 /// The three planes of a planar YUV frame, in Y, U, V order.
-pub type PlaneSet = [PlaneSource; 3];
+pub type PlaneSet<'a> = [PlaneSource<'a>; 3];
 
 /// Which index space the encoded output is addressed in.
 ///
@@ -208,11 +256,20 @@ impl<'decoder> Side<'decoder> {
     ///
     /// Returns an error if the frame cannot be decoded or has no scorable
     /// plane layout.
+    ///
+    /// A frame-owned callback cannot return a borrowed descriptor:
+    /// ```compile_fail
+    /// use andean_condor::metrics::probe::Side;
+    /// fn escape(side: &mut Side<'_>) {
+    ///     let planes = side.with_planes(0, |planes| Ok(planes)).unwrap();
+    ///     println!("{}", planes[0].width());
+    /// }
+    /// ```
     #[inline]
     pub fn with_planes<T>(
         &mut self,
         index: usize,
-        submit: impl FnOnce(PlaneSet) -> Result<T>,
+        submit: impl for<'frame> FnOnce(PlaneSet<'frame>) -> Result<T>,
     ) -> Result<T> {
         match self {
             Self::Node(node) => {
@@ -329,7 +386,7 @@ fn with_native_planes<T>(
     decoder: &mut av_decoders::Decoder,
     bit_depth: usize,
     index: usize,
-    submit: impl FnOnce(PlaneSet) -> Result<T>,
+    submit: impl for<'frame> FnOnce(PlaneSet<'frame>) -> Result<T>,
 ) -> Result<T> {
     macro_rules! read {
         ($pixel:ty) => {{
@@ -354,7 +411,7 @@ fn with_native_planes<T>(
 /// Returns an error when the frame has no chroma planes, which is the case for
 /// monochrome content no planar metric can score.
 #[inline]
-fn native_planes<T>(frame: &av_decoders::v_frame::frame::Frame<T>) -> Result<PlaneSet>
+fn native_planes<T>(frame: &av_decoders::v_frame::frame::Frame<T>) -> Result<PlaneSet<'_>>
 where
     T: av_decoders::v_frame::pixel::Pixel,
 {
@@ -363,26 +420,31 @@ where
         bail!("frame has no chroma planes; a metric requires 4:2:0, 4:2:2 or 4:4:4 content");
     };
 
-    Ok([&frame.y_plane, u_plane, v_plane].map(|plane| {
+    let [y, u, v] = [&frame.y_plane, u_plane, v_plane].map(|plane| {
         let geometry = plane.geometry();
-
-        // SAFETY: `Plane::data` is the plane's own allocation, and `geometry`'s
-        // stride and origin describe exactly that allocation. The sources are
-        // consumed within the `submit` call that receives them, while `frame`
-        // is still alive.
-        //
-        // `v_frame` reports stride and origin in samples, so both are scaled to
-        // bytes here. The stride is widened rather than cast, because the field
-        // is signed to allow bottom-up planes from other frame sources.
-        PlaneSource {
+        let stride = geometry
+            .stride()
+            .checked_mul(bytes_per_sample)
+            .and_then(|n| isize::try_from(n).ok())
+            .context("native plane stride overflow")?;
+        let origin = geometry
+            .data_origin()
+            .checked_mul(bytes_per_sample)
+            .context("native plane origin overflow")?;
+        // v_frame 0.7's Pixel is sealed to padding-free u8/u16. Plane::data
+        // supplies actual initialized storage and the return lifetime borrows frame.
+        Ok::<_, anyhow::Error>(PlaneSource {
             width: geometry.width(),
             height: geometry.height(),
-            stride: geometry.stride() as isize * bytes_per_sample as isize,
-            data_origin: geometry.data_origin() * bytes_per_sample,
+            stride,
+            data_origin: origin,
             data: plane.data().as_ptr().cast::<u8>(),
             bytes_per_sample,
-        }
-    }))
+            readable_len: std::mem::size_of_val(plane.data()),
+            _frame: PhantomData,
+        })
+    });
+    Ok([y?, u?, v?])
 }
 
 /// Describe a VapourSynth frame as its three scorable planes.
@@ -397,7 +459,7 @@ where
 /// defined on planar YUV, so RGB or a non-planar layout is rejected rather
 /// than reinterpreted, which would silently compare the wrong channels.
 #[inline]
-fn vapoursynth_planes(frame: &FrameRef<'_>) -> Result<PlaneSet> {
+fn vapoursynth_planes<'a>(frame: &'a FrameRef<'_>) -> Result<PlaneSet<'a>> {
     use vapoursynth::format::ColorFamily;
 
     let format = frame.format();
@@ -410,19 +472,33 @@ fn vapoursynth_planes(frame: &FrameRef<'_>) -> Result<PlaneSet> {
 
     let bytes_per_sample = usize::from(format.bytes_per_sample());
 
-    Ok(std::array::from_fn(|index| {
-        // `data_ptr` and `stride` describe this frame's own plane allocations,
-        // which the caller keeps alive across `submit`. VapourSynth already
-        // reports both in bytes, so they pass through unscaled.
-        PlaneSource {
+    let [y, u, v] = [0, 1, 2].map(|index| {
+        let height = frame.height(index);
+        let stride = frame.stride(index);
+        let last_row = height.checked_sub(1).context("empty VapourSynth plane")?;
+        // data_row guarantees the last visible row, NOT trailing stride padding.
+        // Row gaps can be uninitialized, so never manufacture &[u8] over them.
+        let row_bytes = frame
+            .width(index)
+            .checked_mul(bytes_per_sample)
+            .context("VapourSynth row overflow")?;
+        let readable_len = last_row
+            .checked_mul(stride)
+            .and_then(|offset| offset.checked_add(row_bytes))
+            .filter(|&len| isize::try_from(len).is_ok())
+            .context("VapourSynth span overflow")?;
+        Ok::<_, anyhow::Error>(PlaneSource {
             width: frame.width(index),
             height: frame.height(index),
-            stride: frame.stride(index) as isize,
+            stride: isize::try_from(stride).context("VapourSynth stride overflow")?,
             data_origin: 0,
             data: frame.data_ptr(index),
             bytes_per_sample,
-        }
-    }))
+            readable_len,
+            _frame: PhantomData,
+        })
+    });
+    Ok([y?, u?, v?])
 }
 
 /// Read every frame in `selected` from both sides and hand each pair to
@@ -467,7 +543,7 @@ pub fn probe_selected_frames<T, R>(
     indexing: OutputIndexing,
     cancelled: Option<&AtomicBool>,
     validate: impl FnOnce(av_decoders::VideoDetails, av_decoders::VideoDetails) -> Result<()>,
-    mut submit: impl FnMut(usize, PlaneSet, PlaneSet) -> Result<R>,
+    mut submit: impl for<'r, 'd> FnMut(usize, PlaneSet<'r>, PlaneSet<'d>) -> Result<R>,
 ) -> Result<Vec<R>> {
     if selected.is_empty() {
         return Ok(Vec::new());
@@ -618,6 +694,49 @@ pub fn check_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m05_native_planes_carry_actual_u16_allocation_spans() {
+        let frame = av_decoders::v_frame::frame::FrameBuilder::new(
+            6,
+            4,
+            av_decoders::v_frame::chroma::ChromaSubsampling::Yuv420,
+            10,
+        )
+        .build::<u16>()
+        .expect("native frame");
+        let planes = native_planes(&frame).expect("native descriptors");
+        for (index, plane) in planes.iter().enumerate() {
+            let storage = frame.plane(index).expect("three planes");
+            assert_eq!(plane.readable_len(), std::mem::size_of_val(storage.data()));
+            assert_eq!(plane.stride() as usize, storage.geometry().stride() * 2);
+            assert_eq!(plane.data_origin(), storage.geometry().data_origin() * 2);
+        }
+    }
+
+    #[test]
+    fn m05_vs_span_stops_at_last_visible_sample() {
+        let mut decoder = av_decoders::Decoder::from_script(
+            "import vapoursynth as vs\nvs.core.std.BlankClip(width=6, height=4, length=1, format=vs.YUV420P10).set_output()",
+            Default::default()).expect("VS span fixture");
+        Side::open(&mut decoder, 10)
+            .expect("VS side")
+            .with_planes(0, |planes| {
+                for plane in planes {
+                    assert_eq!(
+                        plane.readable_len(),
+                        (plane.height() - 1) * plane.stride() as usize + plane.width() * 2
+                    );
+                    assert_eq!(plane.bytes_per_sample(), 2);
+                    assert!(
+                        plane.stride() as usize > plane.width() * 2,
+                        "fixture must exercise row padding"
+                    );
+                }
+                Ok(())
+            })
+            .expect("borrow VS rows without trailing allocation guesses");
+    }
 
     #[test]
     fn m04_probe_transports_independent_vapoursynth_color_properties() {

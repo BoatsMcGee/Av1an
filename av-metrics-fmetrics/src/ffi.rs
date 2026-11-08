@@ -154,8 +154,9 @@ pub enum FmetricsColorspace {
 
 /// One image: interleaved RGB in a single buffer.
 ///
-/// A read-only descriptor the C API never writes through, and the buffer it
-/// points at outlives the call -- which is what makes it `Sync`.
+/// An unvalidated raw ABI record, not a lifetime-enforced safe image. The unsafe
+/// C caller must ensure readable live storage for the entire call. Safe Rust
+/// images return [`crate::BorrowedImg`] instead; the C layout is unchanged.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct FmetricsImg {
@@ -176,8 +177,8 @@ pub struct FmetricsImg {
     pub hdr: bool,
 }
 
-// SAFETY: a read-only descriptor of a buffer the library only reads, and that
-// buffer outlives any call using it -- sound to share and to move.
+// SAFETY: moving/sharing this raw record never dereferences its pointer. Native
+// reads are unsafe and require separate storage/lifetime/aliasing guarantees.
 unsafe impl Sync for FmetricsImg {}
 // SAFETY: as above.
 unsafe impl Send for FmetricsImg {}

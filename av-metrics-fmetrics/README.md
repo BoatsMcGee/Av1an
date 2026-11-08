@@ -92,15 +92,37 @@ The metric converter uses published `yuvxyb` 0.6.0 (MIT, Rust 1.95 minimum), wit
 root default features disabled. Its transitive `yuvxyb-math` 0.1.1 still enables
 its default `fastmath` polynomial powers; approximate math is **not** all disabled.
 Independent numeric regressions cover the matrix, meaningful source depth and
-SDR transfer conversion. No dependency fork or alternate handwritten path exists.
+SDR transfer conversion. FMA target features may change last-bit results in the
+library's floating-point/fastmath path; high-depth SDR gray regressions allow
+four u16 codes (<0.007% full scale) against standard gamma-2.4 + piecewise sRGB.
+No dependency fork or alternate handwritten path exists.
 
 yuvxyb clamps normalized luma to [0, 1] and chroma to [-0.5, 0.5] **before** the
 matrix, including samples outside nominal limited range. Invalid stored codes
 outside the meaningful source depth are rejected. Valid odd 4:2:0/4:2:2 input is
 edge-padded for the library, then cropped to the original dimensions without
-resizing. Source plane geometry and byte-offset arithmetic are checked before
-copying into owned frames, but the public raw-pointer API remains `unsafe`:
-callers must still guarantee allocation spans and lifetimes.
+resizing. Source plane geometry and readable spans are checked before copying
+into owned frames. `PlaneSource<'a>`/`PlaneSet<'a>` have private geometry and borrow
+live storage: use fallible `PlaneSource::from_bytes`, `from_u16`, or
+`PlaneSet::from_frame(&frame)`. Strides (including negative bottom-up strides)
+and origins are **bytes**, even for u16. Zero geometry, unsupported sample sizes,
+short strides/buffers, invalid origins and offset/native-width overflow return
+`MalformedFrame`. `PlaneSet::new` groups checked planes; `yuv_to_rgb` is safe,
+checks depth/storage/peak and chroma agreement, and returns owned `RgbImage`.
+Unsupported color/depth/peak/library conversions return `UnsupportedFormat`.
+
+`RgbView::new(&bytes, width, height, wide)` now returns a `Result`: packed RGB
+must cover every row and fit native `c_uint` geometry. `RgbSource` is sealed.
+`as_img` on an image/view returns `BorrowedImg<'_>`, keeping storage borrowed
+until its last use. `as_raw()` exposes the unchanged `repr(C)` `FmetricsImg` for
+unsafe native interoperability, not for safe submission. Raw plane adapters use
+`unsafe PlaneSource::from_raw_parts(pointer, actual_span_bytes, width, height,
+stride_bytes, origin_bytes, sample_bytes)`; callers must prove the actual live
+allocation, initialized visible samples and immutable lifetime. Checked required
+extent is not proof of allocation length. Padding is never read or exposed as a
+slice: Andean carries native allocation lengths and VS's guaranteed span through
+the last visible row, excluding unpromised final padding. Borrowed views cannot
+escape frame-owned callbacks.
 
 TransNetV2 keeps its model-specific fractional box-average preprocessing; routing
 it through an integer-only YUV interface would change quantization/filter order.

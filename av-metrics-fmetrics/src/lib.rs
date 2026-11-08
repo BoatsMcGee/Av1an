@@ -48,6 +48,63 @@
 //! from a GPU metric implementing the same algorithm. A caller comparing across
 //! engines must record which produced a number.
 //!
+//! # Borrowed storage contracts
+//!
+//! Plane descriptors cannot be forged from arbitrary pointers in safe code:
+//! ```compile_fail
+//! use av_metrics_fmetrics::PlaneSource;
+//! let plane = PlaneSource {
+//!     width: 1, height: 1, stride: 1, data_origin: 0,
+//!     data: 1usize as *const u8, bytes_per_sample: 1,
+//! };
+//! ```
+//!
+//! A plane set cannot outlive its decoded frame:
+//! ```compile_fail
+//! use av_metrics_fmetrics::PlaneSet;
+//! use av_decoders::v_frame::{frame::FrameBuilder, chroma::ChromaSubsampling};
+//! let planes;
+//! {
+//!     let frame = FrameBuilder::new(2, 2, ChromaSubsampling::Yuv444, 8)
+//!         .build::<u8>().unwrap();
+//!     planes = PlaneSet::from_frame(&frame).unwrap();
+//! }
+//! println!("{:?}", planes.as_array());
+//! ```
+//!
+//! An ABI image borrowed from owned RGB cannot outlive that RGB:
+//! ```compile_fail
+//! use av_metrics_fmetrics::{PlaneSet, ColorInfo, FmetricsColorspace, yuv_to_rgb};
+//! # fn demo(frame: &av_decoders::v_frame::frame::Frame<u8>, info: &ColorInfo) {
+//! let descriptor;
+//! {
+//!     let planes = PlaneSet::from_frame(frame).unwrap();
+//!     let image = yuv_to_rgb(&planes, info, 255).unwrap();
+//!     descriptor = image.as_img(FmetricsColorspace::Srgb, false);
+//! }
+//! println!("{descriptor:?}");
+//! # }
+//! ```
+//!
+//! A view's ABI image also keeps its backing vector borrowed:
+//! ```compile_fail
+//! use av_metrics_fmetrics::{RgbView, RgbSource, FmetricsColorspace};
+//! let descriptor;
+//! {
+//!     let bytes = vec![0; 12];
+//!     let view = RgbView::new(&bytes, 2, 2, false).unwrap();
+//!     descriptor = view.as_img(FmetricsColorspace::Srgb, false);
+//! }
+//! println!("{descriptor:?}");
+//! ```
+//!
+//! Raw plane construction requires an explicit unsafe allocation contract:
+//! ```compile_fail,E0133
+//! use av_metrics_fmetrics::PlaneSource;
+//! let bytes = [0u8; 4];
+//! let plane = PlaneSource::from_raw_parts(bytes.as_ptr(), bytes.len(), 2, 2, 2, 0, 1);
+//! ```
+//!
 //! # Example
 //!
 //! ```no_run
@@ -80,7 +137,7 @@ pub use config::{
     ColorInfo, DEFAULT_PNORM, DEFAULT_THREADS, FmetricsConfig, FmetricsMetric, SampleRange,
     YuvMatrix, colorspace_from_details, matrix_for_resolution,
 };
-pub use convert::{PlaneSet, PlaneSource, RgbImage, RgbSource, RgbView, yuv_to_rgb};
+pub use convert::{BorrowedImg, PlaneSet, PlaneSource, RgbImage, RgbSource, RgbView, yuv_to_rgb};
 pub use error::FmetricsError;
 pub use ffi::{
     FmetricsApi, FmetricsButteraugliOptions, FmetricsColorspace, FmetricsCvvdpCtx,

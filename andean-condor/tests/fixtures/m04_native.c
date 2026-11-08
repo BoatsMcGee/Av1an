@@ -19,6 +19,19 @@ const char *fmetrics_error_str(int error) { return "M04 native image mismatch"; 
 void *fmetrics_workspace_create(void) { return malloc(1); }
 void fmetrics_workspace_destroy(void *workspace) { free(workspace); }
 int fmetrics_ssimu2_cmp(void *workspace, const Image *reference, const Image *distorted, double *score) {
+    if (reference->width == 34 && distorted->width == 34) {
+        const uint8_t native[] = {15, 15, 15};
+        if (reference->height != 32 || reference->stride != 102 ||
+            distorted->height != 32 || distorted->stride != 102 ||
+            reference->colorspace != 1 || distorted->colorspace != 1 ||
+            reference->format != 1 || distorted->format != 1 ||
+            reference->hdr || distorted->hdr ||
+            memcmp(reference->data, native, 3) || memcmp(distorted->data, native, 3)) return 2;
+        *score = 42;
+        return 0;
+    }
+    if (reference->width != 32 || reference->height != 32 || reference->stride != 96 ||
+        distorted->width != 32 || distorted->height != 32 || distorted->stride != 96) return 2;
     const uint8_t sdr[] = {4, 4, 4};
     if (reference->colorspace == 1 && distorted->colorspace == 1 &&
         reference->format == 1 && distorted->format == 1 &&

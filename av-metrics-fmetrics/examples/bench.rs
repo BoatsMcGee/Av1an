@@ -48,8 +48,8 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 impl Prepared {
     /// Score one pair, doing no work beyond the library call.
     fn score(&self, scorer: &FmetricsScorer) -> Result<f64, Error> {
-        let reference = RgbView::new(&self.reference, self.width, self.height, false);
-        let distorted = RgbView::new(&self.distorted, self.width, self.height, false);
+        let reference = RgbView::new(&self.reference, self.width, self.height, false)?;
+        let distorted = RgbView::new(&self.distorted, self.width, self.height, false)?;
         Ok(scorer
             .submit_rgb(&reference, &distorted)?
             .require(FmetricsMetric::Ssimulacra2)?)
@@ -145,14 +145,10 @@ fn conversion_only(reference_path: &str, distorted_path: &str) -> Result<(), Err
             break;
         };
 
-        // SAFETY: both plane sets come from frames this loop is holding, and
-        // `yuv_to_rgb` reads only within the allocations they describe.
-        unsafe {
-            let x = yuv_to_rgb(&a, &color, peak)?;
-            let y = yuv_to_rgb(&b, &distorted_color, distorted_peak)?;
-            for sample in x.as_bytes().iter().chain(y.as_bytes().iter()) {
-                sink = sink.wrapping_mul(31).wrapping_add(u64::from(*sample));
-            }
+        let x = yuv_to_rgb(&a, &color, peak)?;
+        let y = yuv_to_rgb(&b, &distorted_color, distorted_peak)?;
+        for sample in x.as_bytes().iter().chain(y.as_bytes().iter()) {
+            sink = sink.wrapping_mul(31).wrapping_add(u64::from(*sample));
         }
         pairs += 1;
     }
@@ -215,13 +211,8 @@ fn library_only(
                 break;
             };
             frames.push(Prepared {
-                // SAFETY: both plane sets describe frames this thread just decoded
-                // and still owns.
-                reference: unsafe { yuv_to_rgb(&a, &color, peak)?.as_bytes().to_vec() },
-                // SAFETY: as above.
-                distorted: unsafe {
-                    yuv_to_rgb(&b, &distorted_color, distorted_peak)?.as_bytes().to_vec()
-                },
+                reference: yuv_to_rgb(&a, &color, peak)?.as_bytes().to_vec(),
+                distorted: yuv_to_rgb(&b, &distorted_color, distorted_peak)?.as_bytes().to_vec(),
                 width,
                 height,
             });

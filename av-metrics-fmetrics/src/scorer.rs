@@ -538,18 +538,13 @@ impl FmetricsScorer {
     #[inline]
     pub fn submit_pair(
         &self,
-        reference: &PlaneSet,
-        distorted: &PlaneSet,
+        reference: &PlaneSet<'_>,
+        distorted: &PlaneSet<'_>,
     ) -> Result<FrameScore, FmetricsError> {
         Self::check_size(self, reference)?;
 
-        // SAFETY: both plane sets come from the decode driver, which keeps each
-        // frame's planes alive for the submission, and the conversion reads
-        // within the allocation each plane describes.
-        let reference_image = unsafe { yuv_to_rgb(reference, &self.color, self.peak)? };
-        // SAFETY: as above.
-        let distorted_image =
-            unsafe { yuv_to_rgb(distorted, &self.distorted_color, self.distorted_peak)? };
+        let reference_image = yuv_to_rgb(reference, &self.color, self.peak)?;
+        let distorted_image = yuv_to_rgb(distorted, &self.distorted_color, self.distorted_peak)?;
 
         Self::check_dimensions(&reference_image, &distorted_image)?;
 
@@ -568,19 +563,19 @@ impl FmetricsScorer {
     }
 
     /// Reject a frame too small for the configured metric.
-    fn check_size(&self, reference: &PlaneSet) -> Result<(), FmetricsError> {
+    fn check_size(&self, reference: &PlaneSet<'_>) -> Result<(), FmetricsError> {
         // Reported here rather than left to the library, whose error code does
         // not name the cause.
         if let Some(minimum) = self.config.metric.minimum_dimension()
-            && reference[0].width.min(reference[0].height) < minimum
+            && reference[0].width().min(reference[0].height()) < minimum
         {
             return Err(FmetricsError::UnsupportedFormat {
                 reason: format!(
                     "{} needs at least {minimum} pixels in each dimension to score five scales, \
                      but the frame is {}x{}",
                     self.config.metric.as_str(),
-                    reference[0].width,
-                    reference[0].height
+                    reference[0].width(),
+                    reference[0].height()
                 ),
             });
         }
@@ -612,16 +607,13 @@ impl FmetricsScorer {
     #[inline]
     pub fn submit_pair_temporal(
         &mut self,
-        reference: &PlaneSet,
-        distorted: &PlaneSet,
+        reference: &PlaneSet<'_>,
+        distorted: &PlaneSet<'_>,
     ) -> Result<FrameScore, FmetricsError> {
         Self::check_size(self, reference)?;
 
-        // SAFETY: as in `submit_pair`.
-        let reference_image = unsafe { yuv_to_rgb(reference, &self.color, self.peak)? };
-        // SAFETY: as above.
-        let distorted_image =
-            unsafe { yuv_to_rgb(distorted, &self.distorted_color, self.distorted_peak)? };
+        let reference_image = yuv_to_rgb(reference, &self.color, self.peak)?;
+        let distorted_image = yuv_to_rgb(distorted, &self.distorted_color, self.distorted_peak)?;
 
         Self::check_dimensions(&reference_image, &distorted_image)?;
 
@@ -685,7 +677,12 @@ impl FmetricsScorer {
                 // `fmetrics.h`; the workspace is live, and both images outlive
                 // the call because the caller owns them.
                 ("fmetrics_ssimu2_cmp", unsafe {
-                    (api.ssimu2_cmp)(workspace, &reference_img, &distorted_img, &mut value)
+                    (api.ssimu2_cmp)(
+                        workspace,
+                        reference_img.as_raw(),
+                        distorted_img.as_raw(),
+                        &mut value,
+                    )
                 })
             },
             FmetricsMetric::Butteraugli => {
@@ -694,8 +691,8 @@ impl FmetricsScorer {
                 ("fmetrics_butteraugli_cmp", unsafe {
                     (api.butteraugli_cmp)(
                         workspace,
-                        &reference_img,
-                        &distorted_img,
+                        reference_img.as_raw(),
+                        distorted_img.as_raw(),
                         &options,
                         &mut value,
                     )
@@ -704,12 +701,26 @@ impl FmetricsScorer {
             FmetricsMetric::Iwssim => (
                 "fmetrics_iwssim_cmp",
                 // SAFETY: as above.
-                unsafe { (api.iwssim_cmp)(workspace, &reference_img, &distorted_img, &mut value) },
+                unsafe {
+                    (api.iwssim_cmp)(
+                        workspace,
+                        reference_img.as_raw(),
+                        distorted_img.as_raw(),
+                        &mut value,
+                    )
+                },
             ),
             FmetricsMetric::Msssim => (
                 "fmetrics_msssim_cmp",
                 // SAFETY: as above.
-                unsafe { (api.msssim_cmp)(workspace, &reference_img, &distorted_img, &mut value) },
+                unsafe {
+                    (api.msssim_cmp)(
+                        workspace,
+                        reference_img.as_raw(),
+                        distorted_img.as_raw(),
+                        &mut value,
+                    )
+                },
             ),
             // Unreachable: a CVVDP scorer holds `Inner::Temporal`.
             FmetricsMetric::Cvvdp => {
@@ -744,8 +755,16 @@ impl FmetricsScorer {
         let distorted_img =
             distorted.as_img(self.distorted_color.colorspace, self.distorted_color.hdr);
 
-        let frame_width = reference_img.width as c_int;
-        let frame_height = reference_img.height as c_int;
+        let frame_width = c_int::try_from(reference_img.as_raw().width).map_err(|_| {
+            FmetricsError::MalformedFrame {
+                reason: "CVVDP width exceeds c_int".to_owned(),
+            }
+        })?;
+        let frame_height = c_int::try_from(reference_img.as_raw().height).map_err(|_| {
+            FmetricsError::MalformedFrame {
+                reason: "CVVDP height exceeds c_int".to_owned(),
+            }
+        })?;
 
         // The context is bound to a geometry, so a change of size means
         // recreating it.
@@ -759,7 +778,12 @@ impl FmetricsScorer {
         // SAFETY: `*context` is a live context created by `cvvdp_create` below
         // or by an earlier frame, and both images outlive the call.
         let status = unsafe {
-            (api.cvvdp_process_frame)(*context, &reference_img, &distorted_img, &mut result)
+            (api.cvvdp_process_frame)(
+                *context,
+                reference_img.as_raw(),
+                distorted_img.as_raw(),
+                &mut result,
+            )
         };
         ffi::check(status, "fmetrics_cvvdp_process_frame")?;
 
@@ -867,7 +891,6 @@ mod tests {
     use v_frame::chroma::ChromaSubsampling;
 
     use super::*;
-    use crate::convert::PlaneSource;
 
     fn details(bit_depth: usize) -> VideoDetails {
         VideoDetails {
@@ -887,28 +910,17 @@ mod tests {
         }
     }
 
-    /// A neutral 4:4:4 frame, leaked so its pointer outlives the test.
-    fn plane(width: usize, height: usize, samples: Vec<u8>) -> PlaneSource {
-        let leaked = Box::leak(samples.into_boxed_slice());
-        PlaneSource {
-            width,
-            height,
-            stride: width as isize,
-            data_origin: 0,
-            data: leaked.as_ptr(),
-            bytes_per_sample: 1,
+    fn frame(width: usize, height: usize, fill: u8) -> v_frame::frame::Frame<u8> {
+        let mut frame =
+            v_frame::frame::FrameBuilder::new(width, height, ChromaSubsampling::Yuv444, 8)
+                .build::<u8>()
+                .unwrap();
+        for index in 0..3 {
+            for row in frame.plane_mut(index).unwrap().rows_mut() {
+                row.fill(if index == 0 { fill } else { 128 });
+            }
         }
-    }
-
-    fn frame(width: usize, height: usize, fill: u8) -> PlaneSet {
-        let size = width * height;
-        PlaneSet {
-            planes: [
-                plane(width, height, vec![fill; size]),
-                plane(width, height, vec![128u8; size]),
-                plane(width, height, vec![128u8; size]),
-            ],
-        }
+        frame
     }
 
     fn color(bit_depth: usize) -> ColorInfo {
@@ -944,7 +956,8 @@ mod tests {
         };
 
         let size = 64;
-        let planes = frame(size, size, 100);
+        let frame = frame(size, size, 100);
+        let planes = PlaneSet::from_frame(&frame).unwrap();
 
         let error = scorer
             .submit_pair(&planes, &planes)
@@ -1120,10 +1133,10 @@ mod tests {
     fn a_frame_round_trips_through_conversion() {
         // Conversion is what every submission does first, so it must work on a
         // frame built exactly as the driver would supply one.
-        let frames = frame(16, 16, 100);
+        let frame = frame(16, 16, 100);
+        let frames = PlaneSet::from_frame(&frame).unwrap();
         let info = color(8);
-        // SAFETY: the planes are leaked buffers of the stated size.
-        let image = unsafe { yuv_to_rgb(&frames, &info, 255).unwrap() };
+        let image = yuv_to_rgb(&frames, &info, 255).unwrap();
         assert_eq!((image.width(), image.height()), (16, 16));
         assert_eq!(image.stride(), 48);
     }
@@ -1148,8 +1161,8 @@ mod tests {
         let size = 64;
         let reference_bytes = vec![128u8; size * size * 3];
         let distorted_bytes = vec![100u8; size * size * 3];
-        let reference = RgbView::new(&reference_bytes, size, size, false);
-        let distorted = RgbView::new(&distorted_bytes, size, size, false);
+        let reference = RgbView::new(&reference_bytes, size, size, false).unwrap();
+        let distorted = RgbView::new(&distorted_bytes, size, size, false).unwrap();
 
         let expected = scorer.submit_rgb(&reference, &distorted).unwrap();
 

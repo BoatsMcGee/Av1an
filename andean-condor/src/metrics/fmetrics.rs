@@ -218,8 +218,8 @@ pub fn score_probed_frames(
                 scorer.reset_temporal().map_err(describe_error)?;
             }
 
-            let reference_planes = metric_planes(reference_planes);
-            let distorted_planes = metric_planes(distorted_planes);
+            let reference_planes = metric_planes(reference_planes)?;
+            let distorted_planes = metric_planes(distorted_planes)?;
 
             // `submit_pair` refuses a context-backed scorer, so CVVDP must go
             // through the entry point that owns its accumulating context.
@@ -263,30 +263,27 @@ pub fn score_probed_frames(
 
 /// Adapt the driver's plane set to the one `av-metrics-fmetrics` submits.
 ///
-/// A field-by-field copy of the same descriptor. The pointer still aliases the
-/// frame the driver holds, and the conversion reads it before the frame drops.
-///
-/// # Safety
-///
-/// Each field comes from a `PlaneSource` describing a live frame, which the
-/// driver consumes inside the `submit` call receiving this.
+/// Retains the frame borrow and its known span; does not infer allocation length
+/// from geometry. Only visible samples (not padding) are initialized by VS.
 #[inline]
-fn metric_planes(planes: PlaneSet) -> MetricPlaneSet {
-    MetricPlaneSet {
-        planes: planes.map(|plane| {
-            // SAFETY: as documented above.
-            unsafe {
-                MetricPlaneSource::new(
-                    plane.width,
-                    plane.height,
-                    plane.stride,
-                    plane.data_origin,
-                    plane.bytes_per_sample,
-                    plane.data,
-                )
-            }
-        }),
-    }
+fn metric_planes(planes: PlaneSet<'_>) -> Result<MetricPlaneSet<'_>> {
+    let [y, u, v] = planes.map(|plane| {
+        // SAFETY: the driver's private descriptors carry an actual frame
+        // borrow, known span and immutable geometry. The returned lifetime
+        // is that same borrow, and only initialized visible samples are read.
+        unsafe {
+            MetricPlaneSource::from_raw_parts(
+                plane.data_ptr(),
+                plane.readable_len(),
+                plane.width(),
+                plane.height(),
+                plane.stride(),
+                plane.data_origin(),
+                plane.bytes_per_sample(),
+            )
+        }
+    });
+    Ok(MetricPlaneSet::new([y?, u?, v?]))
 }
 
 /// Turn a scorer error into a message that says what to do about it.
