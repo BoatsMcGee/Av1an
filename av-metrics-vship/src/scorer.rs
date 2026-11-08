@@ -197,25 +197,44 @@ impl VideoFormat {
     }
 }
 
-/// One plane of a frame: a strided block of samples with a visible origin.
+/// A borrowed plane with a checked contiguous native-upload span.
 ///
-/// This is the single description every supported frame source reduces to. A
-/// `v_frame` `Plane` and a VapourSynth `Frame` plane are each just a pointer, a
-/// stride and an origin, so one walk serves both and neither source needs its
-/// own path through the scorer.
+/// Dimensions count samples; stride, origin and readable length count bytes.
+/// libvship uploads inter-row gaps but not the final row's trailing padding.
+/// Foreign padding need not be an initialized Rust slice.
 ///
-/// # Safety
-///
-/// `data` must be valid for reads covering every visible row, and must stay
-/// valid until the value has been consumed. The type is `Copy`, so keep it
-/// within a single expression rather than storing it.
+/// A safe frame view cannot escape its owner:
+/// ```compile_fail,E0597
+/// use av_metrics_vship::PlaneSource;
+/// use v_frame::{frame::FrameBuilder, chroma::ChromaSubsampling};
+/// let plane;
+/// {
+///     let frame = FrameBuilder::new(2, 2, ChromaSubsampling::Yuv444, 8)
+///         .build::<u8>().unwrap();
+///     plane = PlaneSource::from_plane(&frame.y_plane).unwrap();
+/// }
+/// std::hint::black_box(plane);
+/// ```
+/// Validated geometry cannot be mutated:
+/// ```compile_fail,E0616
+/// use av_metrics_vship::PlaneSource;
+/// let data = [0u8; 4];
+/// let mut plane = PlaneSource::from_bytes(&data, 2, 2, 2, 0, 1).unwrap();
+/// plane.stride = -2;
+/// ```
+/// Raw storage requires an explicit unsafe obligation:
+/// ```compile_fail,E0133
+/// use av_metrics_vship::PlaneSource;
+/// let data = [0u8; 4];
+/// let plane = PlaneSource::from_raw_parts(data.as_ptr(), data.len(), 2, 2, 2, 0, 1);
+/// ```
 #[derive(Debug, Clone, Copy)]
-pub struct PlaneSource {
+pub struct PlaneSource<'a> {
     /// Width in pixels, that is samples per row rather than bytes.
     width: usize,
     /// Height in pixels.
     height: usize,
-    /// Bytes from one row to the next. May be negative for bottom-up images.
+    /// Positive byte spacing between rows; native upload cannot walk backwards.
     stride: isize,
     /// Offset of the first visible sample of row 0 from `data`.
     data_origin: usize,
@@ -223,61 +242,163 @@ pub struct PlaneSource {
     bytes_per_sample: usize,
     /// Pointer to the start of the underlying allocation.
     data: *const u8,
+    readable_len: usize,
+    _storage: PhantomData<&'a [u8]>,
 }
 
-impl PlaneSource {
-    /// Describe a plane from a raw pointer, stride and origin.
+impl<'a> PlaneSource<'a> {
+    /// Borrow initialized bytes, with byte stride/origin and sample dimensions.
     ///
-    /// # Safety
-    ///
-    /// `data` must remain readable for `height` rows at `stride` spacing, and
-    /// `data_origin` must point at the first visible sample of row 0.
+    /// # Errors
+    /// Rejects zero/nonnative dimensions, sample sizes other than 1/2, nonpositive
+    /// or short strides, short spans, and overflowing signed/native offsets.
     #[inline]
-    #[must_use]
-    pub const unsafe fn new(
+    pub fn from_bytes(
+        data: &'a [u8],
         width: usize,
         height: usize,
         stride: isize,
         data_origin: usize,
         bytes_per_sample: usize,
+    ) -> Result<Self, VshipError> {
+        // SAFETY: the slice supplies the actual readable allocation and borrow.
+        unsafe {
+            Self::from_raw_parts(
+                data.as_ptr(),
+                data.len(),
+                width,
+                height,
+                stride,
+                data_origin,
+                bytes_per_sample,
+            )
+        }
+    }
+
+    /// Borrow native-endian u16 storage; stride and origin still count BYTES.
+    ///
+    /// # Errors
+    /// Returns the layout errors described by [`Self::from_bytes`].
+    #[inline]
+    pub fn from_u16(
+        data: &'a [u16],
+        width: usize,
+        height: usize,
+        stride: isize,
+        data_origin: usize,
+    ) -> Result<Self, VshipError> {
+        // SAFETY: initialized u16 has no padding; the slice supplies its actual span.
+        unsafe {
+            Self::from_raw_parts(
+                data.as_ptr().cast(),
+                std::mem::size_of_val(data),
+                width,
+                height,
+                stride,
+                data_origin,
+                2,
+            )
+        }
+    }
+
+    /// Borrow a frame plane without manufacturing a byte slice over its padding.
+    ///
+    /// # Errors
+    /// Returns layout errors as in [`Self::from_bytes`], including byte-scaling overflow.
+    #[inline]
+    pub fn from_plane<T: Pixel>(plane: &'a v_frame::plane::Plane<T>) -> Result<Self, VshipError> {
+        let geometry = plane.geometry();
+        let bytes = size_of::<T>();
+        let stride = geometry
+            .stride()
+            .checked_mul(bytes)
+            .and_then(|n| isize::try_from(n).ok())
+            .ok_or_else(|| malformed("frame stride overflow"))?;
+        let origin = geometry
+            .data_origin()
+            .checked_mul(bytes)
+            .ok_or_else(|| malformed("frame origin overflow"))?;
+        // SAFETY: Plane owns the allocation and exposes its actual sample length.
+        // The borrow, not a guessed extent, keeps it live through native compute.
+        unsafe {
+            Self::from_raw_parts(
+                plane.data().as_ptr().cast(),
+                std::mem::size_of_val(plane.data()),
+                geometry.width(),
+                geometry.height(),
+                stride,
+                origin,
+                bytes,
+            )
+        }
+    }
+
+    /// Describe foreign storage with its actual byte span, without reading it.
+    ///
+    /// # Errors
+    /// Returns the layout errors described by [`Self::from_bytes`], also rejecting
+    /// null pointers and spans beyond `isize::MAX`.
+    ///
+    /// # Safety
+    /// On success, bind `'a` to one live readable allocation covering `readable_len`
+    /// bytes from `data`, without mutation throughout `'a` and the synchronous native
+    /// compute/upload. The entire prefix from visible origin through the last visible
+    /// byte, including inter-row gaps, must be readable. Visible samples must be
+    /// initialized; foreign padding need not form an initialized Rust byte slice.
+    /// Geometry alone is not evidence of an allocation's actual length.
+    #[inline]
+    pub unsafe fn from_raw_parts(
         data: *const u8,
-    ) -> Self {
-        Self {
+        readable_len: usize,
+        width: usize,
+        height: usize,
+        stride: isize,
+        data_origin: usize,
+        bytes_per_sample: usize,
+    ) -> Result<Self, VshipError> {
+        if width == 0
+            || height == 0
+            || !matches!(bytes_per_sample, 1 | 2)
+            || data.is_null()
+            || readable_len > isize::MAX as usize
+            || c_int::try_from(width).is_err()
+            || c_int::try_from(height).is_err()
+            || stride <= 0
+            || c_int::try_from(stride).is_err()
+        {
+            return Err(malformed(
+                "invalid native plane dimensions, sample width, pointer, stride or span",
+            ));
+        }
+        // HIP's int launch expression is (width*height + 255)/256.
+        if width.checked_mul(height).is_none_or(|n| n > (c_int::MAX - 255) as usize) {
+            return Err(malformed("native plane pixel count overflow"));
+        }
+        let row_bytes = width
+            .checked_mul(bytes_per_sample)
+            .and_then(|n| isize::try_from(n).ok())
+            .ok_or_else(|| malformed("plane row size overflow"))?;
+        let origin =
+            isize::try_from(data_origin).map_err(|_| malformed("plane origin overflow"))?;
+        let end = isize::try_from(height - 1)
+            .ok()
+            .and_then(|n| n.checked_mul(stride))
+            .and_then(|n| origin.checked_add(n))
+            .and_then(|n| n.checked_add(row_bytes))
+            .ok_or_else(|| malformed("native upload extent overflow"))?;
+        if stride < row_bytes || end as usize > readable_len {
+            return Err(malformed("short plane stride or native upload span"));
+        }
+        Ok(Self {
             width,
             height,
             stride,
             data_origin,
             bytes_per_sample,
             data,
-        }
-    }
-
-    /// Describe a plane that is contiguous, with no padding.
-    ///
-    /// # Safety
-    ///
-    /// `data` must be valid for reads of `height * width * bytes_per_sample`
-    /// bytes.
-    #[inline]
-    #[must_use]
-    pub const unsafe fn contiguous(
-        width: usize,
-        height: usize,
-        bytes_per_sample: usize,
-        data: *const u8,
-    ) -> Self {
-        // SAFETY: the caller's contract for this constructor is exactly the one
-        // `new` requires.
-        unsafe {
-            Self::new(
-                width,
-                height,
-                (width * bytes_per_sample) as isize,
-                0,
-                bytes_per_sample,
-                data,
-            )
-        }
+            readable_len,
+            _storage: PhantomData,
+        })
     }
 
     /// Width in pixels.
@@ -301,50 +422,65 @@ impl PlaneSource {
         self.bytes_per_sample
     }
 
-    /// Pointer to the first visible byte of `row`, or `None` when out of range.
+    /// Row spacing in bytes.
     #[inline]
-    fn row(&self, row: usize) -> Option<*const u8> {
-        if row >= self.height {
-            return None;
-        }
-        // SAFETY: the constructor's contract guarantees the allocation spans
-        // `height` rows at `stride` spacing, and `row` is bounds-checked above.
-        Some(unsafe { self.data.add(self.data_origin + (row as isize * self.stride) as usize) })
+    #[must_use]
+    pub const fn stride(&self) -> isize {
+        self.stride
     }
+    /// Visible origin in bytes.
+    #[inline]
+    #[must_use]
+    pub const fn data_origin(&self) -> usize {
+        self.data_origin
+    }
+    /// Actual readable allocation span; foreign padding may be uninitialized.
+    #[inline]
+    #[must_use]
+    pub const fn readable_len(&self) -> usize {
+        self.readable_len
+    }
+    /// Allocation start. Dereferencing requires unsafe code.
+    #[inline]
+    #[must_use]
+    pub const fn data_ptr(&self) -> *const u8 {
+        self.data
+    }
+}
+
+fn malformed(reason: &str) -> VshipError {
+    VshipError::MalformedFrame {
+        reason: reason.to_owned(),
+    }
+}
+
+/// The validated pointers and byte strides for one synchronous native call.
+struct PlaneArguments {
+    pointers: [*const u8; 3],
+    strides: [i64; 3],
+}
+
+/// Keep validation and native dispatch private; callers only supply borrowed planes.
+fn plane_arguments(planes: &PlaneSet<'_>) -> Result<PlaneArguments, VshipError> {
+    let mut arguments = PlaneArguments {
+        pointers: [ptr::null(); 3],
+        strides: [0; 3],
+    };
+    for (index, plane) in planes.iter().enumerate() {
+        arguments.strides[index] =
+            i64::try_from(plane.stride).map_err(|_| malformed("native stride overflow"))?;
+        // SAFETY: the immutable constructor validated the visible origin and entire
+        // upload prefix within the borrowed allocation. No slice over padding exists.
+        arguments.pointers[index] = unsafe { plane.data.add(plane.data_origin) };
+    }
+    Ok(arguments)
 }
 
 /// A frame as the three planes libvship scores.
 ///
 /// Every representation a caller might have reduces to this, which is why the
 /// scorer needs no per-source special cases.
-pub type PlaneSet = [PlaneSource; 3];
-
-/// Describe a `v_frame` plane as a [`PlaneSource`].
-fn plane_source<T: Pixel>(
-    plane: &v_frame::plane::Plane<T>,
-    bytes_per_sample: usize,
-) -> PlaneSource {
-    let geometry = plane.geometry();
-
-    // SAFETY: `Plane::data` is the plane's own allocation, and the geometry's
-    // stride and origin describe exactly that allocation. The `PlaneSource` is
-    // built and consumed inside the same submit call, so the borrow outlives
-    // it.
-    //
-    // `v_frame` reports stride and origin in samples, so both are scaled to
-    // bytes here. The stride is widened rather than cast, because the field
-    // is signed to allow bottom-up planes from other frame sources.
-    unsafe {
-        PlaneSource::new(
-            geometry.width(),
-            geometry.height(),
-            geometry.stride() as isize * bytes_per_sample as isize,
-            geometry.data_origin() * bytes_per_sample,
-            bytes_per_sample,
-            plane.data().as_ptr().cast::<u8>(),
-        )
-    }
-}
+pub type PlaneSet<'a> = [PlaneSource<'a>; 3];
 
 /// A single pair's score.
 ///
@@ -554,16 +690,19 @@ impl MetricHandler {
         &mut self,
         api: &'static VshipApi,
         metric: VshipMetric,
-        reference: PlaneSet,
-        distorted: PlaneSet,
+        reference: &PlaneArguments,
+        distorted: &PlaneArguments,
     ) -> Result<FrameScore, VshipError> {
-        validate_planes(&reference, &self.src_colorspace, "reference")?;
-        validate_planes(&distorted, &self.dis_colorspace, "distorted")?;
-
         // libvship reads three plane pointers and two line-size arrays per
         // side, all of which must stay live for the call.
-        let (srcp1, line_size) = plane_arguments(&reference);
-        let (srcp2, line_size2) = plane_arguments(&distorted);
+        let PlaneArguments {
+            pointers: srcp1,
+            strides: line_size,
+        } = reference;
+        let PlaneArguments {
+            pointers: srcp2,
+            strides: line_size2,
+        } = distorted;
 
         let mut score = FrameScore::default();
 
@@ -663,36 +802,26 @@ impl Drop for MetricHandler {
     }
 }
 
-/// Turn a plane set into the pointer and line-size arrays libvship expects.
-///
-/// libvship walks the planes itself, so only the base pointer and the row
-/// stride are passed; the data origin is folded into the base pointer.
-#[inline]
-fn plane_arguments(planes: &PlaneSet) -> ([*const u8; 3], [i64; 3]) {
-    let mut pointers = [ptr::null(); 3];
-    let mut line_sizes = [0i64; 3];
-
-    for (index, plane) in planes.iter().enumerate() {
-        // Row 0 is the first row libvship reads, and its offset from the base
-        // pointer is exactly the visible origin. A zero-height plane has no row
-        // 0, so it contributes a null pointer, which libvship treats as
-        // absent. SAFETY: `row` is bounds-checked inside, and the
-        // constructor's contract guarantees the returned pointer
-        // addresses a valid visible row.
-        pointers[index] = plane.row(0).unwrap_or(ptr::null());
-        line_sizes[index] = plane.stride as i64;
-    }
-
-    (pointers, line_sizes)
-}
-
-/// Check that a plane set matches the geometry its colorspace declared.
+/// Check configured geometry/storage before exposing native arguments.
 fn validate_planes(
-    planes: &PlaneSet,
+    planes: &PlaneSet<'_>,
     colorspace: &VshipColorspace,
     side: &str,
-) -> Result<(), VshipError> {
+) -> Result<PlaneArguments, VshipError> {
     let (chroma_width, chroma_height) = chroma_dimensions(colorspace)?;
+    let expected_bytes = match colorspace.sample {
+        ffi::VshipSample::Uint8 => 1,
+        ffi::VshipSample::Uint9
+        | ffi::VshipSample::Uint10
+        | ffi::VshipSample::Uint12
+        | ffi::VshipSample::Uint14
+        | ffi::VshipSample::Uint16 => 2,
+        sample => {
+            return Err(VshipError::UnsupportedFormat {
+                reason: format!("{side}: unsupported plane sample type {sample:?}"),
+            });
+        },
+    };
 
     for (index, plane) in planes.iter().enumerate() {
         let (expected_width, expected_height) = if index == 0 {
@@ -703,23 +832,38 @@ fn validate_planes(
 
         if i64::try_from(plane.width).unwrap_or(-1) != expected_width
             || i64::try_from(plane.height).unwrap_or(-1) != expected_height
+            || plane.bytes_per_sample != expected_bytes
         {
             return Err(VshipError::InputMismatch {
                 reason: format!(
-                    "{side} plane {index} is {}x{} but its colorspace declares \
-                     {expected_width}x{expected_height}",
-                    plane.width, plane.height
+                    "{side} plane {index} is {}x{} with {} bytes/sample but its colorspace declares \
+                     {expected_width}x{expected_height} with {expected_bytes} bytes/sample",
+                    plane.width, plane.height, plane.bytes_per_sample
                 ),
             });
         }
     }
 
-    Ok(())
+    plane_arguments(planes)
 }
 
 /// The chroma plane dimensions implied by a colorspace.
 #[inline]
 fn chroma_dimensions(colorspace: &VshipColorspace) -> Result<(i64, i64), VshipError> {
+    if colorspace.width <= 0
+        || colorspace.height <= 0
+        || c_int::try_from(colorspace.width).is_err()
+        || c_int::try_from(colorspace.height).is_err()
+    {
+        return Err(malformed("invalid native colorspace dimensions"));
+    }
+    if colorspace
+        .width
+        .checked_mul(colorspace.height)
+        .is_none_or(|n| n > i64::from(c_int::MAX - 255))
+    {
+        return Err(malformed("native colorspace pixel count overflow"));
+    }
     let shift = |value: c_int| {
         u32::try_from(value).map_err(|_| VshipError::MalformedFrame {
             reason: format!("negative chroma subsampling exponent {value}"),
@@ -729,15 +873,17 @@ fn chroma_dimensions(colorspace: &VshipColorspace) -> Result<(i64, i64), VshipEr
     let subw = shift(colorspace.subsampling.subw)?;
     let subh = shift(colorspace.subsampling.subh)?;
 
-    // An exponent wider than the dimension itself is a corrupted colorspace
-    // rather than a real subsampling.
-    if subw > 8 || subh > 8 {
+    // Preserve the supported 4:2:0/4:2:2/4:4:4 set before any shift.
+    if !matches!((subw, subh), (1, 1) | (1, 0) | (0, 0)) {
         return Err(VshipError::MalformedFrame {
-            reason: format!("implausible chroma subsampling exponent {subw}x{subh}"),
+            reason: format!("unsupported chroma subsampling exponent {subw}x{subh}"),
         });
     }
 
-    Ok((colorspace.width >> subw, colorspace.height >> subh))
+    Ok((
+        ((colorspace.width - 1) >> subw) + 1,
+        ((colorspace.height - 1) >> subh) + 1,
+    ))
 }
 
 /// The handler pool.
@@ -842,6 +988,9 @@ impl VshipScorer {
         let dis_colorspace = encode
             .colorspace(target_resolution)
             .map_err(|error| input_format_error("distorted", error))?;
+        // These descriptors also reach InitHandler, before any frame exists.
+        chroma_dimensions(&src_colorspace)?;
+        chroma_dimensions(&dis_colorspace)?;
         let cvvdp_strings = CvvdpStrings::new(&config)?;
 
         let api = VshipApi::load()?;
@@ -972,7 +1121,8 @@ impl VshipScorer {
     ///
     /// Returns [`VshipError::FrameCountMismatch`] if the clips have different
     /// lengths, and [`VshipError::Decode`] or [`VshipError::CallFailed`] on
-    /// downstream failures.
+    /// downstream failures. Returns [`VshipError::InputMismatch`] when the decoded
+    /// sample storage does not match either configured colorspace.
     #[expect(
         clippy::missing_inline_in_public_items,
         reason = "inlining the scoring loop would duplicate the whole body"
@@ -1087,9 +1237,9 @@ impl VshipScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`VshipError::InputMismatch`] if a plane's geometry disagrees
-    /// with its colorspace, and [`VshipError::CallFailed`] if libvship
-    /// rejects the pair.
+    /// Returns [`VshipError::InputMismatch`] for configured geometry/storage
+    /// mismatches, [`VshipError::MalformedFrame`] for invalid upload layouts,
+    /// and [`VshipError::CallFailed`] if libvship rejects the pair.
     #[expect(
         clippy::missing_inline_in_public_items,
         reason = "the pool dispatch and temporal bookkeeping belong in one body"
@@ -1099,8 +1249,6 @@ impl VshipScorer {
         reference: &v_frame::frame::Frame<T>,
         distorted: &v_frame::frame::Frame<T>,
     ) -> Result<FrameScore, VshipError> {
-        let bytes_per_sample = size_of::<T>();
-
         // `Frame` exposes chroma planes as `Option`, since monochrome frames
         // have none. libvship requires chroma, so this is a validation
         // failure.
@@ -1120,17 +1268,17 @@ impl VshipScorer {
         };
 
         let reference_planes = [
-            plane_source(&reference.y_plane, bytes_per_sample),
-            plane_source(u_plane, bytes_per_sample),
-            plane_source(v_plane, bytes_per_sample),
+            PlaneSource::from_plane(&reference.y_plane)?,
+            PlaneSource::from_plane(u_plane)?,
+            PlaneSource::from_plane(v_plane)?,
         ];
         let distorted_planes = [
-            plane_source(&distorted.y_plane, bytes_per_sample),
-            plane_source(d_u, bytes_per_sample),
-            plane_source(d_v, bytes_per_sample),
+            PlaneSource::from_plane(&distorted.y_plane)?,
+            PlaneSource::from_plane(d_u)?,
+            PlaneSource::from_plane(d_v)?,
         ];
 
-        self.submit_planes(reference_planes, distorted_planes)
+        self.submit_planes(reference_planes, distorted_planes, false)
     }
 
     /// Submit one frame pair from raw plane sources.
@@ -1142,16 +1290,34 @@ impl VshipScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`VshipError::InputMismatch`] if a plane's geometry disagrees
-    /// with its colorspace, and [`VshipError::CallFailed`] if libvship
-    /// rejects the pair.
+    /// Returns [`VshipError::InputMismatch`] for configured geometry/storage
+    /// mismatches and [`VshipError::CallFailed`] if libvship rejects the pair.
     #[inline]
     pub fn submit_pair_raw(
         &mut self,
-        reference: PlaneSet,
-        distorted: PlaneSet,
+        reference: PlaneSet<'_>,
+        distorted: PlaneSet<'_>,
     ) -> Result<FrameScore, VshipError> {
-        self.submit_planes(reference, distorted)
+        self.submit_pair_raw_with_reset(reference, distorted, false)
+    }
+
+    /// Submit borrowed planes, optionally clearing history for an external index gap.
+    ///
+    /// Like [`Self::reset_temporal`] followed by [`Self::submit_pair_raw`], but
+    /// validates BOTH sides before resetting any native history. The caller still
+    /// decides when its external frame selection has a discontinuity.
+    ///
+    /// # Errors
+    /// Returns the validation/compute errors of [`Self::submit_pair_raw`] or a
+    /// reset error, without resetting history for an invalid pair.
+    #[inline]
+    pub fn submit_pair_raw_with_reset(
+        &mut self,
+        reference: PlaneSet<'_>,
+        distorted: PlaneSet<'_>,
+        reset_temporal: bool,
+    ) -> Result<FrameScore, VshipError> {
+        self.submit_planes(reference, distorted, reset_temporal)
     }
 
     /// How many pairs have been submitted so far.
@@ -1216,13 +1382,21 @@ impl VshipScorer {
     /// The single path every submitter funnels through.
     fn submit_planes(
         &mut self,
-        reference: PlaneSet,
-        distorted: PlaneSet,
+        reference: PlaneSet<'_>,
+        distorted: PlaneSet<'_>,
+        reset_temporal: bool,
     ) -> Result<FrameScore, VshipError> {
         let Ok(mut pool) = self.handlers.lock() else {
             return Err(poisoned());
         };
 
+        // Preflight BOTH sides before resets, round-robin selection or counters.
+        // Every handler was initialized with these same per-side colorspaces.
+        let handler = &pool.handlers[0];
+        let reference_arguments =
+            validate_planes(&reference, &handler.src_colorspace, "reference")?;
+        let distorted_arguments =
+            validate_planes(&distorted, &handler.dis_colorspace, "distorted")?;
         let index = pool.submitted;
 
         // A temporal handler must see every frame in order, so a jump in the
@@ -1231,7 +1405,10 @@ impl VshipScorer {
         // its point of view, and clearing the history is far cheaper
         // than recreating the handler.
         let discontinuous = pool.last_index.is_some_and(|last| last != index.wrapping_sub(1));
-        if discontinuous && self.metric.is_temporal() && self.config.cvvdp().reset_on_discontinuity
+        if reset_temporal
+            || (discontinuous
+                && self.metric.is_temporal()
+                && self.config.cvvdp().reset_on_discontinuity)
         {
             for handler in &pool.handlers {
                 handler.reset(self.api)?;
@@ -1252,7 +1429,12 @@ impl VshipScorer {
         pool.last_index = Some(index);
         pool.submitted = index.wrapping_add(1);
 
-        pool.handlers[slot].compute(self.api, self.metric, reference, distorted)
+        pool.handlers[slot].compute(
+            self.api,
+            self.metric,
+            &reference_arguments,
+            &distorted_arguments,
+        )
     }
 }
 
@@ -1292,6 +1474,196 @@ fn availability(gpu_id: u32) -> Result<&'static str, VshipError> {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m07_configured_storage_width_on_every_plane_and_side() {
+        let storage = [0u8; 32];
+        for sample in [
+            ffi::VshipSample::Uint8,
+            ffi::VshipSample::Uint9,
+            ffi::VshipSample::Uint10,
+            ffi::VshipSample::Uint12,
+            ffi::VshipSample::Uint14,
+            ffi::VshipSample::Uint16,
+        ] {
+            let mut colorspace = VshipColorspace::bt709_default(2, 2);
+            colorspace.sample = sample;
+            let expected = if sample == ffi::VshipSample::Uint8 {
+                1
+            } else {
+                2
+            };
+            for side in ["reference", "distorted"] {
+                for index in 0..3 {
+                    let mut planes = [
+                        PlaneSource::from_bytes(&storage, 2, 2, 4, 0, expected).unwrap(),
+                        PlaneSource::from_bytes(&storage, 1, 1, 2, 0, expected).unwrap(),
+                        PlaneSource::from_bytes(&storage, 1, 1, 2, 0, expected).unwrap(),
+                    ];
+                    let plane = planes[index];
+                    planes[index] = PlaneSource::from_bytes(
+                        &storage,
+                        plane.width(),
+                        plane.height(),
+                        plane.stride(),
+                        0,
+                        3 - expected,
+                    )
+                    .unwrap();
+                    assert!(
+                        validate_planes(&planes, &colorspace, side).is_err(),
+                        "{sample:?} {side} {index}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m07_safe_u8_frame_cannot_supply_ten_bit_storage() {
+        let frame = v_frame::frame::FrameBuilder::new(2, 2, ChromaSubsampling::Yuv420, 8)
+            .build::<u8>()
+            .unwrap();
+        let planes = [
+            PlaneSource::from_plane(&frame.y_plane).unwrap(),
+            PlaneSource::from_plane(frame.u_plane.as_ref().unwrap()).unwrap(),
+            PlaneSource::from_plane(frame.v_plane.as_ref().unwrap()).unwrap(),
+        ];
+        let mut colorspace = VshipColorspace::bt709_default(2, 2);
+        colorspace.sample = ffi::VshipSample::Uint10;
+        assert!(validate_planes(&planes, &colorspace, "reference").is_err());
+    }
+
+    #[test]
+    fn m07_odd_chroma_and_one_pixel_axes_round_up() {
+        let mut colorspace = VshipColorspace::bt709_default(1919, 1079);
+        assert_eq!(chroma_dimensions(&colorspace).unwrap(), (960, 540));
+        colorspace.subsampling = ffi::VshipChromaSubsample::yuv422();
+        assert_eq!(chroma_dimensions(&colorspace).unwrap(), (960, 1079));
+        colorspace.subsampling = ffi::VshipChromaSubsample::yuv444();
+        assert_eq!(chroma_dimensions(&colorspace).unwrap(), (1919, 1079));
+        colorspace = VshipColorspace::bt709_default(1, 1);
+        assert_eq!(chroma_dimensions(&colorspace).unwrap(), (1, 1));
+    }
+
+    #[test]
+    fn m07_native_upload_rejects_negative_and_short_strides() {
+        let storage = [0u8; 32];
+        for stride in [-4, isize::MIN, 0, 1] {
+            assert!(
+                PlaneSource::from_bytes(&storage, 2, 2, stride, 4, 1).is_err(),
+                "{stride}"
+            );
+        }
+    }
+
+    #[test]
+    fn m07_invalid_colorspace_dimensions_and_sampling_fail() {
+        for (width, height) in [(0, 1), (1, 0), (-1, 1), (i64::MAX, 1)] {
+            let colorspace = VshipColorspace::bt709_default(width, height);
+            assert!(chroma_dimensions(&colorspace).is_err());
+        }
+        for exponent in [-1, 2, 9, i32::MAX] {
+            let mut colorspace = VshipColorspace::bt709_default(2, 2);
+            colorspace.subsampling.subw = exponent;
+            assert!(chroma_dimensions(&colorspace).is_err());
+            colorspace.subsampling.subw = 1;
+            colorspace.subsampling.subh = exponent;
+            assert!(chroma_dimensions(&colorspace).is_err());
+        }
+    }
+
+    #[test]
+    fn m07_nonnative_formats_fail_before_library_discovery() {
+        for (width, height) in [(u32::MAX as usize, 1), (65536, 65536)] {
+            let format =
+                VideoFormat::from_details(&details(width, height, 8, ChromaSubsampling::Yuv420));
+            assert!(matches!(
+                VshipScorer::new(VshipConfig::new(), format, format, None),
+                Err(VshipError::MalformedFrame { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn m07_exact_last_visible_prefix_and_unaligned_origin_are_valid() {
+        // origin 1 + two row gaps of 9 + six final visible bytes = 25.
+        let storage = [0u8; 25];
+        let plane = PlaneSource::from_bytes(&storage, 3, 3, 9, 1, 2).unwrap();
+        let arguments = plane_arguments(&[plane; 3]).unwrap();
+        assert_eq!(arguments.pointers, [storage[1..].as_ptr(); 3]);
+        assert_eq!(arguments.strides, [9; 3]);
+        assert!(PlaneSource::from_bytes(&storage[..24], 3, 3, 9, 1, 2).is_err());
+        let samples = [512u16; 12];
+        assert!(PlaneSource::from_u16(&samples, 3, 3, 8, 0).is_ok());
+    }
+
+    #[test]
+    fn m07_origins_extents_and_native_narrowing_are_checked_without_reads() {
+        let data = [0u8; 32];
+        // Invalid declarations are rejected before any read or pointer addition.
+        for (len, width, height, stride, origin, bytes) in [
+            (32, 0, 1, 1, 0, 1),
+            (32, 1, 0, 1, 0, 1),
+            (32, 1, 1, 1, 0, 0),
+            (32, 1, 1, 4, 0, 4),
+            (32, 1, 1, 1, usize::MAX, 1),
+            (32, 2, 2, 2, isize::MAX as usize, 1),
+            (usize::MAX, 1, 1, 1, 0, 1),
+            (32, c_int::MAX as usize + 1, 1, 1, 0, 1),
+            (32, 1, c_int::MAX as usize + 1, 1, 0, 1),
+            (32, 1, 2, (c_int::MAX as isize).saturating_add(1), 0, 1),
+            (32, 65536, 65536, 65536, 0, 1),
+        ] {
+            assert!(
+                // SAFETY: all declarations fail validation; no asserted span is used.
+                unsafe {
+                    PlaneSource::from_raw_parts(
+                        data.as_ptr(),
+                        len,
+                        width,
+                        height,
+                        stride,
+                        origin,
+                        bytes,
+                    )
+                }
+                .is_err()
+            );
+        }
+        // SAFETY: null is rejected before use.
+        assert!(unsafe { PlaneSource::from_raw_parts(ptr::null(), 1, 1, 1, 1, 0, 1) }.is_err());
+    }
+
+    #[test]
+    fn m07_u8_and_u16_storage_matches_only_configured_integer_formats() {
+        let data = [0u8; 8];
+        let mut colorspace = VshipColorspace::bt709_default(2, 2);
+        let bytes = [
+            PlaneSource::from_bytes(&data, 2, 2, 2, 0, 1).unwrap(),
+            PlaneSource::from_bytes(&data, 1, 1, 1, 0, 1).unwrap(),
+            PlaneSource::from_bytes(&data, 1, 1, 1, 0, 1).unwrap(),
+        ];
+        assert!(validate_planes(&bytes, &colorspace, "reference").is_ok());
+        let words = [512u16; 4];
+        let planes = [
+            PlaneSource::from_u16(&words, 2, 2, 4, 0).unwrap(),
+            PlaneSource::from_u16(&words, 1, 1, 2, 0).unwrap(),
+            PlaneSource::from_u16(&words, 1, 1, 2, 0).unwrap(),
+        ];
+        assert!(validate_planes(&planes, &colorspace, "distorted").is_err());
+        for depth in [9, 10, 12, 14, 16] {
+            colorspace.sample = crate::sample_for_bit_depth(depth).unwrap();
+            assert!(validate_planes(&planes, &colorspace, "distorted").is_ok());
+        }
+        for sample in [ffi::VshipSample::Half, ffi::VshipSample::Float] {
+            colorspace.sample = sample;
+            assert!(matches!(
+                validate_planes(&planes, &colorspace, "reference"),
+                Err(VshipError::UnsupportedFormat { .. })
+            ));
+        }
+    }
 
     /// Video details in the shape `av-decoders` reports them.
     fn details(
@@ -1410,17 +1782,13 @@ mod tests {
         let luma = [0u8; 16];
         let chroma = [0u8; 4];
 
-        // SAFETY: each buffer is larger than the plane it describes, and the
-        // `PlaneSet` is consumed within this expression.
-        let planes: PlaneSet = unsafe {
-            [
-                PlaneSource::new(4, 4, 4, 0, 1, luma.as_ptr()),
-                PlaneSource::new(2, 2, 2, 0, 1, chroma.as_ptr()),
-                PlaneSource::contiguous(2, 2, 1, chroma.as_ptr()),
-            ]
-        };
+        let planes = [
+            PlaneSource::from_bytes(&luma, 4, 4, 4, 0, 1).unwrap(),
+            PlaneSource::from_bytes(&chroma, 2, 2, 2, 0, 1).unwrap(),
+            PlaneSource::from_bytes(&chroma, 2, 2, 2, 0, 1).unwrap(),
+        ];
 
-        let (pointers, strides) = plane_arguments(&planes);
+        let PlaneArguments { pointers, strides } = plane_arguments(&planes).unwrap();
         assert_eq!(pointers[0], luma.as_ptr());
         assert_eq!(pointers[1], chroma.as_ptr());
         assert_eq!(strides, [4, 2, 2]);
@@ -1434,18 +1802,13 @@ mod tests {
         let luma = [0u8; 16];
         let chroma = [0u8; 4];
 
-        // SAFETY: the origin offset plus the described geometry stays inside
-        // the buffer, and the `PlaneSet` is consumed within this
-        // expression.
-        let planes: PlaneSet = unsafe {
-            [
-                PlaneSource::new(2, 2, 2, 1, 1, luma.as_ptr()),
-                PlaneSource::contiguous(2, 2, 1, chroma.as_ptr()),
-                PlaneSource::contiguous(2, 2, 1, chroma.as_ptr()),
-            ]
-        };
+        let planes = [
+            PlaneSource::from_bytes(&luma, 2, 2, 2, 1, 1).unwrap(),
+            PlaneSource::from_bytes(&chroma, 2, 2, 2, 0, 1).unwrap(),
+            PlaneSource::from_bytes(&chroma, 2, 2, 2, 0, 1).unwrap(),
+        ];
 
-        let (pointers, _) = plane_arguments(&planes);
+        let pointers = plane_arguments(&planes).unwrap().pointers;
         // SAFETY: `luma.as_ptr()` plus one byte is still inside `luma`.
         assert_eq!(pointers[0], unsafe { luma.as_ptr().add(1) });
     }
@@ -1456,27 +1819,15 @@ mod tests {
         let luma = [0u8; 16 * 16];
         let chroma = [0u8; 8 * 8];
 
-        // SAFETY: each buffer covers exactly the geometry declared for its
-        // plane, and the `PlaneSet` is consumed within this expression.
-        let correct: PlaneSet = unsafe {
-            [
-                PlaneSource::contiguous(16, 16, 1, luma.as_ptr()),
-                PlaneSource::contiguous(8, 8, 1, chroma.as_ptr()),
-                PlaneSource::contiguous(8, 8, 1, chroma.as_ptr()),
-            ]
-        };
+        let correct = [
+            PlaneSource::from_bytes(&luma, 16, 16, 16, 0, 1).unwrap(),
+            PlaneSource::from_bytes(&chroma, 8, 8, 8, 0, 1).unwrap(),
+            PlaneSource::from_bytes(&chroma, 8, 8, 8, 0, 1).unwrap(),
+        ];
         assert!(validate_planes(&correct, &colorspace, "reference").is_ok());
 
-        // The luma plane claims more width than the buffer holds, which the
-        // validation must catch before the pointer reaches libvship.
-        // SAFETY: this construction is never dereferenced, only validated.
-        let wrong: PlaneSet = unsafe {
-            [
-                PlaneSource::contiguous(32, 16, 1, luma.as_ptr()),
-                PlaneSource::contiguous(8, 8, 1, chroma.as_ptr()),
-                PlaneSource::contiguous(8, 8, 1, chroma.as_ptr()),
-            ]
-        };
+        let mut wrong = correct;
+        wrong[0] = PlaneSource::from_bytes(&luma, 8, 16, 16, 0, 1).unwrap();
         assert!(matches!(
             validate_planes(&wrong, &colorspace, "reference"),
             Err(VshipError::InputMismatch { .. })

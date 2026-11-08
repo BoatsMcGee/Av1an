@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 typedef struct {
     const uint8_t *data;
@@ -81,6 +82,11 @@ int Vship_GetDetailedLastError(char *buffer, int len) { return 0; }
 int Vship_GetDetailedLastErrorHandler(void *handler, char *buffer, int len) { return 0; }
 int Vship_InitHandler(void **handler, void *data) {
     const Init *init = data;
+    if (getenv("M07_ABI_LOG")) {
+        *handler = malloc(sizeof(Init));
+        memcpy(*handler, init, sizeof(Init));
+        return 0;
+    }
     const Colorspace *a = &init->reference, *b = &init->distorted;
     if (init->type != 1 || a->range != 1 || a->matrix != 6 ||
         a->transfer != 13 || a->primaries != 1 || a->chroma_location != 1 ||
@@ -91,9 +97,46 @@ int Vship_InitHandler(void **handler, void *data) {
 }
 int Vship_FreeHandler(void *handler) { free(handler); return 0; }
 int Vship_ComputeHandler(void *handler, void *data, const uint8_t **a, const uint8_t **b, const int64_t *as, const int64_t *bs) {
+    const char *log = getenv("M07_ABI_LOG");
+    if (log) {
+        const Init *init = handler;
+        const Colorspace spaces[] = {init->reference, init->distorted};
+        FILE *file = fopen(log, "a");
+        if (!file) return 7;
+        fprintf(file, "%lld %lld %d %lld %lld %lld %lld %lld %lld\n",
+            (long long)spaces[0].width, (long long)spaces[0].height, spaces[0].sample,
+            (long long)as[0], (long long)as[1], (long long)as[2],
+            (long long)bs[0], (long long)bs[1], (long long)bs[2]);
+        fclose(file);
+        for (int side = 0; side < 2; side++) {
+            const Colorspace *space = &spaces[side];
+            const uint8_t **planes = side ? b : a;
+            const int64_t *strides = side ? bs : as;
+            int bytes = space->sample == 2 ? 1 : 2;
+            for (int plane = 0; plane < 3; plane++) {
+                int64_t width = plane ? ((space->width - 1) >> space->subw) + 1 : space->width;
+                int64_t height = plane ? ((space->height - 1) >> space->subh) + 1 : space->height;
+                size_t prefix = (height - 1) * strides[plane] + width * bytes;
+                /* Copy exactly the production native prefix, NOT height*stride.
+                 * memcpy preserves raw padding; this sink proves transport, not GPU accuracy. */
+                uint8_t *copy = malloc(prefix);
+                memcpy(copy, planes[plane], prefix);
+                uint16_t first = 0, last = 0;
+                memcpy(&first, copy, bytes);
+                memcpy(&last, copy + prefix - bytes, bytes);
+                free(copy);
+                const uint16_t expected[] = {100, 140, 160};
+                if (first != expected[plane] || last != expected[plane]) return 7;
+            }
+        }
+    }
     Score *score = data;
     score->score = 42;
     return 0;
 }
-int Vship_Reset(void *handler) { return 0; }
+int Vship_Reset(void *handler) {
+    const char *log = getenv("M07_ABI_LOG");
+    if (log) { FILE *file = fopen(log, "a"); if (!file) return 7; fputs("reset\n", file); fclose(file); }
+    return 0;
+}
 int Vship_ResetScore(void *handler) { return 0; }

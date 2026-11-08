@@ -76,20 +76,12 @@ fn format_for(clip: &SyntheticClip) -> VideoFormat {
 
 /// Three constant planes of the geometry a 64x48 4:2:0 frame declares.
 ///
-/// # Safety
-///
-/// The buffers must cover the geometry declared below, and the returned
-/// `PlaneSet` must be consumed before they go out of scope.
-unsafe fn grey_planes(luma: &[u8], chroma: &[u8]) -> PlaneSet {
-    // SAFETY: the caller upholds this function's contract, so each pointer
-    // addresses a buffer large enough for the plane it describes.
-    unsafe {
-        [
-            PlaneSource::contiguous(64, 48, 1, luma.as_ptr()),
-            PlaneSource::contiguous(32, 24, 1, chroma.as_ptr()),
-            PlaneSource::contiguous(32, 24, 1, chroma.as_ptr()),
-        ]
-    }
+fn grey_planes<'a>(luma: &'a [u8], chroma: &'a [u8]) -> PlaneSet<'a> {
+    [
+        PlaneSource::from_bytes(luma, 64, 48, 64, 0, 1).unwrap(),
+        PlaneSource::from_bytes(chroma, 32, 24, 32, 0, 1).unwrap(),
+        PlaneSource::from_bytes(chroma, 32, 24, 32, 0, 1).unwrap(),
+    ]
 }
 
 /// A grey 64x48 4:2:0 frame.
@@ -121,6 +113,70 @@ fn availability_probe_is_consistent() {
         assert_eq!(libvship_version(), None);
         assert_eq!(device_name(), None);
     }
+}
+
+/// Hardware gate: ABI sinks cannot prove backend upload completion or accuracy.
+#[test]
+fn m07_gpu_padded_uploads_and_typed_mismatch() {
+    if !is_available() {
+        assert!(
+            std::env::var_os("AV_METRICS_REQUIRE_GPU").is_none(),
+            "required M07 GPU gate needs libvship and a supported device"
+        );
+        eprintln!("unexecuted M07 hardware gate: no supported libvship/GPU runtime");
+        return;
+    }
+    let format = VideoFormat::from_details(&details(64, 48, 10, ChromaSubsampling::Yuv420));
+    let mut scorer =
+        VshipScorer::new(config_for(VshipMetric::Ssimulacra2), format, format, None).unwrap();
+    assert!(
+        matches!(
+            scorer.backend(),
+            VshipBackend::Hip | VshipBackend::Cuda | VshipBackend::Vulkan
+        ),
+        "M07 requires a supported GPU backend, not a CPU/sink"
+    );
+    let byte_frame = v_frame::frame::FrameBuilder::new(64, 48, ChromaSubsampling::Yuv420, 8)
+        .build::<u8>()
+        .unwrap();
+    assert!(matches!(
+        scorer.submit_pair(&byte_frame, &byte_frame),
+        Err(VshipError::InputMismatch { .. })
+    ));
+    assert_eq!(scorer.submitted().unwrap(), 0);
+    let format = VideoFormat::from_details(&details(65, 49, 10, ChromaSubsampling::Yuv420));
+    let mut scorer =
+        VshipScorer::new(config_for(VshipMetric::Ssimulacra2), format, format, None).unwrap();
+    // Positive padding, including the exact final visible sample but no final
+    // row padding; two inputs differ in luma only. Compare with contiguous input
+    // on the SAME real backend instead of inventing a numerical ideal.
+    let y = vec![400u16; 68 * 48 + 65];
+    let d = vec![410u16; 68 * 48 + 65];
+    let uv = vec![512u16; 36 * 24 + 33];
+    let padded = |luma| {
+        [
+            PlaneSource::from_u16(luma, 65, 49, 136, 0).unwrap(),
+            PlaneSource::from_u16(&uv, 33, 25, 72, 0).unwrap(),
+            PlaneSource::from_u16(&uv, 33, 25, 72, 0).unwrap(),
+        ]
+    };
+    let score = scorer.submit_pair_raw(padded(&y), padded(&d)).unwrap().score.unwrap();
+    let y = vec![400u16; 65 * 49];
+    let d = vec![410u16; 65 * 49];
+    let uv = vec![512u16; 33 * 25];
+    let contiguous = |luma| {
+        [
+            PlaneSource::from_u16(luma, 65, 49, 130, 0).unwrap(),
+            PlaneSource::from_u16(&uv, 33, 25, 66, 0).unwrap(),
+            PlaneSource::from_u16(&uv, 33, 25, 66, 0).unwrap(),
+        ]
+    };
+    let baseline = scorer.submit_pair_raw(contiguous(&y), contiguous(&d)).unwrap().score.unwrap();
+    assert!(score.is_finite() && baseline.is_finite());
+    assert!(
+        (score - baseline).abs() <= 1e-6,
+        "padded={score}, contiguous={baseline}"
+    );
 }
 
 /// Constructing a scorer must never panic, whether or not libvship is present.
@@ -789,17 +845,8 @@ fn a_plane_whose_geometry_disagrees_is_rejected() {
         VshipScorer::new(config_for(VshipMetric::Ssimulacra2), format, format, None).unwrap();
 
     let (luma, chroma) = grey_frame();
-    // The second plane claims full height where the 4:2:0 colorspace declares
-    // half, which validation must catch.
-    // SAFETY: this construction is never dereferenced, only validated, because
-    // the geometry check fails first.
-    let planes: PlaneSet = unsafe {
-        [
-            PlaneSource::contiguous(64, 48, 1, luma.as_ptr()),
-            PlaneSource::contiguous(32, 48, 1, chroma.as_ptr()),
-            PlaneSource::contiguous(32, 24, 1, chroma.as_ptr()),
-        ]
-    };
+    let mut planes = grey_planes(&luma, &chroma);
+    planes[1] = PlaneSource::from_bytes(&chroma, 16, 24, 32, 0, 1).unwrap();
 
     assert!(matches!(
         scorer.submit_pair_raw(planes, planes),
@@ -817,14 +864,11 @@ fn submit_pair_raw_accepts_correctly_typed_planes() {
 
     let (luma, chroma) = grey_frame();
     let first = {
-        // SAFETY: both buffers cover the geometry the scorer was built for, and
-        // each `PlaneSet` is consumed by the submit call it is handed to.
-        let planes = unsafe { grey_planes(&luma, &chroma) };
+        let planes = grey_planes(&luma, &chroma);
         scorer.submit_pair_raw(planes, planes)
     };
     let second = {
-        // SAFETY: as above, for the second pair.
-        let planes = unsafe { grey_planes(&luma, &chroma) };
+        let planes = grey_planes(&luma, &chroma);
         scorer.submit_pair_raw(planes, planes)
     };
 

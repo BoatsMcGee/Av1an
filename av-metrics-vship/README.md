@@ -44,6 +44,40 @@ The callback passed to `score_decoders` fires once per pair, which is useful for
 
 A scorer is `Send` but not `Sync`: one scorer owns its whole handler pool and drives it serially, so it can be moved into a worker thread but not shared across threads.
 
+### Borrowed plane uploads
+
+`PlaneSource<'a>` borrows storage through fallible `from_bytes`, `from_u16` or
+`from_plane` adapters. `PlaneSet<'a>` remains a three-plane array; its private
+geometry cannot be changed after validation. Raw callers must use unsafe
+`from_raw_parts` with an **actual readable allocation length**, keeping that
+allocation live throughout the borrow and synchronous native compute/upload.
+No Rust byte slice is constructed over foreign uninitialized padding.
+
+Width/height count samples; stride, origin and span count bytes. Uploads require
+positive dimensions and stride, `stride >= width * bytes_per_sample`, and
+`origin + (height - 1) * stride + row_bytes <= readable_len`. Inter-row padding
+is uploaded; final-row trailing padding is **not** required. Bottom-up/negative
+strides are rejected. Host origin/stride need not be sample-aligned.
+Dimensions/stride must fit native C `int`; the HIP launch expression additionally
+requires `width * height <= INT_MAX - 255` per plane.
+
+Every plane on both sides must match its configured storage width before
+submission counters, handler resets or compute change: 8-bit uses one byte,
+9/10/12/14/16-bit uses two. A typed `Frame<u8>` cannot supply configured 10-bit
+data. Chroma rounds up: 1919×1079 4:2:0 requires 960×540, not 959×539.
+Callers tracking external frame gaps can use `submit_pair_raw_with_reset` to
+request the same history reset only after both sides pass preflight; Av1an uses
+this to preserve its existing discontinuity policy without resetting invalid pairs.
+
+The prefix and misaligned-stride contracts are pinned to Vship
+[`5a627933` HIP upload](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/HIP/gpuColorToLinear/vshipColor.hpp),
+[Vulkan upload](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/Vulkan/gpuColorToLinear/vshipColor.hpp)
+and [HIP sample conversion](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/HIP/gpuColorToLinear/anyDepthToFloat.hpp).
+Pure checks and C ABI sinks run without a GPU; they do not prove GPU upload
+completion or metric accuracy. On a supported GPU host, run `just test-gpu`;
+`m07_gpu_padded_uploads_and_typed_mismatch` compares padded/contiguous uploads
+and fails, rather than skipping, when required mode has no working runtime.
+
 Check availability before constructing one, if the outcome is not already known:
 
 ```rust

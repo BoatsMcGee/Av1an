@@ -324,6 +324,8 @@ pub fn score_probed_frames(
         cancelled,
         probe::check_geometry,
         |position, reference_planes, distorted_planes| {
+            let reference_planes = metric_planes(reference_planes)?;
+            let distorted_planes = metric_planes(distorted_planes)?;
             let source_index = selected[position];
 
             // A temporal handler must see every frame in order. When the
@@ -331,18 +333,12 @@ pub fn score_probed_frames(
             // scene boundary -- the handler would otherwise fold a
             // discontinuity into its motion history, so its history
             // is cleared first.
-            if metric.is_temporal()
+            let reset_temporal = metric.is_temporal()
                 && reset_on_discontinuity
-                && previous.is_some_and(|previous| previous.checked_add(1) != Some(source_index))
-            {
-                scorer.reset_temporal().map_err(describe_error)?;
-            }
+                && previous.is_some_and(|previous| previous.checked_add(1) != Some(source_index));
 
             let frame_score = scorer
-                .submit_pair_raw(
-                    metric_planes(reference_planes),
-                    metric_planes(distorted_planes),
-                )
+                .submit_pair_raw_with_reset(reference_planes, distorted_planes, reset_temporal)
                 .map_err(describe_error)?;
 
             let value = match metric {
@@ -389,23 +385,26 @@ pub fn score_probed_frames(
 /// driver is holding, and libvship reads the planes before the frame is
 /// dropped.
 #[inline]
-fn metric_planes(planes: PlaneSet<'_>) -> MetricPlaneSet {
-    planes.map(|plane| {
+fn metric_planes(planes: PlaneSet<'_>) -> Result<MetricPlaneSet<'_>> {
+    let adapt = |plane: probe::PlaneSource<'_>| {
         // SAFETY: every field is copied unchanged from a `PlaneSource` the
         // driver produced from a live frame. The driver consumes the set inside
         // the `submit` call that receives it, so the frame outlives this
         // reference, and libvship only reads the planes before it is dropped.
         unsafe {
-            MetricPlaneSource::new(
+            MetricPlaneSource::from_raw_parts(
+                plane.data_ptr(),
+                plane.readable_len(),
                 plane.width(),
                 plane.height(),
                 plane.stride(),
                 plane.data_origin(),
                 plane.bytes_per_sample(),
-                plane.data_ptr(),
             )
         }
-    })
+    };
+    let [y, u, v] = planes;
+    Ok([adapt(y)?, adapt(u)?, adapt(v)?])
 }
 
 /// Turn a scorer error into a message that says what to do about it.
