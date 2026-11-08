@@ -524,6 +524,8 @@ struct RowPlanes {
     chroma: [*const u8; 2],
     /// Bytes per sample.
     bytes: usize,
+    /// Luma columns covered by each chroma sample.
+    subsample_x: usize,
 }
 
 impl RowPlanes {
@@ -532,10 +534,10 @@ impl RowPlanes {
     /// # Safety
     ///
     /// The planes must be live allocations, as the caller of [`yuv_to_rgb`]
-    /// guarantees.
+    /// guarantees. Geometry and subsampling must already be validated.
     #[inline]
     #[allow(clippy::cast_possible_wrap)]
-    unsafe fn at(planes: &PlaneSet, row: usize) -> Self {
+    unsafe fn at(planes: &PlaneSet, row: usize, subsampling: [usize; 2]) -> Self {
         let luma = &planes[0];
         let bytes = luma.bytes_per_sample;
 
@@ -546,10 +548,8 @@ impl RowPlanes {
 
             let mut chroma = [luma.data; 2];
             for (index, plane) in planes.iter().enumerate().skip(1) {
-                // A subsampled plane has fewer rows than luma; sampling by luma
-                // row unclamped would read past the end of a 4:2:0 plane, so
-                // the last row repeats instead.
-                let chroma_row = row.min(plane.height.saturating_sub(1));
+                let chroma_row = row / subsampling[1];
+                // Stride and origin are already bytes, including for u16 planes.
                 let offset = plane.data_origin + (chroma_row as isize * plane.stride) as usize;
                 chroma[index - 1] = plane.data.add(offset);
             }
@@ -558,14 +558,15 @@ impl RowPlanes {
                 luma: luma_row,
                 chroma,
                 bytes,
+                subsample_x: subsampling[0],
             }
         }
     }
 
     /// Read one pixel's Y, U and V on the 0-255 scale.
     ///
-    /// Chroma is sampled at the midpoint of its covering cell,
-    /// nearest-neighbour. This is a measurement, not a display conversion:
+    /// Chroma is sampled from its covering cell, nearest-neighbour.
+    /// This is a measurement, not a display conversion:
     /// both sides of a pair go through exactly this path, so the sampling
     /// choice is consistent rather than optimal.
     ///
@@ -573,35 +574,19 @@ impl RowPlanes {
     ///
     /// The pointers must be readable for the samples read.
     #[inline]
-    unsafe fn sample(
-        self,
-        x: usize,
-        chroma_width: [usize; 2],
-        scale: SampleScale,
-    ) -> (f32, f32, f32) {
+    unsafe fn sample(self, x: usize, scale: SampleScale) -> (f32, f32, f32) {
         // SAFETY: delegated to the caller of `yuv_to_rgb`.
         unsafe {
             let y = read_normalized(self.luma.add(x * self.bytes), self.bytes, 0.0, scale.gain);
 
-            // The midpoint of the chroma cell containing this luma sample, as a
-            // shift and a conditional rather than a division: this runs per
-            // pixel.
-            #[expect(
-                clippy::manual_is_multiple_of,
-                reason = "`is_multiple_of` is clearer but this is the hot path"
-            )]
-            let cx = x / 2 + usize::from(x % 2 != 0);
+            let cx = x / self.subsample_x;
 
             let mut offsets = [0f32; 2];
             for (index, pointer) in self.chroma.iter().enumerate() {
-                // Clamp into the plane, which is narrower when subsampled and
-                // may be narrower still than this midpoint
-                // suggests for odd sizes.
-                let px = cx.min(chroma_width[index].saturating_sub(1));
                 // Center in source codes first: full-range midpoint is not half
                 // the peak, and the matrix expects neutral chroma at 128.
                 offsets[index] = read_normalized(
-                    pointer.add(px * self.bytes),
+                    pointer.add(cx * self.bytes),
                     self.bytes,
                     scale.chroma_center,
                     scale.gain,
@@ -685,6 +670,28 @@ pub unsafe fn yuv_to_rgb(
         });
     }
 
+    let u = &planes[1];
+    let v = &planes[2];
+    if (u.width, u.height) != (v.width, v.height) {
+        return Err(FmetricsError::MalformedFrame {
+            reason: format!(
+                "chroma planes disagree: U is {}x{}, V is {}x{}",
+                u.width, u.height, v.width, v.height
+            ),
+        });
+    }
+    // Prefer 4:4:4 when one-pixel axes make layouts indistinguishable;
+    // every matching layout addresses the same valid cells on those axes.
+    let subsampling = [[1, 1], [2, 1], [2, 2]]
+        .into_iter()
+        .find(|&[sx, sy]| u.width == width.div_ceil(sx) && u.height == height.div_ceil(sy))
+        .ok_or_else(|| FmetricsError::MalformedFrame {
+            reason: format!(
+                "chroma is {}x{} for {width}x{height} luma; expected 4:2:0, 4:2:2 or 4:4:4 ceil dimensions",
+                u.width, u.height
+            ),
+        })?;
+
     let coefficients = Coefficients::for_range(info.matrix, info.range);
     let scale = SampleScale {
         gain: match info.range {
@@ -706,8 +713,6 @@ pub unsafe fn yuv_to_rgb(
     let stride = width * channels;
     let mut data = vec![0u8; stride * height];
 
-    let chroma_width = [planes[1].width, planes[2].width];
-
     // The two output formats are handled separately rather than branching per
     // pixel: 8-bit is the common case and would otherwise pay for a test and a
     // wider write path it never takes.
@@ -716,7 +721,7 @@ pub unsafe fn yuv_to_rgb(
             planes,
             coefficients,
             scale,
-            chroma_width,
+            subsampling,
             &mut data,
             stride,
             out_gain,
@@ -726,7 +731,7 @@ pub unsafe fn yuv_to_rgb(
             planes,
             coefficients,
             scale,
-            chroma_width,
+            subsampling,
             &mut data,
             stride,
             1.0,
@@ -750,7 +755,7 @@ fn convert_rows<const WIDE: bool>(
     planes: &PlaneSet,
     coefficients: Coefficients,
     scale: SampleScale,
-    chroma_width: [usize; 2],
+    subsampling: [usize; 2],
     data: &mut [u8],
     stride: usize,
     out_gain: f32,
@@ -760,8 +765,9 @@ fn convert_rows<const WIDE: bool>(
 
     for row in 0..height {
         // SAFETY: delegated to the caller of `yuv_to_rgb`, who guarantees each
-        // plane is a live allocation spanning its rows.
-        let row_planes = unsafe { RowPlanes::at(planes, row) };
+        // plane is a live allocation spanning its rows. Validated ceil chroma
+        // dimensions keep covering-cell coordinates within both chroma planes.
+        let row_planes = unsafe { RowPlanes::at(planes, row, subsampling) };
 
         // SAFETY: `row * stride` is within `data`, which is `stride * height`
         // long.
@@ -769,7 +775,7 @@ fn convert_rows<const WIDE: bool>(
 
         for column in 0..width {
             // SAFETY: as above; the row is inside the allocation.
-            let (y, u, v) = unsafe { row_planes.sample(column, chroma_width, scale) };
+            let (y, u, v) = unsafe { row_planes.sample(column, scale) };
 
             let (r, g, b) = coefficients.apply(y, u, v);
 
@@ -820,17 +826,6 @@ mod tests {
     fn frame444(width: usize, height: usize, y: Vec<u8>, u: Vec<u8>, v: Vec<u8>) -> PlaneSet {
         PlaneSet {
             planes: [plane(width, height, y), plane(width, height, u), plane(width, height, v)],
-        }
-    }
-
-    /// A 4:2:0 frame, with half-width, half-height chroma.
-    fn frame420(width: usize, height: usize, y: Vec<u8>, u: Vec<u8>, v: Vec<u8>) -> PlaneSet {
-        PlaneSet {
-            planes: [
-                plane(width, height, y),
-                plane(width / 2, height / 2, u),
-                plane(width / 2, height / 2, v),
-            ],
         }
     }
 
@@ -1346,53 +1341,184 @@ mod tests {
         );
     }
 
-    #[test]
-    fn subsampled_chroma_rows_are_clamped_to_the_plane() {
-        // A 4:2:0 plane has half as many rows as luma, so sampling chroma by
-        // luma row unclamped reads past the end of the plane on the
-        // bottom half. Every row has a distinct luma value, so a
-        // clamped row shows up as the last row's chroma repeating
-        // rather than as a crash alone.
-        let width = 4;
-        let height = 8;
-        let luma: Vec<u8> = (0..width * height).map(|i| (i * 8) as u8).collect();
-        let chroma: Vec<u8> = vec![128u8; (width / 2) * (height / 2)];
+    // Hand-written covering-cell maps for 5x3 luma, including its final row/column.
+    const M03_LAYOUTS: [([usize; 2], [usize; 15]); 3] = [
+        ([3, 2], [0, 0, 1, 1, 2, 0, 0, 1, 1, 2, 3, 3, 4, 4, 5]),
+        ([3, 3], [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 6, 6, 7, 7, 8]),
+        ([5, 3], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]),
+    ];
+    const M03_Y: [u8; 15] =
+        [100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 148, 152, 156];
+    const M03_U: [u8; 15] =
+        [104, 120, 136, 148, 112, 140, 124, 144, 108, 116, 132, 152, 100, 128, 156];
+    const M03_V: [u8; 15] =
+        [148, 112, 140, 116, 136, 104, 152, 124, 144, 108, 128, 156, 120, 132, 100];
 
-        // SAFETY: leaked buffers of the stated size.
-        let image = unsafe {
-            yuv_to_rgb(
-                &frame420(width, height, luma, chroma.clone(), chroma),
-                &full_range(YuvMatrix::Bt709),
-                255,
-            )
-            .unwrap()
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "keep the independent inverse-luma reference equation directly readable"
+    )]
+    fn m03_assert_cell_map<T: v_frame::pixel::Pixel + Into<u16>>(
+        geometry: [[usize; 2]; 2],
+        samples: [&[T]; 3],
+        cells: &[usize],
+        bit_depth: usize,
+        range: SampleRange,
+    ) {
+        let [[width, height], _] = geometry;
+        let bytes = std::mem::size_of::<T>();
+        let planes = PlaneSet {
+            planes: std::array::from_fn(|index| {
+                let [width, height] = geometry[usize::from(index != 0)];
+                assert!(samples[index].len() >= width * height);
+                PlaneSource {
+                    width,
+                    height,
+                    stride: (width * bytes) as isize,
+                    data_origin: 0,
+                    data: samples[index].as_ptr().cast(),
+                    bytes_per_sample: bytes,
+                }
+            }),
         };
+        let info = ColorInfo {
+            range,
+            bit_depth,
+            ..full_range(YuvMatrix::Bt709)
+        };
+        // SAFETY: all three typed buffers cover the stated geometry and remain live.
+        let image = unsafe { yuv_to_rgb(&planes, &info, info.max_sample().unwrap()).unwrap() };
+        assert_eq!((image.width(), image.height()), (width, height));
+        assert_eq!(image.is_wide(), bytes == 2);
+        assert_eq!(image.stride(), width * 3 * bytes);
+        assert_eq!(image.as_bytes().len(), width * height * 3 * bytes);
+        assert_eq!(cells.len(), width * height);
 
-        // The bottom luma row is luma[4 * 7] = 224; it must still convert.
-        let bottom = image.pixel(0, height - 1);
-        assert_eq!(
-            bottom,
-            (bottom.0, bottom.0, bottom.0),
-            "clamped chroma must still yield a defined pixel"
-        );
+        let shift = f64::from(1u32 << (bit_depth - 8));
+        let peak = f64::from(info.max_sample().unwrap());
+        let center = f64::from(1u32 << (bit_depth - 1));
+        let (black, white, chroma_span) = match range {
+            SampleRange::Full => (0.0, peak, peak),
+            SampleRange::Limited => (16.0 * shift, 235.0 * shift, 224.0 * shift),
+        };
+        for (index, &cell) in cells.iter().enumerate() {
+            // Only the literal map associates pixels with chroma; this f64 reference
+            // reconstructs green from the BT.709 luma identity, independently of production.
+            let y = (f64::from(samples[0][index].into()) - black) / (white - black);
+            let cb = (f64::from(samples[1][cell].into()) - center) / chroma_span;
+            let cr = (f64::from(samples[2][cell].into()) - center) / chroma_span;
+            let r = y + 2.0 * (1.0 - 0.2126) * cr;
+            let b = y + 2.0 * (1.0 - 0.0722) * cb;
+            let g = (y - 0.2126 * r - 0.0722 * b) / (1.0 - 0.2126 - 0.0722);
+            let output_peak = if bytes == 2 { 65535.0 } else { 255.0 };
+            let expected =
+                [r, g, b].map(|c| (c * output_peak).round().clamp(0.0, output_peak) as u32);
+            let actual = image.pixel(index % width, index / width);
+            for (actual, expected) in [actual.0, actual.1, actual.2].into_iter().zip(expected) {
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "{geometry:?} {bit_depth}-bit {range:?} pixel {index}, cell {cell}: {actual} != {expected}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn subsampled_chroma_is_sampled_within_bounds() {
-        // 4:2:0 on odd dimensions: the chroma midpoint can exceed the plane,
-        // so this catches a missing clamp.
-        // SAFETY: leaked buffers of the stated size.
-        let image = unsafe {
-            yuv_to_rgb(
-                &frame420(7, 5, vec![100u8; 35], vec![128u8; 6], vec![128u8; 6]),
-                &full_range(YuvMatrix::Bt709),
-                255,
-            )
-            .unwrap()
-        };
-        assert_eq!((image.width(), image.height()), (7, 5));
-        assert_eq!(image.stride(), 21);
-        assert_eq!(image.data.len(), 21 * 5);
+    fn m03_odd_420_422_444_use_explicit_covering_cells() {
+        for (chroma, cells) in M03_LAYOUTS {
+            m03_assert_cell_map(
+                [[5, 3], chroma],
+                [&M03_Y, &M03_U, &M03_V],
+                &cells,
+                8,
+                SampleRange::Full,
+            );
+        }
+    }
+
+    #[test]
+    fn m03_multi_pixel_u16_preserves_byte_strides_and_cell_precision() {
+        for depth in [10, 12] {
+            let samples = [M03_Y, M03_U, M03_V].map(|plane| {
+                std::array::from_fn::<_, 15, _>(|index| {
+                    (u16::from(plane[index]) << (depth - 8)) + (index % 3) as u16
+                })
+            });
+            for range in [SampleRange::Full, SampleRange::Limited] {
+                for (chroma, cells) in M03_LAYOUTS {
+                    m03_assert_cell_map(
+                        [[5, 3], chroma],
+                        samples.each_ref().map(|plane| plane.as_slice()),
+                        &cells,
+                        depth,
+                        range,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m03_single_pixel_axes_accept_ambiguous_valid_layouts() {
+        for (luma, chroma, cells) in [
+            ([1, 1], [1, 1], &[0][..]),
+            ([1, 3], [1, 2], &[0, 0, 1][..]),
+            ([1, 3], [1, 3], &[0, 1, 2][..]),
+            ([3, 1], [2, 1], &[0, 0, 1][..]),
+            ([3, 1], [3, 1], &[0, 1, 2][..]),
+        ] {
+            m03_assert_cell_map(
+                [luma, chroma],
+                [&M03_Y, &M03_U, &M03_V],
+                cells,
+                8,
+                SampleRange::Full,
+            );
+        }
+    }
+
+    #[test]
+    fn m03_inconsistent_or_unsupported_chroma_geometry_is_rejected() {
+        let samples = [[128u8; 64]; 3];
+        for (u, v) in [
+            ([3, 2], [3, 3]),
+            ([3, 3], [5, 3]),
+            ([5, 3], [3, 3]),
+            ([3, 2], [2, 2]),
+            ([2, 2], [3, 2]),
+            ([2, 1], [2, 1]),
+            ([2, 2], [2, 2]),
+            ([3, 1], [3, 1]),
+            ([4, 2], [4, 2]),
+            ([6, 3], [6, 3]),
+            ([5, 4], [5, 4]),
+            ([5, 2], [5, 2]),
+            ([0, 0], [0, 0]),
+            ([0, 2], [0, 2]),
+            ([3, 0], [3, 0]),
+        ] {
+            let geometry = [[5, 3], u, v];
+            let planes = PlaneSet {
+                planes: std::array::from_fn(|index| {
+                    let [width, height] = geometry[index];
+                    PlaneSource {
+                        width,
+                        height,
+                        stride: width as isize,
+                        data_origin: 0,
+                        data: samples[index].as_ptr(),
+                        bytes_per_sample: 1,
+                    }
+                }),
+            };
+            // SAFETY: live buffers cover even the old clamped reader's accesses;
+            // invalid geometry must instead be rejected before raw access.
+            let result = unsafe { yuv_to_rgb(&planes, &full_range(YuvMatrix::Bt709), 255) };
+            assert!(
+                matches!(result, Err(FmetricsError::MalformedFrame { .. })),
+                "U={u:?}, V={v:?} must fail: {result:?}"
+            );
+        }
     }
 
     #[test]
