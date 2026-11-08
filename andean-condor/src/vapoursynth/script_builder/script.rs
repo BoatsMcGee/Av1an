@@ -1,5 +1,34 @@
 use std::{collections::BTreeMap, fmt::Write};
 
+/// Formats `value` as a double-quoted Python string literal.
+///
+/// Paths and user-supplied text are interpolated into generated scripts, so a
+/// quote or a trailing backslash must not be able to end the literal or change
+/// the script's meaning. Rust's `Debug` escaping is unsuitable: it emits
+/// `\u{...}`, which is not valid Python.
+#[inline]
+#[must_use]
+pub fn python_string_literal(value: &str) -> String {
+    let mut literal = String::with_capacity(value.len() + 2);
+    literal.push('"');
+    for character in value.chars() {
+        match character {
+            '\\' => literal.push_str(r"\\"),
+            '"' => literal.push_str(r#"\""#),
+            '\n' => literal.push_str(r"\n"),
+            '\r' => literal.push_str(r"\r"),
+            '\t' => literal.push_str(r"\t"),
+            control if control < ' ' || control == '\x7f' => {
+                write!(literal, "\\x{:02x}", control as u32)
+                    .expect("writing to a String cannot fail");
+            },
+            other => literal.push(other),
+        }
+    }
+    literal.push('"');
+    literal
+}
+
 pub type ModuleName = String;
 pub type PackageName = String;
 pub type ModuleAlias = Option<String>;
@@ -151,4 +180,47 @@ pub enum Line {
     ///
     /// example: `foo = bar # comment`
     ExpressionWithComment(VariableName, VariableValue, String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::python_string_literal;
+
+    #[test]
+    fn an_ordinary_path_is_a_plain_quoted_literal() {
+        assert_eq!(
+            python_string_literal(r"C:\media\clip.mkv"),
+            r#""C:\\media\\clip.mkv""#
+        );
+    }
+
+    /// A quote in a filename must not be able to end the literal and inject
+    /// code into the generated script.
+    #[test]
+    fn a_quote_is_escaped() {
+        assert_eq!(python_string_literal(r#"a"b.mkv"#), r#""a\"b.mkv""#);
+        assert_eq!(
+            python_string_literal(r#""); import os; os.system("x"#),
+            r#""\"); import os; os.system(\"x""#
+        );
+    }
+
+    /// A directory path on Windows routinely ends in a separator, which would
+    /// otherwise escape the closing quote.
+    #[test]
+    fn a_trailing_separator_does_not_escape_the_closing_quote() {
+        assert_eq!(python_string_literal("C:\\media\\"), "\"C:\\\\media\\\\\"");
+    }
+
+    #[test]
+    fn whitespace_controls_use_python_escapes_not_unicode_escapes() {
+        assert_eq!(python_string_literal("a\nb\tc\rd"), r#""a\nb\tc\rd""#);
+        // `\u{1b}` (Rust's Debug form) is not valid inside a Python literal.
+        assert_eq!(python_string_literal("\x1b"), r#""\x1b""#);
+    }
+
+    #[test]
+    fn non_ascii_text_is_preserved() {
+        assert_eq!(python_string_literal("動画.mkv"), "\"動画.mkv\"");
+    }
 }

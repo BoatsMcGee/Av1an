@@ -18,7 +18,7 @@ use crate::{
         script_builder::{
             NodeVariableName,
             VapourSynthPluginScript,
-            script::{Imports, Line},
+            script::{Imports, Line, python_string_literal},
         },
     },
 };
@@ -195,8 +195,9 @@ impl VapourSynthPluginScript for FGS {
         }
 
         let mut line = format!(
-            "core.fgs.FGS(clip = {}, fgs_data = bytes.fromhex(\"{}\")",
-            node_name, hex_string,
+            "core.fgs.FGS(clip = {}, fgs_data = bytes.fromhex({})",
+            node_name,
+            python_string_literal(&hex_string),
         );
 
         // Always pass dynamic_seed and simd_mask on every call (matching the

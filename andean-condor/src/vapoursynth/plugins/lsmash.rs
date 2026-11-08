@@ -13,7 +13,7 @@ use crate::vapoursynth::{
     script_builder::{
         NodeVariableName,
         VapourSynthPluginScript,
-        script::{Imports, Line},
+        script::{Imports, Line, python_string_literal},
     },
 };
 
@@ -316,11 +316,15 @@ impl VapourSynthPluginScript for LWLibavSource {
             let mut line = String::new();
             write!(
                 &mut line,
-                "core.lsmas.LWLibavSource(source = r\"{}\"",
-                self.source.display()
+                "core.lsmas.LWLibavSource(source = {}",
+                python_string_literal(&self.source.display().to_string())
             )?;
             if let Some(cache) = &self.cachefile {
-                write!(&mut line, ", cachefile = r\"{}\"", cache.display())?;
+                write!(
+                    &mut line,
+                    ", cachefile = {}",
+                    python_string_literal(&cache.display().to_string())
+                )?;
             }
             write!(&mut line, ")")?;
             line

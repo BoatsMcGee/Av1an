@@ -15,7 +15,7 @@ use crate::vapoursynth::{
     script_builder::{
         NodeVariableName,
         VapourSynthPluginScript,
-        script::{Imports, Line},
+        script::{Imports, Line, python_string_literal},
     },
 };
 
@@ -147,7 +147,7 @@ impl VapourSynthPluginScript for MVUSuper {
                 write!(&mut line, ", pelclip = {}", pelclip_name)?;
             }
             if let Some(prefix) = &self.prefix {
-                write!(&mut line, ", prefix = \"{}\"", prefix)?;
+                write!(&mut line, ", prefix = {}", python_string_literal(prefix))?;
             }
             write!(&mut line, ")")?;
             line

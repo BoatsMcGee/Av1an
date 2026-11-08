@@ -15,7 +15,7 @@ use crate::vapoursynth::{
     script_builder::{
         NodeVariableName,
         VapourSynthPluginScript,
-        script::{Imports, Line},
+        script::{Imports, Line, python_string_literal},
     },
 };
 
@@ -252,7 +252,7 @@ impl VapourSynthPluginScript for AnalyseMany {
                 write!(&mut line, ", radius = {}", radius as i64)?;
             }
             if let Some(prefix) = &self.prefix {
-                write!(&mut line, ", prefix = \"{}\"", prefix)?;
+                write!(&mut line, ", prefix = {}", python_string_literal(prefix))?;
             }
             write!(&mut line, ")")?;
             line
