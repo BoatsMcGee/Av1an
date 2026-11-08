@@ -253,12 +253,14 @@ impl WorkspacePool {
 pub struct FmetricsScorer {
     /// The configuration this scorer was built from.
     config: FmetricsConfig,
-    /// The colour properties both sides are read with.
+    /// The reference's colour properties.
     color: ColorInfo,
+    /// The distorted input's independent colour properties.
+    distorted_color: ColorInfo,
     /// The peak sample value for the source depth.
     peak: u32,
-    /// The colorspace both images are submitted as.
-    colorspace: ffi::FmetricsColorspace,
+    /// The distorted input's peak sample value.
+    distorted_peak: u32,
     /// The per-pair workspaces or the CVVDP context.
     inner: Inner,
 }
@@ -312,12 +314,28 @@ impl FmetricsScorer {
     /// rate.
     #[inline]
     pub fn new(config: FmetricsConfig, color: ColorInfo) -> Result<Self, FmetricsError> {
-        let api = FmetricsApi::load()?;
+        Self::new_with_colors(config, color, color)
+    }
+
+    /// Build a scorer with independent reference and distorted color properties.
+    /// Use [`Self::new`] only when both inputs are known to share color metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid sample depths/frame rate or an unavailable library.
+    #[inline]
+    pub fn new_with_colors(
+        config: FmetricsConfig,
+        color: ColorInfo,
+        distorted_color: ColorInfo,
+    ) -> Result<Self, FmetricsError> {
         let peak = color.max_sample()?;
+        let distorted_peak = distorted_color.max_sample()?;
 
         if config.is_temporal() {
             Self::validate_frame_rate(&config)?;
         }
+        let api = FmetricsApi::load()?;
 
         let inner = if config.is_temporal() {
             Inner::Temporal {
@@ -359,9 +377,9 @@ impl FmetricsScorer {
         Ok(Self {
             config,
             color,
+            distorted_color,
             peak,
-            // Depends only on the clip, which `ColorInfo` already records.
-            colorspace: ffi::FmetricsColorspace::Srgb,
+            distorted_peak,
             inner,
         })
     }
@@ -470,7 +488,7 @@ impl FmetricsScorer {
         Self::check_dimensions(reference, distorted)?;
 
         self.with_workspace(pool, |workspace| {
-            self.score_per_pair(workspace, reference, distorted, self.colorspace)
+            self.score_per_pair(workspace, reference, distorted)
         })
     }
 
@@ -530,7 +548,8 @@ impl FmetricsScorer {
         // within the allocation each plane describes.
         let reference_image = unsafe { yuv_to_rgb(reference, &self.color, self.peak)? };
         // SAFETY: as above.
-        let distorted_image = unsafe { yuv_to_rgb(distorted, &self.color, self.peak)? };
+        let distorted_image =
+            unsafe { yuv_to_rgb(distorted, &self.distorted_color, self.distorted_peak)? };
 
         Self::check_dimensions(&reference_image, &distorted_image)?;
 
@@ -544,12 +563,7 @@ impl FmetricsScorer {
         };
 
         self.with_workspace(pool, |workspace| {
-            self.score_per_pair(
-                workspace,
-                &reference_image,
-                &distorted_image,
-                self.colorspace,
-            )
+            self.score_per_pair(workspace, &reference_image, &distorted_image)
         })
     }
 
@@ -606,7 +620,8 @@ impl FmetricsScorer {
         // SAFETY: as in `submit_pair`.
         let reference_image = unsafe { yuv_to_rgb(reference, &self.color, self.peak)? };
         // SAFETY: as above.
-        let distorted_image = unsafe { yuv_to_rgb(distorted, &self.color, self.peak)? };
+        let distorted_image =
+            unsafe { yuv_to_rgb(distorted, &self.distorted_color, self.distorted_peak)? };
 
         Self::check_dimensions(&reference_image, &distorted_image)?;
 
@@ -630,7 +645,6 @@ impl FmetricsScorer {
             &mut current_height,
             &reference_image,
             &distorted_image,
-            self.colorspace,
         );
         // The context is created lazily on the first frame, so its state is
         // written back.
@@ -654,11 +668,11 @@ impl FmetricsScorer {
         workspace: FmetricsWorkspace,
         reference: &R,
         distorted: &R,
-        colorspace: ffi::FmetricsColorspace,
     ) -> Result<FrameScore, FmetricsError> {
         let api = FmetricsApi::load()?;
-        let reference_img = reference.as_img(colorspace, self.color.hdr);
-        let distorted_img = distorted.as_img(colorspace, self.color.hdr);
+        let reference_img = reference.as_img(self.color.colorspace, self.color.hdr);
+        let distorted_img =
+            distorted.as_img(self.distorted_color.colorspace, self.distorted_color.hdr);
 
         let mut value = 0f64;
         let metric = self.config.metric;
@@ -724,11 +738,11 @@ impl FmetricsScorer {
         height: &mut c_int,
         reference: &RgbImage,
         distorted: &RgbImage,
-        colorspace: ffi::FmetricsColorspace,
     ) -> Result<FrameScore, FmetricsError> {
         let api = FmetricsApi::load()?;
-        let reference_img = reference.as_img(colorspace, self.color.hdr);
-        let distorted_img = distorted.as_img(colorspace, self.color.hdr);
+        let reference_img = reference.as_img(self.color.colorspace, self.color.hdr);
+        let distorted_img =
+            distorted.as_img(self.distorted_color.colorspace, self.distorted_color.hdr);
 
         let frame_width = reference_img.width as c_int;
         let frame_height = reference_img.height as c_int;

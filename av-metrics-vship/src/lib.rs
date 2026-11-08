@@ -38,8 +38,9 @@
 //! let mut reference = Decoder::from_file("reference.mkv")?;
 //! let mut distorted = Decoder::from_file("distorted.mkv")?;
 //!
-//! let format = VideoFormat::from_details(reference.get_video_details());
-//! let mut scorer = VshipScorer::new(config, format, format, None)?;
+//! let reference_format = VideoFormat::from_details(reference.get_video_details());
+//! let distorted_format = VideoFormat::from_details(distorted.get_video_details());
+//! let mut scorer = VshipScorer::new(config, reference_format, distorted_format, None)?;
 //!
 //! let scores = scorer.score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {})?;
 //! let pooled = VshipScorer::pool(&scores, VshipMetric::Ssimulacra2, PoolMethod::Mean)?;

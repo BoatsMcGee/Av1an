@@ -23,9 +23,9 @@ let config = FmetricsConfig::new(FmetricsMetric::Ssimulacra2);
 let mut reference = Decoder::from_file("reference.mkv")?;
 let mut distorted = Decoder::from_file("distorted.mkv")?;
 
-let details = *reference.get_video_details();
-let color = ColorInfo::from_details(&details)?;
-let mut scorer = FmetricsScorer::new(config, color)?;
+let reference_color = ColorInfo::from_details(reference.get_video_details())?;
+let distorted_color = ColorInfo::from_details(distorted.get_video_details())?;
+let mut scorer = FmetricsScorer::new_with_colors(config, reference_color, distorted_color)?;
 
 // Submit pairs as they are decoded; the caller owns frame lifetime.
 let score = scorer.submit_pair(&reference_planes, &distorted_planes)?;
@@ -65,14 +65,28 @@ scorer does not decide it.
 
 fmetrics takes **interleaved RGB**, not planar YUV, so every pair is converted
 before submission. That makes the conversion part of the measurement: a wrong
-matrix silently changes every score. The matrix and range therefore come from the
-clip's own details rather than from a default, and `ColorInfo` exposes
-`with_matrix`, `with_range` and `with_hdr` for content whose real characteristics
-are known.
+matrix silently changes every score. `ColorInfo::from_details` honors each input's
+decoded range and BT.601, BT.709 or BT.2020 non-constant-luminance matrix.
+`new_with_colors` keeps the two inputs independent; `new` is shorthand only when
+both inputs are known to have the same color properties.
 
-`av-decoders` reports no colour metadata, so the defaults are declared rather than
-detected: BT.709 above 650 lines, BT.601 below, limited range throughout. That is
-the same declaration made on the libvship path, which keeps the two comparable.
+Only absent/`Unspecified` values use defaults: limited range, BT.709 above 650
+lines (BT.601 otherwise), and sRGB transfer/BT.709 primaries. Explicit transfer
+metadata must be sRGB or linear, with BT.709 primaries; other curves (including
+BT.709, PQ and HLG) and other gamuts return `UnsupportedFormat`. Neither an HDR
+flag nor a CVVDP display model converts transfer functions or gamuts.
+`colorspace_from_details` now returns a `Result`; `ColorInfo::colorspace` carries
+the supported encoding through to the native image descriptor.
+
+av-decoders 0.12 populates color metadata through FFMS2/FFmpeg. For VapourSynth,
+get the backend with `get_vapoursynth_impl()`, then call its
+`get_extended_video_details()` to read the first output frame's properties;
+ordinary decoder details omit them. Y4M has no color metadata
+in this decoder and therefore uses the defaults. These are clip-level properties;
+per-frame changes and mastering-display/content-light-level rendering are not
+implemented here. Chroma reconstruction remains nearest-cell sampling.
+Unrecognized raw numeric metadata may already be collapsed to `None` by the
+decoder; this API cannot distinguish that from an absent property.
 
 Bit depth maps directly: 8-bit becomes `RGB_UINT8`, and 10- or 12-bit is
 up-converted to `RGB_UINT16` rather than truncated, which would discard precision

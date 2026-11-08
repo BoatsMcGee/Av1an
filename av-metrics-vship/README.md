@@ -26,9 +26,10 @@ use av_metrics_vship::{PoolMethod, VideoFormat, VshipConfig, VshipMetric, VshipS
 let mut reference = Decoder::from_file("reference.mkv")?;
 let mut distorted = Decoder::from_file("distorted.mkv")?;
 
-let format = VideoFormat::from_details(reference.get_video_details());
+let reference_format = VideoFormat::from_details(reference.get_video_details());
+let distorted_format = VideoFormat::from_details(distorted.get_video_details());
 let mut scorer =
-    VshipScorer::new(VshipConfig::new().with_handler_threads(4), format, format, None)?;
+    VshipScorer::new(VshipConfig::new().with_handler_threads(4), reference_format, distorted_format, None)?;
 
 let scores = scorer.score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {})?;
 let pooled = VshipScorer::pool(&scores, VshipMetric::Ssimulacra2, PoolMethod::Mean)?;
@@ -130,10 +131,20 @@ The defaults match what libvship's own CLI does for an ordinary encode. The defa
 
 - **Bit depth** becomes `Vship_Sample_t`. libvship's values are non-contiguous — 8, 9, 10, 12, 14 and 16 bits are enum values 2, 3, 5, 7, 9 and 11 — so every variant is declared with an explicit discriminant and nothing is converted sequentially. A depth with no enum value (11 or 13, say) is reported as `UnsupportedFormat` rather than guessed.
 - **Chroma sampling** becomes `Vship_ChromaSubsample_t`: 4:2:0 is `{1, 1}`, 4:2:2 is `{1, 0}` and 4:4:4 is `{0, 0}`. Monochrome has no chroma planes at all, so it is rejected.
-- **Range** is limited and **chroma location** is left-sited, both the C header's own defaults. **Matrix** is BT.709 above 650 lines and BT.601 below, **transfer** and **primaries** are BT.709, and the family is YUV. `av-decoders` reports no colour metadata, so these are declared rather than probed.
+- **Color metadata** is preserved independently in each `VideoFormat`. Explicit full/limited range, supported matrices, chroma locations, transfer functions (including native PQ/HLG) and primaries override defaults. Values without a native equivalent return `UnsupportedFormat` before device discovery; reserved values never become BT.709 silently. BT.2020 SDR transfers map to native BT.709 as in libvship's FFMS2 adapter.
+- Only absent/`Unspecified` values use defaults: limited range, left-sited chroma, BT.709 transfer/primaries, and BT.709 matrix above 650 lines (BT.601 otherwise). The family remains planar YUV; RGB input is rejected.
 - **Av1an's `resolution`** becomes `target_width` and `target_height`. An absent target resolution is libvship's `-1` "do not scale" sentinel, which is why no plane is resized here — libvship scales each input internally.
 
 `VideoFormat::colorspace` performs the same mapping from a `VideoFormat` alone, for callers that have geometry rather than a decoder.
+
+av-decoders 0.12 populates metadata through FFMS2/FFmpeg. For VapourSynth, get the
+backend with `get_vapoursynth_impl()`, then call its `get_extended_video_details()`
+to read the first output frame's properties; ordinary decoder details omit them. Y4M color properties are
+unknown. Mastering-display/content-light-level metadata and per-frame metadata
+changes are not applied by this binding. `VideoFormat` adds the five optional
+decoder color fields; struct-literal callers must supply them (or use `from_details`).
+Unrecognized raw numeric metadata may already be collapsed to `None` by the
+decoder; this API cannot distinguish that from an absent property.
 
 ### Device selection
 

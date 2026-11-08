@@ -58,9 +58,9 @@
 //! let mut reference = Decoder::from_file("reference.mkv")?;
 //! let mut distorted = Decoder::from_file("distorted.mkv")?;
 //!
-//! let details = *reference.get_video_details();
-//! let color = ColorInfo::from_details(&details)?;
-//! let scorer = FmetricsScorer::new(config, color)?;
+//! let reference_color = ColorInfo::from_details(reference.get_video_details())?;
+//! let distorted_color = ColorInfo::from_details(distorted.get_video_details())?;
+//! let scorer = FmetricsScorer::new_with_colors(config, reference_color, distorted_color)?;
 //!
 //! // Submit pairs as they are decoded; the driver owns frame lifetime.
 //! # Ok(())

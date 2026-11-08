@@ -14,7 +14,10 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-use av_decoders::{Decoder, VideoDetails, v_frame::pixel::Pixel};
+use av_decoders::{
+    ChromaLocation, ColorPrimaries, ColorRange, ColorSpace, Decoder, TransferCharacteristic,
+    VideoDetails, v_frame::pixel::Pixel,
+};
 use v_frame::chroma::ChromaSubsampling;
 
 use crate::{
@@ -132,6 +135,16 @@ pub struct VideoFormat {
     pub bit_depth: u32,
     /// Chroma subsampling.
     pub chroma_sampling: ChromaSubsampling,
+    /// Decoder-reported range; only unknown values use the limited-range default.
+    pub color_range: Option<ColorRange>,
+    /// Decoder-reported primaries.
+    pub color_primaries: Option<ColorPrimaries>,
+    /// Decoder-reported transfer function.
+    pub color_transfer_characteristic: Option<TransferCharacteristic>,
+    /// Decoder-reported YUV matrix.
+    pub color_space: Option<ColorSpace>,
+    /// Decoder-reported chroma siting.
+    pub chroma_location: Option<ChromaLocation>,
 }
 
 impl VideoFormat {
@@ -144,6 +157,11 @@ impl VideoFormat {
             height: details.height as u32,
             bit_depth: details.bit_depth as u32,
             chroma_sampling: details.chroma_sampling,
+            color_range: details.color_range,
+            color_primaries: details.color_primaries,
+            color_transfer_characteristic: details.color_transfer_characteristic,
+            color_space: details.color_space,
+            chroma_location: details.chroma_location,
         }
     }
 
@@ -151,8 +169,8 @@ impl VideoFormat {
     ///
     /// # Errors
     ///
-    /// Returns [`VshipError::UnsupportedFormat`] if the bit depth or chroma
-    /// sampling has no libvship equivalent.
+    /// Returns [`VshipError::UnsupportedFormat`] if the bit depth, chroma
+    /// sampling or explicit color metadata has no libvship equivalent.
     #[inline]
     pub fn colorspace(
         &self,
@@ -166,11 +184,11 @@ impl VideoFormat {
                 chroma_sampling: self.chroma_sampling,
                 frame_rate: av_decoders::Rational32::new(0, 1),
                 total_frames: None,
-                color_range: None,
-                color_primaries: None,
-                color_transfer_characteristic: None,
-                color_space: None,
-                chroma_location: None,
+                color_range: self.color_range,
+                color_primaries: self.color_primaries,
+                color_transfer_characteristic: self.color_transfer_characteristic,
+                color_space: self.color_space,
+                chroma_location: self.chroma_location,
                 mastering_display: None,
                 content_light_level: None,
             },
@@ -762,6 +780,15 @@ pub struct VshipScorer {
     _not_sync: PhantomData<*mut ()>,
 }
 
+fn input_format_error(input: &str, error: VshipError) -> VshipError {
+    match error {
+        VshipError::UnsupportedFormat { reason } => VshipError::UnsupportedFormat {
+            reason: format!("{input}: {reason}"),
+        },
+        error => error,
+    }
+}
+
 impl VshipScorer {
     /// Create a scorer for the given reference and encode formats.
     ///
@@ -795,10 +822,6 @@ impl VshipScorer {
         target_resolution: Option<(u32, u32)>,
     ) -> Result<Self, VshipError> {
         config.validate()?;
-        let api = VshipApi::load()?;
-
-        api.gpu_full_check(config.gpu_id_or_default())?;
-
         // libvship performs no geometry-equality check between the two sides:
         // it converts each per its own colorspace and then rejects the
         // pair with `DifferingInputType` if the results differ in size.
@@ -813,9 +836,16 @@ impl VshipScorer {
                 .then_some((reference.width, reference.height))
         });
 
-        let src_colorspace = reference.colorspace(target_resolution)?;
-        let dis_colorspace = encode.colorspace(target_resolution)?;
+        let src_colorspace = reference
+            .colorspace(target_resolution)
+            .map_err(|error| input_format_error("reference", error))?;
+        let dis_colorspace = encode
+            .colorspace(target_resolution)
+            .map_err(|error| input_format_error("distorted", error))?;
         let cvvdp_strings = CvvdpStrings::new(&config)?;
+
+        let api = VshipApi::load()?;
+        api.gpu_full_check(config.gpu_id_or_default())?;
 
         let count = config.handler_count();
         let mut handlers = Vec::with_capacity(count);
@@ -1332,6 +1362,27 @@ mod tests {
     #[test]
     fn the_default_device_is_cached() {
         assert_eq!(default_gpu_id(), default_gpu_id());
+    }
+
+    #[test]
+    fn m04_video_format_preserves_each_inputs_metadata() {
+        use av_decoders::{ColorPrimaries, ColorRange, ColorSpace, TransferCharacteristic};
+        let mut reference = details(1920, 1080, 10, ChromaSubsampling::Yuv420);
+        reference.color_range = Some(ColorRange::Full);
+        reference.color_space = Some(ColorSpace::BT470BG);
+        let mut distorted = reference;
+        distorted.color_range = Some(ColorRange::Limited);
+        distorted.color_space = Some(ColorSpace::BT2020NCL);
+        distorted.color_primaries = Some(ColorPrimaries::BT2020);
+        distorted.color_transfer_characteristic = Some(TransferCharacteristic::SMPTE2084);
+        let reference = VideoFormat::from_details(&reference).colorspace(None).unwrap();
+        let distorted = VideoFormat::from_details(&distorted).colorspace(None).unwrap();
+        assert_eq!(reference.range, ffi::VshipRange::Full);
+        assert_eq!(reference.yuv_matrix, ffi::VshipYuvMatrix::Bt470Bg);
+        assert_eq!(distorted.range, ffi::VshipRange::Limited);
+        assert_eq!(distorted.yuv_matrix, ffi::VshipYuvMatrix::Bt2020Ncl);
+        assert_eq!(distorted.primaries, ffi::VshipPrimaries::Bt2020);
+        assert_eq!(distorted.transfer_function, ffi::VshipTransferFunction::Pq);
     }
 
     #[test]

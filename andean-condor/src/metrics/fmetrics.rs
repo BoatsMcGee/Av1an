@@ -12,7 +12,7 @@
 
 use std::{sync::atomic::AtomicBool, time::Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use av_metrics_fmetrics::{
     ColorInfo, FmetricsConfig, FmetricsCvvdpDisplayModel, FmetricsMetric, FmetricsScorer,
     PlaneSet as MetricPlaneSet, PlaneSource as MetricPlaneSource,
@@ -164,9 +164,8 @@ pub fn score_probed_frames(
         return Ok(Vec::new());
     }
 
-    // The driver checks that both sides agree; only the reference's details are
-    // read here.
-    let reference_details = *reference.get_video_details();
+    let reference_details = probe::video_details(reference).context("reference metadata")?;
+    let distorted_details = probe::video_details(distorted).context("distorted metadata")?;
 
     // Built before any frame is read, so a bad configuration costs nothing.
     let opened = Instant::now();
@@ -183,11 +182,16 @@ pub fn score_probed_frames(
     let butteraugli_uses_q_norm =
         matches!(config, QualityMetric::BUTTERAUGLI { norm: Some(_), .. });
 
-    let color = ColorInfo::from_details(&reference_details).map_err(describe_error)?;
+    let reference_color =
+        ColorInfo::from_details(&reference_details).context("reference color metadata")?;
+    let distorted_color =
+        ColorInfo::from_details(&distorted_details).context("distorted color metadata")?;
 
     let reset_on_discontinuity = fmetrics_config.reset_on_discontinuity;
 
-    let mut scorer = FmetricsScorer::new(fmetrics_config, color).map_err(describe_error)?;
+    let mut scorer =
+        FmetricsScorer::new_with_colors(fmetrics_config, reference_color, distorted_color)
+            .map_err(describe_error)?;
     let setup = opened.elapsed();
 
     let total = selected.len();
@@ -298,6 +302,39 @@ fn describe_error(error: av_metrics_fmetrics::FmetricsError) -> anyhow::Error {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m04_driver_rejects_hdr_on_either_side_before_native_scoring() {
+        for hdr_side in [0, 1] {
+            let mut decoders: Vec<_> = (0..2).map(|side| {
+                let transfer = if side == hdr_side { 16 } else { 13 };
+                av_decoders::Decoder::from_script(&format!(
+                    "import vapoursynth as vs\nvs.core.std.BlankClip(width=32, height=32, length=1, format=vs.YUV420P8).std.SetFrameProps(_Primaries=1, _Transfer={transfer}).set_output()"
+                ), Default::default()).expect("open metadata fixture")
+            }).collect();
+            let (reference, distorted) = decoders.split_at_mut(1);
+            let error = score_probed_frames(
+                &mut reference[0],
+                &mut distorted[0],
+                &ssimulacra2(None),
+                &[0],
+                OutputIndexing::Aligned,
+                None,
+                |_, _| panic!("unsupported HDR must not score"),
+            )
+            .unwrap_err();
+            let error = format!("{error:#}");
+            assert!(
+                error.contains("transfer")
+                    && error.contains(if hdr_side == 0 {
+                        "reference"
+                    } else {
+                        "distorted"
+                    }),
+                "{error}"
+            );
+        }
+    }
 
     /// A SSIMULACRA2 metric configuration.
     fn ssimulacra2(threads: Option<u8>) -> QualityMetric {

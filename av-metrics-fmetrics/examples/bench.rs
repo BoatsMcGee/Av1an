@@ -63,9 +63,11 @@ fn end_to_end(reference_path: &str, distorted_path: &str, threads: u32) -> Resul
     let mut distorted = Decoder::from_file(distorted_path)?;
     let details = *reference.get_video_details();
     let color = ColorInfo::from_details(&details)?;
-    let scorer = FmetricsScorer::new(
+    let distorted_color = ColorInfo::from_details(distorted.get_video_details())?;
+    let scorer = FmetricsScorer::new_with_colors(
         FmetricsConfig::new(FmetricsMetric::Ssimulacra2).with_threads(threads),
         color,
+        distorted_color,
     )?;
 
     let mut decode_time = std::time::Duration::ZERO;
@@ -125,6 +127,8 @@ fn conversion_only(reference_path: &str, distorted_path: &str) -> Result<(), Err
     let details = *reference.get_video_details();
     let color = ColorInfo::from_details(&details)?;
     let peak = color.max_sample()?;
+    let distorted_color = ColorInfo::from_details(distorted.get_video_details())?;
+    let distorted_peak = distorted_color.max_sample()?;
 
     let mut sink = 0u64;
     let mut pairs = 0usize;
@@ -145,7 +149,7 @@ fn conversion_only(reference_path: &str, distorted_path: &str) -> Result<(), Err
         // `yuv_to_rgb` reads only within the allocations they describe.
         unsafe {
             let x = yuv_to_rgb(&a, &color, peak)?;
-            let y = yuv_to_rgb(&b, &color, peak)?;
+            let y = yuv_to_rgb(&b, &distorted_color, distorted_peak)?;
             for sample in x.as_bytes().iter().chain(y.as_bytes().iter()) {
                 sink = sink.wrapping_mul(31).wrapping_add(u64::from(*sample));
             }
@@ -184,6 +188,7 @@ fn library_only(
     wanted: usize,
 ) -> Result<(), Error> {
     let color;
+    let distorted_color;
     let peak;
     let prepared;
     {
@@ -192,6 +197,8 @@ fn library_only(
         let details = *reference.get_video_details();
         color = ColorInfo::from_details(&details)?;
         peak = color.max_sample()?;
+        distorted_color = ColorInfo::from_details(distorted.get_video_details())?;
+        let distorted_peak = distorted_color.max_sample()?;
 
         // Deliberately outside every timed region below: this is our cost, not
         // the library's.
@@ -212,7 +219,9 @@ fn library_only(
                 // and still owns.
                 reference: unsafe { yuv_to_rgb(&a, &color, peak)?.as_bytes().to_vec() },
                 // SAFETY: as above.
-                distorted: unsafe { yuv_to_rgb(&b, &color, peak)?.as_bytes().to_vec() },
+                distorted: unsafe {
+                    yuv_to_rgb(&b, &distorted_color, distorted_peak)?.as_bytes().to_vec()
+                },
                 width,
                 height,
             });
@@ -225,9 +234,10 @@ fn library_only(
         return Err("no frames decoded".into());
     }
 
-    let scorer = Arc::new(FmetricsScorer::new(
+    let scorer = Arc::new(FmetricsScorer::new_with_colors(
         FmetricsConfig::new(FmetricsMetric::Ssimulacra2).with_threads(threads as u32),
         color,
+        distorted_color,
     )?);
 
     // A serial pass first: both the reference score and the wall time the

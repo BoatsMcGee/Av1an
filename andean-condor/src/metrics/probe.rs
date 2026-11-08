@@ -292,6 +292,24 @@ fn is_vapoursynth(decoder: &mut av_decoders::Decoder) -> bool {
     decoder.get_vapoursynth_impl().is_some()
 }
 
+/// Read clip metadata, including the first output frame's color properties for
+/// VapourSynth. Its ordinary details API only reports geometry and frame rate.
+/// FFMS2/FFmpeg already populate color fields; Y4M leaves them unknown.
+///
+/// # Errors
+///
+/// Returns an error if the VapourSynth output or its first frame cannot be read.
+#[inline]
+pub(super) fn video_details(
+    decoder: &mut av_decoders::Decoder,
+) -> Result<av_decoders::VideoDetails> {
+    if let Some(decoder) = decoder.get_vapoursynth_impl() {
+        Ok(decoder.get_extended_video_details()?)
+    } else {
+        Ok(*decoder.get_video_details())
+    }
+}
+
 /// Decode one frame through `av-decoders` and hand its planes to `submit`.
 ///
 /// The pixel type has to be chosen before the read, so the dispatch on bit
@@ -455,8 +473,8 @@ pub fn probe_selected_frames<T, R>(
         return Ok(Vec::new());
     }
 
-    let reference_details = *reference.get_video_details();
-    let distorted_details = *distorted.get_video_details();
+    let reference_details = video_details(reference).context("reference metadata")?;
+    let distorted_details = video_details(distorted).context("distorted metadata")?;
     validate(reference_details, distorted_details)?;
 
     let bit_depth = reference_details.bit_depth;
@@ -600,6 +618,48 @@ pub fn check_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m04_probe_transports_independent_vapoursynth_color_properties() {
+        let mut reference = av_decoders::Decoder::from_script(
+            "import vapoursynth as vs\nvs.core.std.BlankClip(width=16, height=16, length=1, format=vs.YUV420P8).std.SetFrameProps(_Range=1, _Matrix=6, _Primaries=1, _Transfer=13).set_output()",
+            Default::default(),
+        ).expect("open reference script");
+        let mut distorted = av_decoders::Decoder::from_script(
+            "import vapoursynth as vs\nvs.core.std.BlankClip(width=16, height=16, length=1, format=vs.YUV420P8).std.SetFrameProps(_Range=0, _Matrix=9, _Primaries=9, _Transfer=16).set_output()",
+            Default::default(),
+        ).expect("open distorted script");
+        probe_selected_frames::<(), _>(
+            &mut reference,
+            &mut distorted,
+            &[0],
+            OutputIndexing::Aligned,
+            None,
+            |reference, distorted| {
+                let reference =
+                    av_metrics_vship::VideoFormat::from_details(&reference).colorspace(None)?;
+                let distorted =
+                    av_metrics_vship::VideoFormat::from_details(&distorted).colorspace(None)?;
+                assert_eq!(reference.range, av_metrics_vship::ffi::VshipRange::Full);
+                assert_eq!(
+                    reference.yuv_matrix,
+                    av_metrics_vship::ffi::VshipYuvMatrix::St170M
+                );
+                assert_eq!(distorted.range, av_metrics_vship::ffi::VshipRange::Limited);
+                assert_eq!(
+                    distorted.primaries,
+                    av_metrics_vship::ffi::VshipPrimaries::Bt2020
+                );
+                assert_eq!(
+                    distorted.transfer_function,
+                    av_metrics_vship::ffi::VshipTransferFunction::Pq
+                );
+                Ok(())
+            },
+            |_, _, _| Ok(()),
+        )
+        .expect("probe transports metadata before opening the planes");
+    }
 
     /// A compacted output holds only the selected frames, so it is read by
     /// position within the selection while the reference is read by source

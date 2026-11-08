@@ -2,7 +2,9 @@
 
 use std::ffi::CString;
 
-use av_decoders::VideoDetails;
+use av_decoders::{
+    ChromaLocation, ColorPrimaries, ColorRange, ColorSpace, TransferCharacteristic, VideoDetails,
+};
 use v_frame::chroma::ChromaSubsampling;
 
 use crate::{
@@ -580,10 +582,13 @@ pub const fn subsample_for_chroma(
 /// name different targets, which is how a lower-resolution reference is scored
 /// against a higher-resolution result.
 ///
+/// Only absent/`Unspecified` metadata uses defaults: limited range, left chroma,
+/// BT.709 transfer/primaries, and BT.709 above 650 lines (BT.601 otherwise).
+///
 /// # Errors
 ///
 /// Returns [`VshipError::UnsupportedFormat`] if the bit depth or chroma
-/// sampling has no libvship equivalent.
+/// sampling or explicit color metadata has no libvship equivalent.
 #[inline]
 pub fn colorspace_from_details(
     details: &VideoDetails,
@@ -620,26 +625,80 @@ pub fn colorspace_from_details(
         target_width,
         target_height,
         sample,
-        // av-decoders reports no colour metadata, and content Av1an reads is
-        // treated as limited-range studio video, so that is declared rather than
-        // guessed from the resolution.
-        range: VshipRange::Limited,
+        range: match details.color_range {
+            Some(ColorRange::Full) => VshipRange::Full,
+            None | Some(ColorRange::Unspecified | ColorRange::Limited) => VshipRange::Limited,
+        },
         subsampling,
-        // MPEG-2 left siting is the most common convention and the C header's
-        // own documented default.
-        chroma_location: VshipChromaLocation::Left,
+        chroma_location: match details.chroma_location {
+            None | Some(ChromaLocation::Unspecified | ChromaLocation::Left) => {
+                VshipChromaLocation::Left
+            },
+            Some(ChromaLocation::Center) => VshipChromaLocation::Center,
+            Some(ChromaLocation::TopLeft) => VshipChromaLocation::TopLeft,
+            Some(ChromaLocation::Top) => VshipChromaLocation::Top,
+            Some(location) => return Err(unsupported_metadata("chroma location", location)),
+        },
         color_family: VshipColorFamily::YUV,
-        yuv_matrix: matrix_for_resolution(details.height),
-        transfer_function: VshipTransferFunction::Bt709,
-        primaries: VshipPrimaries::Bt709,
+        yuv_matrix: match details.color_space {
+            None | Some(ColorSpace::Unspecified) => matrix_for_resolution(details.height),
+            Some(ColorSpace::BT709) => VshipYuvMatrix::Bt709,
+            Some(ColorSpace::BT470BG) => VshipYuvMatrix::Bt470Bg,
+            Some(ColorSpace::SMPTE170M) => VshipYuvMatrix::St170M,
+            Some(ColorSpace::YCGCO) => VshipYuvMatrix::Ycgco,
+            Some(ColorSpace::BT2020NCL) => VshipYuvMatrix::Bt2020Ncl,
+            Some(ColorSpace::BT2020CL) => VshipYuvMatrix::Bt2020Cl,
+            Some(ColorSpace::ICTCP) => VshipYuvMatrix::Bt2100Ictcp,
+            Some(ColorSpace::YCGCORE) => VshipYuvMatrix::YcgcoRe,
+            Some(ColorSpace::YCGCORO) => VshipYuvMatrix::YcgcoRo,
+            // RGB planes are not supported by this planar-YUV adapter.
+            Some(matrix) => return Err(unsupported_metadata("YUV matrix", matrix)),
+        },
+        transfer_function: match details.color_transfer_characteristic {
+            None | Some(TransferCharacteristic::Unspecified | TransferCharacteristic::BT709) => {
+                VshipTransferFunction::Bt709
+            },
+            Some(TransferCharacteristic::GAMMA22) => VshipTransferFunction::Bt470M,
+            Some(TransferCharacteristic::GAMMA28) => VshipTransferFunction::Bt470Bg,
+            Some(TransferCharacteristic::SMPTE170M) => VshipTransferFunction::Bt601,
+            Some(TransferCharacteristic::SMPTE240M) => VshipTransferFunction::St240M,
+            Some(TransferCharacteristic::Linear) => VshipTransferFunction::Linear,
+            Some(TransferCharacteristic::IEC61966_2_1) => VshipTransferFunction::SRgb,
+            // Match libvship's FFMS2 adapter: both BT.2020 SDR curves use BT.709.
+            Some(TransferCharacteristic::BT2020_10 | TransferCharacteristic::BT2020_12) => {
+                VshipTransferFunction::Bt709
+            },
+            Some(TransferCharacteristic::SMPTE2084) => VshipTransferFunction::Pq,
+            Some(TransferCharacteristic::SMPTE428) => VshipTransferFunction::St428,
+            Some(TransferCharacteristic::ARIB_STD_B67) => VshipTransferFunction::Hlg,
+            Some(transfer) => return Err(unsupported_metadata("transfer", transfer)),
+        },
+        primaries: match details.color_primaries {
+            None | Some(ColorPrimaries::Unspecified | ColorPrimaries::BT709) => {
+                VshipPrimaries::Bt709
+            },
+            Some(ColorPrimaries::BT470M) => VshipPrimaries::Bt470M,
+            Some(ColorPrimaries::BT470BG) => VshipPrimaries::Bt470Bg,
+            Some(ColorPrimaries::SMPTE170M) => VshipPrimaries::St170M,
+            Some(ColorPrimaries::SMPTE240M) => VshipPrimaries::St240M,
+            Some(ColorPrimaries::BT2020) => VshipPrimaries::Bt2020,
+            Some(ColorPrimaries::SMPTE432) => VshipPrimaries::DisplayP3,
+            Some(primaries) => return Err(unsupported_metadata("primaries", primaries)),
+        },
         crop: VshipCropRectangle::default(),
     })
 }
 
+fn unsupported_metadata(field: &str, value: impl std::fmt::Debug) -> VshipError {
+    VshipError::UnsupportedFormat {
+        reason: format!("{field} {value:?} has no libvship equivalent for planar YUV input"),
+    }
+}
+
 /// The YUV matrix libvship should assume for a picture of this height.
 ///
-/// BT.709 is correct at HD and above; below that the BT.601 coefficients are,
-/// which is the height threshold libvship's own FFmpeg plugin uses.
+/// Used only for absent/`Unspecified` matrix metadata, matching the 650-line
+/// threshold libvship's own FFmpeg plugin uses.
 #[inline]
 #[must_use]
 pub const fn matrix_for_resolution(height: usize) -> VshipYuvMatrix {
@@ -682,6 +741,72 @@ mod tests {
             mastering_display: None,
             content_light_level: None,
         }
+    }
+
+    #[test]
+    fn m04_explicit_metadata_overrides_resolution_defaults() {
+        use av_decoders::{
+            ChromaLocation, ColorPrimaries, ColorRange, ColorSpace,
+            TransferCharacteristic as Transfer,
+        };
+        let mut source = details(1920, 1080, 10, ChromaSubsampling::Yuv420);
+        source.color_range = Some(ColorRange::Full);
+        source.color_space = Some(ColorSpace::SMPTE170M);
+        source.chroma_location = Some(ChromaLocation::Center);
+        let color = colorspace_from_details(&source, None).unwrap();
+        assert_eq!(color.range, VshipRange::Full);
+        assert_eq!(color.yuv_matrix, VshipYuvMatrix::St170M);
+        assert_eq!(color.chroma_location, VshipChromaLocation::Center);
+
+        source.height = 480;
+        source.color_range = Some(ColorRange::Limited);
+        source.color_space = Some(ColorSpace::BT2020NCL);
+        source.color_primaries = Some(ColorPrimaries::BT2020);
+        for (transfer, expected) in [
+            (Transfer::SMPTE2084, VshipTransferFunction::Pq),
+            (Transfer::ARIB_STD_B67, VshipTransferFunction::Hlg),
+            (Transfer::Linear, VshipTransferFunction::Linear),
+            (Transfer::IEC61966_2_1, VshipTransferFunction::SRgb),
+        ] {
+            source.color_transfer_characteristic = Some(transfer);
+            let color = colorspace_from_details(&source, None).unwrap();
+            assert_eq!(color.range, VshipRange::Limited);
+            assert_eq!(color.yuv_matrix, VshipYuvMatrix::Bt2020Ncl);
+            assert_eq!(color.primaries, VshipPrimaries::Bt2020);
+            assert_eq!(color.transfer_function, expected);
+        }
+    }
+
+    #[test]
+    fn m04_unknown_defaults_but_unsupported_metadata_errors() {
+        use av_decoders::{
+            ChromaLocation, ColorPrimaries, ColorRange, ColorSpace,
+            TransferCharacteristic as Transfer,
+        };
+        let mut source = details(1920, 480, 8, ChromaSubsampling::Yuv420);
+        let absent = colorspace_from_details(&source, None).unwrap();
+        source.color_range = Some(ColorRange::Unspecified);
+        source.color_space = Some(ColorSpace::Unspecified);
+        source.color_primaries = Some(ColorPrimaries::Unspecified);
+        source.color_transfer_characteristic = Some(Transfer::Unspecified);
+        source.chroma_location = Some(ChromaLocation::Unspecified);
+        assert_eq!(colorspace_from_details(&source, None).unwrap(), absent);
+        for transfer in [Transfer::Reserved, Transfer::VLog, Transfer::Log] {
+            source.color_transfer_characteristic = Some(transfer);
+            assert!(matches!(
+                colorspace_from_details(&source, None),
+                Err(VshipError::UnsupportedFormat { .. })
+            ));
+        }
+        source.color_transfer_characteristic = None;
+        source.color_space = Some(ColorSpace::Reserved);
+        assert!(colorspace_from_details(&source, None).is_err());
+        source.color_space = None;
+        source.color_primaries = Some(ColorPrimaries::SMPTE431);
+        assert!(colorspace_from_details(&source, None).is_err());
+        source.color_primaries = None;
+        source.chroma_location = Some(ChromaLocation::Bottom);
+        assert!(colorspace_from_details(&source, None).is_err());
     }
 
     #[test]

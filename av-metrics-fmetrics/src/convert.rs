@@ -835,6 +835,7 @@ mod tests {
             range: SampleRange::Full,
             bit_depth: 8,
             hdr: false,
+            colorspace: FmetricsColorspace::Srgb,
         }
     }
 
@@ -878,6 +879,7 @@ mod tests {
             range,
             bit_depth: 8,
             hdr: false,
+            colorspace: FmetricsColorspace::Srgb,
         };
         // SAFETY: each plane borrows one byte of `samples`, live through conversion.
         let image = unsafe { yuv_to_rgb(&planes, &info, 255).unwrap() };
@@ -972,6 +974,7 @@ mod tests {
             range,
             bit_depth,
             hdr: false,
+            colorspace: FmetricsColorspace::Srgb,
         };
         // SAFETY: each plane borrows one typed sample, live through conversion.
         unsafe { yuv_to_rgb(&planes, &info, info.max_sample().unwrap()).unwrap() }
@@ -1291,6 +1294,7 @@ mod tests {
             range: SampleRange::Limited,
             bit_depth: 8,
             hdr: false,
+            colorspace: FmetricsColorspace::Srgb,
         };
         let neutral = vec![128u8; 4];
         // SAFETY: leaked buffers of the stated size.
@@ -1562,12 +1566,13 @@ mod tests {
 
     #[test]
     fn hdr_flag_is_carried_rather_than_linearised() {
-        // PQ/HLG samples pass through untouched; only the flag marks them.
+        // The flag does not decode transfer functions; from_details rejects PQ/HLG.
         let info = ColorInfo {
             matrix: YuvMatrix::Bt2020,
             range: SampleRange::Limited,
             bit_depth: 10,
             hdr: true,
+            colorspace: FmetricsColorspace::Srgb,
         };
         let samples = [512u16; 3];
         let planes = PlaneSet {

@@ -4,7 +4,7 @@
 //! hardcoded, because the YUV to RGB conversion in [`crate::convert`] is part
 //! of the measurement: a wrong matrix silently changes every score.
 
-use av_decoders::VideoDetails;
+use av_decoders::{ColorPrimaries, ColorRange, ColorSpace, TransferCharacteristic, VideoDetails};
 
 use crate::error::FmetricsError;
 
@@ -118,28 +118,26 @@ pub struct ColorInfo {
     pub range: SampleRange,
     /// Source bit depth.
     pub bit_depth: usize,
+    /// RGB transfer encoding after the YUV matrix conversion (no gamut conversion).
+    pub colorspace: crate::ffi::FmetricsColorspace,
     /// Whether the source carries HDR values.
     ///
-    /// fmetrics has no PQ or HLG transfer function on its input side, but it
-    /// does accept an `hdr` flag and the matching HDR display model. PQ/HLG
-    /// samples pass through unmodified rather than being linearised here.
-    ///
-    /// [`av_decoders`] reports no transfer function, so this is set by the
-    /// caller rather than detected.
+    /// This flag describes already-supported RGB values, not a PQ/HLG decoder.
+    /// [`Self::from_details`] rejects unsupported transfer functions and gamuts.
     pub hdr: bool,
 }
 
 impl ColorInfo {
     /// Derive the colour properties from a clip's details.
     ///
-    /// `av-decoders` reports no colour metadata, so the matrix and range are
-    /// the same declared values libvship is given on the GPU path, which
-    /// keeps the two engines comparable. Both are public fields, so a
-    /// caller that knows the real characteristics can override them.
+    /// Explicit metadata wins. Only absent/`Unspecified` values fall back to
+    /// limited range, BT.709 above 650 lines (BT.601 otherwise), and sRGB.
+    /// No transfer or gamut conversion is performed: only sRGB/linear sRGB
+    /// with BT.709 primaries can be represented by fmetrics' input API.
     ///
     /// # Errors
     ///
-    /// Returns an error for a bit depth fmetrics cannot represent. 8-bit maps
+    /// Returns an error for unsupported explicit color metadata or bit depth. 8-bit maps
     /// to `RGB_UINT8`; 10- and 12-bit are up-converted to `RGB_UINT16`
     /// rather than truncated.
     #[inline]
@@ -155,11 +153,23 @@ impl ColorInfo {
         }
 
         Ok(Self {
-            matrix: matrix_for_resolution(details.height),
-            // Declared rather than guessed: unflagged SD and HD is limited, and
-            // assuming full would lift the shadows of every clip.
-            range: SampleRange::Limited,
+            matrix: match details.color_space {
+                None | Some(ColorSpace::Unspecified) => matrix_for_resolution(details.height),
+                Some(ColorSpace::BT709) => YuvMatrix::Bt709,
+                Some(ColorSpace::BT470BG | ColorSpace::SMPTE170M) => YuvMatrix::Bt601,
+                Some(ColorSpace::BT2020NCL) => YuvMatrix::Bt2020,
+                Some(matrix) => {
+                    return Err(FmetricsError::UnsupportedFormat {
+                        reason: format!("matrix {matrix:?} has no fmetrics YUV conversion"),
+                    });
+                },
+            },
+            range: match details.color_range {
+                Some(ColorRange::Full) => SampleRange::Full,
+                None | Some(ColorRange::Unspecified | ColorRange::Limited) => SampleRange::Limited,
+            },
             bit_depth: details.bit_depth,
+            colorspace: colorspace_from_details(details)?,
             hdr: false,
         })
     }
@@ -234,14 +244,40 @@ pub const fn matrix_for_resolution(height: usize) -> YuvMatrix {
 
 /// The fmetrics colorspace a clip should be submitted as.
 ///
-/// fmetrics accepts only sRGB and linear sRGB, so every source is submitted as
-/// sRGB; a PQ or HLG source additionally sets `hdr`, and the display model
-/// selects the matching HDR characteristics.
+/// Absent/`Unspecified` transfer and primaries retain the legacy sRGB assumption.
+/// Explicit metadata must be representable without a new transfer/gamut transform.
+///
+/// # Errors
+///
+/// Returns [`FmetricsError::UnsupportedFormat`] for other primaries or transfers,
+/// including BT.709's transfer curve, PQ and HLG. An HDR display model is not a decoder.
 #[inline]
-#[must_use]
-pub const fn colorspace_from_details(details: &VideoDetails) -> crate::ffi::FmetricsColorspace {
-    let _ = details;
-    crate::ffi::FmetricsColorspace::Srgb
+pub fn colorspace_from_details(
+    details: &VideoDetails,
+) -> Result<crate::ffi::FmetricsColorspace, FmetricsError> {
+    if let Some(primaries) = details.color_primaries
+        && !matches!(
+            primaries,
+            ColorPrimaries::Unspecified | ColorPrimaries::BT709
+        )
+    {
+        return Err(FmetricsError::UnsupportedFormat {
+            reason: format!(
+                "primaries {primaries:?} cannot be represented by fmetrics sRGB inputs; no gamut conversion is available"
+            ),
+        });
+    }
+    match details.color_transfer_characteristic {
+        None | Some(TransferCharacteristic::Unspecified | TransferCharacteristic::IEC61966_2_1) => {
+            Ok(crate::ffi::FmetricsColorspace::Srgb)
+        },
+        Some(TransferCharacteristic::Linear) => Ok(crate::ffi::FmetricsColorspace::LinearSrgb),
+        Some(transfer) => Err(FmetricsError::UnsupportedFormat {
+            reason: format!(
+                "transfer {transfer:?} cannot be represented by fmetrics sRGB/linear sRGB inputs; an HDR flag or display model does not convert it"
+            ),
+        }),
+    }
 }
 
 /// Configuration for a scoring run.
@@ -450,6 +486,66 @@ mod tests {
     }
 
     #[test]
+    fn m04_explicit_range_and_matrix_override_resolution() {
+        let mut source = details(1920, 1080, 10);
+        source.color_range = Some(av_decoders::ColorRange::Full);
+        source.color_space = Some(av_decoders::ColorSpace::SMPTE170M);
+        let color = ColorInfo::from_details(&source).unwrap();
+        assert_eq!(color.range, SampleRange::Full);
+        assert_eq!(color.matrix, YuvMatrix::Bt601);
+
+        source.height = 480;
+        source.color_range = Some(av_decoders::ColorRange::Limited);
+        source.color_space = Some(av_decoders::ColorSpace::BT2020NCL);
+        let color = ColorInfo::from_details(&source).unwrap();
+        assert_eq!(color.range, SampleRange::Limited);
+        assert_eq!(color.matrix, YuvMatrix::Bt2020);
+    }
+
+    #[test]
+    fn m04_only_unknown_metadata_uses_defaults() {
+        let mut source = details(1920, 1080, 8);
+        let absent = ColorInfo::from_details(&source).unwrap();
+        source.color_range = Some(av_decoders::ColorRange::Unspecified);
+        source.color_space = Some(av_decoders::ColorSpace::Unspecified);
+        source.color_primaries = Some(av_decoders::ColorPrimaries::Unspecified);
+        source.color_transfer_characteristic =
+            Some(av_decoders::TransferCharacteristic::Unspecified);
+        assert_eq!(ColorInfo::from_details(&source).unwrap(), absent);
+        source.color_space = Some(av_decoders::ColorSpace::Reserved);
+        assert!(matches!(
+            ColorInfo::from_details(&source),
+            Err(FmetricsError::UnsupportedFormat { .. })
+        ));
+    }
+
+    #[test]
+    fn m04_unsupported_transfer_and_gamut_do_not_become_srgb() {
+        use av_decoders::{ColorPrimaries, TransferCharacteristic as Transfer};
+        for transfer in [
+            Transfer::SMPTE2084,
+            Transfer::ARIB_STD_B67,
+            Transfer::BT709,
+            Transfer::Reserved,
+            Transfer::VLog,
+        ] {
+            let mut source = details(1920, 1080, 10);
+            source.color_transfer_characteristic = Some(transfer);
+            let error = ColorInfo::from_details(&source).unwrap_err();
+            assert!(matches!(error, FmetricsError::UnsupportedFormat { .. }));
+            assert!(error.to_string().contains("transfer"), "{error}");
+        }
+        for primaries in
+            [ColorPrimaries::BT2020, ColorPrimaries::SMPTE432, ColorPrimaries::Reserved]
+        {
+            let mut source = details(1920, 1080, 10);
+            source.color_primaries = Some(primaries);
+            let error = ColorInfo::from_details(&source).unwrap_err();
+            assert!(error.to_string().contains("primaries"), "{error}");
+        }
+    }
+
+    #[test]
     fn the_default_pnorm_stays_inside_the_range_the_library_can_compute() {
         // The library computes `pow(d, pnorm)` and reads `pnorm <= 0` as 3.0.
         // An earlier default of `i32::MAX` -- intended as an "infinity norm" --
@@ -492,9 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_can_override_what_av_decoders_cannot_report() {
-        // av-decoders exposes no colour metadata, so a caller that knows its
-        // content has to be able to say so.
+    fn a_caller_can_override_unknown_metadata() {
         let info = ColorInfo::from_details(&details(1920, 1080, 10))
             .unwrap()
             .with_matrix(YuvMatrix::Bt2020)

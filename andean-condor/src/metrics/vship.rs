@@ -30,7 +30,7 @@
 
 use std::{sync::atomic::AtomicBool, time::Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use av_metrics_vship::{
     PlaneSet as MetricPlaneSet, PlaneSource as MetricPlaneSource, VideoFormat, VshipConfig,
     VshipMetric, VshipScorer,
@@ -266,8 +266,8 @@ pub fn score_probed_frames(
         return Ok(Vec::new());
     }
 
-    let reference_details = *reference.get_video_details();
-    let distorted_details = *distorted.get_video_details();
+    let reference_details = probe::video_details(reference).context("reference metadata")?;
+    let distorted_details = probe::video_details(distorted).context("distorted metadata")?;
 
     // The scorer is created before any frame is read, so a bad configuration or
     // an unusable device is reported before spending time decoding.
@@ -418,6 +418,31 @@ fn describe_error(error: av_metrics_vship::VshipError) -> anyhow::Error {
 mod tests {
     use super::*;
     use crate::vapoursynth::plugins::vship::cvvdp::DisplayModel;
+
+    #[test]
+    fn m04_driver_rejects_unsupported_transfer_before_gpu_discovery() {
+        let mut reference = av_decoders::Decoder::from_script(
+            "import vapoursynth as vs\nvs.core.std.BlankClip(width=16, height=16, length=1, format=vs.YUV420P8).set_output()", Default::default(),
+        ).expect("open reference");
+        let mut distorted = av_decoders::Decoder::from_script(
+            "import vapoursynth as vs\nvs.core.std.BlankClip(width=16, height=16, length=1, format=vs.YUV420P8).std.SetFrameProps(_Transfer=3).set_output()", Default::default(),
+        ).expect("open distorted");
+        let error = score_probed_frames(
+            &mut reference,
+            &mut distorted,
+            &ssimulacra2(None),
+            &[0],
+            OutputIndexing::Aligned,
+            None,
+            |_, _| panic!("unsupported transfer must not score"),
+        )
+        .expect_err("unsupported transfer must fail before library discovery");
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("transfer") && error.contains("distorted"),
+            "{error}"
+        );
+    }
 
     /// A SSIMULACRA2 metric configuration.
     fn ssimulacra2(threads: Option<u8>) -> QualityMetric {

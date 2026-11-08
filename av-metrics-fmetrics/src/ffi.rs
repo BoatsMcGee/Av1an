@@ -260,9 +260,8 @@ impl Default for FmetricsButteraugliOptions {
 
 /// Display model for CVVDP.
 ///
-/// The HDR variants are present, so HDR content is measurable here even though
-/// the *input* colorspace has no HDR transfer function: the samples carry the
-/// `hdr` flag and the display model carries the display's characteristics.
+/// HDR display variants describe the display, not an input PQ/HLG decoder.
+/// Input samples must still use a supported sRGB/linear-sRGB encoding and gamut.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FmetricsCvvdpDisplayModel {
@@ -929,9 +928,7 @@ mod tests {
 
     #[test]
     fn hdr_display_models_are_representable() {
-        // HDR display modelling is expressible here: every HDR model has a
-        // counterpart, so HDR content is measurable even though the input
-        // colorspace has no HDR transfer function.
+        // Display models have counterparts, but do not expand input transfer support.
         for model in [
             FmetricsCvvdpDisplayModel::StandardHdrPq,
             FmetricsCvvdpDisplayModel::StandardHdrHlg,
