@@ -25,9 +25,9 @@ use andean_condor::{
 
 /// Reports frames per second for one timed run.
 struct Timing {
-    label:  String,
+    label: String,
     frames: usize,
-    taken:  Duration,
+    taken: Duration,
 }
 
 impl Timing {
@@ -61,14 +61,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     let model = InputModel::VapourSynth {
-        path:          input_path,
-        import_method: VapourSynthImportMethod::FFMS2 {
-            index: None
-        },
-        cache_path:    None,
-        filters:       vec![VapourSynthFilter::Resize {
+        path: input_path,
+        import_method: VapourSynthImportMethod::FFMS2 { index: None },
+        cache_path: None,
+        filters: vec![VapourSynthFilter::Resize {
             scaler: None,
-            width:  None,
+            width: None,
             height: None,
             format: Some(andean_condor::ffmpeg::FFPixelFormat::YUV420P10LE),
         }],
@@ -83,9 +81,9 @@ fn main() -> anyhow::Result<()> {
         bytes += input.y4m_frame(*index)?.get_ref().len();
     }
     report(&Timing {
-        label:  "y4m_frame".to_owned(),
+        label: "y4m_frame".to_owned(),
         frames: indices.len(),
-        taken:  started.elapsed(),
+        taken: started.elapsed(),
     });
     println!("  (produced {bytes} bytes)");
 
@@ -104,9 +102,9 @@ fn main() -> anyhow::Result<()> {
     input.y4m_frames(sender, &indices)?;
     let streamed = consumer.join().expect("consumer thread should join");
     report(&Timing {
-        label:  "y4m_frames".to_owned(),
+        label: "y4m_frames".to_owned(),
         frames: streamed,
-        taken:  started.elapsed(),
+        taken: started.elapsed(),
     });
 
     // 3. Concurrent readers, the fastest path the library offers.
@@ -154,9 +152,9 @@ fn main() -> anyhow::Result<()> {
         counted
     });
     report(&Timing {
-        label:  "sources(8)".to_owned(),
+        label: "sources(8)".to_owned(),
         frames: counted,
-        taken:  started.elapsed(),
+        taken: started.elapsed(),
     });
 
     Ok(())

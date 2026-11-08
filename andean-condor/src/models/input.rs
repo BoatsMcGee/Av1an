@@ -11,27 +11,27 @@ use crate::vapoursynth::vapoursynth_filters::VapourSynthFilter;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum Input {
     Video {
-        path:          PathBuf,
+        path: PathBuf,
         import_method: ImportMethod,
         /// Conversion applied to the decoded frames.
         ///
         /// Native FFMS2 cannot run arbitrary filters; this is the full set of
         /// modifications it supports.
-        filters:       Vec<Ffms2Filter>,
+        filters: Vec<Ffms2Filter>,
     },
     VapourSynth {
-        path:          PathBuf,
+        path: PathBuf,
         import_method: VapourSynthImportMethod,
-        cache_path:    Option<PathBuf>,
+        cache_path: Option<PathBuf>,
         /// Filters chained onto the source node, in order.
-        filters:       Vec<VapourSynthFilter>,
+        filters: Vec<VapourSynthFilter>,
     },
     VapourSynthScript {
-        source:              VapourSynthScriptSource,
-        variables:           HashMap<String, String>,
-        index:               u8,
+        source: VapourSynthScriptSource,
+        variables: HashMap<String, String>,
+        index: u8,
         /// Filters chained onto the script's output node, in order.
-        filters:             Vec<VapourSynthFilter>,
+        filters: Vec<VapourSynthFilter>,
         /// Whether several encoders may pull frames from this script at once.
         ///
         /// Streaming frames concurrently bounds memory, because only a fixed
@@ -61,15 +61,10 @@ impl Input {
     #[must_use]
     pub fn vapoursynth_filters(&self) -> &[VapourSynthFilter] {
         match self {
-            Input::VapourSynth {
-                filters, ..
-            }
-            | Input::VapourSynthScript {
-                filters, ..
-            } => filters,
-            Input::Video {
-                ..
-            } => &[],
+            Input::VapourSynth { filters, .. } | Input::VapourSynthScript { filters, .. } => {
+                filters
+            },
+            Input::Video { .. } => &[],
         }
     }
 
@@ -84,58 +79,29 @@ impl Input {
     pub fn adopt_filters(&mut self, other: &Input) {
         match (self, other) {
             (
-                Input::Video {
-                    filters, ..
-                },
-                Input::VapourSynth {
-                    filters: from, ..
-                }
-                | Input::VapourSynthScript {
-                    filters: from, ..
-                },
+                Input::Video { filters, .. },
+                Input::VapourSynth { filters: from, .. }
+                | Input::VapourSynthScript { filters: from, .. },
             ) => {
                 // The source format is not known here, so an unset field in the
                 // native filter means "unchanged" and the decoder resolves it.
                 *filters = from.iter().filter_map(Ffms2Filter::from_vapoursynth_filter).collect();
             },
-            (
-                Input::Video {
-                    filters, ..
-                },
-                Input::Video {
-                    filters: from, ..
-                },
-            ) => {
+            (Input::Video { filters, .. }, Input::Video { filters: from, .. }) => {
                 *filters = from.clone();
             },
             (
-                Input::VapourSynth {
-                    filters, ..
-                }
-                | Input::VapourSynthScript {
-                    filters, ..
-                },
-                Input::Video {
-                    filters: from, ..
-                },
+                Input::VapourSynth { filters, .. } | Input::VapourSynthScript { filters, .. },
+                Input::Video { filters: from, .. },
             ) => {
                 // A native filter only ever resizes and converts, which
                 // VapourSynth expresses directly.
                 *filters = from.iter().flat_map(Ffms2Filter::to_vapoursynth).collect();
             },
             (
-                Input::VapourSynth {
-                    filters, ..
-                }
-                | Input::VapourSynthScript {
-                    filters, ..
-                },
-                Input::VapourSynth {
-                    filters: from, ..
-                }
-                | Input::VapourSynthScript {
-                    filters: from, ..
-                },
+                Input::VapourSynth { filters, .. } | Input::VapourSynthScript { filters, .. },
+                Input::VapourSynth { filters: from, .. }
+                | Input::VapourSynthScript { filters: from, .. },
             ) => *filters = from.clone(),
         }
     }
@@ -149,12 +115,7 @@ impl Input {
     #[inline]
     pub fn set_filters(&mut self, new: Vec<VapourSynthFilter>) {
         match self {
-            Input::VapourSynth {
-                filters, ..
-            }
-            | Input::VapourSynthScript {
-                filters, ..
-            } => {
+            Input::VapourSynth { filters, .. } | Input::VapourSynthScript { filters, .. } => {
                 *filters = new;
             },
             Input::Video {
@@ -182,15 +143,10 @@ impl Input {
     #[must_use]
     pub fn has_time_altering_filters(&self) -> bool {
         match self {
-            Input::Video {
-                ..
-            } => false,
-            Input::VapourSynth {
-                filters, ..
-            }
-            | Input::VapourSynthScript {
-                filters, ..
-            } => filters.iter().any(VapourSynthFilter::can_alter_time),
+            Input::Video { .. } => false,
+            Input::VapourSynth { filters, .. } | Input::VapourSynthScript { filters, .. } => {
+                filters.iter().any(VapourSynthFilter::can_alter_time)
+            },
         }
     }
 
@@ -206,12 +162,7 @@ impl Input {
     /// input but this one is native.
     #[inline]
     pub fn append_input_filters(&mut self, other: &Input) -> Result<(), InputFilterError> {
-        let (Input::VapourSynth {
-            filters, ..
-        }
-        | Input::VapourSynthScript {
-            filters, ..
-        }) = other
+        let (Input::VapourSynth { filters, .. } | Input::VapourSynthScript { filters, .. }) = other
         else {
             return Ok(());
         };
@@ -234,9 +185,7 @@ impl Input {
                 existing.extend(time_altering);
                 Ok(())
             },
-            Input::Video {
-                ..
-            } => {
+            Input::Video { .. } => {
                 // A native input has no time-altering filters to append, and
                 // its own are left untouched.
                 Err(InputFilterError::WrongKind)
@@ -253,9 +202,7 @@ mod tests {
     fn vapoursynth_input(filters: Vec<VapourSynthFilter>) -> Input {
         Input::VapourSynth {
             path: "input.mkv".into(),
-            import_method: VapourSynthImportMethod::FFMS2 {
-                index: None
-            },
+            import_method: VapourSynthImportMethod::FFMS2 { index: None },
             cache_path: None,
             filters,
         }
@@ -265,7 +212,7 @@ mod tests {
         Input::Video {
             path: "input.mkv".into(),
             import_method: ImportMethod::FFMS2 {
-                index:      None,
+                index: None,
                 cache_path: None,
             },
             filters,
@@ -273,10 +220,7 @@ mod tests {
     }
 
     fn native_filters(input: &Input) -> &[Ffms2Filter] {
-        let Input::Video {
-            filters, ..
-        } = input
-        else {
+        let Input::Video { filters, .. } = input else {
             panic!("expected a Video input");
         };
         filters
@@ -284,17 +228,17 @@ mod tests {
 
     fn crop() -> VapourSynthFilter {
         VapourSynthFilter::Crop {
-            top:    Some(140),
+            top: Some(140),
             bottom: None,
-            left:   None,
-            right:  None,
+            left: None,
+            right: None,
         }
     }
 
     fn resize() -> VapourSynthFilter {
         VapourSynthFilter::Resize {
             scaler: None,
-            width:  Some(1280),
+            width: Some(1280),
             height: Some(720),
             format: None,
         }
@@ -303,7 +247,7 @@ mod tests {
     fn trim() -> VapourSynthFilter {
         VapourSynthFilter::Trim {
             start: Some(24),
-            end:   None,
+            end: None,
         }
     }
 
@@ -361,14 +305,15 @@ mod tests {
     fn a_resize_survives_a_round_trip_through_the_native_form() {
         let native = Ffms2Filter::from_vapoursynth_filter(&resize())
             .expect("a resize maps to a native filter");
-        assert_eq!(native.to_vapoursynth().as_slice(), &[
-            VapourSynthFilter::Resize {
+        assert_eq!(
+            native.to_vapoursynth().as_slice(),
+            &[VapourSynthFilter::Resize {
                 scaler: Some(Scaler::Bicubic),
-                width:  Some(1280),
+                width: Some(1280),
                 height: Some(720),
                 format: None,
-            }
-        ]);
+            }]
+        );
     }
 
     /// Switching back to a VapourSynth input converts the native filters, so
@@ -377,18 +322,21 @@ mod tests {
     fn adopting_filters_from_a_native_input_converts_them() {
         let ten_bit = Ffms2Filter::OutputFormat {
             bit_depth: Some(10),
-            chroma:    None,
-            width:     None,
-            height:    None,
+            chroma: None,
+            width: None,
+            height: None,
         };
         let mut target = vapoursynth_input(Vec::new());
         target.adopt_filters(&video_input(vec![ten_bit]));
-        assert_eq!(target.vapoursynth_filters(), &[VapourSynthFilter::Resize {
-            scaler: Some(Scaler::Bicubic),
-            width:  None,
-            height: None,
-            format: Some(FFPixelFormat::YUV420P10LE),
-        }]);
+        assert_eq!(
+            target.vapoursynth_filters(),
+            &[VapourSynthFilter::Resize {
+                scaler: Some(Scaler::Bicubic),
+                width: None,
+                height: None,
+                format: Some(FFPixelFormat::YUV420P10LE),
+            }]
+        );
     }
 
     /// Switching to a native input keeps only what FFMS2 can run. Unlike
@@ -400,12 +348,15 @@ mod tests {
         let mut native = video_input(Vec::new());
         native.adopt_filters(&vapoursynth_input(vec![crop(), resize()]));
 
-        assert_eq!(native_filters(&native), &[Ffms2Filter::OutputFormat {
-            bit_depth: None,
-            chroma:    None,
-            width:     Some(1280),
-            height:    Some(720),
-        }]);
+        assert_eq!(
+            native_filters(&native),
+            &[Ffms2Filter::OutputFormat {
+                bit_depth: None,
+                chroma: None,
+                width: Some(1280),
+                height: Some(720),
+            }]
+        );
     }
 
     /// Within the same kind of input, adopting is a plain copy.
@@ -422,17 +373,20 @@ mod tests {
     fn set_filters_replaces_and_converts() {
         let mut native = video_input(vec![Ffms2Filter::OutputFormat {
             bit_depth: Some(12),
-            chroma:    None,
-            width:     None,
-            height:    None,
+            chroma: None,
+            width: None,
+            height: None,
         }]);
         native.set_filters(vec![resize()]);
-        assert_eq!(native_filters(&native), &[Ffms2Filter::OutputFormat {
-            bit_depth: None,
-            chroma:    None,
-            width:     Some(1280),
-            height:    Some(720),
-        }]);
+        assert_eq!(
+            native_filters(&native),
+            &[Ffms2Filter::OutputFormat {
+                bit_depth: None,
+                chroma: None,
+                width: Some(1280),
+                height: Some(720),
+            }]
+        );
 
         let mut target = vapoursynth_input(vec![crop()]);
         target.set_filters(vec![trim()]);
@@ -506,9 +460,7 @@ mod tests {
 
     fn video_cache_path(input: &Input) -> Option<PathBuf> {
         let Input::Video {
-            import_method: ImportMethod::FFMS2 {
-                cache_path, ..
-            },
+            import_method: ImportMethod::FFMS2 { cache_path, .. },
             ..
         } = input
         else {
@@ -537,15 +489,10 @@ mod tests {
     #[test]
     fn a_supplied_cache_path_survives_a_round_trip() {
         let mut input = video_input(Vec::new());
-        let Input::Video {
-            import_method, ..
-        } = &mut input
-        else {
+        let Input::Video { import_method, .. } = &mut input else {
             panic!("expected a native input");
         };
-        let ImportMethod::FFMS2 {
-            cache_path, ..
-        } = import_method;
+        let ImportMethod::FFMS2 { cache_path, .. } = import_method;
         *cache_path = Some(PathBuf::from("cache/custom.ffindex"));
 
         let written = serde_json::to_string(&input).expect("a native input serializes");
@@ -601,7 +548,7 @@ pub enum ImportMethod {
     FFMS2 {
         /// The video track to decode, as seen by FFMS2. `None` selects the
         /// first video track.
-        index:      Option<u8>,
+        index: Option<u8>,
         /// Where to read or write the `.ffindex` cache, defaulting to
         /// `{source}.ffindex` next to the source file.
         #[serde(default)]

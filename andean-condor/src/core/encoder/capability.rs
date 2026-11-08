@@ -36,7 +36,7 @@ pub enum Container {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BinaryKey {
     encoder_base: EncoderBase,
-    executable:   PathBuf,
+    executable: PathBuf,
 }
 
 /// Thread-safe global cache mapping `(BinaryKey, EncoderCapability)` to a

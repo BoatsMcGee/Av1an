@@ -26,13 +26,7 @@ use std::{sync::Arc, time::Instant};
 
 use av_decoders::Decoder;
 use av_metrics_fmetrics::{
-    ColorInfo,
-    FmetricsConfig,
-    FmetricsMetric,
-    FmetricsScorer,
-    PlaneSet,
-    RgbView,
-    is_available,
+    ColorInfo, FmetricsConfig, FmetricsMetric, FmetricsScorer, PlaneSet, RgbView, is_available,
     yuv_to_rgb,
 };
 
@@ -41,8 +35,8 @@ use av_metrics_fmetrics::{
 struct Prepared {
     reference: Vec<u8>,
     distorted: Vec<u8>,
-    width:     usize,
-    height:    usize,
+    width: usize,
+    height: usize,
 }
 
 /// The error type every fallible step here returns.

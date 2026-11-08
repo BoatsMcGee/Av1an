@@ -32,12 +32,8 @@ use std::{sync::atomic::AtomicBool, time::Instant};
 
 use anyhow::{Result, bail};
 use av_metrics_vship::{
-    PlaneSet as MetricPlaneSet,
-    PlaneSource as MetricPlaneSource,
-    VideoFormat,
-    VshipConfig,
-    VshipMetric,
-    VshipScorer,
+    PlaneSet as MetricPlaneSet, PlaneSource as MetricPlaneSource, VideoFormat, VshipConfig,
+    VshipMetric, VshipScorer,
 };
 
 use crate::{
@@ -54,21 +50,10 @@ use crate::{
 #[must_use]
 pub const fn vship_metric_for(metric: &QualityMetric) -> Option<VshipMetric> {
     match metric {
-        QualityMetric::SSIMULACRA2 {
-            ..
-        } => Some(VshipMetric::Ssimulacra2),
-        QualityMetric::BUTTERAUGLI {
-            ..
-        } => Some(VshipMetric::Butteraugli),
-        QualityMetric::CVVDP {
-            ..
-        } => Some(VshipMetric::Cvvdp),
-        QualityMetric::VMAF {
-            ..
-        }
-        | QualityMetric::XPSNR {
-            ..
-        } => None,
+        QualityMetric::SSIMULACRA2 { .. } => Some(VshipMetric::Ssimulacra2),
+        QualityMetric::BUTTERAUGLI { .. } => Some(VshipMetric::Butteraugli),
+        QualityMetric::CVVDP { .. } => Some(VshipMetric::Cvvdp),
+        QualityMetric::VMAF { .. } | QualityMetric::XPSNR { .. } => None,
     }
 }
 
@@ -112,9 +97,7 @@ pub fn native_supported(metric: &QualityMetric) -> bool {
 pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<VshipConfig> {
     match metric {
         QualityMetric::SSIMULACRA2 {
-            threads,
-            gpu_id,
-            ..
+            threads, gpu_id, ..
         } => Ok(with_gpu_id(
             VshipConfig::new()
                 .with_metric(VshipMetric::Ssimulacra2)
@@ -176,12 +159,7 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<VshipCon
             }
             Ok(config)
         },
-        QualityMetric::VMAF {
-            ..
-        }
-        | QualityMetric::XPSNR {
-            ..
-        } => {
+        QualityMetric::VMAF { .. } | QualityMetric::XPSNR { .. } => {
             bail!("{} has no libvship equivalent", metric.friendly_name());
         },
     }
@@ -196,21 +174,11 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<VshipCon
 #[must_use]
 const fn resolution(metric: &QualityMetric) -> Option<(u32, u32)> {
     match metric {
-        QualityMetric::VMAF {
-            resolution, ..
-        }
-        | QualityMetric::SSIMULACRA2 {
-            resolution, ..
-        }
-        | QualityMetric::BUTTERAUGLI {
-            resolution, ..
-        }
-        | QualityMetric::XPSNR {
-            resolution, ..
-        }
-        | QualityMetric::CVVDP {
-            resolution, ..
-        } => *resolution,
+        QualityMetric::VMAF { resolution, .. }
+        | QualityMetric::SSIMULACRA2 { resolution, .. }
+        | QualityMetric::BUTTERAUGLI { resolution, .. }
+        | QualityMetric::XPSNR { resolution, .. }
+        | QualityMetric::CVVDP { resolution, .. } => *resolution,
     }
 }
 
@@ -224,10 +192,7 @@ const fn resolution(metric: &QualityMetric) -> Option<(u32, u32)> {
 #[inline]
 #[must_use]
 fn butteraugli_uses_q_norm(metric: &QualityMetric) -> bool {
-    matches!(metric, QualityMetric::BUTTERAUGLI {
-        norm: Some(_),
-        ..
-    })
+    matches!(metric, QualityMetric::BUTTERAUGLI { norm: Some(_), .. })
 }
 
 /// libvship handler count for a configured `threads` value.
@@ -495,20 +460,20 @@ mod tests {
     #[test]
     fn the_supported_metrics_map_to_their_libvship_counterparts() {
         let butteraugli = QualityMetric::BUTTERAUGLI {
-            target_range:         (1.0, 3.0),
-            resolution:           None,
-            threads:              None,
+            target_range: (1.0, 3.0),
+            resolution: None,
+            threads: None,
             intensity_multiplier: None,
-            norm:                 None,
-            gpu_id:               None,
+            norm: None,
+            gpu_id: None,
         };
         let cvvdp = QualityMetric::CVVDP {
-            target_range:      (0.0, 1.0),
-            resolution:        None,
-            display_model:     None,
+            target_range: (0.0, 1.0),
+            resolution: None,
+            display_model: None,
             resize_to_display: None,
-            disable_temporal:  None,
-            gpu_id:            None,
+            disable_temporal: None,
+            gpu_id: None,
         };
 
         assert_eq!(
@@ -526,15 +491,15 @@ mod tests {
     fn metrics_libvship_does_not_implement_are_rejected() {
         let vmaf = QualityMetric::VMAF {
             target_range: (94.0, 96.0),
-            resolution:   None,
-            scaler:       String::new(),
-            threads:      1,
-            model:        None,
-            features:     vec![],
+            resolution: None,
+            scaler: String::new(),
+            threads: 1,
+            model: None,
+            features: vec![],
         };
         let xpsnr = QualityMetric::XPSNR {
             target_range: (40.0, 45.0),
-            resolution:   None,
+            resolution: None,
         };
 
         assert_eq!(vship_metric_for(&vmaf), None);
@@ -567,25 +532,25 @@ mod tests {
         for metric in [
             QualityMetric::SSIMULACRA2 {
                 target_range: (74.0, 76.0),
-                resolution:   None,
-                threads:      None,
-                gpu_id:       Some(2),
+                resolution: None,
+                threads: None,
+                gpu_id: Some(2),
             },
             QualityMetric::BUTTERAUGLI {
-                target_range:         (1.0, 3.0),
-                resolution:           None,
-                threads:              None,
+                target_range: (1.0, 3.0),
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 None,
-                gpu_id:               Some(2),
+                norm: None,
+                gpu_id: Some(2),
             },
             QualityMetric::CVVDP {
-                target_range:      (9.4, 9.6),
-                resolution:        None,
-                display_model:     None,
+                target_range: (9.4, 9.6),
+                resolution: None,
+                display_model: None,
                 resize_to_display: None,
-                disable_temporal:  None,
-                gpu_id:            Some(2),
+                disable_temporal: None,
+                gpu_id: Some(2),
             },
         ] {
             let config = scorer_config(&metric, 24.0).expect("config should build");
@@ -609,20 +574,20 @@ mod tests {
         for metric in [
             ssimulacra2(None),
             QualityMetric::BUTTERAUGLI {
-                target_range:         (1.0, 3.0),
-                resolution:           None,
-                threads:              None,
+                target_range: (1.0, 3.0),
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 None,
-                gpu_id:               None,
+                norm: None,
+                gpu_id: None,
             },
             QualityMetric::CVVDP {
-                target_range:      (9.4, 9.6),
-                resolution:        None,
-                display_model:     None,
+                target_range: (9.4, 9.6),
+                resolution: None,
+                display_model: None,
                 resize_to_display: None,
-                disable_temporal:  None,
-                gpu_id:            None,
+                disable_temporal: None,
+                gpu_id: None,
             },
         ] {
             let config = scorer_config(&metric, 24.0).expect("config should build");
@@ -638,12 +603,12 @@ mod tests {
     #[test]
     fn butteraugli_norm_and_intensity_pass_through() {
         let metric = QualityMetric::BUTTERAUGLI {
-            target_range:         (1.0, 3.0),
-            resolution:           None,
-            threads:              Some(3),
+            target_range: (1.0, 3.0),
+            resolution: None,
+            threads: Some(3),
             intensity_multiplier: Some(250.0),
-            norm:                 Some(3),
-            gpu_id:               None,
+            norm: Some(3),
+            gpu_id: None,
         };
         let config = scorer_config(&metric, 24.0).expect("config should build");
 
@@ -657,12 +622,12 @@ mod tests {
     fn butteraugli_reports_the_norm_the_plugin_would() {
         // No norm requested: the plugin reads `BUTTERAUGLI_INFNorm`.
         let default = QualityMetric::BUTTERAUGLI {
-            target_range:         (0.8, 1.2),
-            resolution:           None,
-            threads:              None,
+            target_range: (0.8, 1.2),
+            resolution: None,
+            threads: None,
             intensity_multiplier: None,
-            norm:                 None,
-            gpu_id:               None,
+            norm: None,
+            gpu_id: None,
         };
         assert!(
             !butteraugli_uses_q_norm(&default),
@@ -674,12 +639,12 @@ mod tests {
         // so `butteraugli-3` selects `norm_q` rather than `norm_3`.
         for norm in [2, 3, 5] {
             let configured = QualityMetric::BUTTERAUGLI {
-                target_range:         default.target_range(),
-                resolution:           None,
-                threads:              None,
+                target_range: default.target_range(),
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 Some(norm),
-                gpu_id:               None,
+                norm: Some(norm),
+                gpu_id: None,
             };
             assert!(
                 butteraugli_uses_q_norm(&configured),
@@ -691,12 +656,12 @@ mod tests {
     #[test]
     fn cvvdp_display_model_and_temporal_options_pass_through() {
         let metric = QualityMetric::CVVDP {
-            target_range:      (0.0, 1.0),
-            resolution:        None,
-            display_model:     Some(DisplayModel::StandardFHD),
+            target_range: (0.0, 1.0),
+            resolution: None,
+            display_model: Some(DisplayModel::StandardFHD),
             resize_to_display: Some(true),
-            disable_temporal:  Some(true),
-            gpu_id:            None,
+            disable_temporal: Some(true),
+            gpu_id: None,
         };
         let config = scorer_config(&metric, 23.976).expect("config should build");
 
@@ -718,12 +683,12 @@ mod tests {
     #[test]
     fn cvvdp_receives_the_source_frame_rate() {
         let metric = QualityMetric::CVVDP {
-            target_range:      (0.0, 1.0),
-            resolution:        None,
-            display_model:     None,
+            target_range: (0.0, 1.0),
+            resolution: None,
+            display_model: None,
             resize_to_display: None,
-            disable_temporal:  None,
-            gpu_id:            None,
+            disable_temporal: None,
+            gpu_id: None,
         };
 
         let config = scorer_config(&metric, 23.976).expect("config should build");
@@ -745,11 +710,11 @@ mod tests {
     fn native_support_requires_both_a_supported_metric_and_the_library() {
         let vmaf = QualityMetric::VMAF {
             target_range: (94.0, 96.0),
-            resolution:   None,
-            scaler:       String::new(),
-            threads:      1,
-            model:        None,
-            features:     vec![],
+            resolution: None,
+            scaler: String::new(),
+            threads: 1,
+            model: None,
+            features: vec![],
         };
 
         // A metric libvship cannot compute is never routed natively, regardless
@@ -820,20 +785,20 @@ mod tests {
         let reference = y4m_fixture(&y4m(&[10, 10, 10, 10]));
 
         let butteraugli = QualityMetric::BUTTERAUGLI {
-            target_range:         (1.0, 3.0),
-            resolution:           None,
-            threads:              None,
+            target_range: (1.0, 3.0),
+            resolution: None,
+            threads: None,
             intensity_multiplier: None,
-            norm:                 None,
-            gpu_id:               None,
+            norm: None,
+            gpu_id: None,
         };
         let cvvdp = QualityMetric::CVVDP {
-            target_range:      (0.0, 1.0),
-            resolution:        None,
-            display_model:     None,
+            target_range: (0.0, 1.0),
+            resolution: None,
+            display_model: None,
             resize_to_display: None,
-            disable_temporal:  None,
-            gpu_id:            None,
+            disable_temporal: None,
+            gpu_id: None,
         };
 
         // A near-identical encode and a badly wrong one, both against the same

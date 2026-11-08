@@ -7,13 +7,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         zoomvtools::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -24,25 +22,25 @@ use crate::vapoursynth::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ZMVSuper {
     /// Horizontal padding in pixels. Default 16.
-    pub hpad:         Option<u32>,
+    pub hpad: Option<u32>,
     /// Vertical padding in pixels. Default 16.
-    pub vpad:         Option<u32>,
+    pub vpad: Option<u32>,
     /// Sub-pixel accuracy: 1=full, 2=half, 4=quarter. Default 2.
-    pub pel:          Option<u32>,
+    pub pel: Option<u32>,
     /// Number of hierarchical levels to use. 0 = all. Default 0.
-    pub levels:       Option<u32>,
+    pub levels: Option<u32>,
     /// Include chroma planes. Default True.
-    pub chroma:       Option<bool>,
+    pub chroma: Option<bool>,
     /// Sub-pixel interpolation for pel>1: 0=bilinear, 1=bicubic, 2=Wiener.
     /// Default 2.
-    pub sharp:        Option<u32>,
+    pub sharp: Option<u32>,
     /// Pyramid downscale filter: 0=simple average, 1=bilinear, 2=cubic. Default
     /// 1.
-    pub rfilter:      Option<u32>,
+    pub rfilter: Option<u32>,
     /// Only used for script generation
     pub pelclip_name: Option<NodeVariableName>,
     /// CPU optimizations. Default 4.
-    pub opt:          Option<u32>,
+    pub opt: Option<u32>,
 }
 
 impl Plugin for ZMVSuper {
@@ -83,29 +81,32 @@ impl ZMVSuper {
         arguments
             .set_node("clip", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
         if let Some(pelclip) = pelclip {
             arguments.set_node("pelclip", pelclip).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: "pelclip".to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
-        Self::argument_set_ints(&mut arguments, vec![
-            ("hpad", self.hpad),
-            ("vpad", self.vpad),
-            ("pel", self.pel),
-            ("levels", self.levels),
-            ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
-            ("sharp", self.sharp),
-            ("rfilter", self.rfilter),
-            ("opt", self.opt),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("hpad", self.hpad),
+                ("vpad", self.vpad),
+                ("pel", self.pel),
+                ("levels", self.levels),
+                ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
+                ("sharp", self.sharp),
+                ("rfilter", self.rfilter),
+                ("opt", self.opt),
+            ],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
         Ok(node)
     }

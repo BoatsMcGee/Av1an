@@ -1,8 +1,6 @@
 use std::{
     sync::{
-        self,
-        Arc,
-        Mutex,
+        self, Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::SystemTime,
@@ -19,30 +17,25 @@ use crate::{
     models::{
         Condor as CondorModel,
         sequence::{
-            SequenceConfigHandler,
-            SequenceDataHandler,
+            SequenceConfigHandler, SequenceDataHandler,
             noise_detector::{
-                NoiseDetectorConfigHandler,
-                NoiseDetectorData,
-                NoiseDetectorDataHandler,
+                NoiseDetectorConfigHandler, NoiseDetectorData, NoiseDetectorDataHandler,
             },
         },
     },
     vapoursynth::{
-        VapourSynthError,
-        get_core,
+        VapourSynthError, get_core,
         plugins::{
-            MetricPluginFunction,
-            PluginFunction,
+            MetricPluginFunction, PluginFunction,
             standard::{plane_stats::PlaneStats, splice::Splice, trim::Trim},
         },
     },
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Noise Detector",
+    name: "Noise Detector",
     description: "Measure the amount of noise of the video per scene",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 #[derive(Default)]
@@ -97,15 +90,10 @@ where
         let mut v_input_owned = input.as_vapoursynth_script()?;
         let v_input = v_input_owned.as_mut();
         let decoder = match input {
-            Input::VapourSynth {
-                decoder, ..
-            }
-            | Input::VapourSynthScript {
-                decoder, ..
-            } => decoder,
-            Input::Video {
-                ..
-            } => v_input.expect("Video Input exists").decoder(),
+            Input::VapourSynth { decoder, .. } | Input::VapourSynthScript { decoder, .. } => {
+                decoder
+            },
+            Input::Video { .. } => v_input.expect("Video Input exists").decoder(),
         };
         let vapoursynth_decoder = decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
         let env = &vapoursynth_decoder.env;
@@ -188,8 +176,8 @@ where
 
         let plane_stats_node = PlaneStats {
             clip_b_name: Some("denoised".to_owned()),
-            plane:       Some(0),
-            prop:        None,
+            plane: Some(0),
+            prop: None,
         }
         .call(core, &reference_node, Some(&denoised_node))?;
 
@@ -217,20 +205,20 @@ where
                 let global = pending_map.get(local).copied().unwrap_or(local);
                 let _ = frame_tx.send(SequenceStatus::Subprocess {
                     parent: Status::Processing {
-                        id:         Self::DETAILS.name.to_owned(),
+                        id: Self::DETAILS.name.to_owned(),
                         completion: SequenceCompletion::Custom {
-                            name:      Self::DETAILS.name.to_owned(),
+                            name: Self::DETAILS.name.to_owned(),
                             completed: completed_now as f64,
-                            total:     total as f64,
+                            total: total as f64,
                         },
                     },
-                    child:  Status::Processing {
-                        id:         "Noise".to_owned(),
+                    child: Status::Processing {
+                        id: "Noise".to_owned(),
                         completion: SequenceCompletion::SceneQuality {
-                            index:     global as u64,
+                            index: global as u64,
                             quantizer: 0.0,
-                            score:     noise,
-                            bitrate:   0.0,
+                            score: noise,
+                            bitrate: 0.0,
                         },
                     },
                 });
@@ -260,18 +248,18 @@ where
                     let global = pending[local];
                     *condor.scenes[global].sequence_data.get_noise_detection_mut()? =
                         Some(NoiseDetectorData {
-                            noise:      *noise,
-                            luminance:  0.0,
+                            noise: *noise,
+                            luminance: 0.0,
                             created_on: SystemTime::now(),
                         });
                 }
             }
         }
         let data = CondorModel {
-            input:           input_data_copy,
-            output:          condor.output.as_data(),
-            encoder:         condor.encoder.clone(),
-            scenes:          condor.scenes.clone(),
+            input: input_data_copy,
+            output: condor.output.as_data(),
+            encoder: condor.encoder.clone(),
+            scenes: condor.scenes.clone(),
             sequence_config: condor.sequence_config.clone(),
         };
         (condor.save_callback)(data)?;

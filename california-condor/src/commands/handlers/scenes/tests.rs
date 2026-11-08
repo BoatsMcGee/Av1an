@@ -20,13 +20,13 @@ use crate::{
 
 fn test_video() -> TestVideo {
     TestVideo {
-        path:         PathBuf::from("video.mkv"),
-        width:        1920,
-        height:       1080,
-        frames:       720,
+        path: PathBuf::from("video.mkv"),
+        width: 1920,
+        height: 1080,
+        frames: 720,
         fps_rational: (24, 1),
-        format:       FFPixelFormat::YUV420P,
-        scenes:       vec![(0, 121), (121, 240), (240, 480), (480, 528), (528, 720)],
+        format: FFPixelFormat::YUV420P,
+        scenes: vec![(0, 121), (121, 240), (240, 480), (480, 528), (528, 720)],
     }
 }
 
@@ -57,17 +57,13 @@ fn setting_frames_moves_the_range_and_keeps_the_neighbours() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());
 
-    let (name, value) = apply_set(&mut configuration, 0, &ScenesSet::Start {
-        frame: 23
-    })
-    .expect("the start frame moves");
+    let (name, value) = apply_set(&mut configuration, 0, &ScenesSet::Start { frame: 23 })
+        .expect("the start frame moves");
     assert_eq!(name, "start_frame");
     assert_eq!(value, json!({"start_frame": 23, "end_frame": 121}));
 
-    let (name, _) = apply_set(&mut configuration, 4, &ScenesSet::End {
-        frame: 600
-    })
-    .expect("the end frame moves");
+    let (name, _) = apply_set(&mut configuration, 4, &ScenesSet::End { frame: 600 })
+        .expect("the end frame moves");
     assert_eq!(name, "end_frame");
     assert_eq!(
         ranges(&configuration),
@@ -81,10 +77,8 @@ fn setting_a_frame_into_a_neighbour_reports_the_overlap() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());
 
-    let (_, _) = apply_set(&mut configuration, 1, &ScenesSet::Start {
-        frame: 50
-    })
-    .expect("the start frame moves");
+    let (_, _) = apply_set(&mut configuration, 1, &ScenesSet::Start { frame: 50 })
+        .expect("the start frame moves");
 
     assert_eq!(
         ranges(&configuration)[1],
@@ -103,10 +97,8 @@ fn a_frame_edit_that_would_empty_a_scene_is_rejected() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());
 
-    let error = apply_set(&mut configuration, 1, &ScenesSet::Start {
-        frame: 240
-    })
-    .expect_err("the scene would be empty");
+    let error = apply_set(&mut configuration, 1, &ScenesSet::Start { frame: 240 })
+        .expect_err("the scene would be empty");
     assert!(
         error.to_string().contains("scene 1 would be empty"),
         "{error}"
@@ -124,25 +116,30 @@ fn encoder_edits_touch_only_their_scene() {
     let mut configuration = configuration(temp.path());
     let global = configuration.condor.encoder.clone();
 
-    apply_set(&mut configuration, 2, &ScenesSet::Encoder {
-        encoder:           x265(),
-        executable:        None,
-        passes:            None,
-        params:            None,
-        iso:               None,
-        chroma_iso:        None,
-        ffmpeg_filter:     None,
-        append_color_data: None,
-    })
+    apply_set(
+        &mut configuration,
+        2,
+        &ScenesSet::Encoder {
+            encoder: x265(),
+            executable: None,
+            passes: None,
+            params: None,
+            iso: None,
+            chroma_iso: None,
+            ffmpeg_filter: None,
+            append_color_data: None,
+        },
+    )
     .expect("the encoder switches");
-    apply_set(&mut configuration, 2, &ScenesSet::Params {
-        params: "crf=18".to_owned(),
-    })
+    apply_set(
+        &mut configuration,
+        2,
+        &ScenesSet::Params {
+            params: "crf=18".to_owned(),
+        },
+    )
     .expect("the parameter merges");
-    apply_set(&mut configuration, 2, &ScenesSet::Passes {
-        value: 2
-    })
-    .expect("the passes change");
+    apply_set(&mut configuration, 2, &ScenesSet::Passes { value: 2 }).expect("the passes change");
 
     assert_eq!(
         configuration.condor.scenes[2].encoder.base(),
@@ -173,16 +170,20 @@ fn one_set_encoder_line_applies_every_flag() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());
 
-    let (name, value) = apply_set(&mut configuration, 1, &ScenesSet::Encoder {
-        encoder:           EncoderMethod::SVTAV1,
-        executable:        None,
-        passes:            Some(2),
-        params:            Some("crf=18".to_owned()),
-        iso:               Some(800),
-        chroma_iso:        Some(200),
-        ffmpeg_filter:     Some("hflip".to_owned()),
-        append_color_data: None,
-    })
+    let (name, value) = apply_set(
+        &mut configuration,
+        1,
+        &ScenesSet::Encoder {
+            encoder: EncoderMethod::SVTAV1,
+            executable: None,
+            passes: Some(2),
+            params: Some("crf=18".to_owned()),
+            iso: Some(800),
+            chroma_iso: Some(200),
+            ffmpeg_filter: Some("hflip".to_owned()),
+            append_color_data: None,
+        },
+    )
     .expect("the encoder and its settings change at once");
 
     assert_eq!(name, "encoder");
@@ -205,16 +206,20 @@ fn encoder_capability_rules_apply_to_the_new_encoder() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());
 
-    let photon_noise = apply_set(&mut configuration, 0, &ScenesSet::Encoder {
-        encoder:           x265(),
-        executable:        None,
-        passes:            None,
-        params:            None,
-        iso:               Some(800),
-        chroma_iso:        None,
-        ffmpeg_filter:     None,
-        append_color_data: None,
-    })
+    let photon_noise = apply_set(
+        &mut configuration,
+        0,
+        &ScenesSet::Encoder {
+            encoder: x265(),
+            executable: None,
+            passes: None,
+            params: None,
+            iso: Some(800),
+            chroma_iso: None,
+            ffmpeg_filter: None,
+            append_color_data: None,
+        },
+    )
     .expect_err("x265 has no Photon Noise table");
     assert!(
         photon_noise.to_string().contains("does not support Photon Noise"),
@@ -226,29 +231,37 @@ fn encoder_capability_rules_apply_to_the_new_encoder() {
         "a rejected switch leaves the encoder alone"
     );
 
-    let passes = apply_set(&mut configuration, 1, &ScenesSet::Encoder {
-        encoder:           EncoderMethod::FFmpeg,
-        executable:        None,
-        passes:            Some(2),
-        params:            None,
-        iso:               None,
-        chroma_iso:        None,
-        ffmpeg_filter:     None,
-        append_color_data: None,
-    })
+    let passes = apply_set(
+        &mut configuration,
+        1,
+        &ScenesSet::Encoder {
+            encoder: EncoderMethod::FFmpeg,
+            executable: None,
+            passes: Some(2),
+            params: None,
+            iso: None,
+            chroma_iso: None,
+            ffmpeg_filter: None,
+            append_color_data: None,
+        },
+    )
     .expect_err("FFmpeg is single-pass");
     assert!(passes.to_string().contains("single-pass only"), "{passes}");
 
-    let chroma = apply_set(&mut configuration, 1, &ScenesSet::Encoder {
-        encoder:           EncoderMethod::SVTAV1,
-        executable:        None,
-        passes:            None,
-        params:            None,
-        iso:               None,
-        chroma_iso:        Some(200),
-        ffmpeg_filter:     None,
-        append_color_data: None,
-    })
+    let chroma = apply_set(
+        &mut configuration,
+        1,
+        &ScenesSet::Encoder {
+            encoder: EncoderMethod::SVTAV1,
+            executable: None,
+            passes: None,
+            params: None,
+            iso: None,
+            chroma_iso: Some(200),
+            ffmpeg_filter: None,
+            append_color_data: None,
+        },
+    )
     .expect_err("chroma ISO needs a luma ISO");
     assert!(
         chroma.to_string().contains("--chroma-iso needs --iso"),
@@ -261,18 +274,23 @@ fn the_standalone_overrides_keep_working() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());
 
-    apply_set(&mut configuration, 3, &ScenesSet::Passes {
-        value: 2
-    })
-    .expect("the passes change");
-    apply_set(&mut configuration, 0, &ScenesSet::FfmpegFilter {
-        filter: "hflip".to_owned(),
-    })
+    apply_set(&mut configuration, 3, &ScenesSet::Passes { value: 2 }).expect("the passes change");
+    apply_set(
+        &mut configuration,
+        0,
+        &ScenesSet::FfmpegFilter {
+            filter: "hflip".to_owned(),
+        },
+    )
     .expect("the filter applies");
-    apply_set(&mut configuration, 1, &ScenesSet::PhotonNoise {
-        iso:          800,
-        chroma_noise: Some(200),
-    })
+    apply_set(
+        &mut configuration,
+        1,
+        &ScenesSet::PhotonNoise {
+            iso: 800,
+            chroma_noise: Some(200),
+        },
+    )
     .expect("the Photon Noise table is set");
 
     assert_eq!(
@@ -298,36 +316,48 @@ fn sub_scenes_are_validated_against_their_scene() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());
 
-    apply_set(&mut configuration, 1, &ScenesSet::SubScenes {
-        ranges: vec!["121-180".to_owned(), "180-240".to_owned()],
-    })
+    apply_set(
+        &mut configuration,
+        1,
+        &ScenesSet::SubScenes {
+            ranges: vec!["121-180".to_owned(), "180-240".to_owned()],
+        },
+    )
     .expect("the sub-scenes replace");
     assert_eq!(
         configuration.condor.scenes[1].sub_scenes,
         Some(vec![
             SubScene {
                 start_frame: 121,
-                end_frame:   180,
+                end_frame: 180,
             },
             SubScene {
                 start_frame: 180,
-                end_frame:   240,
+                end_frame: 240,
             },
         ])
     );
 
-    let outside = apply_set(&mut configuration, 1, &ScenesSet::SubScenes {
-        ranges: vec!["0-50".to_owned()],
-    })
+    let outside = apply_set(
+        &mut configuration,
+        1,
+        &ScenesSet::SubScenes {
+            ranges: vec!["0-50".to_owned()],
+        },
+    )
     .expect_err("the range leaves the scene");
     assert!(
         outside.to_string().contains("lies outside scene 121..240"),
         "{outside}"
     );
 
-    apply_set(&mut configuration, 1, &ScenesSet::SubScenes {
-        ranges: vec!["none".to_owned()],
-    })
+    apply_set(
+        &mut configuration,
+        1,
+        &ScenesSet::SubScenes {
+            ranges: vec!["none".to_owned()],
+        },
+    )
     .expect("none clears");
     assert_eq!(configuration.condor.scenes[1].sub_scenes, None);
 }
@@ -336,21 +366,23 @@ fn sub_scenes_are_validated_against_their_scene() {
 fn frame_edits_clip_sub_scenes() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());
-    apply_set(&mut configuration, 1, &ScenesSet::SubScenes {
-        ranges: vec!["121-180".to_owned(), "180-240".to_owned()],
-    })
+    apply_set(
+        &mut configuration,
+        1,
+        &ScenesSet::SubScenes {
+            ranges: vec!["121-180".to_owned(), "180-240".to_owned()],
+        },
+    )
     .expect("the sub-scenes replace");
 
-    apply_set(&mut configuration, 1, &ScenesSet::Start {
-        frame: 200
-    })
-    .expect("the start frame moves");
+    apply_set(&mut configuration, 1, &ScenesSet::Start { frame: 200 })
+        .expect("the start frame moves");
 
     assert_eq!(
         configuration.condor.scenes[1].sub_scenes,
         Some(vec![SubScene {
             start_frame: 200,
-            end_frame:   240,
+            end_frame: 240,
         }]),
         "the sub-scenes are clipped to the new range"
     );
@@ -362,20 +394,28 @@ fn resets_restore_what_a_detection_would_have_written() {
     let mut configuration = configuration(temp.path());
     let global = configuration.condor.encoder.clone();
 
-    apply_set(&mut configuration, 2, &ScenesSet::Encoder {
-        encoder:           x265(),
-        executable:        None,
-        passes:            None,
-        params:            None,
-        iso:               None,
-        chroma_iso:        None,
-        ffmpeg_filter:     None,
-        append_color_data: None,
-    })
+    apply_set(
+        &mut configuration,
+        2,
+        &ScenesSet::Encoder {
+            encoder: x265(),
+            executable: None,
+            passes: None,
+            params: None,
+            iso: None,
+            chroma_iso: None,
+            ffmpeg_filter: None,
+            append_color_data: None,
+        },
+    )
     .expect("the encoder switches");
-    apply_set(&mut configuration, 2, &ScenesSet::SubScenes {
-        ranges: vec!["240-300".to_owned()],
-    })
+    apply_set(
+        &mut configuration,
+        2,
+        &ScenesSet::SubScenes {
+            ranges: vec!["240-300".to_owned()],
+        },
+    )
     .expect("the sub-scenes replace");
 
     let (name, _) =
@@ -389,16 +429,20 @@ fn resets_restore_what_a_detection_would_have_written() {
     reset_key(&mut configuration, 2, ScenesKey::SubScenes, &global).expect("the sub-scenes reset");
     assert_eq!(configuration.condor.scenes[2].sub_scenes, None);
 
-    apply_set(&mut configuration, 0, &ScenesSet::Encoder {
-        encoder:           x265(),
-        executable:        None,
-        passes:            None,
-        params:            None,
-        iso:               None,
-        chroma_iso:        None,
-        ffmpeg_filter:     None,
-        append_color_data: None,
-    })
+    apply_set(
+        &mut configuration,
+        0,
+        &ScenesSet::Encoder {
+            encoder: x265(),
+            executable: None,
+            passes: None,
+            params: None,
+            iso: None,
+            chroma_iso: None,
+            ffmpeg_filter: None,
+            append_color_data: None,
+        },
+    )
     .expect("the encoder switches");
     let _ = reset_scene(&mut configuration, 0, &global).expect("the scene resets");
     assert_eq!(configuration.condor.scenes[0].encoder, global);
@@ -421,13 +465,11 @@ fn sequence_data_resets_clear_the_saved_results() {
     let global = configuration.condor.encoder.clone();
     let scene = &mut configuration.condor.scenes[0];
     scene.sequence_data.noise_detection = Some(NoiseDetectorData {
-        noise:      1.0,
-        luminance:  2.0,
+        noise: 1.0,
+        luminance: 2.0,
         created_on: SystemTime::now(),
     });
-    scene.sequence_data.noise_scaling = Some(NoiseScalerData {
-        scaler: 1.5
-    });
+    scene.sequence_data.noise_scaling = Some(NoiseScalerData { scaler: 1.5 });
     scene.sequence_data.parallel_encoder.bytes = Some(123);
     scene.sequence_data.quality_check.quality.scores = vec![99.0];
     scene.sequence_data.target_quality.passes.push(Default::default());
@@ -594,10 +636,8 @@ fn an_edit_without_scenes_names_the_missing_index() {
     let video = test_video();
     let mut configuration = default_config(&video, &temp.path().join("out.mkv"), temp.path());
 
-    let error = apply_set(&mut configuration, 0, &ScenesSet::Start {
-        frame: 5
-    })
-    .expect_err("there are no scenes yet");
+    let error = apply_set(&mut configuration, 0, &ScenesSet::Start { frame: 5 })
+        .expect_err("there are no scenes yet");
     assert!(
         error.to_string().contains("scene index 0 does not exist"),
         "{error}"

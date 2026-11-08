@@ -18,12 +18,7 @@ mod common;
 use std::hint::black_box;
 
 use av_metrics_vmaf::{
-    BackendPreference,
-    PoolMethod,
-    VideoFormat,
-    VmafConfig,
-    VmafScorer,
-    is_available,
+    BackendPreference, PoolMethod, VideoFormat, VmafConfig, VmafScorer, is_available,
 };
 use common::{Distortion, SyntheticPair};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -50,9 +45,9 @@ fn scorer_for(
     let (reference, distorted) = pair.decoders();
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 

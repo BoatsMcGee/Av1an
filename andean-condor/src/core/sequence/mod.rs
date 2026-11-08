@@ -54,9 +54,9 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 pub struct SequenceDetails {
-    pub name:        &'static str,
+    pub name: &'static str,
     pub description: &'static str,
-    pub version:     &'static str,
+    pub version: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,14 +68,14 @@ pub enum SequenceStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Status {
     Processing {
-        id:         String,
+        id: String,
         completion: SequenceCompletion,
     },
     Completed {
         id: String,
     },
     Failed {
-        id:    String,
+        id: String,
         error: String,
     },
 }
@@ -85,7 +85,7 @@ pub enum SequenceCompletion {
     Percentage(f64),
     Scenes {
         completed: u64,
-        total:     u64,
+        total: u64,
     },
     PassFrames {
         passes: (u8, u8),
@@ -93,25 +93,25 @@ pub enum SequenceCompletion {
     },
     Passes {
         completed: u8,
-        total:     u8,
+        total: u8,
     },
     Frames {
         completed: u64,
-        total:     u64,
+        total: u64,
     },
     SceneQuality {
-        index:     u64,
+        index: u64,
         quantizer: f64,
-        score:     f64,
-        bitrate:   f64,
+        score: f64,
+        bitrate: f64,
     },
     FrameScore {
         frame: u64,
         score: f64,
     },
     Custom {
-        name:      String,
+        name: String,
         completed: f64,
-        total:     f64,
+        total: f64,
     },
 }

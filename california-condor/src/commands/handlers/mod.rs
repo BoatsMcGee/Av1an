@@ -2,10 +2,7 @@ use std::path::{Path, PathBuf};
 
 use andean_condor::{
     models::input::{
-        ImportMethod,
-        Input as InputModel,
-        VapourSynthImportMethod,
-        VapourSynthScriptSource,
+        ImportMethod, Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource,
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
@@ -15,8 +12,7 @@ use tracing::{debug, error, warn};
 use crate::{
     DEFAULT_CONFIG_PATH,
     commands::{
-        CondorCliError,
-        DecoderMethod,
+        CondorCliError, DecoderMethod,
         config::{InputOverride, Toggle},
     },
     configuration::{ConfigError, Configuration},
@@ -112,10 +108,7 @@ pub fn configure_input(
                 import_method,
                 ..
             } => match import_method {
-                ImportMethod::FFMS2 {
-                    index,
-                    cache_path,
-                } => (
+                ImportMethod::FFMS2 { index, cache_path } => (
                     path,
                     Some(DecoderMethod::FFMS2),
                     None,
@@ -128,18 +121,18 @@ pub fn configure_input(
                 import_method,
                 ..
             } => match import_method {
-                VapourSynthImportMethod::LSMASHWorks {
-                    index,
-                } => (path, Some(DecoderMethod::LSMASHWorks), None, *index, None),
-                VapourSynthImportMethod::DGDecNV {
-                    ..
-                } => (path, Some(DecoderMethod::DGDecodeNV), None, None, None),
-                VapourSynthImportMethod::FFMS2 {
-                    index,
-                } => (path, Some(DecoderMethod::VSFFMS2), None, *index, None),
-                VapourSynthImportMethod::BestSource {
-                    index,
-                } => (path, Some(DecoderMethod::BestSource), None, *index, None),
+                VapourSynthImportMethod::LSMASHWorks { index } => {
+                    (path, Some(DecoderMethod::LSMASHWorks), None, *index, None)
+                },
+                VapourSynthImportMethod::DGDecNV { .. } => {
+                    (path, Some(DecoderMethod::DGDecodeNV), None, None, None)
+                },
+                VapourSynthImportMethod::FFMS2 { index } => {
+                    (path, Some(DecoderMethod::VSFFMS2), None, *index, None)
+                },
+                VapourSynthImportMethod::BestSource { index } => {
+                    (path, Some(DecoderMethod::BestSource), None, *index, None)
+                },
             },
             InputModel::VapourSynthScript {
                 source,
@@ -170,12 +163,7 @@ pub fn configure_input(
             stream_concurrently,
             ..
         } => Some(*stream_concurrently),
-        InputModel::Video {
-            ..
-        }
-        | InputModel::VapourSynth {
-            ..
-        } => None,
+        InputModel::Video { .. } | InputModel::VapourSynth { .. } => None,
     };
 
     let mut input = Configuration::new_input_model(
@@ -204,38 +192,26 @@ pub fn configure_input(
 pub fn input_kind_label(input: &InputModel) -> &'static str {
     match input {
         InputModel::Video {
-            import_method: ImportMethod::FFMS2 {
-                ..
-            },
+            import_method: ImportMethod::FFMS2 { .. },
             ..
         } => "native FFMS2 video input",
         InputModel::VapourSynth {
-            import_method: VapourSynthImportMethod::BestSource {
-                ..
-            },
+            import_method: VapourSynthImportMethod::BestSource { .. },
             ..
         } => "BestSource video input",
         InputModel::VapourSynth {
-            import_method: VapourSynthImportMethod::FFMS2 {
-                ..
-            },
+            import_method: VapourSynthImportMethod::FFMS2 { .. },
             ..
         } => "VapourSynth FFMS2 video input",
         InputModel::VapourSynth {
-            import_method: VapourSynthImportMethod::LSMASHWorks {
-                ..
-            },
+            import_method: VapourSynthImportMethod::LSMASHWorks { .. },
             ..
         } => "L-SMASH-Works video input",
         InputModel::VapourSynth {
-            import_method: VapourSynthImportMethod::DGDecNV {
-                ..
-            },
+            import_method: VapourSynthImportMethod::DGDecNV { .. },
             ..
         } => "DGDecNV video input",
-        InputModel::VapourSynthScript {
-            ..
-        } => "VapourSynth script input",
+        InputModel::VapourSynthScript { .. } => "VapourSynth script input",
     }
 }
 

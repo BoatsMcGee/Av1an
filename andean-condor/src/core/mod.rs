@@ -17,10 +17,7 @@ use crate::{
         encoder::Encoder,
         scene::Scene,
         sequence::{
-            DefaultSequenceConfig,
-            DefaultSequenceData,
-            SequenceConfigHandler,
-            SequenceDataHandler,
+            DefaultSequenceConfig, DefaultSequenceData, SequenceConfigHandler, SequenceDataHandler,
         },
     },
 };
@@ -38,12 +35,12 @@ where
     Data: SequenceDataHandler,
     Config: SequenceConfigHandler,
 {
-    pub input:           Input,
-    pub output:          Output,
-    pub encoder:         Encoder,
-    pub scenes:          Vec<Scene<Data>>,
+    pub input: Input,
+    pub output: Output,
+    pub encoder: Encoder,
+    pub scenes: Vec<Scene<Data>>,
     pub sequence_config: Config,
-    pub save_callback:   SaveCallback<Data, Config>,
+    pub save_callback: SaveCallback<Data, Config>,
 }
 
 impl<Data, Config> Condor<Data, Config>
@@ -73,10 +70,10 @@ where
     #[inline]
     pub fn as_data(&self) -> CondorModel<Data, Config> {
         CondorModel {
-            input:           self.input.as_data(),
-            output:          self.output.as_data(),
-            encoder:         self.encoder.clone(),
-            scenes:          self.scenes.clone(),
+            input: self.input.as_data(),
+            output: self.output.as_data(),
+            encoder: self.encoder.clone(),
+            scenes: self.scenes.clone(),
             sequence_config: self.sequence_config.clone(),
         }
     }
@@ -84,10 +81,10 @@ where
     #[inline]
     pub fn save(&self) -> Result<Option<CondorModel<Data, Config>>> {
         let data = CondorModel {
-            input:           self.input.as_data(),
-            output:          self.output.as_data(),
-            encoder:         self.encoder.clone(),
-            scenes:          self.scenes.clone(),
+            input: self.input.as_data(),
+            output: self.output.as_data(),
+            encoder: self.encoder.clone(),
+            scenes: self.scenes.clone(),
             sequence_config: self.sequence_config.clone(),
         };
 
@@ -142,7 +139,7 @@ where
     Data: SequenceDataHandler,
     Config: SequenceConfigHandler,
 {
-    pub condor:    Condor<Data, Config>,
+    pub condor: Condor<Data, Config>,
     pub sequences: Sequences<Data, Config>,
 }
 
@@ -289,9 +286,9 @@ pub type SequenceWarningsTuple = (SequenceWarnings, SequenceWarnings, SequenceWa
 
 pub struct SequenceProgressEvent {
     pub sequence_type: SequenceType,
-    pub index:         usize,
-    pub details:       SequenceDetails,
-    pub progress:      SequenceStatus,
+    pub index: usize,
+    pub details: SequenceDetails,
+    pub progress: SequenceStatus,
 }
 
 pub enum SequenceType {

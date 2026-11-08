@@ -11,8 +11,7 @@ use crate::vapoursynth::{
     VapourSynthError,
     plugins::{Plugin, PluginFunction},
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -190,16 +189,16 @@ impl Source {
         let mut arguments = Self::arguments()?;
         let absolute_source_path =
             absolute(self.source).map_err(|_| VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  "Failed to get absolute path".to_owned(),
+                message: "Failed to get absolute path".to_owned(),
             })?;
         let absolute_cachefile = if let Some(cachefile) = self.cachefile {
             let absolute_cachefile_path =
                 absolute(cachefile).map_err(|_| VapourSynthError::PluginFunctionError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     function: Self::FUNCTION_NAME.to_owned(),
-                    message:  "Failed to get absolute path".to_owned(),
+                    message: "Failed to get absolute path".to_owned(),
                 })?;
             Some(absolute_cachefile_path)
         } else {
@@ -208,42 +207,48 @@ impl Source {
         let absolute_timecodes = if let Some(timecodes) = self.timecodes {
             let absolute_timecodes_path =
                 absolute(timecodes).map_err(|_| VapourSynthError::PluginFunctionError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     function: Self::FUNCTION_NAME.to_owned(),
-                    message:  "Failed to get absolute path".to_owned(),
+                    message: "Failed to get absolute path".to_owned(),
                 })?;
             Some(absolute_timecodes_path)
         } else {
             None
         };
 
-        Self::arguments_set(&mut arguments, vec![
-            (
-                "source",
-                Some(absolute_source_path.display().to_string().as_bytes()),
-            ),
-            (
-                "cachefile",
-                absolute_cachefile.map(|p| p.display().to_string().into_bytes()).as_deref(),
-            ),
-            (
-                "timecodes",
-                absolute_timecodes.map(|p| p.display().to_string().into_bytes()).as_deref(),
-            ),
-            ("resizer", self.resizer.map(|s| s.into_bytes()).as_deref()),
-        ])?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("track", self.track),
-            ("cache", self.cache.map(|b| b as i32)),
-            ("fpsnum", self.fpsnum),
-            ("fpsden", self.fpsden),
-            ("threads", self.threads),
-            ("seekmode", self.seekmode),
-            ("width", self.width),
-            ("height", self.height),
-            ("format", self.format),
-            ("alpha", self.alpha.map(|b| b as i32)),
-        ])?;
+        Self::arguments_set(
+            &mut arguments,
+            vec![
+                (
+                    "source",
+                    Some(absolute_source_path.display().to_string().as_bytes()),
+                ),
+                (
+                    "cachefile",
+                    absolute_cachefile.map(|p| p.display().to_string().into_bytes()).as_deref(),
+                ),
+                (
+                    "timecodes",
+                    absolute_timecodes.map(|p| p.display().to_string().into_bytes()).as_deref(),
+                ),
+                ("resizer", self.resizer.map(|s| s.into_bytes()).as_deref()),
+            ],
+        )?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("track", self.track),
+                ("cache", self.cache.map(|b| b as i32)),
+                ("fpsnum", self.fpsnum),
+                ("fpsden", self.fpsden),
+                ("threads", self.threads),
+                ("seekmode", self.seekmode),
+                ("width", self.width),
+                ("height", self.height),
+                ("format", self.format),
+                ("alpha", self.alpha.map(|b| b as i32)),
+            ],
+        )?;
 
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 

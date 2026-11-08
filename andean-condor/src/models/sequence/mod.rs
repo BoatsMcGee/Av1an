@@ -5,35 +5,23 @@ use serde::{Deserialize, Serialize};
 use crate::models::sequence::{
     bitrate_optimizer::{BitrateOptimizerConfig, BitrateOptimizerConfigHandler},
     noise_detector::{
-        NoiseDetectorConfig,
-        NoiseDetectorConfigHandler,
-        NoiseDetectorData,
+        NoiseDetectorConfig, NoiseDetectorConfigHandler, NoiseDetectorData,
         NoiseDetectorDataHandler,
     },
     noise_scaler::{
-        NoiseScalerConfig,
-        NoiseScalerConfigHandler,
-        NoiseScalerData,
-        NoiseScalerDataHandler,
+        NoiseScalerConfig, NoiseScalerConfigHandler, NoiseScalerData, NoiseScalerDataHandler,
     },
     parallel_encoder::{
-        ParallelEncoderConfig,
-        ParallelEncoderConfigHandler,
-        ParallelEncoderData,
+        ParallelEncoderConfig, ParallelEncoderConfigHandler, ParallelEncoderData,
         ParallelEncoderDataHandler,
     },
     quality_check::{
-        QualityCheckConfig,
-        QualityCheckConfigHandler,
-        QualityCheckData,
-        QualityCheckDataHandler,
+        QualityCheckConfig, QualityCheckConfigHandler, QualityCheckData, QualityCheckDataHandler,
     },
     scene_concatenator::{SceneConcatenatorConfig, SceneConcatenatorConfigHandler},
     scene_detector::{SceneDetectorConfig, SceneDetectorData, SceneDetectorDataHandler},
     target_quality::{
-        TargetQualityConfig,
-        TargetQualityConfigHandler,
-        TargetQualityData,
+        TargetQualityConfig, TargetQualityConfigHandler, TargetQualityData,
         TargetQualityDataHandler,
     },
 };
@@ -66,13 +54,13 @@ where
         + ParallelEncoderConfigHandler
         + SceneConcatenatorConfigHandler,
 {
-    pub scene_detector:     SceneDetectorConfig,
-    pub noise_detector:     Option<NoiseDetectorConfig>,
-    pub noise_scaler:       Option<NoiseScalerConfig>,
-    pub target_quality:     Option<TargetQualityConfig>,
-    pub quality_check:      Option<QualityCheckConfig>,
-    pub bitrate_optimizer:  BitrateOptimizerConfig,
-    pub parallel_encoder:   ParallelEncoderConfig,
+    pub scene_detector: SceneDetectorConfig,
+    pub noise_detector: Option<NoiseDetectorConfig>,
+    pub noise_scaler: Option<NoiseScalerConfig>,
+    pub target_quality: Option<TargetQualityConfig>,
+    pub quality_check: Option<QualityCheckConfig>,
+    pub bitrate_optimizer: BitrateOptimizerConfig,
+    pub parallel_encoder: ParallelEncoderConfig,
     pub scene_concatenator: SceneConcatenatorConfig,
 }
 
@@ -80,20 +68,19 @@ impl Default for DefaultSequenceConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            scene_detector:     SceneDetectorConfig::default(),
-            noise_detector:     None,
-            noise_scaler:       None,
-            target_quality:     None,
-            quality_check:      None,
-            bitrate_optimizer:  BitrateOptimizerConfig::default(),
-            parallel_encoder:   ParallelEncoderConfig::default(),
+            scene_detector: SceneDetectorConfig::default(),
+            noise_detector: None,
+            noise_scaler: None,
+            target_quality: None,
+            quality_check: None,
+            bitrate_optimizer: BitrateOptimizerConfig::default(),
+            parallel_encoder: ParallelEncoderConfig::default(),
             scene_concatenator: SceneConcatenatorConfig::default(),
         }
     }
 }
 
-impl SequenceConfigHandler for DefaultSequenceConfig {
-}
+impl SequenceConfigHandler for DefaultSequenceConfig {}
 
 impl NoiseDetectorConfigHandler for DefaultSequenceConfig {
     #[inline]
@@ -191,16 +178,15 @@ where
         // + SceneConcatenateDataHandler
         + QualityCheckDataHandler,
 {
-    pub scene_detection:  SceneDetectorData,
-    pub noise_detection:  Option<NoiseDetectorData>,
-    pub noise_scaling:    Option<NoiseScalerData>,
-    pub target_quality:   TargetQualityData,
+    pub scene_detection: SceneDetectorData,
+    pub noise_detection: Option<NoiseDetectorData>,
+    pub noise_scaling: Option<NoiseScalerData>,
+    pub target_quality: TargetQualityData,
     pub parallel_encoder: ParallelEncoderData,
-    pub quality_check:    QualityCheckData,
+    pub quality_check: QualityCheckData,
 }
 
-impl SequenceDataHandler for DefaultSequenceData {
-}
+impl SequenceDataHandler for DefaultSequenceData {}
 
 impl SceneDetectorDataHandler for DefaultSequenceData {
     #[inline]
@@ -278,12 +264,12 @@ impl Default for DefaultSequenceData {
     #[inline]
     fn default() -> Self {
         Self {
-            scene_detection:  SceneDetectorData::default(),
-            noise_detection:  None,
-            noise_scaling:    None,
-            target_quality:   TargetQualityData::default(),
+            scene_detection: SceneDetectorData::default(),
+            noise_detection: None,
+            noise_scaling: None,
+            target_quality: TargetQualityData::default(),
             parallel_encoder: ParallelEncoderData::default(),
-            quality_check:    QualityCheckData::default(),
+            quality_check: QualityCheckData::default(),
         }
     }
 }

@@ -11,9 +11,7 @@ pub struct InputInfo {
 impl InputInfo {
     #[inline]
     pub fn new(clip_info: ClipInfo) -> Self {
-        Self {
-            clip_info,
-        }
+        Self { clip_info }
     }
 
     /// Whether the source signals an HDR transfer characteristic.

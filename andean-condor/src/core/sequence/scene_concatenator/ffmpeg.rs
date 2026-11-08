@@ -384,23 +384,26 @@ mod tests {
     #[test]
     fn ffmpeg_args_without_settings_are_video_only() {
         let args = ffmpeg_args(Path::new("concat.txt"), Path::new("out.mkv"), None, None);
-        assert_eq!(strings(args), vec![
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "info",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            "concat.txt",
-            "-map",
-            "0",
-            "-c",
-            "copy",
-            "out.mkv",
-        ]);
+        assert_eq!(
+            strings(args),
+            vec![
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "info",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                "concat.txt",
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "out.mkv",
+            ]
+        );
     }
     /// A dropped video leaves no `v:0` output stream, so no video stream
     /// options may be emitted.

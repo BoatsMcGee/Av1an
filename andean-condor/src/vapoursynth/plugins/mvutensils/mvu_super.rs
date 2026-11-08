@@ -8,13 +8,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         mvutensils::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -27,25 +25,25 @@ pub struct MVUSuper {
     /// Block size [h, v]. A single value sets both.
     /// Used to pad the frame so right/bottom edges are fully covered. Default
     /// [8, 8].
-    pub blksize:      Option<Vec<u32>>,
+    pub blksize: Option<Vec<u32>>,
     /// Block overlap [h, v], must be ≤ blksize/2. Default [4, 4].
-    pub overlap:      Option<Vec<u32>>,
+    pub overlap: Option<Vec<u32>>,
     /// Border padding [h, v] in pixels. Default [16, 16].
-    pub pad:          Option<Vec<u32>>,
+    pub pad: Option<Vec<u32>>,
     /// Sub-pixel accuracy: 1=full, 2=half, 4=quarter. Default 2.
-    pub pel:          Option<u32>,
+    pub pel: Option<u32>,
     /// Sub-pixel interpolation for pel>1: 0=bilinear, 1=bicubic, 2=Wiener.
     /// Default 2.
-    pub sharp:        Option<u32>,
+    pub sharp: Option<u32>,
     /// Pyramid downscale filter: 0=simple average, 1=bilinear, 2=cubic. Default
     /// 1.
-    pub rfilter:      Option<u32>,
+    pub rfilter: Option<u32>,
     /// If True, generate only one level (saves memory). Default False.
-    pub onelevel:     Option<bool>,
+    pub onelevel: Option<bool>,
     /// Only used for script generation
     pub pelclip_name: Option<NodeVariableName>,
     /// Prefix for frame properties. Default "MVUtensils".
-    pub prefix:       Option<String>,
+    pub prefix: Option<String>,
 }
 
 impl Plugin for MVUSuper {
@@ -86,30 +84,36 @@ impl MVUSuper {
         arguments
             .set_node("clip", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
         if let Some(pelclip) = pelclip {
             arguments.set_node("pelclip", pelclip).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: "pelclip".to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
-        Self::argument_set_int_arrays(&mut arguments, vec![
-            ("blksize", self.blksize.or_else(|| Some(vec![8]))),
-            ("overlap", self.overlap.or_else(|| Some(vec![4]))),
-            ("pad", self.pad),
-        ])?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("pel", self.pel),
-            ("sharp", self.sharp),
-            ("rfilter", self.rfilter),
-            ("onelevel", self.onelevel.map(|b| if b { 1 } else { 0 })),
-        ])?;
+        Self::argument_set_int_arrays(
+            &mut arguments,
+            vec![
+                ("blksize", self.blksize.or_else(|| Some(vec![8]))),
+                ("overlap", self.overlap.or_else(|| Some(vec![4]))),
+                ("pad", self.pad),
+            ],
+        )?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("pel", self.pel),
+                ("sharp", self.sharp),
+                ("rfilter", self.rfilter),
+                ("onelevel", self.onelevel.map(|b| if b { 1 } else { 0 })),
+            ],
+        )?;
         Self::arguments_set(&mut arguments, vec![("prefix", self.prefix)])?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
         Ok(node)

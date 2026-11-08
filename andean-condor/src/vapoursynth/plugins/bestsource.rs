@@ -11,8 +11,7 @@ use crate::vapoursynth::{
     VapourSynthError,
     plugins::{Plugin, PluginFunction},
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -231,16 +230,16 @@ impl VideoSource {
         let mut arguments = Self::arguments()?;
         let absolute_source_path =
             absolute(self.source.clone()).map_err(|_| VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  "Failed to get absolute path".to_owned(),
+                message: "Failed to get absolute path".to_owned(),
             })?;
         let absolute_cachepath = if let Some(cachepath) = &self.cachepath {
             let absolute_cachefile_path =
                 absolute(cachepath).map_err(|_| VapourSynthError::PluginFunctionError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     function: Self::FUNCTION_NAME.to_owned(),
-                    message:  "Failed to get absolute path".to_owned(),
+                    message: "Failed to get absolute path".to_owned(),
                 })?;
             Some(absolute_cachefile_path)
         } else {
@@ -249,56 +248,62 @@ impl VideoSource {
         let absolute_timecodes = if let Some(timecodes) = &self.timecodes {
             let absolute_timecodes_path =
                 absolute(timecodes).map_err(|_| VapourSynthError::PluginFunctionError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     function: Self::FUNCTION_NAME.to_owned(),
-                    message:  "Failed to get absolute path".to_owned(),
+                    message: "Failed to get absolute path".to_owned(),
                 })?;
             Some(absolute_timecodes_path)
         } else {
             None
         };
 
-        Self::arguments_set(&mut arguments, vec![
-            (
-                "source",
-                Some(absolute_source_path.display().to_string().as_bytes()),
-            ),
-            (
-                "cachepath",
-                absolute_cachepath.map(|p| p.display().to_string().into_bytes()).as_deref(),
-            ),
-            (
-                "hwdevice",
-                self.hwdevice.clone().map(|s| s.into_bytes()).as_deref(),
-            ),
-            (
-                "timecodes",
-                absolute_timecodes.map(|p| p.display().to_string().into_bytes()).as_deref(),
-            ),
-        ])?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("track", self.track),
-            ("variableformat", self.variable_format),
-            ("fpsnum", self.fpsnum),
-            ("fpsden", self.fpsden),
-            ("rff", self.rff.map(|b| b as i32)),
-            ("threads", self.threads),
-            ("seekpreroll", self.seekpreroll.map(|i| i as i32)),
-            ("enable_drefs", self.enable_drefs.map(|b| b as i32)),
-            (
-                "use_absolute_path",
-                self.use_absolute_path.map(|b| b as i32),
-            ),
-            ("cachemode", self.cachemode.map(|i| i as i32)),
-            ("cachesize", self.cachesize.map(|i| i as i32)),
-            ("extrahwframes", self.extrahwframes),
-            ("start_number", self.start_number.map(|i| i as i32)),
-            ("viewid", self.viewid),
-            ("showprogress", self.showprogress.map(|b| b as i32)),
-            ("maxdecoders", self.maxdecoders.map(|i| i as i32)),
-            ("hwfallback", self.hwfallback.map(|b| b as i32)),
-            ("exporttimestamps", self.exporttimestamps.map(|b| b as i32)),
-        ])?;
+        Self::arguments_set(
+            &mut arguments,
+            vec![
+                (
+                    "source",
+                    Some(absolute_source_path.display().to_string().as_bytes()),
+                ),
+                (
+                    "cachepath",
+                    absolute_cachepath.map(|p| p.display().to_string().into_bytes()).as_deref(),
+                ),
+                (
+                    "hwdevice",
+                    self.hwdevice.clone().map(|s| s.into_bytes()).as_deref(),
+                ),
+                (
+                    "timecodes",
+                    absolute_timecodes.map(|p| p.display().to_string().into_bytes()).as_deref(),
+                ),
+            ],
+        )?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("track", self.track),
+                ("variableformat", self.variable_format),
+                ("fpsnum", self.fpsnum),
+                ("fpsden", self.fpsden),
+                ("rff", self.rff.map(|b| b as i32)),
+                ("threads", self.threads),
+                ("seekpreroll", self.seekpreroll.map(|i| i as i32)),
+                ("enable_drefs", self.enable_drefs.map(|b| b as i32)),
+                (
+                    "use_absolute_path",
+                    self.use_absolute_path.map(|b| b as i32),
+                ),
+                ("cachemode", self.cachemode.map(|i| i as i32)),
+                ("cachesize", self.cachesize.map(|i| i as i32)),
+                ("extrahwframes", self.extrahwframes),
+                ("start_number", self.start_number.map(|i| i as i32)),
+                ("viewid", self.viewid),
+                ("showprogress", self.showprogress.map(|b| b as i32)),
+                ("maxdecoders", self.maxdecoders.map(|i| i as i32)),
+                ("hwfallback", self.hwfallback.map(|b| b as i32)),
+                ("exporttimestamps", self.exporttimestamps.map(|b| b as i32)),
+            ],
+        )?;
 
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 

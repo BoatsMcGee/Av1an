@@ -8,13 +8,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         vszip::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -24,10 +22,10 @@ pub struct RFS {
     /// Only used for script generation
     pub clip_a_name: String,
     /// Only used for script generation
-    pub frames:      Vec<u32>,
+    pub frames: Vec<u32>,
     pub clip_b_name: String,
-    pub planes:      Option<Vec<u32>>,
-    pub mismatch:    Option<bool>,
+    pub planes: Option<Vec<u32>>,
+    pub mismatch: Option<bool>,
 }
 
 impl Plugin for RFS {
@@ -61,26 +59,26 @@ impl RFS {
         let mut arguments = Self::arguments()?;
         arguments.set_node("clipa", clip_a).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clipa".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         arguments.set_node("clipb", clip_b).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clipb".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
-        Self::argument_set_ints(&mut arguments, vec![(
-            "mismatch",
-            self.mismatch.map(|b| if b { 1 } else { 0 }),
-        )])?;
-        Self::argument_set_int_arrays(&mut arguments, vec![
-            ("frames", Some(self.frames)),
-            ("planes", self.planes),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![("mismatch", self.mismatch.map(|b| if b { 1 } else { 0 }))],
+        )?;
+        Self::argument_set_int_arrays(
+            &mut arguments,
+            vec![("frames", Some(self.frames)), ("planes", self.planes)],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         Ok(node)

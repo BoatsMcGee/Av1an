@@ -3,17 +3,8 @@ use std::path::{Path, PathBuf};
 use andean_condor::models::{
     input::Input,
     sequence::scene_concatenator::{
-        Chapters,
-        ConcatMethod,
-        FfmpegConfig,
-        FfmpegTrack,
-        FfmpegTrackKind,
-        FfmpegTrackMap,
-        Metadata,
-        MkvmergeConfig,
-        MkvmergeTrack,
-        MkvmergeTrackKind,
-        SceneConcatenatorConfig,
+        Chapters, ConcatMethod, FfmpegConfig, FfmpegTrack, FfmpegTrackKind, FfmpegTrackMap,
+        Metadata, MkvmergeConfig, MkvmergeTrack, MkvmergeTrackKind, SceneConcatenatorConfig,
         TrackMap,
     },
 };
@@ -25,8 +16,7 @@ use tracing::{debug, warn};
 
 use crate::{
     commands::{
-        ConcatenationMethod,
-        DiscardCategory,
+        ConcatenationMethod, DiscardCategory,
         config::{ConfigAction, ConfigCommand, PropertyChange},
         handlers::{config::edit, configure_temp, load_configuration},
     },
@@ -126,10 +116,13 @@ pub fn apply_discard(configuration: &mut Configuration, discard: &[DiscardCatego
     let with_ffmpeg_streams = matches!(method, ConcatMethod::FFmpeg(_));
     let source = track_probe::probe(&input, with_ffmpeg_streams)?;
     let summary = track_probe::summarize(&source);
-    debug!("{}", ConcatenateConfigError::TracksDiscarded {
-        path: input,
-        summary,
-    });
+    debug!(
+        "{}",
+        ConcatenateConfigError::TracksDiscarded {
+            path: input,
+            summary,
+        }
+    );
 
     match method {
         ConcatMethod::MKVMerge(mut mkvmerge) => {
@@ -152,17 +145,10 @@ pub fn apply_discard(configuration: &mut Configuration, discard: &[DiscardCatego
 /// mkvmerge can identify.
 fn discard_input(configuration: &Configuration) -> Option<PathBuf> {
     match &configuration.condor.input {
-        Input::Video {
-            path, ..
-        }
-        | Input::VapourSynth {
-            path, ..
-        } => Some(path.clone()),
+        Input::Video { path, .. } | Input::VapourSynth { path, .. } => Some(path.clone()),
         // A script's own tracks depend on the script, which mkvmerge cannot
         // read, and the frame server has no container tracks of its own.
-        Input::VapourSynthScript {
-            ..
-        } => None,
+        Input::VapourSynthScript { .. } => None,
     }
 }
 
@@ -370,18 +356,14 @@ impl ConfigCommand for ConcatenateCrud {
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         match set {
-            ConcatenateSet::Method {
-                method,
-            } => {
+            ConcatenateSet::Method { method } => {
                 configure_concatenate(configuration, Some(method))?;
                 PropertyChange::new(
                     "method",
                     &configuration.condor.sequence_config.scene_concatenator.method,
                 )
             },
-            ConcatenateSet::Output {
-                path: output,
-            } => {
+            ConcatenateSet::Output { path: output } => {
                 configuration.condor.sequence_config.scene_concatenator.output =
                     Some(output.clone());
                 PropertyChange::new(
@@ -389,9 +371,7 @@ impl ConfigCommand for ConcatenateCrud {
                     &configuration.condor.sequence_config.scene_concatenator.output,
                 )
             },
-            ConcatenateSet::ScenesDirectory {
-                path: directory,
-            } => {
+            ConcatenateSet::ScenesDirectory { path: directory } => {
                 configuration.condor.sequence_config.scene_concatenator.scenes_directory =
                     directory.clone();
                 PropertyChange::new(
@@ -691,18 +671,20 @@ mod tests {
     fn discard_chapters_and_metadata_sets_copy_false() {
         let source = probed_source();
         let mut mkvmerge = MkvmergeConfig::default();
-        discard_mkvmerge(&mut mkvmerge, &source, &[
-            DiscardCategory::Chapters,
-            DiscardCategory::Metadata,
-        ]);
+        discard_mkvmerge(
+            &mut mkvmerge,
+            &source,
+            &[DiscardCategory::Chapters, DiscardCategory::Metadata],
+        );
         assert!(!mkvmerge.chapters.expect("chapters are created").copy);
         assert!(!mkvmerge.metadata.expect("metadata is created").copy);
 
         let mut ffmpeg = FfmpegConfig::default();
-        discard_ffmpeg(&mut ffmpeg, &source, &[
-            DiscardCategory::Chapters,
-            DiscardCategory::Metadata,
-        ]);
+        discard_ffmpeg(
+            &mut ffmpeg,
+            &source,
+            &[DiscardCategory::Chapters, DiscardCategory::Metadata],
+        );
         assert!(!ffmpeg.chapters.expect("chapters are created").copy);
         assert!(!ffmpeg.metadata.expect("metadata is created").copy);
     }

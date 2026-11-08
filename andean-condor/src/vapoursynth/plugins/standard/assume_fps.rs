@@ -6,13 +6,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         standard::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -21,7 +19,7 @@ pub struct AssumeFPS {
     /// Only used for script generation
     pub source_node_name: Option<String>,
     /// Only used for script generation
-    pub fps:              Option<(u32, u32)>,
+    pub fps: Option<(u32, u32)>,
 }
 
 impl Plugin for AssumeFPS {
@@ -54,18 +52,18 @@ impl AssumeFPS {
         arguments
             .set_node("clip", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
 
         match options {
             AssumeFPSOptions::Source(node) => {
                 arguments.set_node("src", node).map_err(|e| {
                     VapourSynthError::PluginArgumentsError {
-                        plugin:   Self::PLUGIN_NAME.to_owned(),
+                        plugin: Self::PLUGIN_NAME.to_owned(),
                         argument: "src".to_owned(),
-                        message:  e.to_string(),
+                        message: e.to_string(),
                     }
                 })?;
             },
@@ -73,10 +71,10 @@ impl AssumeFPS {
                 numerator,
                 denominator,
             } => {
-                Self::argument_set_ints(&mut arguments, vec![
-                    ("numerator", Some(*numerator)),
-                    ("denominator", Some(*denominator)),
-                ])?;
+                Self::argument_set_ints(
+                    &mut arguments,
+                    vec![("numerator", Some(*numerator)), ("denominator", Some(*denominator))],
+                )?;
             },
         }
 

@@ -15,14 +15,9 @@ use crate::{
     core::input::{Input, InputError, OpenProgress, clip_info::ClipInfo},
     models::input::{Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource},
     vapoursynth::{
-        get_api,
-        get_clip_info,
-        get_core,
+        get_api, get_clip_info, get_core,
         plugins::{
-            bestsource::VideoSource,
-            dgdecodenv::DGSource,
-            ffms2::Source,
-            lsmash::LWLibavSource,
+            bestsource::VideoSource, dgdecodenv::DGSource, ffms2::Source, lsmash::LWLibavSource,
         },
         script_builder::{
             VapourSynthPluginScript,
@@ -75,25 +70,20 @@ pub fn validate_script(source: &VapourSynthScriptSource) -> Result<()> {
 #[inline]
 fn filters_of(data: &InputModel) -> Vec<VapourSynthFilter> {
     match data {
-        InputModel::VapourSynth {
-            filters, ..
-        }
-        | InputModel::VapourSynthScript {
-            filters, ..
-        } => filters.clone(),
-        InputModel::Video {
-            ..
-        } => Vec::new(),
+        InputModel::VapourSynth { filters, .. } | InputModel::VapourSynthScript { filters, .. } => {
+            filters.clone()
+        },
+        InputModel::Video { .. } => Vec::new(),
     }
 }
 
 /// How a VapourSynth import method calls its source plugin.
 pub(super) struct SourceCall {
-    namespace:                       &'static str,
-    function:                        &'static str,
-    cache_argument:                  &'static str,
-    track_argument:                  Option<&'static str>,
-    track:                           Option<u8>,
+    namespace: &'static str,
+    function: &'static str,
+    cache_argument: &'static str,
+    track_argument: Option<&'static str>,
+    track: Option<u8>,
     /// How many concurrent readers one instance serves without seeking back
     /// and forth between their positions.
     pub(super) readers_per_instance: usize,
@@ -103,45 +93,37 @@ impl SourceCall {
     /// Describes how `import_method` invokes its plugin.
     fn new(import_method: &VapourSynthImportMethod) -> Self {
         match import_method {
-            VapourSynthImportMethod::LSMASHWorks {
-                index,
-            } => Self {
-                namespace:            "lsmas",
-                function:             "LWLibavSource",
-                cache_argument:       "cachefile",
-                track_argument:       Some("stream_index"),
-                track:                *index,
+            VapourSynthImportMethod::LSMASHWorks { index } => Self {
+                namespace: "lsmas",
+                function: "LWLibavSource",
+                cache_argument: "cachefile",
+                track_argument: Some("stream_index"),
+                track: *index,
                 readers_per_instance: 1,
             },
-            VapourSynthImportMethod::FFMS2 {
-                index,
-            } => Self {
-                namespace:            "ffms2",
-                function:             "Source",
-                cache_argument:       "cachefile",
-                track_argument:       Some("track"),
-                track:                *index,
+            VapourSynthImportMethod::FFMS2 { index } => Self {
+                namespace: "ffms2",
+                function: "Source",
+                cache_argument: "cachefile",
+                track_argument: Some("track"),
+                track: *index,
                 readers_per_instance: 1,
             },
-            VapourSynthImportMethod::BestSource {
-                index,
-            } => Self {
-                namespace:            "bs",
-                function:             "VideoSource",
-                cache_argument:       "cachepath",
-                track_argument:       Some("track"),
-                track:                *index,
+            VapourSynthImportMethod::BestSource { index } => Self {
+                namespace: "bs",
+                function: "VideoSource",
+                cache_argument: "cachepath",
+                track_argument: Some("track"),
+                track: *index,
                 // BestSource keeps up to 4 decoders (`maxdecoders`)
                 readers_per_instance: 4,
             },
-            VapourSynthImportMethod::DGDecNV {
-                ..
-            } => Self {
-                namespace:            "dgdecodenv",
-                function:             "DGSource",
-                cache_argument:       "indexing_path",
-                track_argument:       None,
-                track:                None,
+            VapourSynthImportMethod::DGDecNV { .. } => Self {
+                namespace: "dgdecodenv",
+                function: "DGSource",
+                cache_argument: "indexing_path",
+                track_argument: None,
+                track: None,
                 readers_per_instance: 1,
             },
         }
@@ -203,15 +185,10 @@ fn compose_modifier(
 #[inline]
 fn has_script_only_filter(data: &InputModel) -> bool {
     match data {
-        InputModel::VapourSynth {
-            filters, ..
-        }
-        | InputModel::VapourSynthScript {
-            filters, ..
-        } => filters.iter().any(VapourSynthFilter::is_script_only),
-        InputModel::Video {
-            ..
-        } => false,
+        InputModel::VapourSynth { filters, .. } | InputModel::VapourSynthScript { filters, .. } => {
+            filters.iter().any(VapourSynthFilter::is_script_only)
+        },
+        InputModel::Video { .. } => false,
     }
 }
 
@@ -252,10 +229,7 @@ pub fn index_source(
         cache_path.as_deref(),
         dgindexnv_executable.as_deref(),
         Some(&mut |current, total| {
-            progress(OpenProgress::Indexing {
-                current,
-                total,
-            });
+            progress(OpenProgress::Indexing { current, total });
         }),
         cancelled,
     )?;
@@ -434,29 +408,29 @@ pub fn from_vapoursynth_scripted(data: &InputModel) -> Result<Input> {
         } => {
             let mut script = VapourSynthScript::default();
             let (source_imports, source_lines) = match import_method {
-                VapourSynthImportMethod::LSMASHWorks {
-                    ..
-                } => LWLibavSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?,
-                VapourSynthImportMethod::DGDecNV {
-                    ..
-                } => DGSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?,
-                VapourSynthImportMethod::FFMS2 {
-                    ..
-                } => Source::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?,
-                VapourSynthImportMethod::BestSource {
-                    ..
-                } => VideoSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?,
+                VapourSynthImportMethod::LSMASHWorks { .. } => {
+                    LWLibavSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?
+                },
+                VapourSynthImportMethod::DGDecNV { .. } => {
+                    DGSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?
+                },
+                VapourSynthImportMethod::FFMS2 { .. } => {
+                    Source::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?
+                },
+                VapourSynthImportMethod::BestSource { .. } => {
+                    VideoSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?
+                },
             };
             add_source_and_filters(&mut script, source_imports, source_lines, filters.iter())?;
             script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
 
             from_vapoursynth(
                 &InputModel::VapourSynthScript {
-                    source:              VapourSynthScriptSource::Text(script.to_string()),
-                    variables:           HashMap::new(),
-                    index:               SCRIPT_OUTPUT_INDEX,
+                    source: VapourSynthScriptSource::Text(script.to_string()),
+                    variables: HashMap::new(),
+                    index: SCRIPT_OUTPUT_INDEX,
                     // Already baked into the script.
-                    filters:             Vec::new(),
+                    filters: Vec::new(),
                     // The generated script decodes with the same source plugin
                     // as the input it wraps, so it keeps whatever that input
                     // was allowed to do.
@@ -467,9 +441,7 @@ pub fn from_vapoursynth_scripted(data: &InputModel) -> Result<Input> {
         },
         // A user script's output node has no name this code can reference, so a
         // script-only filter cannot be appended to it.
-        InputModel::VapourSynthScript {
-            filters, ..
-        } => {
+        InputModel::VapourSynthScript { filters, .. } => {
             if let Some(filter) = filters.iter().find(|f| f.is_script_only()) {
                 bail!(
                     "{filter} is script-only and cannot be applied to a VapourSynth script input; \
@@ -478,9 +450,7 @@ pub fn from_vapoursynth_scripted(data: &InputModel) -> Result<Input> {
             }
             from_vapoursynth(data, None)
         },
-        InputModel::Video {
-            ..
-        } => bail!("scripted VapourSynth input expected"),
+        InputModel::Video { .. } => bail!("scripted VapourSynth input expected"),
     }
 }
 
@@ -514,10 +484,10 @@ pub fn as_vapoursynth_script(input: &mut Input) -> Result<Option<Input>> {
     script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
 
     let script_input = InputModel::VapourSynthScript {
-        source:              VapourSynthScriptSource::Text(script.to_string()),
-        variables:           HashMap::new(),
-        index:               SCRIPT_OUTPUT_INDEX,
-        filters:             Vec::new(),
+        source: VapourSynthScriptSource::Text(script.to_string()),
+        variables: HashMap::new(),
+        index: SCRIPT_OUTPUT_INDEX,
+        filters: Vec::new(),
         // This wraps a native input, whose FFMS2 source is known to handle
         // several readers at once.
         stream_concurrently: true,
@@ -691,14 +661,14 @@ mod tests {
     fn script_input_without_vapoursynth_errors_instead_of_panicking() {
         let available = get_api().is_ok();
         let data = InputModel::VapourSynthScript {
-            source:              VapourSynthScriptSource::Text(
+            source: VapourSynthScriptSource::Text(
                 "from vapoursynth import core
 core.std.BlankClip().set_output()"
                     .to_owned(),
             ),
-            variables:           HashMap::new(),
-            index:               0,
-            filters:             Vec::new(),
+            variables: HashMap::new(),
+            index: 0,
+            filters: Vec::new(),
             stream_concurrently: false,
         };
 

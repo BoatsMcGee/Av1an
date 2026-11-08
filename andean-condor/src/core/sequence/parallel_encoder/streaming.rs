@@ -208,7 +208,7 @@ impl ParallelEncoder {
         }
         if let Some(failed) = ordered.iter().flatten().find(|r| !r.result.status.success()) {
             let err = ParallelEncoderError::EncoderFailed {
-                scene:  failed.scene,
+                scene: failed.scene,
                 result: failed.result.clone(),
             };
             error!("{}", err);

@@ -14,18 +14,18 @@ pub struct ParallelEncoderConfig
 where
     Self: SequenceConfigHandler,
 {
-    pub workers:          Option<u8>,
+    pub workers: Option<u8>,
     pub scenes_directory: PathBuf,
-    pub input:            Option<InputModel>,
+    pub input: Option<InputModel>,
 }
 
 impl Default for ParallelEncoderConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            workers:          None,
+            workers: None,
             scenes_directory: PathBuf::new(),
-            input:            None,
+            input: None,
         }
     }
 }
@@ -40,8 +40,7 @@ impl ParallelEncoderConfig {
     }
 }
 
-impl SequenceConfigHandler for ParallelEncoderConfig {
-}
+impl SequenceConfigHandler for ParallelEncoderConfig {}
 
 pub trait ParallelEncoderConfigHandler
 where
@@ -54,10 +53,10 @@ where
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ParallelEncoderData {
     /// Must be milliseconds since UNIX Epoch
-    pub started_on:   Option<u128>,
+    pub started_on: Option<u128>,
     /// Must be milliseconds since UNIX Epoch
     pub completed_on: Option<u128>,
-    pub bytes:        Option<u64>,
+    pub bytes: Option<u64>,
 }
 
 pub trait ParallelEncoderDataHandler

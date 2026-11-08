@@ -7,13 +7,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         zoomvtools::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -25,67 +23,67 @@ pub struct Analyse {
     /// Only used for script generation
     pub super_clip_name: Option<NodeVariableName>,
     /// Block size (horizontal). Default 8.
-    pub blksize:         Option<u32>,
+    pub blksize: Option<u32>,
     /// Block size (vertical). Defaults to blksize.
-    pub blksizev:        Option<u32>,
+    pub blksizev: Option<u32>,
     /// Number of hierarchical levels to use. 0 = all. Default 0.
-    pub levels:          Option<u32>,
+    pub levels: Option<u32>,
     /// Search algorithm: 0=log/diamond, 1=exhaustive, 2=hex, 3=UMH, 4=horiz,
     /// 5=vert. Default 0.
-    pub search:          Option<u32>,
+    pub search: Option<u32>,
     /// Search radius/step for chosen search. Default 2.
-    pub searchparam:     Option<u32>,
+    pub searchparam: Option<u32>,
     /// Refinement search radius at finest level.
-    pub pelsearch:       Option<u32>,
+    pub pelsearch: Option<u32>,
     /// If true, estimate backward vectors (isb=1). Default False.
-    pub isb:             Option<u32>,
+    pub isb: Option<u32>,
     /// Weight of motion-coherence penalty. Default 250.
-    pub lambda:          Option<u32>,
+    pub lambda: Option<u32>,
     /// Include chroma planes in SAD/SATD metric. Default True.
-    pub chroma:          Option<bool>,
+    pub chroma: Option<bool>,
     /// Temporal distance and direction (signed). Positive=backward,
     /// negative=forward. Default 1.
-    pub delta:           Option<i32>,
+    pub delta: Option<i32>,
     /// Use pre-defined settings for typical TV footage. Default True.
-    pub truemotion:      Option<bool>,
+    pub truemotion: Option<bool>,
     /// SAD "knee" that throttles mvlambda per block. Default 400.
-    pub lsad:            Option<u32>,
+    pub lsad: Option<u32>,
     /// How mvlambda scales across pyramid levels: 0=const, 1=linear,
     /// 2=quadratic. Default 1.
-    pub plevel:          Option<u32>,
+    pub plevel: Option<u32>,
     /// Estimate global (pan) motion vector. Default True.
-    pub global:          Option<bool>,
+    pub global: Option<bool>,
     /// Extra penalty for accepting a freshly searched vector. Default 25.
-    pub pnew:            Option<u32>,
+    pub pnew: Option<u32>,
     /// Extra penalty for accepting the zero vector. Defaults to pnew.
-    pub pzero:           Option<u32>,
+    pub pzero: Option<u32>,
     /// Penalty for the global-motion predictor. Default 0.
-    pub pglobal:         Option<u32>,
+    pub pglobal: Option<u32>,
     /// Block overlap in pixels. Default 4.
-    pub overlap:         Option<u32>,
+    pub overlap: Option<u32>,
     /// Block overlap (vertical). Defaults to overlap.
-    pub overlapv:        Option<u32>,
+    pub overlapv: Option<u32>,
     /// Divide extra searches among levels. Default 0.
-    pub divide:          Option<u32>,
+    pub divide: Option<u32>,
     /// SAD above which a block gets a wider search. Default 10000.
-    pub badsad:          Option<u32>,
+    pub badsad: Option<u32>,
     /// Radius of the wider search. Default 24.
-    pub badrange:        Option<u32>,
+    pub badrange: Option<u32>,
     /// CPU optimizations. Default 4.
-    pub opt:             Option<u32>,
+    pub opt: Option<u32>,
     /// Scan rows alternately for better predictor reuse. Default True.
-    pub meander:         Option<bool>,
+    pub meander: Option<bool>,
     /// Try multiple motion-vector candidates per block. Default False.
-    pub trymany:         Option<bool>,
+    pub trymany: Option<bool>,
     /// Treat the clip as field-based. Default False.
-    pub fields:          Option<bool>,
+    pub fields: Option<bool>,
     /// Top field first. Default False.
-    pub tff:             Option<bool>,
+    pub tff: Option<bool>,
     /// Search algorithm for the coarse levels. Default 0.
-    pub search_coarse:   Option<u32>,
+    pub search_coarse: Option<u32>,
     /// DCT transform to use: 0=no transform (SAD), 1=hadamard, 2=rows,
     /// 3=columns, 4=full. Default 0.
-    pub dct:             Option<u32>,
+    pub dct: Option<u32>,
 }
 
 impl Plugin for Analyse {
@@ -144,41 +142,44 @@ impl Analyse {
         let mut arguments = Self::arguments()?;
         arguments.set_node("super_clip", super_clip).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "super_clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("blksize", self.blksize),
-            ("blksizev", self.blksizev),
-            ("levels", self.levels),
-            ("search", self.search),
-            ("searchparam", self.searchparam),
-            ("pelsearch", self.pelsearch),
-            ("isb", self.isb),
-            ("lambda", self.lambda),
-            ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
-            ("truemotion", self.truemotion.map(|b| if b { 1 } else { 0 })),
-            ("lsad", self.lsad),
-            ("plevel", self.plevel),
-            ("global", self.global.map(|b| if b { 1 } else { 0 })),
-            ("pnew", self.pnew),
-            ("pzero", self.pzero),
-            ("pglobal", self.pglobal),
-            ("overlap", self.overlap),
-            ("overlapv", self.overlapv),
-            ("divide", self.divide),
-            ("badsad", self.badsad),
-            ("badrange", self.badrange),
-            ("opt", self.opt),
-            ("meander", self.meander.map(|b| if b { 1 } else { 0 })),
-            ("trymany", self.trymany.map(|b| if b { 1 } else { 0 })),
-            ("fields", self.fields.map(|b| if b { 1 } else { 0 })),
-            ("tff", self.tff.map(|b| if b { 1 } else { 0 })),
-            ("search_coarse", self.search_coarse),
-            ("dct", self.dct),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("blksize", self.blksize),
+                ("blksizev", self.blksizev),
+                ("levels", self.levels),
+                ("search", self.search),
+                ("searchparam", self.searchparam),
+                ("pelsearch", self.pelsearch),
+                ("isb", self.isb),
+                ("lambda", self.lambda),
+                ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
+                ("truemotion", self.truemotion.map(|b| if b { 1 } else { 0 })),
+                ("lsad", self.lsad),
+                ("plevel", self.plevel),
+                ("global", self.global.map(|b| if b { 1 } else { 0 })),
+                ("pnew", self.pnew),
+                ("pzero", self.pzero),
+                ("pglobal", self.pglobal),
+                ("overlap", self.overlap),
+                ("overlapv", self.overlapv),
+                ("divide", self.divide),
+                ("badsad", self.badsad),
+                ("badrange", self.badrange),
+                ("opt", self.opt),
+                ("meander", self.meander.map(|b| if b { 1 } else { 0 })),
+                ("trymany", self.trymany.map(|b| if b { 1 } else { 0 })),
+                ("fields", self.fields.map(|b| if b { 1 } else { 0 })),
+                ("tff", self.tff.map(|b| if b { 1 } else { 0 })),
+                ("search_coarse", self.search_coarse),
+                ("dct", self.dct),
+            ],
+        )?;
         // delta is signed (negative = forward, positive = backward)
         Self::argument_set_int(&mut arguments, "delta", self.delta.map(|d| d as i64))?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;

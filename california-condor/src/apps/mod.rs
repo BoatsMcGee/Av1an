@@ -1,8 +1,7 @@
 use std::{
     io::{self, BufWriter, IsTerminal, Write, stderr, stdout},
     sync::{
-        Arc,
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
     },
@@ -13,8 +12,7 @@ use std::{
 use andean_condor::core::sequence::SequenceStatus;
 use anyhow::Result;
 use ratatui::{
-    Frame,
-    Terminal,
+    Frame, Terminal,
     crossterm::{
         self,
         event::{self, Event as TermEvent, KeyCode, KeyModifiers},
@@ -162,8 +160,7 @@ pub trait TuiApp: Send + Sync + 'static {
 
     /// Optional hook invoked once after the loop terminates (both TTY and
     /// headless paths). Used for post-run reports. Defaults to a no-op.
-    fn after_loop(&mut self) {
-    }
+    fn after_loop(&mut self) {}
 
     fn init(&mut self) -> Result<StdOutOrErrTerminal> {
         let use_stdout = stdout().is_terminal();

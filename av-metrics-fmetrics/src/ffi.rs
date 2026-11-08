@@ -48,11 +48,9 @@ impl FmetricsWorkspace {
 // never dereferences it -- it only passes it back. Concurrent *use* is what
 // would be unsafe, and the caller prevents it by handing each workspace to one
 // thread at a time.
-unsafe impl Send for FmetricsWorkspace {
-}
+unsafe impl Send for FmetricsWorkspace {}
 // SAFETY: as above.
-unsafe impl Sync for FmetricsWorkspace {
-}
+unsafe impl Sync for FmetricsWorkspace {}
 
 /// An opaque CVVDP context.
 ///
@@ -73,12 +71,10 @@ impl FmetricsCvvdpCtx {
 
 // SAFETY: as for `FmetricsWorkspace`. Moving a context moves exclusive
 // ownership of it, so no second thread observes the same accumulator.
-unsafe impl Send for FmetricsCvvdpCtx {
-}
+unsafe impl Send for FmetricsCvvdpCtx {}
 // SAFETY: as above. Nothing shares a context; `submit_pair_temporal` takes
 // `&mut`.
-unsafe impl Sync for FmetricsCvvdpCtx {
-}
+unsafe impl Sync for FmetricsCvvdpCtx {}
 
 /// Result code returned by every fallible fmetrics entry point.
 #[repr(C)]
@@ -165,28 +161,26 @@ pub enum FmetricsColorspace {
 pub struct FmetricsImg {
     /// Pointer to the first sample. Interleaved, so three consecutive samples
     /// are R, G and B.
-    pub data:       *const c_void,
+    pub data: *const c_void,
     /// Width in pixels, not bytes.
-    pub width:      c_uint,
+    pub width: c_uint,
     /// Height in pixels.
-    pub height:     c_uint,
+    pub height: c_uint,
     /// Bytes from one row to the next.
-    pub stride:     c_uint,
+    pub stride: c_uint,
     /// Sample format.
-    pub format:     FmetricsPixFmt,
+    pub format: FmetricsPixFmt,
     /// Colorspace the samples are in.
     pub colorspace: FmetricsColorspace,
     /// Whether the samples carry HDR values.
-    pub hdr:        bool,
+    pub hdr: bool,
 }
 
 // SAFETY: a read-only descriptor of a buffer the library only reads, and that
 // buffer outlives any call using it -- sound to share and to move.
-unsafe impl Sync for FmetricsImg {
-}
+unsafe impl Sync for FmetricsImg {}
 // SAFETY: as above.
-unsafe impl Send for FmetricsImg {
-}
+unsafe impl Send for FmetricsImg {}
 
 impl FmetricsImg {
     /// An 8-bit sRGB image.
@@ -244,7 +238,7 @@ pub struct FmetricsButteraugliOptions {
     /// Target intensity, in unspecified units.
     pub intensity_target: f32,
     /// The p-norm exponent.
-    pub pnorm:            c_int,
+    pub pnorm: c_int,
 }
 
 impl Default for FmetricsButteraugliOptions {
@@ -259,7 +253,7 @@ impl Default for FmetricsButteraugliOptions {
     fn default() -> Self {
         Self {
             intensity_target: 203.0,
-            pnorm:            i32::MAX,
+            pnorm: i32::MAX,
         }
     }
 }
@@ -335,23 +329,23 @@ pub enum FmetricsCvvdpDisplayModel {
 #[derive(Debug, Clone, Copy)]
 pub struct FmetricsCvvdpDisplayParams {
     /// Panel resolution width.
-    pub resolution_width:        c_int,
+    pub resolution_width: c_int,
     /// Panel resolution height.
-    pub resolution_height:       c_int,
+    pub resolution_height: c_int,
     /// Viewing distance in metres.
     pub viewing_distance_meters: f32,
     /// Diagonal size in inches.
-    pub diagonal_size_inches:    f32,
+    pub diagonal_size_inches: f32,
     /// Peak luminance.
-    pub max_luminance:           f32,
+    pub max_luminance: f32,
     /// Contrast ratio.
-    pub contrast:                f32,
+    pub contrast: f32,
     /// Ambient light.
-    pub ambient_light:           f32,
+    pub ambient_light: f32,
     /// Reflectivity.
-    pub reflectivity:            f32,
+    pub reflectivity: f32,
     /// Whether the display is HDR.
-    pub is_hdr:                  bool,
+    pub is_hdr: bool,
 }
 
 /// A CVVDP score.
@@ -359,7 +353,7 @@ pub struct FmetricsCvvdpDisplayParams {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FmetricsCvvdpResult {
     /// Just-objective-difference score, on a JOD-like scale.
-    pub jod:     f64,
+    pub jod: f64,
     /// A secondary quality measure on a different scale.
     ///
     /// This is not interchangeable with [`Self::jod`]; the two are reported
@@ -491,39 +485,39 @@ pub type CvvdpVersionStr = unsafe extern "C" fn() -> *const c_char;
 #[derive(Clone, Copy)]
 pub struct FmetricsApi {
     /// Reports the library version.
-    pub version_str:              VersionStr,
+    pub version_str: VersionStr,
     /// Expands an error code into its message.
-    pub error_str:                ErrorStr,
+    pub error_str: ErrorStr,
     /// Allocates a reusable workspace.
-    pub workspace_create:         WorkspaceCreate,
+    pub workspace_create: WorkspaceCreate,
     /// Releases a workspace.
-    pub workspace_destroy:        WorkspaceDestroy,
+    pub workspace_destroy: WorkspaceDestroy,
     /// Scores one pair with IW-SSIM.
-    pub iwssim_cmp:               IwssimCmp,
+    pub iwssim_cmp: IwssimCmp,
     /// Scores one pair with MS-SSIM.
-    pub msssim_cmp:               MsssimCmp,
+    pub msssim_cmp: MsssimCmp,
     /// Scores one pair with SSIMULACRA2.
-    pub ssimu2_cmp:               Ssimu2Cmp,
+    pub ssimu2_cmp: Ssimu2Cmp,
     /// Scores one pair with SSIMULACRA2, writing an error map.
-    pub ssimu2_cmp_map:           Ssimu2CmpMap,
+    pub ssimu2_cmp_map: Ssimu2CmpMap,
     /// Scores one pair with Butteraugli.
-    pub butteraugli_cmp:          ButteraugliCmp,
+    pub butteraugli_cmp: ButteraugliCmp,
     /// Scores one pair with Butteraugli, writing an error map.
-    pub butteraugli_cmp_map:      ButteraugliCmpMap,
+    pub butteraugli_cmp_map: ButteraugliCmpMap,
     /// Creates a stateful CVVDP context.
-    pub cvvdp_create:             CvvdpCreate,
+    pub cvvdp_create: CvvdpCreate,
     /// Destroys a CVVDP context.
-    pub cvvdp_destroy:            CvvdpDestroy,
+    pub cvvdp_destroy: CvvdpDestroy,
     /// Scores one frame pair through a CVVDP context.
-    pub cvvdp_process_frame:      CvvdpProcessFrame,
+    pub cvvdp_process_frame: CvvdpProcessFrame,
     /// Clears a CVVDP context's history.
-    pub cvvdp_reset:              CvvdpReset,
+    pub cvvdp_reset: CvvdpReset,
     /// Scores one pair with CVVDP in a single call.
-    pub cvvdp_cmp:                CvvdpCmp,
+    pub cvvdp_cmp: CvvdpCmp,
     /// Reads a display model's parameters.
     pub cvvdp_get_display_params: CvvdpGetDisplayParams,
     /// Reports the CVVDP implementation version.
-    pub cvvdp_version_str:        CvvdpVersionStr,
+    pub cvvdp_version_str: CvvdpVersionStr,
 }
 
 impl FmetricsApi {
@@ -807,38 +801,26 @@ fn resolve() -> Result<FmetricsApi, std::io::Error> {
                 // error rather than a null pointer.
                 let api: Result<FmetricsApi, std::io::Error> = unsafe {
                     Ok(FmetricsApi {
-                        version_str:              symbol(&library, b"fmetrics_version_str\0")?,
-                        error_str:                symbol(&library, b"fmetrics_error_str\0")?,
-                        workspace_create:         symbol(&library, b"fmetrics_workspace_create\0")?,
-                        workspace_destroy:        symbol(
-                            &library,
-                            b"fmetrics_workspace_destroy\0",
-                        )?,
-                        iwssim_cmp:               symbol(&library, b"fmetrics_iwssim_cmp\0")?,
-                        msssim_cmp:               symbol(&library, b"fmetrics_msssim_cmp\0")?,
-                        ssimu2_cmp:               symbol(&library, b"fmetrics_ssimu2_cmp\0")?,
-                        ssimu2_cmp_map:           symbol(&library, b"fmetrics_ssimu2_cmp_map\0")?,
-                        butteraugli_cmp:          symbol(&library, b"fmetrics_butteraugli_cmp\0")?,
-                        butteraugli_cmp_map:      symbol(
-                            &library,
-                            b"fmetrics_butteraugli_cmp_map\0",
-                        )?,
-                        cvvdp_create:             symbol(&library, b"fmetrics_cvvdp_create\0")?,
-                        cvvdp_destroy:            symbol(&library, b"fmetrics_cvvdp_destroy\0")?,
-                        cvvdp_process_frame:      symbol(
-                            &library,
-                            b"fmetrics_cvvdp_process_frame\0",
-                        )?,
-                        cvvdp_reset:              symbol(&library, b"fmetrics_cvvdp_reset\0")?,
-                        cvvdp_cmp:                symbol(&library, b"fmetrics_cvvdp_cmp\0")?,
+                        version_str: symbol(&library, b"fmetrics_version_str\0")?,
+                        error_str: symbol(&library, b"fmetrics_error_str\0")?,
+                        workspace_create: symbol(&library, b"fmetrics_workspace_create\0")?,
+                        workspace_destroy: symbol(&library, b"fmetrics_workspace_destroy\0")?,
+                        iwssim_cmp: symbol(&library, b"fmetrics_iwssim_cmp\0")?,
+                        msssim_cmp: symbol(&library, b"fmetrics_msssim_cmp\0")?,
+                        ssimu2_cmp: symbol(&library, b"fmetrics_ssimu2_cmp\0")?,
+                        ssimu2_cmp_map: symbol(&library, b"fmetrics_ssimu2_cmp_map\0")?,
+                        butteraugli_cmp: symbol(&library, b"fmetrics_butteraugli_cmp\0")?,
+                        butteraugli_cmp_map: symbol(&library, b"fmetrics_butteraugli_cmp_map\0")?,
+                        cvvdp_create: symbol(&library, b"fmetrics_cvvdp_create\0")?,
+                        cvvdp_destroy: symbol(&library, b"fmetrics_cvvdp_destroy\0")?,
+                        cvvdp_process_frame: symbol(&library, b"fmetrics_cvvdp_process_frame\0")?,
+                        cvvdp_reset: symbol(&library, b"fmetrics_cvvdp_reset\0")?,
+                        cvvdp_cmp: symbol(&library, b"fmetrics_cvvdp_cmp\0")?,
                         cvvdp_get_display_params: symbol(
                             &library,
                             b"fmetrics_cvvdp_get_display_params\0",
                         )?,
-                        cvvdp_version_str:        symbol(
-                            &library,
-                            b"fmetrics_cvvdp_version_str\0",
-                        )?,
+                        cvvdp_version_str: symbol(&library, b"fmetrics_cvvdp_version_str\0")?,
                     })
                 };
 

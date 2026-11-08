@@ -28,26 +28,26 @@ use crate::{
 #[derive(Clone)]
 pub struct SceneReportDetails {
     pub quantizer: Option<f64>,
-    pub speed:     Option<String>,
+    pub speed: Option<String>,
 }
 
 #[derive(Clone)]
 pub struct QualityCheckState {
-    pub scene_scores:    BTreeMap<u64, f64>,
-    pub frame_scores:    Vec<f64>,
-    pub scene_details:   BTreeMap<u64, SceneReportDetails>,
+    pub scene_scores: BTreeMap<u64, f64>,
+    pub frame_scores: Vec<f64>,
+    pub scene_details: BTreeMap<u64, SceneReportDetails>,
     pub frames_compared: u64,
-    pub total_frames:    u64,
+    pub total_frames: u64,
 }
 
 pub struct QualityCheckApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
-    pub clip_info:                  ClipInfo,
-    pub metric:                     QualityMetric,
-    pub pass_started:               std::time::Instant,
-    attempted_cancel:               bool,
-    shared_progress:                SharedProgress<QualityCheckState>,
-    cached_state:                   QualityCheckState,
+    pub clip_info: ClipInfo,
+    pub metric: QualityMetric,
+    pub pass_started: std::time::Instant,
+    attempted_cancel: bool,
+    shared_progress: SharedProgress<QualityCheckState>,
+    cached_state: QualityCheckState,
 }
 
 impl TuiApp for QualityCheckApp {
@@ -85,16 +85,12 @@ impl TuiApp for QualityCheckApp {
         match status {
             SequenceStatus::Whole(status) => match status {
                 Status::Processing {
-                    completion:
-                        SequenceCompletion::Frames {
-                            completed,
-                            total,
-                        },
+                    completion: SequenceCompletion::Frames { completed, total },
                     ..
                 } if !std::io::stdout().is_terminal() => {
                     let event = QualityCheckConsoleEvent::CompareProgress {
                         current_frame: completed,
-                        total_frames:  total,
+                        total_frames: total,
                     };
                     println!(
                         "[Quality Check][Compare] {}",
@@ -104,10 +100,7 @@ impl TuiApp for QualityCheckApp {
                 },
                 _ => false,
             },
-            SequenceStatus::Subprocess {
-                parent,
-                child,
-            } => match (parent, child) {
+            SequenceStatus::Subprocess { parent, child } => match (parent, child) {
                 (
                     Status::Processing {
                         completion:
@@ -120,21 +113,14 @@ impl TuiApp for QualityCheckApp {
                     },
                     Status::Processing {
                         id,
-                        completion:
-                            SequenceCompletion::FrameScore {
-                                frame,
-                                score,
-                            },
+                        completion: SequenceCompletion::FrameScore { frame, score },
                     },
                 ) if id == "Quality" => {
                     state.frames_compared = completed as u64;
                     state.total_frames = total as u64;
                     state.frame_scores.push(score);
                     if !std::io::stdout().is_terminal() {
-                        let event = QualityCheckConsoleEvent::FrameScore {
-                            frame,
-                            score,
-                        };
+                        let event = QualityCheckConsoleEvent::FrameScore { frame, score };
                         println!(
                             "[Quality Check][Frame] {}",
                             serde_json::to_string(&event).unwrap()
@@ -154,12 +140,7 @@ impl TuiApp for QualityCheckApp {
                     },
                     Status::Processing {
                         id,
-                        completion:
-                            SequenceCompletion::SceneQuality {
-                                index,
-                                score,
-                                ..
-                            },
+                        completion: SequenceCompletion::SceneQuality { index, score, .. },
                     },
                 ) if id == "Quality" => {
                     state.frames_compared = completed as u64;
@@ -251,25 +232,25 @@ impl TuiApp for QualityCheckApp {
         frame.render_widget(chart, layout[1]);
 
         let progress_bar = ProgressBar {
-            color:               main,
-            processing_title:    if self.attempted_cancel {
+            color: main,
+            processing_title: if self.attempted_cancel {
                 "Shutting down...".to_owned()
             } else {
                 "Comparing".to_owned()
             },
-            completed_title:     if self.attempted_cancel {
+            completed_title: if self.attempted_cancel {
                 "Quality Check Aborted".to_owned()
             } else {
                 "Quality Check Completed".to_owned()
             },
-            top_right_title:     String::new(),
+            top_right_title: String::new(),
             bottom_center_title: String::new(),
-            unit_per_second:     "FPS".to_owned(),
-            unit:                "Frame".to_owned(),
-            initial_completed:   0,
-            completed:           state.frames_compared,
-            total:               state.total_frames,
-            show_label:          true,
+            unit_per_second: "FPS".to_owned(),
+            unit: "Frame".to_owned(),
+            initial_completed: 0,
+            completed: state.frames_compared,
+            total: state.total_frames,
+            show_label: true,
         };
         let progress_bar = progress_bar.generate(Some(self.pass_started));
         frame.render_widget(progress_bar, layout[2]);
@@ -307,10 +288,13 @@ impl QualityCheckApp {
             .iter()
             .enumerate()
             .map(|(scene_index, scene)| {
-                (scene_index as u64, SceneReportDetails {
-                    quantizer: scene.encoder.quantizer(),
-                    speed:     scene.encoder.speed(),
-                })
+                (
+                    scene_index as u64,
+                    SceneReportDetails {
+                        quantizer: scene.encoder.quantizer(),
+                        speed: scene.encoder.speed(),
+                    },
+                )
             })
             .collect();
         let total_frames = scores.values().fold(0, |acc, scores| acc + scores.len() as u64);
@@ -465,13 +449,13 @@ impl QualityCheckApp {
 }
 
 struct ReportStats {
-    count:             usize,
-    average:           f64,
-    minimum:           f64,
-    maximum:           f64,
+    count: usize,
+    average: f64,
+    minimum: f64,
+    maximum: f64,
     /// 1% worst
-    percentile:        f64,
-    std_dev:           f64,
+    percentile: f64,
+    std_dev: f64,
     outside_two_sigma: usize,
 }
 
@@ -487,6 +471,6 @@ pub enum QualityCheckConsoleEvent {
     },
     CompareProgress {
         current_frame: u64,
-        total_frames:  u64,
+        total_frames: u64,
     },
 }

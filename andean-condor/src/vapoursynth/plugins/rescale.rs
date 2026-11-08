@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::vapoursynth::script_builder::{
-    NodeVariableName,
-    VapourSynthPluginScript,
+    NodeVariableName, VapourSynthPluginScript,
     script::{Imports, Line, ModuleAlias, ModuleName},
 };
 
@@ -15,21 +14,21 @@ use crate::vapoursynth::script_builder::{
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RescaleBuilder {
     /// Kernel to descale with
-    pub descale_kernel:   VSJETKernel,
+    pub descale_kernel: VSJETKernel,
     /// Height to descale to
-    pub height:           f64,
+    pub height: f64,
     /// Width to descale to. Please be absolutely certain of what you're doing
     /// if you're using `get_w` for this.
-    pub width:            f64,
+    pub width: f64,
     /// Padded height used in a "fractional" descale
-    pub base_height:      Option<u32>,
+    pub base_height: Option<u32>,
     /// Padded width used in a "fractional" descale
     /// Both of these are technically optional but highly recommended to have
     /// set for float width/height.
-    pub base_width:       Option<u32>,
+    pub base_width: Option<u32>,
     /// Whether to descale only height, only width, or both. "h" or "w"
     /// respectively for the former two.
-    pub mode:             Option<DescaleMode>,
+    pub mode: Option<DescaleMode>,
     /// Downscales the clip back the size of the original input clip and applies
     /// the masks, if any. Defaults to Linear Hermite.
     pub downscale_kernel: VSJETKernel,
@@ -41,18 +40,18 @@ impl Default for RescaleBuilder {
     #[inline]
     fn default() -> Self {
         Self {
-            width:            1280.0,
-            height:           720.0,
-            base_width:       None,
-            base_height:      None,
-            descale_kernel:   VSJETKernel::Bilinear {
+            width: 1280.0,
+            height: 720.0,
+            base_width: None,
+            base_height: None,
+            descale_kernel: VSJETKernel::Bilinear {
                 border_handling: BorderHandling::default(),
-                linear:          false,
+                linear: false,
             },
-            mode:             Some(DescaleMode::default()),
-            doubler:          Doubler::ArtCNN(ArtCNNModel::R8F64),
+            mode: Some(DescaleMode::default()),
+            doubler: Doubler::ArtCNN(ArtCNNModel::R8F64),
             downscale_kernel: VSJETKernel::Hermite {
-                linear:          true,
+                linear: true,
                 border_handling: BorderHandling::Mirror,
             },
         }
@@ -450,128 +449,128 @@ pub enum VSJETKernel {
     /// Bicubic resizer. (b=0, c=0.5).
     #[strum(serialize = "Bicubic")]
     Bicubic {
-        b:               f64,
-        c:               f64,
-        linear:          bool,
+        b: f64,
+        c: f64,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// BSpline resizer (b=1, c=0).
     #[strum(serialize = "BSpline")]
     BSpline {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Hermite resizer (b=0, c=0).
     #[strum(serialize = "Hermite")]
     Hermite {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Mitchell resizer (b=1/3, c=1/3).
     #[strum(serialize = "Mitchell")]
     Mitchell {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Catrom resizer (b=0, c=0.5).
     #[strum(serialize = "Catrom")]
     Catrom {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// FFmpeg's swscale default resizer (b=0, c=0.6).
     #[strum(serialize = "FFmpegBicubic")]
     FFmpegBicubic {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Adobe's "Bicubic" interpolation preset resizer (b=0, c=0.75).
     #[strum(serialize = "AdobeBicubic")]
     AdobeBicubic {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Adobe's "Bicubic Sharper" interpolation preset resizer (b=0, c=1,
     /// blur=1.05).
     #[strum(serialize = "AdobeBicubicSharper")]
     AdobeBicubicSharper {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Adobe's "Bicubic Smoother" interpolation preset resizer (b=0, c=0.625,
     /// blur=1.15).
     #[strum(serialize = "AdobeBicubicSmoother")]
     AdobeBicubicSmoother {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// BicubicSharp resizer (b=0, c=1).
     #[strum(serialize = "BicubicSharp")]
     BicubicSharp {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// RobidouxSoft resizer (b=0.67962, c=0.16019).
     #[strum(serialize = "RobidouxSoft")]
     RobidouxSoft {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Robidoux resizer (b=0.37822, c=0.31089).
     #[strum(serialize = "Robidoux")]
     Robidoux {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// RobidouxSharp resizer (b=0.26201, c=0.36899).
     #[strum(serialize = "RobidouxSharp")]
     RobidouxSharp {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Bicubic resizer that follows the rule of `b + 2c = ...`
     #[strum(serialize = "BicubicAuto")]
     BicubicAuto {
-        b:               Option<f64>,
-        c:               Option<f64>,
-        linear:          bool,
+        b: Option<f64>,
+        c: Option<f64>,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Spline16 resizer.
     #[strum(serialize = "Spline16")]
     Spline16 {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Spline36 resizer.
     #[strum(serialize = "Spline36")]
     Spline36 {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Spline64 resizer.
     #[strum(serialize = "Spline64")]
     Spline64 {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Bilinear resizer.
     #[strum(serialize = "Bilinear")]
     Bilinear {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Lanczos resizer. (taps=3)
     #[strum(serialize = "Lanczos")]
     Lanczos {
-        taps:            Option<u32>,
-        linear:          bool,
+        taps: Option<u32>,
+        linear: bool,
         border_handling: BorderHandling,
     },
     /// Point resizer.
     #[strum(serialize = "Point")]
     Point {
-        linear:          bool,
+        linear: bool,
         border_handling: BorderHandling,
     },
 }
@@ -580,10 +579,10 @@ impl Default for VSJETKernel {
     #[inline]
     fn default() -> Self {
         Self::Bicubic {
-            b:               0.0,
-            c:               0.5,
+            b: 0.0,
+            c: 0.5,
             border_handling: BorderHandling::Mirror,
-            linear:          false,
+            linear: false,
         }
     }
 }
@@ -766,7 +765,7 @@ mod tests {
     #[test]
     fn default_rescale() {
         let kernel = VSJETKernel::Bilinear {
-            linear:          false,
+            linear: false,
             border_handling: BorderHandling::Mirror,
         };
 

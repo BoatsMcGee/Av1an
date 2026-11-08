@@ -4,11 +4,7 @@ use andean_condor::{
     core::{
         input::clip_info::ClipInfo,
         sequence::{
-            SequenceCompletion,
-            SequenceDetails,
-            SequenceStatus,
-            Status,
-            benchmarker::Benchmarker,
+            SequenceCompletion, SequenceDetails, SequenceStatus, Status, benchmarker::Benchmarker,
         },
     },
     models::encoder::Encoder,
@@ -32,11 +28,11 @@ pub struct BenchmarkerState {
 
 pub struct BenchmarkerApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
-    pub encoder:                    Encoder,
-    pub clip_info:                  ClipInfo,
-    attempted_cancel:               bool,
-    shared_progress:                SharedProgress<BenchmarkerState>,
-    cached_state:                   BenchmarkerState,
+    pub encoder: Encoder,
+    pub clip_info: ClipInfo,
+    attempted_cancel: bool,
+    shared_progress: SharedProgress<BenchmarkerState>,
+    cached_state: BenchmarkerState,
 }
 
 impl TuiApp for BenchmarkerApp {
@@ -74,9 +70,7 @@ impl TuiApp for BenchmarkerApp {
         const DETAILS: SequenceDetails = Benchmarker::DETAILS;
         match status {
             SequenceStatus::Whole(status) => match status {
-                Status::Completed {
-                    id,
-                } => {
+                Status::Completed { id } => {
                     if id == DETAILS.name {
                         // Whole benchmark completed; the loop ends via Quit.
                         false
@@ -84,9 +78,7 @@ impl TuiApp for BenchmarkerApp {
                         let workers = id.parse::<u8>().expect("Workers is a number");
                         state.results.entry(workers).and_modify(|ws| ws.added = true);
                         if !std::io::stdout().is_terminal() {
-                            let event = BenchmarkerConsoleEvent::WorkerAdded {
-                                worker: workers
-                            };
+                            let event = BenchmarkerConsoleEvent::WorkerAdded { worker: workers };
                             println!(
                                 "[Benchmarker][Worker Added] {}",
                                 serde_json::to_string(&event).unwrap()
@@ -95,10 +87,7 @@ impl TuiApp for BenchmarkerApp {
                         true
                     }
                 },
-                Status::Failed {
-                    id,
-                    error,
-                } => {
+                Status::Failed { id, error } => {
                     let workers = id.parse::<u8>().expect("Workers is a number");
                     state
                         .results
@@ -118,17 +107,10 @@ impl TuiApp for BenchmarkerApp {
                 },
                 _ => false,
             },
-            SequenceStatus::Subprocess {
-                parent: _,
-                child,
-            } => match child {
+            SequenceStatus::Subprocess { parent: _, child } => match child {
                 Status::Processing {
                     id,
-                    completion:
-                        SequenceCompletion::Frames {
-                            completed,
-                            total,
-                        },
+                    completion: SequenceCompletion::Frames { completed, total },
                 } => {
                     let workers = id.parse::<u8>().expect("Workers is a number");
                     state
@@ -139,18 +121,18 @@ impl TuiApp for BenchmarkerApp {
                             ws.total_frames = total;
                         })
                         .or_insert_with(|| WorkerStatus {
-                            started:       std::time::Instant::now(),
-                            added:         false,
-                            finished:      None,
+                            started: std::time::Instant::now(),
+                            added: false,
+                            finished: None,
                             failed_reason: None,
                             current_frame: completed,
-                            total_frames:  total,
+                            total_frames: total,
                         });
                     if !std::io::stdout().is_terminal() {
                         let event = BenchmarkerConsoleEvent::Progress {
-                            worker:        workers,
+                            worker: workers,
                             current_frame: completed,
-                            total_frames:  total,
+                            total_frames: total,
                         };
                         println!(
                             "[Benchmarker][Progress] {}",
@@ -159,18 +141,14 @@ impl TuiApp for BenchmarkerApp {
                     }
                     true
                 },
-                Status::Completed {
-                    id,
-                } => {
+                Status::Completed { id } => {
                     let workers = id.parse::<u8>().expect("Workers is a number");
                     state
                         .results
                         .entry(workers)
                         .and_modify(|ws| ws.finished = Some(std::time::Instant::now()));
                     if !std::io::stdout().is_terminal() {
-                        let event = BenchmarkerConsoleEvent::WorkerCompleted {
-                            worker: workers
-                        };
+                        let event = BenchmarkerConsoleEvent::WorkerCompleted { worker: workers };
                         println!(
                             "[Benchmarker][Worker Completed] {}",
                             serde_json::to_string(&event).unwrap()
@@ -219,12 +197,15 @@ impl TuiApp for BenchmarkerApp {
                 ])
             })
             .collect::<Vec<_>>();
-        let table = Table::new(rows, [
-            Constraint::Fill(1),
-            Constraint::Fill(1),
-            Constraint::Fill(1),
-            Constraint::Fill(1),
-        ])
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+            ],
+        )
         .header(Row::new(vec![
             Cell::from(Line::from("Workers").centered()),
             Cell::from(Line::from("FPS").centered()),
@@ -254,12 +235,12 @@ impl BenchmarkerApp {
 
 #[derive(Debug, Clone)]
 pub struct WorkerStatus {
-    pub started:       std::time::Instant,
-    pub finished:      Option<std::time::Instant>,
-    pub added:         bool,
+    pub started: std::time::Instant,
+    pub finished: Option<std::time::Instant>,
+    pub added: bool,
     pub failed_reason: Option<String>,
     pub current_frame: u64,
-    pub total_frames:  u64,
+    pub total_frames: u64,
 }
 
 impl WorkerStatus {
@@ -288,9 +269,9 @@ impl WorkerStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BenchmarkerConsoleEvent {
     Progress {
-        worker:        u8,
+        worker: u8,
         current_frame: u64,
-        total_frames:  u64,
+        total_frames: u64,
     },
     WorkerCompleted {
         worker: u8,
@@ -300,6 +281,6 @@ pub enum BenchmarkerConsoleEvent {
     },
     WorkerFailed {
         worker: u8,
-        error:  String,
+        error: String,
     },
 }

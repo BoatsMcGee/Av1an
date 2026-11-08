@@ -8,13 +8,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         vszip::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -22,7 +20,7 @@ use crate::vapoursynth::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Bilateral {
     /// Only used for script generation
-    pub ref_name:  Option<NodeVariableName>,
+    pub ref_name: Option<NodeVariableName>,
     /// sigma of Gaussian function to calculate spatial weight.
     /// The scale of this parameter is equivalent to pixel distance.
     /// Larger sigmaS results in larger filtering radius as well as stronger
@@ -31,7 +29,7 @@ pub struct Bilateral {
     /// sigmaS of first plane and sub-sampling.
     ///
     /// Defaults to `[3.0, 3.0, 3.0]`
-    pub sigma_s:   Option<Vec<f64>>,
+    pub sigma_s: Option<Vec<f64>>,
     /// sigma of Gaussian function to calculate range weight.
     /// The scale of this parameter is the same as pixel value ranging in [0,1].
     /// Smaller sigmaR preserves edges better, may also leads to weaker
@@ -39,9 +37,9 @@ pub struct Bilateral {
     /// the same sigmaR is used for all the planes.
     ///
     /// Defaults to `[0.02, 0.02, 0.02]`
-    pub sigma_r:   Option<Vec<f64>>,
+    pub sigma_r: Option<Vec<f64>>,
     /// An array to specify which planes to process.
-    pub planes:    Option<Vec<bool>>,
+    pub planes: Option<Vec<bool>>,
     /// 0 = Automatically determine the algorithm according to sigmaS, sigmaR
     /// and PBFICnum.
     ///
@@ -56,7 +54,7 @@ pub struct Bilateral {
     /// to 32. For chroma plane default value will be odd to better preserve
     /// neutral value of chromiance. Available range is [2,256].
     /// Use an array to specify PBFICnum for each plane.
-    pub pbficnum:  Option<Vec<u32>>,
+    pub pbficnum: Option<Vec<u32>>,
 }
 
 impl Plugin for Bilateral {
@@ -93,31 +91,36 @@ impl Bilateral {
         arguments
             .set_node("clip", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
         if let Some(ref_node) = ref_node {
             arguments.set_node("ref", ref_node).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: "ref".to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
-        Self::arguments_set_float_arrays(&mut arguments, vec![
-            ("sigmaS", self.sigma_s),
-            ("sigmaR", self.sigma_r),
-        ])?;
-        Self::argument_set_int_arrays(&mut arguments, vec![
-            (
-                "planes",
-                self.planes.as_ref().map(|b| b.iter().map(|b| if *b { 1 } else { 0 }).collect()),
-            ),
-            ("algorithm", self.algorithm),
-            ("PBFICnum", self.pbficnum),
-        ])?;
+        Self::arguments_set_float_arrays(
+            &mut arguments,
+            vec![("sigmaS", self.sigma_s), ("sigmaR", self.sigma_r)],
+        )?;
+        Self::argument_set_int_arrays(
+            &mut arguments,
+            vec![
+                (
+                    "planes",
+                    self.planes
+                        .as_ref()
+                        .map(|b| b.iter().map(|b| if *b { 1 } else { 0 }).collect()),
+                ),
+                ("algorithm", self.algorithm),
+                ("PBFICnum", self.pbficnum),
+            ],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         Ok(node)

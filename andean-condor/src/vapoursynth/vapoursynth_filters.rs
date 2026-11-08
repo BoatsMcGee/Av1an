@@ -18,35 +18,23 @@ use crate::{
         plugins::{
             fgs::FGS,
             mvutensils::{
-                analyse_many::AnalyseMany,
-                degrain::Degrain,
-                mvu_super::MVUSuper,
+                analyse_many::AnalyseMany, degrain::Degrain, mvu_super::MVUSuper,
                 recalculate::Recalculate,
             },
             rescale::{Doubler, RescaleBuilder, VSJETKernel},
             resize::{
-                Scaler,
-                bicubic::Bicubic,
-                bilinear::Bilinear,
-                bob::Bob,
-                lanczos::Lanczos,
-                point::Point,
-                spline16::Spline16,
-                spline36::Spline36,
-                spline64::Spline64,
+                Scaler, bicubic::Bicubic, bilinear::Bilinear, bob::Bob, lanczos::Lanczos,
+                point::Point, spline16::Spline16, spline36::Spline36, spline64::Spline64,
             },
             standard::{crop::Crop, trim::Trim},
             vszip::{bilateral::Bilateral, wnnm::WNNM},
             zoomvtools::{
-                analyse::Analyse as ZoomAnalyse,
-                degrain::Degrain as ZoomDegrainPlugin,
-                recalculate::Recalculate as ZoomRecalculate,
-                zmv_super::ZMVSuper,
+                analyse::Analyse as ZoomAnalyse, degrain::Degrain as ZoomDegrainPlugin,
+                recalculate::Recalculate as ZoomRecalculate, zmv_super::ZMVSuper,
             },
         },
         script_builder::{
-            NodeVariableName,
-            VapourSynthPluginScript,
+            NodeVariableName, VapourSynthPluginScript,
             script::{Imports, Line},
         },
     },
@@ -59,154 +47,154 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum VapourSynthFilter {
     Crop {
-        top:    Option<usize>,
+        top: Option<usize>,
         bottom: Option<usize>,
-        left:   Option<usize>,
-        right:  Option<usize>,
+        left: Option<usize>,
+        right: Option<usize>,
     },
     Resize {
         scaler: Option<Scaler>,
-        width:  Option<usize>,
+        width: Option<usize>,
         height: Option<usize>,
         format: Option<FFPixelFormat>,
     },
     Trim {
         start: Option<usize>,
-        end:   Option<usize>,
+        end: Option<usize>,
     },
     Rescale {
-        kernel:  VSJETKernel,
-        width:   usize,
-        height:  usize,
+        kernel: VSJETKernel,
+        width: usize,
+        height: usize,
         doubler: Doubler,
     },
     WNNM {
-        sigma:                Option<Vec<f64>>,
-        block_size:           Option<usize>,
-        block_step:           Option<usize>,
-        group_size:           Option<usize>,
-        bm_range:             Option<usize>,
-        radius:               Option<usize>,
-        ps_num:               Option<usize>,
-        ps_range:             Option<usize>,
-        residual:             Option<bool>,
+        sigma: Option<Vec<f64>>,
+        block_size: Option<usize>,
+        block_step: Option<usize>,
+        group_size: Option<usize>,
+        bm_range: Option<usize>,
+        radius: Option<usize>,
+        ps_num: Option<usize>,
+        ps_range: Option<usize>,
+        residual: Option<bool>,
         adaptive_aggregation: Option<bool>,
     },
     Bilateral {
-        sigma_s:   Option<Vec<f64>>,
-        sigma_r:   Option<Vec<f64>>,
-        planes:    Option<Vec<bool>>,
+        sigma_s: Option<Vec<f64>>,
+        sigma_r: Option<Vec<f64>>,
+        planes: Option<Vec<bool>>,
         algorithm: Option<Vec<u32>>,
-        pbficnum:  Option<Vec<u32>>,
+        pbficnum: Option<Vec<u32>>,
     },
     /// MVUtensils Degrain - motion-compensated temporal denoising workflow.
     /// This is a composite filter that internally chains Super -> AnalyseMany
     /// -> (optional Recalculate) -> Degrain.
     Degrain {
-        blksize:        Option<Vec<usize>>,
-        overlap:        Option<Vec<usize>>,
-        pad:            Option<Vec<usize>>,
-        pel:            Option<usize>,
-        sharp:          Option<usize>,
-        rfilter:        Option<usize>,
-        radius:         Option<usize>,
-        search:         Option<usize>,
-        searchparam:    Option<usize>,
-        mvlambda:       Option<usize>,
-        chroma:         Option<bool>,
-        lsad:           Option<usize>,
-        plevel:         Option<usize>,
-        globalmv:       Option<bool>,
-        pnew:           Option<usize>,
-        pzero:          Option<usize>,
-        pglobal:        Option<usize>,
-        badsad:         Option<usize>,
-        badrange:       Option<usize>,
-        meander:        Option<bool>,
-        trymany:        Option<usize>,
-        satd:           Option<bool>,
-        recalculate:    Option<bool>,
-        recalc_thsad:   Option<usize>,
-        recalc_smooth:  Option<bool>,
+        blksize: Option<Vec<usize>>,
+        overlap: Option<Vec<usize>>,
+        pad: Option<Vec<usize>>,
+        pel: Option<usize>,
+        sharp: Option<usize>,
+        rfilter: Option<usize>,
+        radius: Option<usize>,
+        search: Option<usize>,
+        searchparam: Option<usize>,
+        mvlambda: Option<usize>,
+        chroma: Option<bool>,
+        lsad: Option<usize>,
+        plevel: Option<usize>,
+        globalmv: Option<bool>,
+        pnew: Option<usize>,
+        pzero: Option<usize>,
+        pglobal: Option<usize>,
+        badsad: Option<usize>,
+        badrange: Option<usize>,
+        meander: Option<bool>,
+        trymany: Option<usize>,
+        satd: Option<bool>,
+        recalculate: Option<bool>,
+        recalc_thsad: Option<usize>,
+        recalc_smooth: Option<bool>,
         recalc_blksize: Option<Vec<usize>>,
         recalc_overlap: Option<Vec<usize>>,
-        thsad:          Option<Vec<usize>>,
-        thsad2:         Option<Vec<usize>>,
-        planes:         Option<Vec<usize>>,
-        limit:          Option<Vec<f64>>,
-        thscd1:         Option<usize>,
-        thscd2:         Option<f64>,
-        prefix:         Option<String>,
+        thsad: Option<Vec<usize>>,
+        thsad2: Option<Vec<usize>>,
+        planes: Option<Vec<usize>>,
+        limit: Option<Vec<f64>>,
+        thscd1: Option<usize>,
+        thscd2: Option<f64>,
+        prefix: Option<String>,
     },
     /// ZooMVTools Degrain - motion-compensated temporal denoising workflow.
     /// This is a composite filter that internally chains ZMVSuper -> two
     /// Analyse calls (isb=0 forward, isb=1 backward) -> (optional
     /// Recalculate on both) -> Degrain1 (implemented as Degrain).
     ZoomDegrain {
-        hpad:               Option<usize>,
-        vpad:               Option<usize>,
-        pel:                Option<usize>,
-        levels:             Option<usize>,
-        chroma:             Option<bool>,
-        sharp:              Option<usize>,
-        rfilter:            Option<usize>,
-        blksize:            Option<usize>,
-        blksizev:           Option<usize>,
-        search:             Option<usize>,
-        searchparam:        Option<usize>,
-        pelsearch:          Option<usize>,
-        lambda:             Option<usize>,
-        lsad:               Option<usize>,
-        plevel:             Option<usize>,
-        global:             Option<bool>,
-        pnew:               Option<usize>,
-        pzero:              Option<usize>,
-        pglobal:            Option<usize>,
-        overlap:            Option<usize>,
-        overlapv:           Option<usize>,
-        divide:             Option<usize>,
-        badsad:             Option<usize>,
-        badrange:           Option<usize>,
-        truemotion:         Option<bool>,
-        meander:            Option<bool>,
-        trymany:            Option<bool>,
-        fields:             Option<bool>,
-        tff:                Option<bool>,
-        search_coarse:      Option<usize>,
-        dct:                Option<usize>,
-        recalculate:        Option<bool>,
-        recalc_thsad:       Option<usize>,
-        recalc_smooth:      Option<bool>,
-        recalc_blksize:     Option<usize>,
-        recalc_blksizev:    Option<usize>,
-        recalc_search:      Option<usize>,
+        hpad: Option<usize>,
+        vpad: Option<usize>,
+        pel: Option<usize>,
+        levels: Option<usize>,
+        chroma: Option<bool>,
+        sharp: Option<usize>,
+        rfilter: Option<usize>,
+        blksize: Option<usize>,
+        blksizev: Option<usize>,
+        search: Option<usize>,
+        searchparam: Option<usize>,
+        pelsearch: Option<usize>,
+        lambda: Option<usize>,
+        lsad: Option<usize>,
+        plevel: Option<usize>,
+        global: Option<bool>,
+        pnew: Option<usize>,
+        pzero: Option<usize>,
+        pglobal: Option<usize>,
+        overlap: Option<usize>,
+        overlapv: Option<usize>,
+        divide: Option<usize>,
+        badsad: Option<usize>,
+        badrange: Option<usize>,
+        truemotion: Option<bool>,
+        meander: Option<bool>,
+        trymany: Option<bool>,
+        fields: Option<bool>,
+        tff: Option<bool>,
+        search_coarse: Option<usize>,
+        dct: Option<usize>,
+        recalculate: Option<bool>,
+        recalc_thsad: Option<usize>,
+        recalc_smooth: Option<bool>,
+        recalc_blksize: Option<usize>,
+        recalc_blksizev: Option<usize>,
+        recalc_search: Option<usize>,
         recalc_searchparam: Option<usize>,
-        recalc_lambda:      Option<usize>,
-        recalc_overlap:     Option<usize>,
-        recalc_overlapv:    Option<usize>,
-        recalc_divide:      Option<usize>,
-        thsad:              Option<usize>,
-        thsadc:             Option<usize>,
-        plane:              Option<i32>,
-        limit:              Option<usize>,
-        limitc:             Option<usize>,
-        thscd1:             Option<usize>,
-        thscd2:             Option<usize>,
+        recalc_lambda: Option<usize>,
+        recalc_overlap: Option<usize>,
+        recalc_overlapv: Option<usize>,
+        recalc_divide: Option<usize>,
+        thsad: Option<usize>,
+        thsadc: Option<usize>,
+        plane: Option<i32>,
+        limit: Option<usize>,
+        limitc: Option<usize>,
+        thscd1: Option<usize>,
+        thscd2: Option<usize>,
     },
     /// FGS (Film Grain Synthesis) - applies photon-noise film grain using
     /// dav1d's grain engine. Builds a [`PhotonNoise`] from the supplied
     /// parameters and delegates to the `com.vs.fgs` plugin's `FGS` function.
     FGS {
         /// Required ISO strength for the luma grain.
-        iso:          u32,
+        iso: u32,
         /// Optional ISO strength for chroma grain (defaults to luma `iso`).
-        chroma_iso:   Option<u32>,
+        chroma_iso: Option<u32>,
         /// Optional custom luma AR coefficients (max 24).
-        cy:           Option<Vec<i8>>,
+        cy: Option<Vec<i8>>,
         /// Optional custom chroma-blue AR coefficients (max 25).
-        ccb:          Option<Vec<i8>>,
+        ccb: Option<Vec<i8>>,
         /// Optional custom chroma-red AR coefficients (max 25).
-        ccr:          Option<Vec<i8>>,
+        ccr: Option<Vec<i8>>,
         /// When `true`, randomizes the grain seed per frame for dynamic
         /// variation.
         dynamic_seed: Option<bool>,
@@ -237,16 +225,16 @@ impl FromStr for VapourSynthFilter {
             .collect::<BTreeMap<_, _>>();
         match variant_name {
             "crop" => Ok(VapourSynthFilter::Crop {
-                top:    variant_args
+                top: variant_args
                     .get("top")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
                 bottom: variant_args
                     .get("bottom")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                left:   variant_args
+                left: variant_args
                     .get("left")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                right:  variant_args
+                right: variant_args
                     .get("right")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
             }),
@@ -254,7 +242,7 @@ impl FromStr for VapourSynthFilter {
                 scaler: variant_args
                     .get("scaler")
                     .map(|v| Scaler::from_str(v).expect("Failed to parse filter argument value")),
-                width:  variant_args
+                width: variant_args
                     .get("width")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
                 height: variant_args
@@ -268,20 +256,20 @@ impl FromStr for VapourSynthFilter {
                 start: variant_args
                     .get("start")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                end:   variant_args
+                end: variant_args
                     .get("end")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
             }),
             "rescale" => Ok(VapourSynthFilter::Rescale {
-                kernel:  variant_args
+                kernel: variant_args
                     .get("kernel")
                     .map(|v| VSJETKernel::from_str(v).expect("Failed to parse kernel"))
                     .expect("Failed to parse kernel"),
-                width:   variant_args
+                width: variant_args
                     .get("width")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value"))
                     .expect("Failed to parse width"),
-                height:  variant_args
+                height: variant_args
                     .get("height")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value"))
                     .expect("Failed to parse height"),
@@ -291,51 +279,49 @@ impl FromStr for VapourSynthFilter {
                     .expect("Failed to parse doubler"),
             }),
             "wnnm" => Ok(VapourSynthFilter::WNNM {
-                sigma:                variant_args.get("sigma").map(|v| {
+                sigma: variant_args.get("sigma").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                block_size:           variant_args
+                block_size: variant_args
                     .get("block_size")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                block_step:           variant_args
+                block_step: variant_args
                     .get("block_step")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                group_size:           variant_args
+                group_size: variant_args
                     .get("group_size")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                bm_range:             variant_args
+                bm_range: variant_args
                     .get("bm_range")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                radius:               variant_args
+                radius: variant_args
                     .get("radius")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                ps_num:               variant_args
+                ps_num: variant_args
                     .get("ps_num")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                ps_range:             variant_args
+                ps_range: variant_args
                     .get("ps_range")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                residual:             variant_args
-                    .get("residual")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
+                residual: variant_args.get("residual").map(|v| matches!(v.as_str(), "true" | "1")),
                 adaptive_aggregation: variant_args
                     .get("adaptive_aggregation")
                     .map(|v| matches!(v.as_str(), "true" | "1")),
             }),
             "bilateral" => Ok(VapourSynthFilter::Bilateral {
-                sigma_s:   variant_args.get("sigma_s").map(|v| {
+                sigma_s: variant_args.get("sigma_s").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                sigma_r:   variant_args.get("sigma_r").map(|v| {
+                sigma_r: variant_args.get("sigma_r").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                planes:    variant_args
+                planes: variant_args
                     .get("planes")
                     .map(|v| v.split(',').map(|s| matches!(s, "1" | "true")).collect()),
                 algorithm: variant_args.get("algorithm").map(|v| {
@@ -343,92 +329,84 @@ impl FromStr for VapourSynthFilter {
                         .map(|s| s.parse::<u32>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                pbficnum:  variant_args.get("pbficnum").map(|v| {
+                pbficnum: variant_args.get("pbficnum").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<u32>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
             }),
             "degrain" => Ok(VapourSynthFilter::Degrain {
-                blksize:        variant_args.get("blksize").map(|v| {
+                blksize: variant_args.get("blksize").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                overlap:        variant_args.get("overlap").map(|v| {
+                overlap: variant_args.get("overlap").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                pad:            variant_args.get("pad").map(|v| {
+                pad: variant_args.get("pad").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                pel:            variant_args
+                pel: variant_args
                     .get("pel")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                sharp:          variant_args
+                sharp: variant_args
                     .get("sharp")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                rfilter:        variant_args
+                rfilter: variant_args
                     .get("rfilter")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                radius:         variant_args
+                radius: variant_args
                     .get("radius")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                search:         variant_args
+                search: variant_args
                     .get("search")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                searchparam:    variant_args
+                searchparam: variant_args
                     .get("searchparam")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                mvlambda:       variant_args
+                mvlambda: variant_args
                     .get("mvlambda")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                chroma:         variant_args
-                    .get("chroma")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                lsad:           variant_args
+                chroma: variant_args.get("chroma").map(|v| matches!(v.as_str(), "true" | "1")),
+                lsad: variant_args
                     .get("lsad")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                plevel:         variant_args
+                plevel: variant_args
                     .get("plevel")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                globalmv:       variant_args
-                    .get("globalmv")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                pnew:           variant_args
+                globalmv: variant_args.get("globalmv").map(|v| matches!(v.as_str(), "true" | "1")),
+                pnew: variant_args
                     .get("pnew")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pzero:          variant_args
+                pzero: variant_args
                     .get("pzero")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pglobal:        variant_args
+                pglobal: variant_args
                     .get("pglobal")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                badsad:         variant_args
+                badsad: variant_args
                     .get("badsad")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                badrange:       variant_args
+                badrange: variant_args
                     .get("badrange")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                meander:        variant_args
-                    .get("meander")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                trymany:        variant_args
+                meander: variant_args.get("meander").map(|v| matches!(v.as_str(), "true" | "1")),
+                trymany: variant_args
                     .get("trymany")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                satd:           variant_args
-                    .get("satd")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                recalculate:    variant_args
+                satd: variant_args.get("satd").map(|v| matches!(v.as_str(), "true" | "1")),
+                recalculate: variant_args
                     .get("recalculate")
                     .map(|v| matches!(v.as_str(), "true" | "1")),
-                recalc_thsad:   variant_args
+                recalc_thsad: variant_args
                     .get("recalc_thsad")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_smooth:  variant_args
+                recalc_smooth: variant_args
                     .get("recalc_smooth")
                     .map(|v| matches!(v.as_str(), "true" | "1")),
                 recalc_blksize: variant_args.get("recalc_blksize").map(|v| {
@@ -441,202 +419,190 @@ impl FromStr for VapourSynthFilter {
                         .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                thsad:          variant_args.get("thsad").map(|v| {
+                thsad: variant_args.get("thsad").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                thsad2:         variant_args.get("thsad2").map(|v| {
+                thsad2: variant_args.get("thsad2").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                planes:         variant_args.get("planes").map(|v| {
+                planes: variant_args.get("planes").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                limit:          variant_args.get("limit").map(|v| {
+                limit: variant_args.get("limit").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                thscd1:         variant_args
+                thscd1: variant_args
                     .get("thscd1")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thscd2:         variant_args
+                thscd2: variant_args
                     .get("thscd2")
                     .map(|v| v.parse::<f64>().expect("Failed to parse filter argument value")),
-                prefix:         variant_args.get("prefix").cloned(),
+                prefix: variant_args.get("prefix").cloned(),
             }),
             "zoom_degrain" => Ok(VapourSynthFilter::ZoomDegrain {
-                hpad:               variant_args
+                hpad: variant_args
                     .get("hpad")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                vpad:               variant_args
+                vpad: variant_args
                     .get("vpad")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pel:                variant_args
+                pel: variant_args
                     .get("pel")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                levels:             variant_args
+                levels: variant_args
                     .get("levels")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                chroma:             variant_args
-                    .get("chroma")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                sharp:              variant_args
+                chroma: variant_args.get("chroma").map(|v| matches!(v.as_str(), "true" | "1")),
+                sharp: variant_args
                     .get("sharp")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                rfilter:            variant_args
+                rfilter: variant_args
                     .get("rfilter")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                blksize:            variant_args
+                blksize: variant_args
                     .get("blksize")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                blksizev:           variant_args
+                blksizev: variant_args
                     .get("blksizev")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                search:             variant_args
+                search: variant_args
                     .get("search")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                searchparam:        variant_args
+                searchparam: variant_args
                     .get("searchparam")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pelsearch:          variant_args
+                pelsearch: variant_args
                     .get("pelsearch")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                lambda:             variant_args
+                lambda: variant_args
                     .get("lambda")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                lsad:               variant_args
+                lsad: variant_args
                     .get("lsad")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                plevel:             variant_args
+                plevel: variant_args
                     .get("plevel")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                global:             variant_args
-                    .get("global")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                pnew:               variant_args
+                global: variant_args.get("global").map(|v| matches!(v.as_str(), "true" | "1")),
+                pnew: variant_args
                     .get("pnew")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pzero:              variant_args
+                pzero: variant_args
                     .get("pzero")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pglobal:            variant_args
+                pglobal: variant_args
                     .get("pglobal")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                overlap:            variant_args
+                overlap: variant_args
                     .get("overlap")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                overlapv:           variant_args
+                overlapv: variant_args
                     .get("overlapv")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                divide:             variant_args
+                divide: variant_args
                     .get("divide")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                badsad:             variant_args
+                badsad: variant_args
                     .get("badsad")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                badrange:           variant_args
+                badrange: variant_args
                     .get("badrange")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                truemotion:         variant_args
+                truemotion: variant_args
                     .get("truemotion")
                     .map(|v| matches!(v.as_str(), "true" | "1")),
-                meander:            variant_args
-                    .get("meander")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                trymany:            variant_args
-                    .get("trymany")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                fields:             variant_args
-                    .get("fields")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                tff:                variant_args
-                    .get("tff")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                search_coarse:      variant_args
+                meander: variant_args.get("meander").map(|v| matches!(v.as_str(), "true" | "1")),
+                trymany: variant_args.get("trymany").map(|v| matches!(v.as_str(), "true" | "1")),
+                fields: variant_args.get("fields").map(|v| matches!(v.as_str(), "true" | "1")),
+                tff: variant_args.get("tff").map(|v| matches!(v.as_str(), "true" | "1")),
+                search_coarse: variant_args
                     .get("search_coarse")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                dct:                variant_args
+                dct: variant_args
                     .get("dct")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalculate:        variant_args
+                recalculate: variant_args
                     .get("recalculate")
                     .map(|v| matches!(v.as_str(), "true" | "1")),
-                recalc_thsad:       variant_args
+                recalc_thsad: variant_args
                     .get("recalc_thsad")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_smooth:      variant_args
+                recalc_smooth: variant_args
                     .get("recalc_smooth")
                     .map(|v| matches!(v.as_str(), "true" | "1")),
-                recalc_blksize:     variant_args
+                recalc_blksize: variant_args
                     .get("recalc_blksize")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_blksizev:    variant_args
+                recalc_blksizev: variant_args
                     .get("recalc_blksizev")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_search:      variant_args
+                recalc_search: variant_args
                     .get("recalc_search")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
                 recalc_searchparam: variant_args
                     .get("recalc_searchparam")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_lambda:      variant_args
+                recalc_lambda: variant_args
                     .get("recalc_lambda")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_overlap:     variant_args
+                recalc_overlap: variant_args
                     .get("recalc_overlap")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_overlapv:    variant_args
+                recalc_overlapv: variant_args
                     .get("recalc_overlapv")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_divide:      variant_args
+                recalc_divide: variant_args
                     .get("recalc_divide")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thsad:              variant_args
+                thsad: variant_args
                     .get("thsad")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thsadc:             variant_args
+                thsadc: variant_args
                     .get("thsadc")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                plane:              variant_args
+                plane: variant_args
                     .get("plane")
                     .map(|v| v.parse::<i32>().expect("Failed to parse filter argument value")),
-                limit:              variant_args
+                limit: variant_args
                     .get("limit")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                limitc:             variant_args
+                limitc: variant_args
                     .get("limitc")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thscd1:             variant_args
+                thscd1: variant_args
                     .get("thscd1")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thscd2:             variant_args
+                thscd2: variant_args
                     .get("thscd2")
                     .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
             }),
             "fgs" => Ok(VapourSynthFilter::FGS {
-                iso:          variant_args
+                iso: variant_args
                     .get("iso")
                     .map(|v| v.parse::<u32>().expect("Failed to parse filter argument value"))
                     .expect("FGS filter requires an `iso` argument"),
-                chroma_iso:   variant_args
+                chroma_iso: variant_args
                     .get("chroma_iso")
                     .map(|v| v.parse::<u32>().expect("Failed to parse filter argument value")),
-                cy:           variant_args.get("cy").map(|v| {
+                cy: variant_args.get("cy").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                ccb:          variant_args.get("ccb").map(|v| {
+                ccb: variant_args.get("ccb").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
                         .collect()
                 }),
-                ccr:          variant_args.get("ccr").map(|v| {
+                ccr: variant_args.get("ccr").map(|v| {
                     v.split(',')
                         .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
                         .collect()
@@ -678,10 +644,7 @@ impl Display for VapourSynthFilter {
                 height.map(|v| format!("height={};", v)).unwrap_or_default(),
                 format.map(|v| format!("format={};", v.to_pix_fmt_string())).unwrap_or_default(),
             ),
-            VapourSynthFilter::Trim {
-                start,
-                end,
-            } => format!(
+            VapourSynthFilter::Trim { start, end } => format!(
                 "trim:{}{}",
                 start.map(|v| format!("start={};", v)).unwrap_or_default(),
                 end.map(|v| format!("end={};", v)).unwrap_or_default()
@@ -1081,10 +1044,10 @@ impl VapourSynthFilter {
                 right,
             } => {
                 let plugin = Crop {
-                    top:    top.map(|v| v as u32),
+                    top: top.map(|v| v as u32),
                     bottom: bottom.map(|v| v as u32),
-                    left:   left.map(|v| v as u32),
-                    right:  right.map(|v| v as u32),
+                    left: left.map(|v| v as u32),
+                    right: right.map(|v| v as u32),
                 };
 
                 Ok(plugin.invoke(core, node)?)
@@ -1101,9 +1064,9 @@ impl VapourSynthFilter {
                 let format = if let Some(format) = format {
                     Some(format.to_vapoursynth_format().map_err(|e| {
                         VapourSynthError::PluginFunctionError {
-                            plugin:   "Resize".to_owned(),
+                            plugin: "Resize".to_owned(),
                             function: "Resize".to_owned(),
-                            message:  e.to_string(),
+                            message: e.to_string(),
                         }
                     })?)
                 } else {
@@ -1171,10 +1134,7 @@ impl VapourSynthFilter {
 
                 Ok(node)
             },
-            VapourSynthFilter::Trim {
-                start,
-                end,
-            } => {
+            VapourSynthFilter::Trim { start, end } => {
                 let plugin = Trim {
                     first: start.map(|v| v as u32),
                     last: end.map(|v| v as u32),
@@ -1183,9 +1143,7 @@ impl VapourSynthFilter {
 
                 Ok(plugin.invoke(core, node)?)
             },
-            VapourSynthFilter::Rescale {
-                ..
-            } => unreachable!(),
+            VapourSynthFilter::Rescale { .. } => unreachable!(),
             VapourSynthFilter::WNNM {
                 sigma,
                 block_size,
@@ -1199,17 +1157,17 @@ impl VapourSynthFilter {
                 adaptive_aggregation,
             } => {
                 let plugin = WNNM {
-                    sigma:                sigma.clone(),
-                    block_size:           block_size.map(|v| v as u32),
-                    block_step:           block_step.map(|v| v as u32),
-                    group_size:           group_size.map(|v| v as u32),
-                    bm_range:             bm_range.map(|v| v as u32),
-                    radius:               radius.map(|v| v as u32),
-                    ps_num:               ps_num.map(|v| v as u32),
-                    ps_range:             ps_range.map(|v| v as u32),
-                    residual:             *residual,
+                    sigma: sigma.clone(),
+                    block_size: block_size.map(|v| v as u32),
+                    block_step: block_step.map(|v| v as u32),
+                    group_size: group_size.map(|v| v as u32),
+                    bm_range: bm_range.map(|v| v as u32),
+                    radius: radius.map(|v| v as u32),
+                    ps_num: ps_num.map(|v| v as u32),
+                    ps_range: ps_range.map(|v| v as u32),
+                    residual: *residual,
                     adaptive_aggregation: *adaptive_aggregation,
-                    rclip_name:           None,
+                    rclip_name: None,
                 };
 
                 Ok(plugin.invoke(core, node, None)?)
@@ -1222,12 +1180,12 @@ impl VapourSynthFilter {
                 pbficnum,
             } => {
                 let plugin = Bilateral {
-                    sigma_s:   sigma_s.clone(),
-                    sigma_r:   sigma_r.clone(),
-                    planes:    planes.clone(),
+                    sigma_s: sigma_s.clone(),
+                    sigma_r: sigma_r.clone(),
+                    planes: planes.clone(),
                     algorithm: algorithm.clone(),
-                    pbficnum:  pbficnum.clone(),
-                    ref_name:  None,
+                    pbficnum: pbficnum.clone(),
+                    ref_name: None,
                 };
 
                 Ok(plugin.invoke(core, node, None)?)
@@ -1270,75 +1228,71 @@ impl VapourSynthFilter {
             } => {
                 // Step 1: Create super clip
                 let super_plugin = MVUSuper {
-                    blksize:      blksize
-                        .clone()
-                        .map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    overlap:      overlap
-                        .clone()
-                        .map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    pad:          pad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    pel:          pel.map(|v| v as u32),
-                    sharp:        sharp.map(|v| v as u32),
-                    rfilter:      rfilter.map(|v| v as u32),
-                    onelevel:     Some(false),
+                    blksize: blksize.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    overlap: overlap.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    pad: pad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    pel: pel.map(|v| v as u32),
+                    sharp: sharp.map(|v| v as u32),
+                    rfilter: rfilter.map(|v| v as u32),
+                    onelevel: Some(false),
                     pelclip_name: None,
-                    prefix:       prefix.clone(),
+                    prefix: prefix.clone(),
                 };
                 let super_node = super_plugin.invoke(core, node, None)?;
 
                 // Step 2: AnalyseMany to produce vector clips
                 let analyse_many_plugin = AnalyseMany {
-                    super_name:  None,
-                    blksize:     blksize.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    overlap:     overlap.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    levels:      None,
-                    search:      search.map(|v| v as u32),
+                    super_name: None,
+                    blksize: blksize.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    overlap: overlap.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    levels: None,
+                    search: search.map(|v| v as u32),
                     searchparam: searchparam.map(|v| v as u32),
-                    pelsearch:   None,
-                    mvlambda:    mvlambda.map(|v| v as u32),
-                    chroma:      *chroma,
-                    delta:       Some(1),
-                    lsad:        lsad.map(|v| v as u32),
-                    plevel:      plevel.map(|v| v as u32),
-                    globalmv:    *globalmv,
-                    pnew:        pnew.map(|v| v as u32),
-                    pzero:       pzero.map(|v| v as u32),
-                    pglobal:     pglobal.map(|v| v as u32),
-                    badsad:      badsad.map(|v| v as u32),
-                    badrange:    badrange.map(|v| v as u32),
-                    meander:     *meander,
-                    trymany:     trymany.map(|v| v as u32),
-                    fields:      Some(false),
-                    tff:         Some(false),
-                    satd:        *satd,
-                    radius:      radius.map(|v| v as u32),
-                    prefix:      prefix.clone(),
+                    pelsearch: None,
+                    mvlambda: mvlambda.map(|v| v as u32),
+                    chroma: *chroma,
+                    delta: Some(1),
+                    lsad: lsad.map(|v| v as u32),
+                    plevel: plevel.map(|v| v as u32),
+                    globalmv: *globalmv,
+                    pnew: pnew.map(|v| v as u32),
+                    pzero: pzero.map(|v| v as u32),
+                    pglobal: pglobal.map(|v| v as u32),
+                    badsad: badsad.map(|v| v as u32),
+                    badrange: badrange.map(|v| v as u32),
+                    meander: *meander,
+                    trymany: trymany.map(|v| v as u32),
+                    fields: Some(false),
+                    tff: Some(false),
+                    satd: *satd,
+                    radius: radius.map(|v| v as u32),
+                    prefix: prefix.clone(),
                 };
                 let vectors_node = analyse_many_plugin.invoke(core, &super_node)?;
 
                 // Step 3: Optional Recalculate
                 let vectors_node = if recalculate.unwrap_or(false) {
                     let recalc_plugin = Recalculate {
-                        super_name:   None,
+                        super_name: None,
                         vectors_name: None,
-                        thsad:        recalc_thsad.map(|v| v as u32),
-                        smooth:       *recalc_smooth,
-                        blksize:      recalc_blksize
+                        thsad: recalc_thsad.map(|v| v as u32),
+                        smooth: *recalc_smooth,
+                        blksize: recalc_blksize
                             .clone()
                             .map(|v| v.into_iter().map(|u| u as u32).collect()),
-                        overlap:      recalc_overlap
+                        overlap: recalc_overlap
                             .clone()
                             .map(|v| v.into_iter().map(|u| u as u32).collect()),
-                        search:       None,
-                        searchparam:  None,
-                        mvlambda:     None,
-                        chroma:       *chroma,
-                        pnew:         None,
-                        meander:      None,
-                        fields:       None,
-                        tff:          None,
-                        satd:         None,
-                        prefix:       prefix.clone(),
+                        search: None,
+                        searchparam: None,
+                        mvlambda: None,
+                        chroma: *chroma,
+                        pnew: None,
+                        meander: None,
+                        fields: None,
+                        tff: None,
+                        satd: None,
+                        prefix: prefix.clone(),
                     };
                     recalc_plugin.invoke(core, &super_node, &vectors_node)?
                 } else {
@@ -1347,17 +1301,17 @@ impl VapourSynthFilter {
 
                 // Step 4: Degrain
                 let degrain_plugin = Degrain {
-                    clip_name:    None,
-                    super_name:   None,
+                    clip_name: None,
+                    super_name: None,
                     vectors_name: None,
-                    thsad:        thsad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    thsad2:       thsad2.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    planes:       planes.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    limit:        limit.clone(),
-                    thscd1:       thscd1.map(|v| v as u32),
-                    thscd2:       *thscd2,
-                    weights:      None,
-                    prefix:       prefix.clone(),
+                    thsad: thsad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    thsad2: thsad2.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    planes: planes.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    limit: limit.clone(),
+                    thscd1: thscd1.map(|v| v as u32),
+                    thscd2: *thscd2,
+                    weights: None,
+                    prefix: prefix.clone(),
                 };
                 degrain_plugin.invoke(core, node, &super_node, &vectors_node)
             },
@@ -1414,50 +1368,50 @@ impl VapourSynthFilter {
             } => {
                 // Step 1: Create super clip
                 let super_plugin = ZMVSuper {
-                    hpad:         hpad.map(|v| v as u32),
-                    vpad:         vpad.map(|v| v as u32),
-                    pel:          pel.map(|v| v as u32),
-                    levels:       levels.map(|v| v as u32),
-                    chroma:       *chroma,
-                    sharp:        sharp.map(|v| v as u32),
-                    rfilter:      rfilter.map(|v| v as u32),
+                    hpad: hpad.map(|v| v as u32),
+                    vpad: vpad.map(|v| v as u32),
+                    pel: pel.map(|v| v as u32),
+                    levels: levels.map(|v| v as u32),
+                    chroma: *chroma,
+                    sharp: sharp.map(|v| v as u32),
+                    rfilter: rfilter.map(|v| v as u32),
                     pelclip_name: None,
-                    opt:          Some(4),
+                    opt: Some(4),
                 };
                 let super_node = super_plugin.invoke(core, node, None)?;
 
                 // Step 2: Analyse forward (isb=0) and backward (isb=1)
                 let analyse_forward = ZoomAnalyse {
                     super_clip_name: None,
-                    blksize:         blksize.map(|v| v as u32),
-                    blksizev:        blksizev.map(|v| v as u32),
-                    levels:          levels.map(|v| v as u32),
-                    search:          search.map(|v| v as u32),
-                    searchparam:     searchparam.map(|v| v as u32),
-                    pelsearch:       pelsearch.map(|v| v as u32),
-                    isb:             Some(0),
-                    lambda:          lambda.map(|v| v as u32),
-                    chroma:          *chroma,
-                    delta:           Some(-1),
-                    truemotion:      *truemotion,
-                    lsad:            lsad.map(|v| v as u32),
-                    plevel:          plevel.map(|v| v as u32),
-                    global:          *global,
-                    pnew:            pnew.map(|v| v as u32),
-                    pzero:           pzero.map(|v| v as u32),
-                    pglobal:         pglobal.map(|v| v as u32),
-                    overlap:         overlap.map(|v| v as u32),
-                    overlapv:        overlapv.map(|v| v as u32),
-                    divide:          divide.map(|v| v as u32),
-                    badsad:          badsad.map(|v| v as u32),
-                    badrange:        badrange.map(|v| v as u32),
-                    opt:             Some(4),
-                    meander:         *meander,
-                    trymany:         *trymany,
-                    fields:          *fields,
-                    tff:             *tff,
-                    search_coarse:   search_coarse.map(|v| v as u32),
-                    dct:             dct.map(|v| v as u32),
+                    blksize: blksize.map(|v| v as u32),
+                    blksizev: blksizev.map(|v| v as u32),
+                    levels: levels.map(|v| v as u32),
+                    search: search.map(|v| v as u32),
+                    searchparam: searchparam.map(|v| v as u32),
+                    pelsearch: pelsearch.map(|v| v as u32),
+                    isb: Some(0),
+                    lambda: lambda.map(|v| v as u32),
+                    chroma: *chroma,
+                    delta: Some(-1),
+                    truemotion: *truemotion,
+                    lsad: lsad.map(|v| v as u32),
+                    plevel: plevel.map(|v| v as u32),
+                    global: *global,
+                    pnew: pnew.map(|v| v as u32),
+                    pzero: pzero.map(|v| v as u32),
+                    pglobal: pglobal.map(|v| v as u32),
+                    overlap: overlap.map(|v| v as u32),
+                    overlapv: overlapv.map(|v| v as u32),
+                    divide: divide.map(|v| v as u32),
+                    badsad: badsad.map(|v| v as u32),
+                    badrange: badrange.map(|v| v as u32),
+                    opt: Some(4),
+                    meander: *meander,
+                    trymany: *trymany,
+                    fields: *fields,
+                    tff: *tff,
+                    search_coarse: search_coarse.map(|v| v as u32),
+                    dct: dct.map(|v| v as u32),
                 };
                 let mvfw_node = analyse_forward.clone().invoke(core, &super_node)?;
 
@@ -1470,25 +1424,25 @@ impl VapourSynthFilter {
                 let (mvbw_node, mvfw_node) = if recalculate.unwrap_or(false) {
                     let recalc_plugin = ZoomRecalculate {
                         super_clip_name: None,
-                        vectors_name:    None,
-                        thsad:           recalc_thsad.map(|v| v as u32),
-                        smooth:          *recalc_smooth,
-                        blksize:         recalc_blksize.map(|v| v as u32),
-                        blksizev:        recalc_blksizev.map(|v| v as u32),
-                        search:          recalc_search.map(|v| v as u32),
-                        searchparam:     recalc_searchparam.map(|v| v as u32),
-                        lambda:          recalc_lambda.map(|v| v as u32),
-                        chroma:          *chroma,
-                        truemotion:      Some(true),
-                        pnew:            Some(25),
-                        overlap:         recalc_overlap.map(|v| v as u32),
-                        overlapv:        recalc_overlapv.map(|v| v as u32),
-                        divide:          recalc_divide.map(|v| v as u32),
-                        opt:             Some(4),
-                        meander:         Some(true),
-                        fields:          *fields,
-                        tff:             *tff,
-                        dct:             Some(0),
+                        vectors_name: None,
+                        thsad: recalc_thsad.map(|v| v as u32),
+                        smooth: *recalc_smooth,
+                        blksize: recalc_blksize.map(|v| v as u32),
+                        blksizev: recalc_blksizev.map(|v| v as u32),
+                        search: recalc_search.map(|v| v as u32),
+                        searchparam: recalc_searchparam.map(|v| v as u32),
+                        lambda: recalc_lambda.map(|v| v as u32),
+                        chroma: *chroma,
+                        truemotion: Some(true),
+                        pnew: Some(25),
+                        overlap: recalc_overlap.map(|v| v as u32),
+                        overlapv: recalc_overlapv.map(|v| v as u32),
+                        divide: recalc_divide.map(|v| v as u32),
+                        opt: Some(4),
+                        meander: Some(true),
+                        fields: *fields,
+                        tff: *tff,
+                        dct: Some(0),
                     };
                     let mvbw_node = recalc_plugin.clone().invoke(core, &super_node, &mvbw_node)?;
                     let mvfw_node = recalc_plugin.invoke(core, &super_node, &mvfw_node)?;
@@ -1499,18 +1453,18 @@ impl VapourSynthFilter {
 
                 // Step 4: Degrain1
                 let degrain_plugin = ZoomDegrainPlugin {
-                    clip_name:       None,
+                    clip_name: None,
                     super_clip_name: None,
-                    mvbw_name:       None,
-                    mvfw_name:       None,
-                    thsad:           thsad.map(|v| v as u32),
-                    thsadc:          thsadc.map(|v| v as u32),
-                    plane:           *plane,
-                    limit:           limit.map(|v| v as u32),
-                    limitc:          limitc.map(|v| v as u32),
-                    thscd1:          thscd1.map(|v| v as u32),
-                    thscd2:          thscd2.map(|v| v as u32),
-                    opt:             Some(4),
+                    mvbw_name: None,
+                    mvfw_name: None,
+                    thsad: thsad.map(|v| v as u32),
+                    thsadc: thsadc.map(|v| v as u32),
+                    plane: *plane,
+                    limit: limit.map(|v| v as u32),
+                    limitc: limitc.map(|v| v as u32),
+                    thscd1: thscd1.map(|v| v as u32),
+                    thscd2: thscd2.map(|v| v as u32),
+                    opt: Some(4),
                 };
                 degrain_plugin.invoke(core, node, &super_node, &mvbw_node, &mvfw_node)
             },
@@ -1523,13 +1477,13 @@ impl VapourSynthFilter {
                 dynamic_seed,
             } => {
                 let photon_noise = PhotonNoise {
-                    iso:        *iso,
+                    iso: *iso,
                     chroma_iso: *chroma_iso,
-                    width:      None,
-                    height:     None,
-                    c_y:        cy.clone(),
-                    ccb:        ccb.clone(),
-                    ccr:        ccr.clone(),
+                    width: None,
+                    height: None,
+                    c_y: cy.clone(),
+                    ccb: ccb.clone(),
+                    ccr: ccr.clone(),
                 };
                 let fgs = FGS {
                     photon_noise,
@@ -1554,10 +1508,10 @@ impl VapourSynthFilter {
                 right,
             } => {
                 let plugin = Crop {
-                    top:    top.map(|v| v as u32),
+                    top: top.map(|v| v as u32),
                     bottom: bottom.map(|v| v as u32),
-                    left:   left.map(|v| v as u32),
-                    right:  right.map(|v| v as u32),
+                    left: left.map(|v| v as u32),
+                    right: right.map(|v| v as u32),
                 };
 
                 plugin.generate_script(node_name)?
@@ -1636,10 +1590,7 @@ impl VapourSynthFilter {
                     .generate_script(node_name)?,
                 }
             },
-            VapourSynthFilter::Trim {
-                start,
-                end,
-            } => {
+            VapourSynthFilter::Trim { start, end } => {
                 let plugin = Trim {
                     first: start.map(|v| v as u32),
                     last: end.map(|v| v as u32),
@@ -1674,17 +1625,17 @@ impl VapourSynthFilter {
                 adaptive_aggregation,
             } => {
                 let plugin = WNNM {
-                    sigma:                sigma.clone(),
-                    block_size:           block_size.map(|v| v as u32),
-                    block_step:           block_step.map(|v| v as u32),
-                    group_size:           group_size.map(|v| v as u32),
-                    bm_range:             bm_range.map(|v| v as u32),
-                    radius:               radius.map(|v| v as u32),
-                    ps_num:               ps_num.map(|v| v as u32),
-                    ps_range:             ps_range.map(|v| v as u32),
-                    residual:             *residual,
+                    sigma: sigma.clone(),
+                    block_size: block_size.map(|v| v as u32),
+                    block_step: block_step.map(|v| v as u32),
+                    group_size: group_size.map(|v| v as u32),
+                    bm_range: bm_range.map(|v| v as u32),
+                    radius: radius.map(|v| v as u32),
+                    ps_num: ps_num.map(|v| v as u32),
+                    ps_range: ps_range.map(|v| v as u32),
+                    residual: *residual,
                     adaptive_aggregation: *adaptive_aggregation,
-                    rclip_name:           None,
+                    rclip_name: None,
                 };
 
                 plugin.generate_script(node_name)?
@@ -1697,12 +1648,12 @@ impl VapourSynthFilter {
                 pbficnum,
             } => {
                 let plugin = Bilateral {
-                    sigma_s:   sigma_s.clone(),
-                    sigma_r:   sigma_r.clone(),
-                    planes:    planes.clone(),
+                    sigma_s: sigma_s.clone(),
+                    sigma_r: sigma_r.clone(),
+                    planes: planes.clone(),
                     algorithm: algorithm.clone(),
-                    pbficnum:  pbficnum.clone(),
-                    ref_name:  None,
+                    pbficnum: pbficnum.clone(),
+                    ref_name: None,
                 };
 
                 plugin.generate_script(node_name)?
@@ -1750,50 +1701,46 @@ impl VapourSynthFilter {
 
                 // Step 1: Super
                 let super_plugin = MVUSuper {
-                    blksize:      blksize
-                        .clone()
-                        .map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    overlap:      overlap
-                        .clone()
-                        .map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    pad:          pad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    pel:          pel.map(|v| v as u32),
-                    sharp:        sharp.map(|v| v as u32),
-                    rfilter:      rfilter.map(|v| v as u32),
-                    onelevel:     Some(false),
+                    blksize: blksize.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    overlap: overlap.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    pad: pad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    pel: pel.map(|v| v as u32),
+                    sharp: sharp.map(|v| v as u32),
+                    rfilter: rfilter.map(|v| v as u32),
+                    onelevel: Some(false),
                     pelclip_name: None,
-                    prefix:       prefix.clone(),
+                    prefix: prefix.clone(),
                 };
                 let (_, super_lines) = super_plugin.generate_script(super_name.clone())?;
                 lines.extend(super_lines);
 
                 // Step 2: AnalyseMany
                 let analyse_many_plugin = AnalyseMany {
-                    super_name:  Some(super_name.clone()),
-                    blksize:     blksize.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    overlap:     overlap.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    levels:      None,
-                    search:      search.map(|v| v as u32),
+                    super_name: Some(super_name.clone()),
+                    blksize: blksize.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    overlap: overlap.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    levels: None,
+                    search: search.map(|v| v as u32),
                     searchparam: searchparam.map(|v| v as u32),
-                    pelsearch:   None,
-                    mvlambda:    mvlambda.map(|v| v as u32),
-                    chroma:      *chroma,
-                    delta:       Some(1),
-                    lsad:        lsad.map(|v| v as u32),
-                    plevel:      plevel.map(|v| v as u32),
-                    globalmv:    *globalmv,
-                    pnew:        pnew.map(|v| v as u32),
-                    pzero:       pzero.map(|v| v as u32),
-                    pglobal:     pglobal.map(|v| v as u32),
-                    badsad:      badsad.map(|v| v as u32),
-                    badrange:    badrange.map(|v| v as u32),
-                    meander:     *meander,
-                    trymany:     trymany.map(|v| v as u32),
-                    fields:      Some(false),
-                    tff:         Some(false),
-                    satd:        *satd,
-                    radius:      radius.map(|v| v as u32),
-                    prefix:      prefix.clone(),
+                    pelsearch: None,
+                    mvlambda: mvlambda.map(|v| v as u32),
+                    chroma: *chroma,
+                    delta: Some(1),
+                    lsad: lsad.map(|v| v as u32),
+                    plevel: plevel.map(|v| v as u32),
+                    globalmv: *globalmv,
+                    pnew: pnew.map(|v| v as u32),
+                    pzero: pzero.map(|v| v as u32),
+                    pglobal: pglobal.map(|v| v as u32),
+                    badsad: badsad.map(|v| v as u32),
+                    badrange: badrange.map(|v| v as u32),
+                    meander: *meander,
+                    trymany: trymany.map(|v| v as u32),
+                    fields: Some(false),
+                    tff: Some(false),
+                    satd: *satd,
+                    radius: radius.map(|v| v as u32),
+                    prefix: prefix.clone(),
                 };
                 let (_, analyse_lines) =
                     analyse_many_plugin.generate_script(vectors_name.clone())?;
@@ -1803,26 +1750,26 @@ impl VapourSynthFilter {
                 let final_vectors_name = if recalculate.unwrap_or(false) {
                     let recalc_name = "mvu_vectors_recalc".to_string();
                     let recalc_plugin = Recalculate {
-                        super_name:   Some(super_name.clone()),
+                        super_name: Some(super_name.clone()),
                         vectors_name: Some(vectors_name),
-                        thsad:        recalc_thsad.map(|v| v as u32),
-                        smooth:       *recalc_smooth,
-                        blksize:      recalc_blksize
+                        thsad: recalc_thsad.map(|v| v as u32),
+                        smooth: *recalc_smooth,
+                        blksize: recalc_blksize
                             .clone()
                             .map(|v| v.into_iter().map(|u| u as u32).collect()),
-                        overlap:      recalc_overlap
+                        overlap: recalc_overlap
                             .clone()
                             .map(|v| v.into_iter().map(|u| u as u32).collect()),
-                        search:       None,
-                        searchparam:  None,
-                        mvlambda:     None,
-                        chroma:       *chroma,
-                        pnew:         None,
-                        meander:      None,
-                        fields:       None,
-                        tff:          None,
-                        satd:         None,
-                        prefix:       prefix.clone(),
+                        search: None,
+                        searchparam: None,
+                        mvlambda: None,
+                        chroma: *chroma,
+                        pnew: None,
+                        meander: None,
+                        fields: None,
+                        tff: None,
+                        satd: None,
+                        prefix: prefix.clone(),
                     };
                     let (_, recalc_lines) = recalc_plugin.generate_script(recalc_name.clone())?;
                     lines.extend(recalc_lines);
@@ -1833,17 +1780,17 @@ impl VapourSynthFilter {
 
                 // Step 4: Degrain
                 let degrain_plugin = Degrain {
-                    clip_name:    Some(node_name.clone()),
-                    super_name:   Some(super_name),
+                    clip_name: Some(node_name.clone()),
+                    super_name: Some(super_name),
                     vectors_name: Some(final_vectors_name),
-                    thsad:        thsad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    thsad2:       thsad2.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    planes:       planes.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
-                    limit:        limit.clone(),
-                    thscd1:       thscd1.map(|v| v as u32),
-                    thscd2:       *thscd2,
-                    weights:      None,
-                    prefix:       prefix.clone(),
+                    thsad: thsad.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    thsad2: thsad2.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    planes: planes.clone().map(|v| v.into_iter().map(|u| u as u32).collect()),
+                    limit: limit.clone(),
+                    thscd1: thscd1.map(|v| v as u32),
+                    thscd2: *thscd2,
+                    weights: None,
+                    prefix: prefix.clone(),
                 };
                 let (_, degrain_lines) = degrain_plugin.generate_script(node_name)?;
                 lines.extend(degrain_lines);
@@ -1909,15 +1856,15 @@ impl VapourSynthFilter {
 
                 // Step 1: Super
                 let super_plugin = ZMVSuper {
-                    hpad:         hpad.map(|v| v as u32),
-                    vpad:         vpad.map(|v| v as u32),
-                    pel:          pel.map(|v| v as u32),
-                    levels:       levels.map(|v| v as u32),
-                    chroma:       *chroma,
-                    sharp:        sharp.map(|v| v as u32),
-                    rfilter:      rfilter.map(|v| v as u32),
+                    hpad: hpad.map(|v| v as u32),
+                    vpad: vpad.map(|v| v as u32),
+                    pel: pel.map(|v| v as u32),
+                    levels: levels.map(|v| v as u32),
+                    chroma: *chroma,
+                    sharp: sharp.map(|v| v as u32),
+                    rfilter: rfilter.map(|v| v as u32),
                     pelclip_name: None,
-                    opt:          Some(4),
+                    opt: Some(4),
                 };
                 let (_, super_lines) = super_plugin.generate_script(super_name.clone())?;
                 lines.extend(super_lines);
@@ -1925,35 +1872,35 @@ impl VapourSynthFilter {
                 // Step 2: Analyse forward (isb=0) and backward (isb=1)
                 let analyse_plugin = ZoomAnalyse {
                     super_clip_name: Some(super_name.clone()),
-                    blksize:         blksize.map(|v| v as u32),
-                    blksizev:        blksizev.map(|v| v as u32),
-                    levels:          levels.map(|v| v as u32),
-                    search:          search.map(|v| v as u32),
-                    searchparam:     searchparam.map(|v| v as u32),
-                    pelsearch:       pelsearch.map(|v| v as u32),
-                    isb:             Some(0),
-                    lambda:          lambda.map(|v| v as u32),
-                    chroma:          *chroma,
-                    delta:           Some(-1),
-                    truemotion:      *truemotion,
-                    lsad:            lsad.map(|v| v as u32),
-                    plevel:          plevel.map(|v| v as u32),
-                    global:          *global,
-                    pnew:            pnew.map(|v| v as u32),
-                    pzero:           pzero.map(|v| v as u32),
-                    pglobal:         pglobal.map(|v| v as u32),
-                    overlap:         overlap.map(|v| v as u32),
-                    overlapv:        overlapv.map(|v| v as u32),
-                    divide:          divide.map(|v| v as u32),
-                    badsad:          badsad.map(|v| v as u32),
-                    badrange:        badrange.map(|v| v as u32),
-                    opt:             Some(4),
-                    meander:         *meander,
-                    trymany:         *trymany,
-                    fields:          *fields,
-                    tff:             *tff,
-                    search_coarse:   search_coarse.map(|v| v as u32),
-                    dct:             dct.map(|v| v as u32),
+                    blksize: blksize.map(|v| v as u32),
+                    blksizev: blksizev.map(|v| v as u32),
+                    levels: levels.map(|v| v as u32),
+                    search: search.map(|v| v as u32),
+                    searchparam: searchparam.map(|v| v as u32),
+                    pelsearch: pelsearch.map(|v| v as u32),
+                    isb: Some(0),
+                    lambda: lambda.map(|v| v as u32),
+                    chroma: *chroma,
+                    delta: Some(-1),
+                    truemotion: *truemotion,
+                    lsad: lsad.map(|v| v as u32),
+                    plevel: plevel.map(|v| v as u32),
+                    global: *global,
+                    pnew: pnew.map(|v| v as u32),
+                    pzero: pzero.map(|v| v as u32),
+                    pglobal: pglobal.map(|v| v as u32),
+                    overlap: overlap.map(|v| v as u32),
+                    overlapv: overlapv.map(|v| v as u32),
+                    divide: divide.map(|v| v as u32),
+                    badsad: badsad.map(|v| v as u32),
+                    badrange: badrange.map(|v| v as u32),
+                    opt: Some(4),
+                    meander: *meander,
+                    trymany: *trymany,
+                    fields: *fields,
+                    tff: *tff,
+                    search_coarse: search_coarse.map(|v| v as u32),
+                    dct: dct.map(|v| v as u32),
                 };
                 let (_, analyse_fw_lines) = analyse_plugin.generate_script(mvfw_name.clone())?;
                 lines.extend(analyse_fw_lines);
@@ -1970,25 +1917,25 @@ impl VapourSynthFilter {
                     let recalc_fw_name = "zmv_mvfw_recalc".to_string();
                     let recalc_plugin = ZoomRecalculate {
                         super_clip_name: Some(super_name.clone()),
-                        vectors_name:    Some(mvbw_name),
-                        thsad:           recalc_thsad.map(|v| v as u32),
-                        smooth:          *recalc_smooth,
-                        blksize:         recalc_blksize.map(|v| v as u32),
-                        blksizev:        recalc_blksizev.map(|v| v as u32),
-                        search:          recalc_search.map(|v| v as u32),
-                        searchparam:     recalc_searchparam.map(|v| v as u32),
-                        lambda:          recalc_lambda.map(|v| v as u32),
-                        chroma:          *chroma,
-                        truemotion:      Some(true),
-                        pnew:            Some(25),
-                        overlap:         recalc_overlap.map(|v| v as u32),
-                        overlapv:        recalc_overlapv.map(|v| v as u32),
-                        divide:          recalc_divide.map(|v| v as u32),
-                        opt:             Some(4),
-                        meander:         Some(true),
-                        fields:          *fields,
-                        tff:             *tff,
-                        dct:             Some(0),
+                        vectors_name: Some(mvbw_name),
+                        thsad: recalc_thsad.map(|v| v as u32),
+                        smooth: *recalc_smooth,
+                        blksize: recalc_blksize.map(|v| v as u32),
+                        blksizev: recalc_blksizev.map(|v| v as u32),
+                        search: recalc_search.map(|v| v as u32),
+                        searchparam: recalc_searchparam.map(|v| v as u32),
+                        lambda: recalc_lambda.map(|v| v as u32),
+                        chroma: *chroma,
+                        truemotion: Some(true),
+                        pnew: Some(25),
+                        overlap: recalc_overlap.map(|v| v as u32),
+                        overlapv: recalc_overlapv.map(|v| v as u32),
+                        divide: recalc_divide.map(|v| v as u32),
+                        opt: Some(4),
+                        meander: Some(true),
+                        fields: *fields,
+                        tff: *tff,
+                        dct: Some(0),
                     };
                     let (_, recalc_bw_lines) =
                         recalc_plugin.generate_script(recalc_bw_name.clone())?;
@@ -2007,18 +1954,18 @@ impl VapourSynthFilter {
 
                 // Step 4: Degrain1
                 let degrain_plugin = ZoomDegrainPlugin {
-                    clip_name:       Some(node_name.clone()),
+                    clip_name: Some(node_name.clone()),
                     super_clip_name: Some(super_name),
-                    mvbw_name:       Some(final_mvbw_name),
-                    mvfw_name:       Some(final_mvfw_name),
-                    thsad:           thsad.map(|v| v as u32),
-                    thsadc:          thsadc.map(|v| v as u32),
-                    plane:           *plane,
-                    limit:           limit.map(|v| v as u32),
-                    limitc:          limitc.map(|v| v as u32),
-                    thscd1:          thscd1.map(|v| v as u32),
-                    thscd2:          thscd2.map(|v| v as u32),
-                    opt:             Some(4),
+                    mvbw_name: Some(final_mvbw_name),
+                    mvfw_name: Some(final_mvfw_name),
+                    thsad: thsad.map(|v| v as u32),
+                    thsadc: thsadc.map(|v| v as u32),
+                    plane: *plane,
+                    limit: limit.map(|v| v as u32),
+                    limitc: limitc.map(|v| v as u32),
+                    thscd1: thscd1.map(|v| v as u32),
+                    thscd2: thscd2.map(|v| v as u32),
+                    opt: Some(4),
                 };
                 let (_, degrain_lines) = degrain_plugin.generate_script(node_name)?;
                 lines.extend(degrain_lines);
@@ -2034,13 +1981,13 @@ impl VapourSynthFilter {
                 dynamic_seed,
             } => {
                 let photon_noise = PhotonNoise {
-                    iso:        *iso,
+                    iso: *iso,
                     chroma_iso: *chroma_iso,
-                    width:      None,
-                    height:     None,
-                    c_y:        cy.clone(),
-                    ccb:        ccb.clone(),
-                    ccr:        ccr.clone(),
+                    width: None,
+                    height: None,
+                    c_y: cy.clone(),
+                    ccb: ccb.clone(),
+                    ccr: ccr.clone(),
                 };
                 let fgs = FGS {
                     photon_noise,

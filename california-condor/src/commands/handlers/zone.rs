@@ -43,9 +43,7 @@ pub fn configure_zoner(configuration: &mut Configuration, zones: &[String]) -> R
     if zones.is_empty() {
         bail!("no zones provided");
     }
-    configuration.condor.sequence_config.zoner = Some(ZonerConfig {
-        zones,
-    });
+    configuration.condor.sequence_config.zoner = Some(ZonerConfig { zones });
 
     Ok(())
 }
@@ -138,10 +136,13 @@ mod tests {
         // real file.
         let binary = std::env::current_exe().expect("the test binary has a path");
 
-        configure_zoner(&mut configuration, &[format!(
-            "0 200 replace svt-av1(\"{}\") \"--preset 3\" --iso 400",
-            binary.display()
-        )])
+        configure_zoner(
+            &mut configuration,
+            &[format!(
+                "0 200 replace svt-av1(\"{}\") \"--preset 3\" --iso 400",
+                binary.display()
+            )],
+        )
         .expect("the zone parses");
 
         let zoner = configuration.condor.sequence_config.zoner.expect("the zoner is configured");

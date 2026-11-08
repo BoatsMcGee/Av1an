@@ -15,8 +15,7 @@
 
 use std::{
     collections::BTreeMap,
-    env,
-    fs,
+    env, fs,
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -127,25 +126,8 @@ fn load_font() -> Vec<u8> {
 /// against the theme.
 fn rgb(color: ratatui::style::Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
     use ratatui::style::Color::{
-        Black,
-        Blue,
-        Cyan,
-        DarkGray,
-        Gray,
-        Green,
-        Indexed,
-        LightBlue,
-        LightCyan,
-        LightGreen,
-        LightMagenta,
-        LightRed,
-        LightYellow,
-        Magenta,
-        Red,
-        Reset,
-        Rgb,
-        White,
-        Yellow,
+        Black, Blue, Cyan, DarkGray, Gray, Green, Indexed, LightBlue, LightCyan, LightGreen,
+        LightMagenta, LightRed, LightYellow, Magenta, Red, Reset, Rgb, White, Yellow,
     };
     match color {
         Reset => fallback,
@@ -210,9 +192,9 @@ fn xterm256(i: u8) -> (u8, u8, u8) {
 /// A minimal RGBA8 raster image, so generating screenshots needs no image
 /// library. AVIF encoding is delegated to FFmpeg (see [`encode_avif`]).
 struct Canvas {
-    width:  u32,
+    width: u32,
     height: u32,
-    data:   Vec<u8>,
+    data: Vec<u8>,
 }
 
 impl Canvas {
@@ -439,12 +421,11 @@ fn draw_tiling_char(img: &mut Canvas, ch: char, x0: u32, y0: u32, fg: (u8, u8, u
 fn rasterize(buf: &Buffer, theme: Theme, font: &FontVec) -> Canvas {
     let bg_default = rgb(theme.background, (0, 0, 0));
     let fg_default = rgb(theme.foreground, (255, 255, 255));
-    let mut img = Canvas::from_pixel(WIDTH, HEIGHT, [
-        bg_default.0,
-        bg_default.1,
-        bg_default.2,
-        255,
-    ]);
+    let mut img = Canvas::from_pixel(
+        WIDTH,
+        HEIGHT,
+        [bg_default.0, bg_default.1, bg_default.2, 255],
+    );
 
     let scale = PxScale::from(FONT_PX);
     let scaled = font.as_scaled(scale);
@@ -604,19 +585,17 @@ fn mock_scene_bounds() -> Vec<(usize, usize)> {
 
 fn clip_info() -> ClipInfo {
     ClipInfo {
-        num_frames:                    CLIP_FRAMES,
-        format_info:                   PixelFormat::VapourSynth {
-            bit_depth: 10
-        },
-        frame_rate:                    av_format::rational::Rational64::new(24000, 1001),
-        resolution:                    (CLIP_WIDTH as u32, CLIP_HEIGHT as u32),
-        color_range:                   None,
-        color_primaries:               None,
+        num_frames: CLIP_FRAMES,
+        format_info: PixelFormat::VapourSynth { bit_depth: 10 },
+        frame_rate: av_format::rational::Rational64::new(24000, 1001),
+        resolution: (CLIP_WIDTH as u32, CLIP_HEIGHT as u32),
+        color_range: None,
+        color_primaries: None,
         color_transfer_characteristic: Some(TransferCharacteristic::SMPTE2084),
-        color_space:                   None,
-        chroma_location:               None,
-        mastering_display:             None,
-        content_light_level:           None,
+        color_space: None,
+        chroma_location: None,
+        mastering_display: None,
+        content_light_level: None,
     }
 }
 
@@ -627,13 +606,13 @@ fn encoder() -> Encoder {
 /// A set of scene boundaries for fixtures (no real video required).
 fn mock_scenes() -> Vec<Scene<CliSequenceData>> {
     let video = TestVideo {
-        path:         PathBuf::new(),
-        width:        CLIP_WIDTH,
-        height:       CLIP_HEIGHT,
-        frames:       CLIP_FRAMES,
+        path: PathBuf::new(),
+        width: CLIP_WIDTH,
+        height: CLIP_HEIGHT,
+        frames: CLIP_FRAMES,
         fps_rational: (24000, 1001),
-        format:       FFPixelFormat::YUV420P,
-        scenes:       mock_scene_bounds(),
+        format: FFPixelFormat::YUV420P,
+        scenes: mock_scene_bounds(),
     };
     video.mock_scenes(&encoder())
 }
@@ -663,12 +642,12 @@ fn tq_passes(scenes: &[Scene<CliSequenceData>]) -> BTreeMap<u64, Vec<QualityPass
         .map(|(i, _)| {
             let i = i as f64;
             let pass = QualityPass {
-                scene:        i as u64,
+                scene: i as u64,
                 current_pass: 2,
                 total_passes: 3,
-                quantizer:    (i * 0.9).sin().mul_add(6.0, 30.0),
-                score:        (i * 0.7).cos().mul_add(3.0, 92.0),
-                bitrate:      (i * 1.3).sin().mul_add(1400.0, 4200.0),
+                quantizer: (i * 0.9).sin().mul_add(6.0, 30.0),
+                score: (i * 0.7).cos().mul_add(3.0, 92.0),
+                bitrate: (i * 1.3).sin().mul_add(1400.0, 4200.0),
             };
             (i as u64, vec![pass])
         })
@@ -680,11 +659,11 @@ fn tq_passes(scenes: &[Scene<CliSequenceData>]) -> BTreeMap<u64, Vec<QualityPass
 // ---------------------------------------------------------------------------
 
 struct Screen {
-    slug:    &'static str,
+    slug: &'static str,
     /// The command whose prompt line heads the screenshot, e.g.
     /// `detect-scenes`.
     command: &'static str,
-    buf:     Buffer,
+    buf: Buffer,
 }
 
 /// Build every TUI screen, rendering under whatever theme is currently
@@ -715,9 +694,9 @@ fn tui_screens() -> Vec<Screen> {
         // Backdate after on_snapshot so the FPS reads ~350.
         backdate_for_frames(&mut app.started, frames_processed, 350.0);
         screens.push(Screen {
-            slug:    "scene-detection",
+            slug: "scene-detection",
             command: "detect-scenes",
-            buf:     capture(|f| app.render(f)),
+            buf: capture(|f| app.render(f)),
         });
     }
 
@@ -742,9 +721,9 @@ fn tui_screens() -> Vec<Screen> {
         // ~0.35 SPS => ~34s for 12 scenes.
         backdate_for_frames(&mut app.started, processed, 0.35);
         screens.push(Screen {
-            slug:    "noise-detection",
+            slug: "noise-detection",
             command: "detect-noise",
-            buf:     capture(|f| app.render(f)),
+            buf: capture(|f| app.render(f)),
         });
     }
 
@@ -774,23 +753,24 @@ fn tui_screens() -> Vec<Screen> {
                     2..=5 => (true, None),
                     _ => (false, Some("Threshold not met".to_owned())),
                 };
-                (workers, WorkerStatus {
-                    started: now - duration,
-                    finished: Some(now),
-                    added,
-                    failed_reason,
-                    current_frame: sample,
-                    total_frames: sample,
-                })
+                (
+                    workers,
+                    WorkerStatus {
+                        started: now - duration,
+                        finished: Some(now),
+                        added,
+                        failed_reason,
+                        current_frame: sample,
+                        total_frames: sample,
+                    },
+                )
             })
             .collect();
-        app.on_snapshot(BenchmarkerState {
-            results,
-        });
+        app.on_snapshot(BenchmarkerState { results });
         screens.push(Screen {
-            slug:    "benchmarker",
+            slug: "benchmarker",
             command: "benchmark",
-            buf:     capture(|f| app.render(f)),
+            buf: capture(|f| app.render(f)),
         });
     }
 
@@ -802,18 +782,18 @@ fn tui_screens() -> Vec<Screen> {
         let passes = tq_passes(&scenes);
         let mut app = TargetQualityApp::new(ci, scenes, encoder(), ProbeStatistic::Mean);
         app.on_snapshot(TargetQualityState {
-            quality_passes:  passes,
-            current_pass:    2,
-            frames_encoded:  6040,
+            quality_passes: passes,
+            current_pass: 2,
+            frames_encoded: 6040,
             frames_compared: 0,
-            total_frames:    CLIP_FRAMES as u64,
+            total_frames: CLIP_FRAMES as u64,
         });
         // Backdate after on_snapshot (which resets the pass timer) so FPS ~24.
         backdate_for_frames(&mut app.pass_started, 6040, 24.0);
         screens.push(Screen {
-            slug:    "target-quality-encoding",
+            slug: "target-quality-encoding",
             command: "target-quality",
-            buf:     capture(|f| app.render(f)),
+            buf: capture(|f| app.render(f)),
         });
     }
 
@@ -825,18 +805,18 @@ fn tui_screens() -> Vec<Screen> {
         let passes = tq_passes(&scenes);
         let mut app = TargetQualityApp::new(ci, scenes, encoder(), ProbeStatistic::Mean);
         app.on_snapshot(TargetQualityState {
-            quality_passes:  passes,
-            current_pass:    2,
-            frames_encoded:  CLIP_FRAMES as u64,
+            quality_passes: passes,
+            current_pass: 2,
+            frames_encoded: CLIP_FRAMES as u64,
             frames_compared: 7190,
-            total_frames:    CLIP_FRAMES as u64,
+            total_frames: CLIP_FRAMES as u64,
         });
         // Backdate after on_snapshot so FPS ~110.
         backdate_for_frames(&mut app.pass_started, 7190, 110.0);
         screens.push(Screen {
-            slug:    "target-quality-comparing",
+            slug: "target-quality-comparing",
             command: "target-quality",
-            buf:     capture(|f| app.render(f)),
+            buf: capture(|f| app.render(f)),
         });
     }
 
@@ -876,12 +856,12 @@ fn tui_screens() -> Vec<Screen> {
             .filter(|(i, _)| (20u64..24).contains(i))
             .map(|(idx, (processed, s))| {
                 let mut se = SceneEncoder {
-                    scene:            s.clone(),
-                    started:          Instant::now(),
-                    current_pass:     1,
-                    total_passes:     2,
+                    scene: s.clone(),
+                    started: Instant::now(),
+                    current_pass: 1,
+                    total_passes: 2,
                     frames_processed: *processed,
-                    total_frames:     (s.end_frame - s.start_frame) as u64,
+                    total_frames: (s.end_frame - s.start_frame) as u64,
                 };
                 // Each worker ~24 FPS on its own scene.
                 backdate_for_frames(&mut se.started, *processed, 24.0);
@@ -893,19 +873,19 @@ fn tui_screens() -> Vec<Screen> {
         let est_bitrate = 3_500_000.0; // ~3500 kbps is realistic for 1080p AV1
         let est_bytes = (est_bitrate / 8.0 * (total as f64 / CLIP_FPS)) as u64;
         app.on_snapshot(ParallelEncoderState {
-            scenes:                 snapshot_map,
-            active_encoders:        active,
-            clip_info:              ci,
+            scenes: snapshot_map,
+            active_encoders: active,
+            clip_info: ci,
             completed_scenes_count: 20,
-            estimated_bitrate:      est_bitrate,
-            estimated_bytes:        est_bytes,
+            estimated_bitrate: est_bitrate,
+            estimated_bytes: est_bytes,
         });
         // Overall aggregate ~90 FPS across the active workers since resume.
         backdate_for_frames(&mut app.started, delta, 90.0);
         screens.push(Screen {
-            slug:    "parallel-encoder",
+            slug: "parallel-encoder",
             command: "encode",
-            buf:     capture(|f| app.render(f)),
+            buf: capture(|f| app.render(f)),
         });
     }
 
@@ -913,13 +893,11 @@ fn tui_screens() -> Vec<Screen> {
     {
         let mut app = SceneConcatenatorApp::new(ci, 48, ConcatMethod::Ivf);
         backdate(&mut app.started, 33);
-        app.on_snapshot(SceneConcatenatorState {
-            percent: 72.0
-        });
+        app.on_snapshot(SceneConcatenatorState { percent: 72.0 });
         screens.push(Screen {
-            slug:    "scene-concatenator",
+            slug: "scene-concatenator",
             command: "concatenate",
-            buf:     capture(|f| app.render(f)),
+            buf: capture(|f| app.render(f)),
         });
     }
 

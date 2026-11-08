@@ -9,8 +9,7 @@ use crate::vapoursynth::{
     VapourSynthError,
     plugins::{Plugin, PluginFunction},
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -18,17 +17,17 @@ use crate::vapoursynth::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct BM3DCUDA {
     // Only used for script generation
-    pub clip_name:  NodeVariableName,
+    pub clip_name: NodeVariableName,
     // Only used for script generation
-    pub ref_name:   Option<NodeVariableName>,
+    pub ref_name: Option<NodeVariableName>,
     /// The strength of denoising for each plane.
     ///
     /// Defaults to `[3.0, 3.0, 3.0]`
-    pub sigma:      Option<[f64; 3]>,
-    pub radius:     Option<u32>,
+    pub sigma: Option<[f64; 3]>,
+    pub radius: Option<u32>,
     pub block_step: Option<u32>,
-    pub bm_range:   Option<u32>,
-    pub ps_range:   Option<u32>,
+    pub bm_range: Option<u32>,
+    pub ps_range: Option<u32>,
 
     /// Multi-threaded copy between CPU and GPU at the expense of 4x memory
     /// consumption.
@@ -72,30 +71,33 @@ impl BM3DCUDA {
         arguments
             .set_node("clip", clip)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
         if let Some(reference) = reference {
             arguments.set_node("ref", reference).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: "ref".to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
-        Self::argument_set_ints(&mut arguments, vec![
-            ("radius", self.radius),
-            ("block_step", self.block_step),
-            ("bm_range", self.bm_range),
-            ("ps_range", self.ps_range),
-            ("fast", self.fast.map(|b| if b { 1 } else { 0 })),
-        ])?;
-        Self::arguments_set_float_arrays(&mut arguments, vec![(
-            "sigma",
-            self.sigma.map(|s| s.to_vec()),
-        )])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("radius", self.radius),
+                ("block_step", self.block_step),
+                ("bm_range", self.bm_range),
+                ("ps_range", self.ps_range),
+                ("fast", self.fast.map(|b| if b { 1 } else { 0 })),
+            ],
+        )?;
+        Self::arguments_set_float_arrays(
+            &mut arguments,
+            vec![("sigma", self.sigma.map(|s| s.to_vec()))],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         Ok(node)

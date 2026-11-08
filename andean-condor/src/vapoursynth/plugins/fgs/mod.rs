@@ -12,12 +12,10 @@ use self::format::FgsFormat;
 use crate::{
     models::encoder::photon_noise::PhotonNoise,
     vapoursynth::{
-        VapourSynthError,
-        get_clip_info,
+        VapourSynthError, get_clip_info,
         plugins::{Plugin, PluginFunction, resize::bicubic::Bicubic},
         script_builder::{
-            NodeVariableName,
-            VapourSynthPluginScript,
+            NodeVariableName, VapourSynthPluginScript,
             script::{Imports, Line},
         },
     },
@@ -82,9 +80,9 @@ impl FGS {
         node: &Node<'core>,
     ) -> Result<Node<'core>, VapourSynthError> {
         let clip_info = get_clip_info(node).map_err(|e| VapourSynthError::PluginFunctionError {
-            plugin:   Self::PLUGIN_NAME.to_owned(),
+            plugin: Self::PLUGIN_NAME.to_owned(),
             function: Self::FUNCTION_NAME.to_owned(),
-            message:  e.to_string(),
+            message: e.to_string(),
         })?;
 
         let (width, height) = clip_info.resolution;
@@ -120,9 +118,9 @@ impl FGS {
 
         arguments.set_node("clip", fgs_input).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
 
@@ -137,17 +135,21 @@ impl FGS {
         let supported_arguments = Self::plugin_function_arguments(core)?;
         let is_supported =
             |name: &str| supported_arguments.iter().any(|argument| argument.name == name);
-        Self::argument_set_ints(&mut arguments, vec![
-            (
-                "dynamic_seed",
-                is_supported("dynamic_seed").then_some(self.dynamic_seed.unwrap_or(false) as i64),
-            ),
-            (
-                "simd_mask",
-                is_supported("simd_mask").then_some(self.simd_mask.unwrap_or(!0) as i64),
-            ),
-            ("seed_list", is_supported("seed_list").then_some(0)),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                (
+                    "dynamic_seed",
+                    is_supported("dynamic_seed")
+                        .then_some(self.dynamic_seed.unwrap_or(false) as i64),
+                ),
+                (
+                    "simd_mask",
+                    is_supported("simd_mask").then_some(self.simd_mask.unwrap_or(!0) as i64),
+                ),
+                ("seed_list", is_supported("seed_list").then_some(0)),
+            ],
+        )?;
 
         let fgs_node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 

@@ -23,10 +23,7 @@ use std::path::PathBuf;
 
 use andean_condor::{
     models::sequence::target_quality::types::{
-        ProbeStatistic,
-        ProbeStrategy,
-        SubsetProbeLength,
-        SubsetProbePosition,
+        ProbeStatistic, ProbeStrategy, SubsetProbeLength, SubsetProbePosition,
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
@@ -118,16 +115,16 @@ impl From<bool> for Toggle {
 pub struct InputOverride {
     /// Path to a video or a VapourSynth script.
     #[arg(long, short('i'), value_name = "Path")]
-    pub path:                Option<PathBuf>,
+    pub path: Option<PathBuf>,
     /// Decoding plugin for a video input.
     #[arg(long, value_name = "Decoder")]
-    pub decoder:             Option<DecoderMethod>,
+    pub decoder: Option<DecoderMethod>,
     /// Conversion applied to the decoded frames.
     #[arg(long, value_name = "Filter")]
-    pub filters:             Option<Vec<VapourSynthFilter>>,
+    pub filters: Option<Vec<VapourSynthFilter>>,
     /// VapourSynth script arguments (`key=value`); scripts only.
     #[arg(long, value_name = "Arguments")]
-    pub vs_args:             Option<Vec<String>>,
+    pub vs_args: Option<Vec<String>>,
     /// Let several encoders pull frames from a VapourSynth script at once.
     ///
     /// Bare `--stream-concurrently` means on; `--stream-concurrently off`
@@ -154,16 +151,16 @@ impl InputOverride {
 pub struct StrategyArgs {
     /// The probing strategy to use.
     #[arg(value_name = "KIND")]
-    pub kind:           ProbeStrategyKind,
+    pub kind: ProbeStrategyKind,
     /// Frames between probes; required by *skip*.
     #[arg(value_name = "Frames")]
-    pub skip:           Option<u32>,
+    pub skip: Option<u32>,
     /// Where in the scene to probe; used by *subset*.
     #[arg(long, value_name = "Position")]
-    pub position:       Option<SubsetPosition>,
+    pub position: Option<SubsetPosition>,
     /// Subset length in frames; used by *subset*.
     #[arg(long, value_name = "Frames")]
-    pub length_frames:  Option<u32>,
+    pub length_frames: Option<u32>,
     /// Subset length as a percentage; used by *subset*.
     #[arg(long, value_name = "Percent")]
     pub length_percent: Option<f64>,
@@ -175,17 +172,17 @@ pub struct StrategyArgs {
 pub struct StatisticArgs {
     /// The statistic to reduce the probe scores with.
     #[arg(value_name = "KIND")]
-    pub kind:       StatisticKind,
+    pub kind: StatisticKind,
     /// The value required by *percentile* (`0..=100`) or
     /// *standard-deviation-distance* (`SIGMA`).
     #[arg(value_name = "VALUE", allow_hyphen_values = true)]
-    pub value:      Option<f64>,
+    pub value: Option<f64>,
     /// The percentile (`0..=100`) for *percentile*.
     #[arg(long, value_name = "Percent")]
     pub percentile: Option<f64>,
     /// The standard deviation distance for *standard-deviation-distance*.
     #[arg(long, value_name = "Sigma", allow_hyphen_values = true)]
-    pub sigma:      Option<f64>,
+    pub sigma: Option<f64>,
 }
 
 /// The strategies `set strategy` can choose.
@@ -288,9 +285,7 @@ impl StrategyArgs {
                 if takes_flags {
                     return Err(ProbeError::SkipStrategyTakesOnlyFrames);
                 }
-                Ok(ProbeStrategy::Skip {
-                    skip,
-                })
+                Ok(ProbeStrategy::Skip { skip })
             },
             ProbeStrategyKind::Subset => {
                 if self.skip.is_some() {
@@ -387,9 +382,7 @@ impl StatisticArgs {
                 if !sigma.is_finite() {
                     return Err(ProbeError::SigmaNotFinite);
                 }
-                Ok(ProbeStatistic::StandardDeviationDistance {
-                    sigma,
-                })
+                Ok(ProbeStatistic::StandardDeviationDistance { sigma })
             },
         }
     }
@@ -411,7 +404,7 @@ pub struct PropertyChange {
     /// such as `condor scenes` it may name its item, e.g. `scene 3 params`.
     pub property: String,
     /// The property's value after the change, in the shape `info` prints.
-    pub value:    Value,
+    pub value: Value,
 }
 
 impl PropertyChange {

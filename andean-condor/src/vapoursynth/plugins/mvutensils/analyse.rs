@@ -8,13 +8,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         mvutensils::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -24,56 +22,56 @@ use crate::vapoursynth::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Analyse {
     /// Only used for script generation
-    pub super_name:  Option<NodeVariableName>,
+    pub super_name: Option<NodeVariableName>,
     /// Block size [h, v]. Defaults to super's value.
-    pub blksize:     Option<Vec<u32>>,
+    pub blksize: Option<Vec<u32>>,
     /// Block overlap [h, v]. Defaults to super's value.
-    pub overlap:     Option<Vec<u32>>,
+    pub overlap: Option<Vec<u32>>,
     /// Number of hierarchical levels to use. 0 = all.
-    pub levels:      Option<u32>,
+    pub levels: Option<u32>,
     /// Search algorithm: 0=log/diamond, 1=exhaustive, 2=hex, 3=UMH, 4=horiz,
     /// 5=vert.
-    pub search:      Option<u32>,
+    pub search: Option<u32>,
     /// Search radius/step for chosen search.
     pub searchparam: Option<u32>,
     /// Refinement search radius at finest level.
-    pub pelsearch:   Option<u32>,
+    pub pelsearch: Option<u32>,
     /// Weight of motion-coherence penalty (per 8x8 block).
-    pub mvlambda:    Option<u32>,
+    pub mvlambda: Option<u32>,
     /// Include chroma planes in SAD/SATD metric.
-    pub chroma:      Option<bool>,
+    pub chroma: Option<bool>,
     /// Temporal distance and direction. Positive=backward, negative=forward.
-    pub delta:       Option<i32>,
+    pub delta: Option<i32>,
     /// SAD "knee" that throttles mvlambda per block.
-    pub lsad:        Option<u32>,
+    pub lsad: Option<u32>,
     /// How mvlambda scales across pyramid levels: 0=const, 1=linear,
     /// 2=quadratic.
-    pub plevel:      Option<u32>,
+    pub plevel: Option<u32>,
     /// Estimate global (pan) motion vector.
-    pub globalmv:    Option<bool>,
+    pub globalmv: Option<bool>,
     /// Extra penalty for accepting a freshly searched vector.
-    pub pnew:        Option<u32>,
+    pub pnew: Option<u32>,
     /// Extra penalty for accepting the zero vector. Defaults to pnew.
-    pub pzero:       Option<u32>,
+    pub pzero: Option<u32>,
     /// Penalty for the global-motion predictor.
-    pub pglobal:     Option<u32>,
+    pub pglobal: Option<u32>,
     /// SAD above which a block gets a wider search.
-    pub badsad:      Option<u32>,
+    pub badsad: Option<u32>,
     /// Radius of the wider search.
-    pub badrange:    Option<u32>,
+    pub badrange: Option<u32>,
     /// Scan rows alternately for better predictor reuse.
-    pub meander:     Option<bool>,
+    pub meander: Option<bool>,
     /// Try multiple motion-vector candidates per block: 0=off, 1=except finest,
     /// 2=all.
-    pub trymany:     Option<u32>,
+    pub trymany: Option<u32>,
     /// Treat the clip as field-based.
-    pub fields:      Option<bool>,
+    pub fields: Option<bool>,
     /// Top field first.
-    pub tff:         Option<bool>,
+    pub tff: Option<bool>,
     /// Use SATD instead of SAD.
-    pub satd:        Option<bool>,
+    pub satd: Option<bool>,
     /// Prefix for frame properties.
-    pub prefix:      Option<String>,
+    pub prefix: Option<String>,
 }
 
 impl Plugin for Analyse {
@@ -125,36 +123,39 @@ impl Analyse {
         let mut arguments = Self::arguments()?;
         arguments.set_node("super", super_node).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "super".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
-        Self::argument_set_int_arrays(&mut arguments, vec![
-            ("blksize", self.blksize),
-            ("overlap", self.overlap),
-        ])?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("levels", self.levels),
-            ("search", self.search),
-            ("searchparam", self.searchparam),
-            ("pelsearch", self.pelsearch),
-            ("mvlambda", self.mvlambda),
-            ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
-            ("lsad", self.lsad),
-            ("plevel", self.plevel),
-            ("globalmv", self.globalmv.map(|b| if b { 1 } else { 0 })),
-            ("pnew", self.pnew),
-            ("pzero", self.pzero),
-            ("pglobal", self.pglobal),
-            ("badsad", self.badsad),
-            ("badrange", self.badrange),
-            ("meander", self.meander.map(|b| if b { 1 } else { 0 })),
-            ("trymany", self.trymany),
-            ("fields", self.fields.map(|b| if b { 1 } else { 0 })),
-            ("tff", self.tff.map(|b| if b { 1 } else { 0 })),
-            ("satd", self.satd.map(|b| if b { 1 } else { 0 })),
-        ])?;
+        Self::argument_set_int_arrays(
+            &mut arguments,
+            vec![("blksize", self.blksize), ("overlap", self.overlap)],
+        )?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("levels", self.levels),
+                ("search", self.search),
+                ("searchparam", self.searchparam),
+                ("pelsearch", self.pelsearch),
+                ("mvlambda", self.mvlambda),
+                ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
+                ("lsad", self.lsad),
+                ("plevel", self.plevel),
+                ("globalmv", self.globalmv.map(|b| if b { 1 } else { 0 })),
+                ("pnew", self.pnew),
+                ("pzero", self.pzero),
+                ("pglobal", self.pglobal),
+                ("badsad", self.badsad),
+                ("badrange", self.badrange),
+                ("meander", self.meander.map(|b| if b { 1 } else { 0 })),
+                ("trymany", self.trymany),
+                ("fields", self.fields.map(|b| if b { 1 } else { 0 })),
+                ("tff", self.tff.map(|b| if b { 1 } else { 0 })),
+                ("satd", self.satd.map(|b| if b { 1 } else { 0 })),
+            ],
+        )?;
         // delta is signed (negative = forward, positive = backward)
         Self::argument_set_int(&mut arguments, "delta", self.delta.map(|d| d as i64))?;
         Self::arguments_set(&mut arguments, vec![("prefix", self.prefix)])?;

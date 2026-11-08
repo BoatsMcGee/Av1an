@@ -28,13 +28,13 @@ pub struct SceneConcatenatorState {
 
 pub struct SceneConcatenatorApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
-    pub started:                    std::time::Instant,
-    pub clip_info:                  ClipInfo,
-    pub method:                     ConcatMethod,
-    pub scenes_len:                 usize,
-    attempted_cancel:               bool,
-    shared_progress:                SharedProgress<SceneConcatenatorState>,
-    cached_state:                   SceneConcatenatorState,
+    pub started: std::time::Instant,
+    pub clip_info: ClipInfo,
+    pub method: ConcatMethod,
+    pub scenes_len: usize,
+    attempted_cancel: bool,
+    shared_progress: SharedProgress<SceneConcatenatorState>,
+    cached_state: SceneConcatenatorState,
 }
 
 impl TuiApp for SceneConcatenatorApp {
@@ -69,9 +69,7 @@ impl TuiApp for SceneConcatenatorApp {
     }
 
     fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool {
-        if let SequenceStatus::Whole(Status::Processing {
-            completion, ..
-        }) = status
+        if let SequenceStatus::Whole(Status::Processing { completion, .. }) = status
             && let SequenceCompletion::Percentage(percentage) = completion
         {
             state.percent = percentage;
@@ -106,25 +104,25 @@ impl TuiApp for SceneConcatenatorApp {
         frame.render_widget(input_info, layout[0]);
 
         let progress_bar = ProgressBar {
-            color:               main,
-            processing_title:    if self.attempted_cancel {
+            color: main,
+            processing_title: if self.attempted_cancel {
                 "Waiting for Concatenation to Finish...".to_owned()
             } else {
                 "Concatenating Scenes...".to_owned()
             },
-            completed_title:     if self.attempted_cancel {
+            completed_title: if self.attempted_cancel {
                 "Concatenation Aborted".to_owned()
             } else {
                 "Concatenation Completed".to_owned()
             },
-            top_right_title:     format!("{} scenes", self.scenes_len),
+            top_right_title: format!("{} scenes", self.scenes_len),
             bottom_center_title: String::new(),
-            unit_per_second:     "%".to_owned(),
-            unit:                "Percent".to_owned(),
-            initial_completed:   0,
-            completed:           self.cached_state.percent.round() as u64,
-            total:               100,
-            show_label:          false,
+            unit_per_second: "%".to_owned(),
+            unit: "Percent".to_owned(),
+            initial_completed: 0,
+            completed: self.cached_state.percent.round() as u64,
+            total: 100,
+            show_label: false,
         };
         let progress_bar = progress_bar.generate(Some(self.started));
         frame.render_widget(progress_bar, layout[2]);
@@ -137,9 +135,7 @@ impl SceneConcatenatorApp {
         scenes_len: usize,
         method: ConcatMethod,
     ) -> SceneConcatenatorApp {
-        let state = SceneConcatenatorState {
-            percent: 0.0
-        };
+        let state = SceneConcatenatorState { percent: 0.0 };
         SceneConcatenatorApp {
             original_panic_hook: None,
             started: std::time::Instant::now(),

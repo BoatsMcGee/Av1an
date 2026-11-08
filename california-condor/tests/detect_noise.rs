@@ -4,9 +4,7 @@ mod common;
 mod config_helpers;
 
 use california_condor::{
-    commands::handlers::load_configuration,
-    test_helpers::*,
-    utils::hash_path::hash_path,
+    commands::handlers::load_configuration, test_helpers::*, utils::hash_path::hash_path,
 };
 use common::condor_cmd;
 use config_helpers::{init_config, load};
@@ -84,27 +82,27 @@ mod tests {
             .to_path_buf();
         let config_path = temp.path().join("condor.json");
         let custom_reference_filters = vec![VapourSynthFilter::WNNM {
-            sigma:                Some(vec![2.0, 0.0, 0.0]),
-            block_size:           None,
-            block_step:           None,
-            group_size:           None,
-            bm_range:             None,
-            radius:               None,
-            ps_num:               None,
-            ps_range:             None,
-            residual:             None,
+            sigma: Some(vec![2.0, 0.0, 0.0]),
+            block_size: None,
+            block_step: None,
+            group_size: None,
+            bm_range: None,
+            radius: None,
+            ps_num: None,
+            ps_range: None,
+            residual: None,
             adaptive_aggregation: None,
         }];
         let custom_denoised_filters = vec![VapourSynthFilter::WNNM {
-            sigma:                Some(vec![4.0, 0.0, 0.0]),
-            block_size:           None,
-            block_step:           None,
-            group_size:           None,
-            bm_range:             None,
-            radius:               None,
-            ps_num:               None,
-            ps_range:             None,
-            residual:             None,
+            sigma: Some(vec![4.0, 0.0, 0.0]),
+            block_size: None,
+            block_step: None,
+            group_size: None,
+            bm_range: None,
+            radius: None,
+            ps_num: None,
+            ps_range: None,
+            residual: None,
             adaptive_aggregation: None,
         }];
 
@@ -142,8 +140,8 @@ mod tests {
         expected_config.condor.scenes.iter_mut().enumerate().for_each(|(index, scene)| {
             scene.sequence_data.noise_detection = Some(NoiseDetectorData {
                 created_on: SystemTime::now(),
-                noise:      expected_noise(index),
-                luminance:  0.0,
+                noise: expected_noise(index),
+                luminance: 0.0,
             });
         });
 
@@ -210,11 +208,14 @@ mod tests {
             "one reference filter was set"
         );
         assert!(
-            matches!(&detector.reference_filters[0], VapourSynthFilter::Resize {
-                width: Some(960),
-                height: Some(540),
-                ..
-            }),
+            matches!(
+                &detector.reference_filters[0],
+                VapourSynthFilter::Resize {
+                    width: Some(960),
+                    height: Some(540),
+                    ..
+                }
+            ),
             "reference filter is {:?}",
             detector.reference_filters[0]
         );

@@ -21,9 +21,9 @@ where
     SequenceData: SequenceDataHandler,
     SequenceConfig: SequenceConfigHandler,
 {
-    pub input:           Input,
-    pub output:          Output,
-    pub encoder:         Encoder,
-    pub scenes:          Vec<Scene<SequenceData>>,
+    pub input: Input,
+    pub output: Output,
+    pub encoder: Encoder,
+    pub scenes: Vec<Scene<SequenceData>>,
     pub sequence_config: SequenceConfig,
 }

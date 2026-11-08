@@ -20,10 +20,10 @@ use crate::{
 /// that each worker's area can display both the per-scene encoder parameters
 /// (top half) and a full progress bar with FPS/elapsed/remaining (bottom half).
 pub struct ActiveEncoders<'a> {
-    pub color:          Color,
-    pub workers:        u8,
+    pub color: Color,
+    pub workers: u8,
     pub parent_encoder: Encoder,
-    pub active_scenes:  &'a BTreeMap<u64, SceneEncoder>,
+    pub active_scenes: &'a BTreeMap<u64, SceneEncoder>,
 }
 
 impl Widget for ActiveEncoders<'_> {
@@ -65,17 +65,17 @@ impl Widget for ActiveEncoders<'_> {
 
             // Bottom half: full progress bar with FPS, elapsed, remaining
             let progress_bar = ProgressBar {
-                color:               self.color,
-                processing_title:    String::new(),
-                completed_title:     String::new(),
-                top_right_title:     String::new(),
+                color: self.color,
+                processing_title: String::new(),
+                completed_title: String::new(),
+                top_right_title: String::new(),
                 bottom_center_title: String::new(),
-                initial_completed:   0,
-                unit_per_second:     "FPS".to_owned(),
-                unit:                "Frame".to_owned(),
-                completed:           scene_encoder.frames_processed,
-                total:               scene_encoder.total_frames,
-                show_label:          true,
+                initial_completed: 0,
+                unit_per_second: "FPS".to_owned(),
+                unit: "Frame".to_owned(),
+                completed: scene_encoder.frames_processed,
+                total: scene_encoder.total_frames,
+                show_label: true,
             };
             progress_bar
                 .generate(Some(scene_encoder.started))
@@ -121,26 +121,29 @@ mod tests {
     /// The given scenes mid-encode, keyed the way progress reports them.
     fn active(scenes: &[u64]) -> BTreeMap<u64, SceneEncoder> {
         let video = TestVideo {
-            path:         PathBuf::new(),
-            width:        1920,
-            height:       1080,
-            frames:       400,
+            path: PathBuf::new(),
+            width: 1920,
+            height: 1080,
+            frames: 400,
             fps_rational: (24000, 1001),
-            format:       FFPixelFormat::YUV420P,
-            scenes:       vec![(0, 100), (100, 200), (200, 300), (300, 400)],
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 100), (100, 200), (200, 300), (300, 400)],
         };
         let scene = video.mock_scenes(&encoder()).remove(0);
         scenes
             .iter()
             .map(|&index| {
-                (index, SceneEncoder {
-                    scene:            scene.clone(),
-                    started:          std::time::Instant::now(),
-                    current_pass:     1,
-                    total_passes:     2,
-                    frames_processed: 40,
-                    total_frames:     100,
-                })
+                (
+                    index,
+                    SceneEncoder {
+                        scene: scene.clone(),
+                        started: std::time::Instant::now(),
+                        current_pass: 1,
+                        total_passes: 2,
+                        frames_processed: 40,
+                        total_frames: 100,
+                    },
+                )
             })
             .collect()
     }

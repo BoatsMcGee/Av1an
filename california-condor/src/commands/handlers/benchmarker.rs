@@ -94,15 +94,11 @@ impl ConfigCommand for BenchmarkCrud {
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         let benchmarker = &mut configuration.condor.sequence_config.benchmarker;
         match set {
-            BenchmarkSet::Threshold {
-                value,
-            } => {
+            BenchmarkSet::Threshold { value } => {
                 benchmarker.threshold = *value;
                 PropertyChange::new("threshold", value)
             },
-            BenchmarkSet::MaxMemory {
-                value,
-            } => {
+            BenchmarkSet::MaxMemory { value } => {
                 benchmarker.max_memory = Some(*value);
                 PropertyChange::new("max-memory", value)
             },
@@ -120,21 +116,21 @@ impl ConfigCommand for BenchmarkCrud {
                 *benchmarker = defaults;
                 PropertyChange {
                     property: "section".to_owned(),
-                    value:    serde_json::to_value(&*benchmarker)?,
+                    value: serde_json::to_value(&*benchmarker)?,
                 }
             },
             Some(BenchmarkKey::Threshold) => {
                 benchmarker.threshold = defaults.threshold;
                 PropertyChange {
                     property: "threshold".to_owned(),
-                    value:    serde_json::to_value(benchmarker.threshold)?,
+                    value: serde_json::to_value(benchmarker.threshold)?,
                 }
             },
             Some(BenchmarkKey::MaxMemory) => {
                 benchmarker.max_memory = None;
                 PropertyChange {
                     property: "max-memory".to_owned(),
-                    value:    serde_json::to_value(benchmarker.max_memory)?,
+                    value: serde_json::to_value(benchmarker.max_memory)?,
                 }
             },
         }))
@@ -232,7 +228,7 @@ mod tests {
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.sequence_config.benchmarker = BenchmarkerConfig {
-            threshold:  1,
+            threshold: 1,
             max_memory: Some(4096),
         };
         // immutable shadow

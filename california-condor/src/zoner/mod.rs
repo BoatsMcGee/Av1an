@@ -45,19 +45,14 @@ pub mod zone;
 
 pub use parse::{load_zones, parse_zone, parse_zones};
 pub use zone::{
-    Zone,
-    ZoneEncoder,
-    ZoneEncoderMerge,
-    ZoneOptions,
-    ZoneOptionsBody,
-    ZonePhotonNoise,
+    Zone, ZoneEncoder, ZoneEncoderMerge, ZoneOptions, ZoneOptionsBody, ZonePhotonNoise,
     ZonePhotonNoiseBody,
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Zoner",
+    name: "Zoner",
     description: "Overrides the encoder of the scenes inside frame ranges.",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 /// `condor.sequence_config.zoner` in `condor.json`.
@@ -419,10 +414,10 @@ mod tests {
     /// A zone merging `crf` into the scenes of `start..end`.
     fn crf(start_frame: usize, end_frame: usize, crf: f64) -> Zone {
         Zone {
-            start_frame:    Some(start_frame),
-            end_frame:      Some(end_frame),
+            start_frame: Some(start_frame),
+            end_frame: Some(end_frame),
             maximum_frames: None,
-            encoder:        Some(ZoneEncoder::Merge(ZoneEncoderMerge {
+            encoder: Some(ZoneEncoder::Merge(ZoneEncoderMerge {
                 base: Some(EncoderBase::SVTAV1),
                 options: Some(ZoneOptions::Merge(ZoneOptionsBody::Map(
                     CLIParameter::new_numbers("--", " ", &[("crf", crf)]),
@@ -452,10 +447,10 @@ mod tests {
     fn a_zone_caps_the_length_of_the_scenes_it_matches() {
         let mut scenes = scenes();
         let zone = Zone {
-            start_frame:    Some(200),
-            end_frame:      None,
+            start_frame: Some(200),
+            end_frame: None,
             maximum_frames: Some(100),
-            encoder:        None,
+            encoder: None,
         };
 
         let warnings = apply_zones(&[zone], &mut scenes, 400);

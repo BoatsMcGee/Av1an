@@ -19,22 +19,20 @@ use crate::{
     models::{
         encoder::Encoder,
         sequence::{
-            SequenceConfigHandler,
-            SequenceDataHandler,
-            scene_detector::SceneDetectorDataHandler,
+            SequenceConfigHandler, SequenceDataHandler, scene_detector::SceneDetectorDataHandler,
         },
     },
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Serial Encoder",
+    name: "Serial Encoder",
     description: "Encodes every scene linearly with no threading or parallelism.",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 pub struct SerialEncoder {
-    pub input:            Option<Input>,
-    pub encoder:          Option<Encoder>,
+    pub input: Option<Input>,
+    pub encoder: Option<Encoder>,
     pub scenes_directory: PathBuf,
 }
 
@@ -230,8 +228,8 @@ impl SerialEncoder {
     #[inline]
     pub fn new(scenes_directory: &Path) -> Self {
         SerialEncoder {
-            input:            None,
-            encoder:          None,
+            input: None,
+            encoder: None,
             scenes_directory: scenes_directory.to_path_buf(),
         }
     }

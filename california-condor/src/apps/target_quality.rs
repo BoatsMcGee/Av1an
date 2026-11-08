@@ -23,24 +23,24 @@ use crate::{
 };
 #[derive(Clone)]
 pub struct TargetQualityState {
-    pub quality_passes:  BTreeMap<u64, Vec<QualityPass>>,
-    pub current_pass:    u8,
-    pub frames_encoded:  u64,
+    pub quality_passes: BTreeMap<u64, Vec<QualityPass>>,
+    pub current_pass: u8,
+    pub frames_encoded: u64,
     pub frames_compared: u64,
-    pub total_frames:    u64,
+    pub total_frames: u64,
 }
 
 pub struct TargetQualityApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
-    pub encoder:                    Encoder,
-    pub clip_info:                  ClipInfo,
-    pub pass_started:               std::time::Instant,
+    pub encoder: Encoder,
+    pub clip_info: ClipInfo,
+    pub pass_started: std::time::Instant,
     /// The stopped clock of a pass whose frames are all done, held so the
     /// progress bar's FPS stops moving through the gap before the next pass.
-    pass_completed:                 Option<std::time::Instant>,
-    attempted_cancel:               bool,
-    shared_progress:                SharedProgress<TargetQualityState>,
-    cached_state:                   TargetQualityState,
+    pass_completed: Option<std::time::Instant>,
+    attempted_cancel: bool,
+    shared_progress: SharedProgress<TargetQualityState>,
+    cached_state: TargetQualityState,
 }
 
 impl TuiApp for TargetQualityApp {
@@ -78,10 +78,7 @@ impl TuiApp for TargetQualityApp {
         match status {
             SequenceStatus::Whole(status) => match status {
                 Status::Processing {
-                    completion:
-                        SequenceCompletion::Passes {
-                            total, ..
-                        },
+                    completion: SequenceCompletion::Passes { total, .. },
                     ..
                 } => {
                     state.current_pass = total;
@@ -96,11 +93,7 @@ impl TuiApp for TargetQualityApp {
                 },
                 Status::Processing {
                     id,
-                    completion:
-                        SequenceCompletion::Frames {
-                            completed,
-                            total,
-                        },
+                    completion: SequenceCompletion::Frames { completed, total },
                 } if id == "Encode" || id == "Compare" => {
                     if id == "Encode" {
                         state.frames_compared = 0;
@@ -117,10 +110,7 @@ impl TuiApp for TargetQualityApp {
                 },
                 _ => false,
             },
-            SequenceStatus::Subprocess {
-                parent,
-                child,
-            } => match (parent, child) {
+            SequenceStatus::Subprocess { parent, child } => match (parent, child) {
                 (
                     Status::Processing {
                         completion:
@@ -132,11 +122,7 @@ impl TuiApp for TargetQualityApp {
                     },
                     Status::Processing {
                         id,
-                        completion:
-                            SequenceCompletion::Frames {
-                                completed,
-                                total,
-                            },
+                        completion: SequenceCompletion::Frames { completed, total },
                     },
                 ) if id == "Encode" => {
                     state.frames_compared = 0;
@@ -167,11 +153,7 @@ impl TuiApp for TargetQualityApp {
                     },
                     Status::Processing {
                         id,
-                        completion:
-                            SequenceCompletion::Frames {
-                                completed,
-                                total,
-                            },
+                        completion: SequenceCompletion::Frames { completed, total },
                     },
                 ) if id == "Compare" => {
                     if completed == 0 {
@@ -328,23 +310,23 @@ impl TuiApp for TargetQualityApp {
         frame.render_widget(chart, layout[1]);
 
         let progress_bar = ProgressBar {
-            color:               main,
-            processing_title:    if self.attempted_cancel {
+            color: main,
+            processing_title: if self.attempted_cancel {
                 "Shutting down...".to_owned()
             } else if state.frames_encoded < state.total_frames {
                 format!("Encoding Pass {}", state.current_pass)
             } else {
                 format!("Comparing Pass {}", state.current_pass)
             },
-            completed_title:     Self::completed_title(state, self.attempted_cancel),
-            top_right_title:     String::new(),
+            completed_title: Self::completed_title(state, self.attempted_cancel),
+            top_right_title: String::new(),
             bottom_center_title: String::new(),
-            unit_per_second:     "FPS".to_owned(),
-            unit:                "Frame".to_owned(),
-            initial_completed:   0,
-            completed:           Self::completed(state),
-            total:               state.total_frames,
-            show_label:          true,
+            unit_per_second: "FPS".to_owned(),
+            unit: "Frame".to_owned(),
+            initial_completed: 0,
+            completed: Self::completed(state),
+            total: state.total_frames,
+            show_label: true,
         };
         // A finished pass keeps its clock stopped, so the FPS it measured stays
         // on screen instead of being recomputed against the gap that follows.
@@ -411,12 +393,12 @@ impl TargetQualityApp {
                         .iter()
                         .enumerate()
                         .map(|(pass_index, pass)| QualityPass {
-                            scene:        scene_index as u64,
+                            scene: scene_index as u64,
                             current_pass: (pass_index + 1) as u8,
                             total_passes: (pass_index + 1) as u8,
-                            quantizer:    pass.quantizer,
-                            score:        probe_statistic.calculate(&pass.scores),
-                            bitrate:      pass.bitrate,
+                            quantizer: pass.quantizer,
+                            score: probe_statistic.calculate(&pass.scores),
+                            bitrate: pass.bitrate,
                         })
                         .collect(),
                 )
@@ -447,27 +429,27 @@ pub enum TargetQualityConsoleEvent {
     Pass(u8),
     QualityPass(QualityPass),
     EncodeProgress {
-        current_pass:  u8,
-        total_passes:  u8,
+        current_pass: u8,
+        total_passes: u8,
         current_frame: u64,
-        total_frames:  u64,
+        total_frames: u64,
     },
     CompareProgress {
-        current_pass:  u8,
-        total_passes:  u8,
+        current_pass: u8,
+        total_passes: u8,
         current_frame: u64,
-        total_frames:  u64,
+        total_frames: u64,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityPass {
-    pub(crate) scene:        u64,
+    pub(crate) scene: u64,
     pub(crate) current_pass: u8,
     pub(crate) total_passes: u8,
-    pub(crate) quantizer:    f64,
-    pub(crate) score:        f64,
-    pub(crate) bitrate:      f64,
+    pub(crate) quantizer: f64,
+    pub(crate) score: f64,
+    pub(crate) bitrate: f64,
 }
 
 #[cfg(test)]

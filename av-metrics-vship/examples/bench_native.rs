@@ -15,12 +15,7 @@ use std::{hint::black_box, time::Instant};
 
 use av_decoders::Decoder;
 use av_metrics_vship::{
-    DEFAULT_HANDLER_THREADS,
-    PoolMethod,
-    VideoFormat,
-    VshipConfig,
-    VshipMetric,
-    VshipScorer,
+    DEFAULT_HANDLER_THREADS, PoolMethod, VideoFormat, VshipConfig, VshipMetric, VshipScorer,
     is_available,
 };
 

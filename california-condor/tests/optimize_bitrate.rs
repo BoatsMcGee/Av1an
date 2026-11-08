@@ -4,9 +4,7 @@ mod common;
 mod config_helpers;
 
 use california_condor::{
-    commands::handlers::load_configuration,
-    test_helpers::*,
-    utils::hash_path::hash_path,
+    commands::handlers::load_configuration, test_helpers::*, utils::hash_path::hash_path,
 };
 use common::condor_cmd;
 use config_helpers::{init_config, load};
@@ -18,13 +16,8 @@ mod tests {
         sequence::target_quality::{
             TargetQualityConfig,
             types::{
-                ProbeStatistic,
-                ProbeStrategy,
-                QualityMetric,
-                QualityPass,
-                SubsetProbeLength,
-                SubsetProbePosition,
-                TargetQualityProbing,
+                ProbeStatistic, ProbeStrategy, QualityMetric, QualityPass, SubsetProbeLength,
+                SubsetProbePosition, TargetQualityProbing,
             },
         },
     };
@@ -56,19 +49,19 @@ mod tests {
         config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
             metric: QualityMetric::SSIMULACRA2 {
                 target_range: (79.0, 81.0),
-                resolution:   None,
-                threads:      None,
-                gpu_id:       None,
+                resolution: None,
+                threads: None,
+                gpu_id: None,
             },
             quantizer_range: (20, 40),
             input: None,
             probing: TargetQualityProbing {
                 encoder_options: None,
-                strategy:        ProbeStrategy::Subset {
+                strategy: ProbeStrategy::Subset {
                     position: SubsetProbePosition::Start,
-                    length:   SubsetProbeLength::Frames(1),
+                    length: SubsetProbeLength::Frames(1),
                 },
-                statistic:       ProbeStatistic::Mean,
+                statistic: ProbeStatistic::Mean,
             },
             ..Default::default()
         });

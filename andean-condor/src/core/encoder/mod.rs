@@ -5,8 +5,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        Arc,
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
         mpsc::{self},
     },
@@ -25,11 +24,7 @@ use tracing::info;
 use crate::{
     core::input::{Input, clip_info::ClipInfo, color_range::ColorRange},
     models::encoder::{
-        Encoder,
-        EncoderBase,
-        EncoderPasses,
-        cli_parameter::CLIParameter,
-        photon_noise::PhotonNoise,
+        Encoder, EncoderBase, EncoderPasses, cli_parameter::CLIParameter, photon_noise::PhotonNoise,
     },
 };
 
@@ -54,33 +49,15 @@ impl Encoder {
     #[inline]
     pub fn executable(&self) -> &str {
         let (default_name, executable) = match self {
-            Encoder::AOM {
-                executable, ..
-            } => ("aomenc", executable),
-            Encoder::RAV1E {
-                executable, ..
-            } => ("rav1e", executable),
-            Encoder::VPX {
-                executable, ..
-            } => ("vpxenc", executable),
-            Encoder::SVTAV1 {
-                executable, ..
-            } => ("SvtAv1EncApp", executable),
-            Encoder::AVM {
-                executable, ..
-            } => ("avmenc", executable),
-            Encoder::X264 {
-                executable, ..
-            } => ("x264", executable),
-            Encoder::X265 {
-                executable, ..
-            } => ("x265", executable),
-            Encoder::VVenC {
-                executable, ..
-            } => ("vvencapp", executable),
-            Encoder::FFmpeg {
-                executable, ..
-            } => ("ffmpeg", executable),
+            Encoder::AOM { executable, .. } => ("aomenc", executable),
+            Encoder::RAV1E { executable, .. } => ("rav1e", executable),
+            Encoder::VPX { executable, .. } => ("vpxenc", executable),
+            Encoder::SVTAV1 { executable, .. } => ("SvtAv1EncApp", executable),
+            Encoder::AVM { executable, .. } => ("avmenc", executable),
+            Encoder::X264 { executable, .. } => ("x264", executable),
+            Encoder::X265 { executable, .. } => ("x265", executable),
+            Encoder::VVenC { executable, .. } => ("vvencapp", executable),
+            Encoder::FFmpeg { executable, .. } => ("ffmpeg", executable),
         };
 
         if let Some(executable) = executable
@@ -135,21 +112,23 @@ impl Encoder {
         };
 
         match self {
-            Encoder::AOM {
-                options, ..
-            } => {
+            Encoder::AOM { options, .. } => {
                 let mut parameters = ["-".to_owned()].to_vec();
                 let mut params = pass_parameters;
                 params.extend(color_parameters);
                 params.extend(options.clone());
-                params.extend(CLIParameter::new_strings("-", " ", &[(
-                    "o",
-                    if pass.0 == pass.1 {
-                        output_path
-                    } else {
-                        NULL_OUTPUT
-                    },
-                )]));
+                params.extend(CLIParameter::new_strings(
+                    "-",
+                    " ",
+                    &[(
+                        "o",
+                        if pass.0 == pass.1 {
+                            output_path
+                        } else {
+                            NULL_OUTPUT
+                        },
+                    )],
+                ));
                 for (key, value) in params {
                     match value.to_string_pair(&key) {
                         (Some(prefixed_key), Some(separate_value)) => {
@@ -165,21 +144,23 @@ impl Encoder {
 
                 parameters
             },
-            Encoder::RAV1E {
-                options, ..
-            } => {
+            Encoder::RAV1E { options, .. } => {
                 let mut parameters = ["-".to_owned()].to_vec();
                 let mut params = pass_parameters;
                 params.extend(color_parameters);
                 params.extend(options.clone());
-                params.extend(CLIParameter::new_strings("--", " ", &[(
-                    "output",
-                    if pass.0 == pass.1 {
-                        output_path
-                    } else {
-                        NULL_OUTPUT
-                    },
-                )]));
+                params.extend(CLIParameter::new_strings(
+                    "--",
+                    " ",
+                    &[(
+                        "output",
+                        if pass.0 == pass.1 {
+                            output_path
+                        } else {
+                            NULL_OUTPUT
+                        },
+                    )],
+                ));
                 for (key, value) in params {
                     match value.to_string_pair(&key) {
                         (Some(prefixed_key), Some(separate_value)) => {
@@ -195,21 +176,23 @@ impl Encoder {
 
                 parameters
             },
-            Encoder::VPX {
-                options, ..
-            } => {
+            Encoder::VPX { options, .. } => {
                 let mut parameters = ["-".to_owned()].to_vec();
                 let mut params = pass_parameters;
                 params.extend(color_parameters);
                 params.extend(options.clone());
-                params.extend(CLIParameter::new_strings("-", " ", &[(
-                    "o",
-                    if pass.0 == pass.1 {
-                        output_path
-                    } else {
-                        NULL_OUTPUT
-                    },
-                )]));
+                params.extend(CLIParameter::new_strings(
+                    "-",
+                    " ",
+                    &[(
+                        "o",
+                        if pass.0 == pass.1 {
+                            output_path
+                        } else {
+                            NULL_OUTPUT
+                        },
+                    )],
+                ));
                 for (key, value) in params {
                     match value.to_string_pair(&key) {
                         (Some(prefixed_key), Some(separate_value)) => {
@@ -225,26 +208,60 @@ impl Encoder {
 
                 parameters
             },
-            Encoder::SVTAV1 {
-                options, ..
-            } => {
+            Encoder::SVTAV1 { options, .. } => {
                 let mut parameters = Vec::new();
                 let mut params = pass_parameters;
                 params.extend(color_parameters);
                 params.extend(options.clone());
                 // Force progress 2. Progress 0-1 is unsupported
                 params.extend(CLIParameter::new_numbers("--", " ", &[("progress", 2.0)]));
-                params.extend(CLIParameter::new_strings("-", " ", &[
-                    ("i", "stdin"),
-                    (
-                        "b",
+                params.extend(CLIParameter::new_strings(
+                    "-",
+                    " ",
+                    &[
+                        ("i", "stdin"),
+                        (
+                            "b",
+                            if pass.0 == pass.1 {
+                                output_path
+                            } else {
+                                NULL_OUTPUT
+                            },
+                        ),
+                    ],
+                ));
+                for (key, value) in params {
+                    match value.to_string_pair(&key) {
+                        (Some(prefixed_key), Some(separate_value)) => {
+                            parameters.push(prefixed_key);
+                            parameters.push(separate_value);
+                        },
+                        (Some(prefixed_and_delimited), None) => {
+                            parameters.push(prefixed_and_delimited);
+                        },
+                        _ => (), // Boolean/Flag set to false, nothing to push
+                    }
+                }
+
+                parameters
+            },
+            Encoder::AVM { options, .. } => {
+                let mut parameters = ["-".to_owned()].to_vec();
+                let mut params = pass_parameters;
+                params.extend(color_parameters);
+                params.extend(options.clone());
+                params.extend(CLIParameter::new_strings(
+                    "-",
+                    " ",
+                    &[(
+                        "o",
                         if pass.0 == pass.1 {
                             output_path
                         } else {
                             NULL_OUTPUT
                         },
-                    ),
-                ]));
+                    )],
+                ));
                 for (key, value) in params {
                     match value.to_string_pair(&key) {
                         (Some(prefixed_key), Some(separate_value)) => {
@@ -260,21 +277,23 @@ impl Encoder {
 
                 parameters
             },
-            Encoder::AVM {
-                options, ..
-            } => {
+            Encoder::X264 { options, .. } => {
                 let mut parameters = ["-".to_owned()].to_vec();
                 let mut params = pass_parameters;
                 params.extend(color_parameters);
                 params.extend(options.clone());
-                params.extend(CLIParameter::new_strings("-", " ", &[(
-                    "o",
-                    if pass.0 == pass.1 {
-                        output_path
-                    } else {
-                        NULL_OUTPUT
-                    },
-                )]));
+                params.extend(CLIParameter::new_strings(
+                    "-",
+                    " ",
+                    &[(
+                        "o",
+                        if pass.0 == pass.1 {
+                            output_path
+                        } else {
+                            NULL_OUTPUT
+                        },
+                    )],
+                ));
                 for (key, value) in params {
                     match value.to_string_pair(&key) {
                         (Some(prefixed_key), Some(separate_value)) => {
@@ -290,21 +309,23 @@ impl Encoder {
 
                 parameters
             },
-            Encoder::X264 {
-                options, ..
-            } => {
+            Encoder::X265 { options, .. } => {
                 let mut parameters = ["-".to_owned()].to_vec();
                 let mut params = pass_parameters;
                 params.extend(color_parameters);
                 params.extend(options.clone());
-                params.extend(CLIParameter::new_strings("-", " ", &[(
-                    "o",
-                    if pass.0 == pass.1 {
-                        output_path
-                    } else {
-                        NULL_OUTPUT
-                    },
-                )]));
+                params.extend(CLIParameter::new_strings(
+                    "-",
+                    " ",
+                    &[(
+                        "o",
+                        if pass.0 == pass.1 {
+                            output_path
+                        } else {
+                            NULL_OUTPUT
+                        },
+                    )],
+                ));
                 for (key, value) in params {
                     match value.to_string_pair(&key) {
                         (Some(prefixed_key), Some(separate_value)) => {
@@ -320,51 +341,23 @@ impl Encoder {
 
                 parameters
             },
-            Encoder::X265 {
-                options, ..
-            } => {
-                let mut parameters = ["-".to_owned()].to_vec();
-                let mut params = pass_parameters;
-                params.extend(color_parameters);
-                params.extend(options.clone());
-                params.extend(CLIParameter::new_strings("-", " ", &[(
-                    "o",
-                    if pass.0 == pass.1 {
-                        output_path
-                    } else {
-                        NULL_OUTPUT
-                    },
-                )]));
-                for (key, value) in params {
-                    match value.to_string_pair(&key) {
-                        (Some(prefixed_key), Some(separate_value)) => {
-                            parameters.push(prefixed_key);
-                            parameters.push(separate_value);
-                        },
-                        (Some(prefixed_and_delimited), None) => {
-                            parameters.push(prefixed_and_delimited);
-                        },
-                        _ => (), // Boolean/Flag set to false, nothing to push
-                    }
-                }
-
-                parameters
-            },
-            Encoder::VVenC {
-                options, ..
-            } => {
+            Encoder::VVenC { options, .. } => {
                 let mut parameters = ["-i".to_owned(), "-".to_owned()].to_vec();
                 let mut params = pass_parameters;
                 params.extend(color_parameters);
                 params.extend(options.clone());
-                params.extend(CLIParameter::new_strings("-", " ", &[(
-                    "o",
-                    if pass.0 == pass.1 {
-                        output_path
-                    } else {
-                        NULL_OUTPUT
-                    },
-                )]));
+                params.extend(CLIParameter::new_strings(
+                    "-",
+                    " ",
+                    &[(
+                        "o",
+                        if pass.0 == pass.1 {
+                            output_path
+                        } else {
+                            NULL_OUTPUT
+                        },
+                    )],
+                ));
                 for (key, value) in params {
                     match value.to_string_pair(&key) {
                         (Some(prefixed_key), Some(separate_value)) => {
@@ -380,9 +373,7 @@ impl Encoder {
 
                 parameters
             },
-            Encoder::FFmpeg {
-                options, ..
-            } => {
+            Encoder::FFmpeg { options, .. } => {
                 let mut params = pass_parameters;
                 params.extend(color_parameters);
                 params.extend(options.clone());
@@ -458,11 +449,11 @@ impl Encoder {
             EncoderPasses::All(total) => {
                 let clip_info = input.clip_info()?;
                 let mut result = EncoderResult {
-                    encoder:    self.base(),
+                    encoder: self.base(),
                     parameters: self.parameters_with_output((1, total), output, &clip_info),
-                    status:     std::process::ExitStatus::default(),
-                    stdout:     StringOrBytes::from(Vec::new()),
-                    stderr:     StringOrBytes::from(Vec::new()),
+                    status: std::process::ExitStatus::default(),
+                    stdout: StringOrBytes::from(Vec::new()),
+                    stderr: StringOrBytes::from(Vec::new()),
                 };
                 for pass in 1..total {
                     let progress_tx = progress_tx.clone();
@@ -533,11 +524,11 @@ impl Encoder {
                         system.refresh_all();
                         let usage = system.process(sysinfo::Pid::from_u32(pid)).map_or_else(
                             || EncodeResourceUsage {
-                                cpu:    0.0,
+                                cpu: 0.0,
                                 memory: 0,
                             },
                             |process| EncodeResourceUsage {
-                                cpu:    process.cpu_usage(),
+                                cpu: process.cpu_usage(),
                                 memory: process.memory(),
                             },
                         );
@@ -620,11 +611,11 @@ impl Encoder {
         let encode_duration = decode_start_time.elapsed();
 
         let encoder_result = EncoderResult {
-            encoder:    self.base(),
+            encoder: self.base(),
             parameters: self.parameters_with_output(pass, output, &clip_info),
-            status:     encoder_output.status,
-            stdout:     StringOrBytes::from(encoder_output.stdout),
-            stderr:     stderr_output.lock().expect("mutex should acquire lock").clone().into(),
+            status: encoder_output.status,
+            stdout: StringOrBytes::from(encoder_output.stdout),
+            stderr: stderr_output.lock().expect("mutex should acquire lock").clone().into(),
         };
 
         if !encoder_output.status.success() {
@@ -654,7 +645,7 @@ impl Encoder {
         match self.passes() {
             EncoderPasses::All(1) => {
                 progress_tx.send(EncodeProgress {
-                    pass:  (1, 1),
+                    pass: (1, 1),
                     frame: 0,
                     usage: EncodeResourceUsage::default(),
                 })?;
@@ -668,7 +659,7 @@ impl Encoder {
             },
             EncoderPasses::Specific(current, total) => {
                 progress_tx.send(EncodeProgress {
-                    pass:  (current, total),
+                    pass: (current, total),
                     frame: 0,
                     usage: EncodeResourceUsage::default(),
                 })?;
@@ -691,11 +682,11 @@ impl Encoder {
                     frame_receivers.insert(pass, frame_receiver);
                 }
                 let mut result = EncoderResult {
-                    encoder:    self.base(),
+                    encoder: self.base(),
                     parameters: self.parameters_with_output((1, total), output, clip_info),
-                    status:     std::process::ExitStatus::default(),
-                    stdout:     StringOrBytes::from(Vec::new()),
-                    stderr:     StringOrBytes::from(Vec::new()),
+                    status: std::process::ExitStatus::default(),
+                    stdout: StringOrBytes::from(Vec::new()),
+                    stderr: StringOrBytes::from(Vec::new()),
                 };
                 thread::spawn(move || -> Result<()> {
                     for frame in frames_rx {
@@ -707,7 +698,7 @@ impl Encoder {
                 });
                 for pass in 1..=total {
                     progress_tx.send(EncodeProgress {
-                        pass:  (pass, total),
+                        pass: (pass, total),
                         frame: 0,
                         usage: EncodeResourceUsage::default(),
                     })?;
@@ -783,7 +774,7 @@ impl Encoder {
                     Ok(_) => {
                         let line = buf.clone();
                         let usage = EncodeResourceUsage {
-                            cpu:    0.0,
+                            cpu: 0.0,
                             memory: 0,
                         };
 
@@ -854,7 +845,7 @@ impl Encoder {
                         //     },
                         // );
                         let usage = EncodeResourceUsage {
-                            cpu:    0.0,
+                            cpu: 0.0,
                             memory: 0,
                         };
 
@@ -925,11 +916,11 @@ impl Encoder {
             .map_err(|_| anyhow::Error::msg("Failed to join STDOUT thread"))??;
 
         let encoder_result = EncoderResult {
-            encoder:    self.base(),
+            encoder: self.base(),
             parameters: self.parameters_with_output(pass, output, clip_info),
-            status:     encoder_output.status,
-            stdout:     StringOrBytes::from(encoder_output.stdout),
-            stderr:     stderr_output.lock().expect("mutex should acquire lock").clone().into(),
+            status: encoder_output.status,
+            stdout: StringOrBytes::from(encoder_output.stdout),
+            stderr: stderr_output.lock().expect("mutex should acquire lock").clone().into(),
         };
 
         Ok(encoder_result)
@@ -963,15 +954,9 @@ impl Encoder {
         color_range: Option<ColorRange>,
     ) -> Result<Option<(String, GrainTableSegment)>> {
         let photon_noise = match self {
-            Encoder::AOM {
-                photon_noise, ..
-            } => photon_noise.as_ref(),
-            Encoder::RAV1E {
-                photon_noise, ..
-            } => photon_noise.as_ref(),
-            Encoder::SVTAV1 {
-                photon_noise, ..
-            } => photon_noise.as_ref(),
+            Encoder::AOM { photon_noise, .. } => photon_noise.as_ref(),
+            Encoder::RAV1E { photon_noise, .. } => photon_noise.as_ref(),
+            Encoder::SVTAV1 { photon_noise, .. } => photon_noise.as_ref(),
             _ => None,
         };
         if photon_noise.is_none() {
@@ -979,28 +964,38 @@ impl Encoder {
         }
         let photon_noise = photon_noise.expect("photon noise should exist");
         let hash_name = photon_noise.hash_name();
-        let mut params = generate_photon_noise_params(0, u64::MAX, NoiseGenArgs {
-            iso_setting: photon_noise.iso,
-            width: photon_noise.width.unwrap_or(width),
-            height: photon_noise.height.unwrap_or(height),
-            transfer_function,
-            chroma_grain: photon_noise.chroma_iso.is_some_and(|c_iso| c_iso == photon_noise.iso),
-            random_seed: None,
-            full_range: matches!(color_range, Some(ColorRange::Full)),
-        });
+        let mut params = generate_photon_noise_params(
+            0,
+            u64::MAX,
+            NoiseGenArgs {
+                iso_setting: photon_noise.iso,
+                width: photon_noise.width.unwrap_or(width),
+                height: photon_noise.height.unwrap_or(height),
+                transfer_function,
+                chroma_grain: photon_noise
+                    .chroma_iso
+                    .is_some_and(|c_iso| c_iso == photon_noise.iso),
+                random_seed: None,
+                full_range: matches!(color_range, Some(ColorRange::Full)),
+            },
+        );
 
         if let Some(chroma_iso) = photon_noise.chroma_iso
             && chroma_iso != photon_noise.iso
         {
-            let chroma_params = generate_photon_noise_params(0, u64::MAX, NoiseGenArgs {
-                iso_setting: chroma_iso,
-                width: photon_noise.width.unwrap_or(width),
-                height: photon_noise.height.unwrap_or(height),
-                transfer_function,
-                chroma_grain: true,
-                random_seed: None,
-                full_range: matches!(color_range, Some(ColorRange::Full)),
-            });
+            let chroma_params = generate_photon_noise_params(
+                0,
+                u64::MAX,
+                NoiseGenArgs {
+                    iso_setting: chroma_iso,
+                    width: photon_noise.width.unwrap_or(width),
+                    height: photon_noise.height.unwrap_or(height),
+                    transfer_function,
+                    chroma_grain: true,
+                    random_seed: None,
+                    full_range: matches!(color_range, Some(ColorRange::Full)),
+                },
+            );
             params.scaling_points_cr = chroma_params.scaling_points_cr;
             params.scaling_points_cb = chroma_params.scaling_points_cb;
         }
@@ -1029,25 +1024,19 @@ impl Encoder {
     #[inline]
     pub fn apply_photon_noise_parameters(&mut self, table_path: &Path) -> Result<()> {
         match self {
-            Encoder::AOM {
-                options, ..
-            } => {
+            Encoder::AOM { options, .. } => {
                 options.insert(
                     "film-grain-table".to_owned(),
                     CLIParameter::new_string("--", "=", &format!("{}", table_path.display())),
                 );
             },
-            Encoder::RAV1E {
-                options, ..
-            } => {
+            Encoder::RAV1E { options, .. } => {
                 options.insert(
                     "photon-noise-table".to_owned(),
                     CLIParameter::new_string("--", " ", &format!("{}", table_path.display())),
                 );
             },
-            Encoder::SVTAV1 {
-                options, ..
-            } => {
+            Encoder::SVTAV1 { options, .. } => {
                 options.insert(
                     "fgs-table".to_owned(),
                     CLIParameter::new_string("--", " ", &format!("{}", table_path.display())),
@@ -1062,76 +1051,40 @@ impl Encoder {
     #[inline]
     pub fn quantizer(&self) -> Option<f64> {
         match self {
-            Encoder::AOM {
-                options, ..
-            } => options.get("cq-level").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(*value),
+            Encoder::AOM { options, .. } => options.get("cq-level").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(*value),
                 _ => None,
             }),
-            Encoder::RAV1E {
-                options, ..
-            } => options.get("quantizer").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(*value),
+            Encoder::RAV1E { options, .. } => options.get("quantizer").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(*value),
                 _ => None,
             }),
-            Encoder::SVTAV1 {
-                options, ..
-            } => options.get("crf").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(*value),
+            Encoder::SVTAV1 { options, .. } => options.get("crf").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(*value),
                 _ => None,
             }),
-            Encoder::AVM {
-                options, ..
-            } => options.get("qp").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(*value),
+            Encoder::AVM { options, .. } => options.get("qp").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(*value),
                 _ => None,
             }),
-            Encoder::VPX {
-                options, ..
-            } => options.get("cq-level").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(*value),
+            Encoder::VPX { options, .. } => options.get("cq-level").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(*value),
                 _ => None,
             }),
-            Encoder::X264 {
-                options, ..
-            } => options.get("crf").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(*value),
+            Encoder::X264 { options, .. } => options.get("crf").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(*value),
                 _ => None,
             }),
-            Encoder::X265 {
-                options, ..
-            } => options.get("crf").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(*value),
+            Encoder::X265 { options, .. } => options.get("crf").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(*value),
                 _ => None,
             }),
-            Encoder::VVenC {
-                options, ..
-            } => options.get("qp").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(*value),
+            Encoder::VVenC { options, .. } => options.get("qp").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(*value),
                 _ => None,
             }),
-            Encoder::FFmpeg {
-                options, ..
-            } => options.get("crf").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(*value),
+            Encoder::FFmpeg { options, .. } => options.get("crf").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(*value),
                 _ => None,
             }),
         }
@@ -1140,57 +1093,39 @@ impl Encoder {
     #[inline]
     pub fn set_quantizer(&mut self, quantizer: f64) {
         match self {
-            Encoder::AOM {
-                options, ..
-            } => options.insert(
+            Encoder::AOM { options, .. } => options.insert(
                 "cq-level".to_owned(),
                 CLIParameter::new_number("--", "=", quantizer),
             ),
-            Encoder::RAV1E {
-                options, ..
-            } => options.insert(
+            Encoder::RAV1E { options, .. } => options.insert(
                 "quantizer".to_owned(),
                 CLIParameter::new_number("--", " ", quantizer),
             ),
-            Encoder::SVTAV1 {
-                options, ..
-            } => options.insert(
+            Encoder::SVTAV1 { options, .. } => options.insert(
                 "crf".to_owned(),
                 CLIParameter::new_number("--", " ", quantizer),
             ),
-            Encoder::AVM {
-                options, ..
-            } => options.insert(
+            Encoder::AVM { options, .. } => options.insert(
                 "qp".to_owned(),
                 CLIParameter::new_number("--", "=", quantizer),
             ),
-            Encoder::VPX {
-                options, ..
-            } => options.insert(
+            Encoder::VPX { options, .. } => options.insert(
                 "cq-level".to_owned(),
                 CLIParameter::new_number("--", "=", quantizer),
             ),
-            Encoder::X264 {
-                options, ..
-            } => options.insert(
+            Encoder::X264 { options, .. } => options.insert(
                 "crf".to_owned(),
                 CLIParameter::new_number("--", " ", quantizer),
             ),
-            Encoder::X265 {
-                options, ..
-            } => options.insert(
+            Encoder::X265 { options, .. } => options.insert(
                 "crf".to_owned(),
                 CLIParameter::new_number("--", " ", quantizer),
             ),
-            Encoder::VVenC {
-                options, ..
-            } => options.insert(
+            Encoder::VVenC { options, .. } => options.insert(
                 "qp".to_owned(),
                 CLIParameter::new_number("--", " ", quantizer),
             ),
-            Encoder::FFmpeg {
-                options, ..
-            } => options.insert(
+            Encoder::FFmpeg { options, .. } => options.insert(
                 "crf".to_owned(),
                 CLIParameter::new_number("-", " ", quantizer),
             ),
@@ -1200,85 +1135,79 @@ impl Encoder {
     #[inline]
     pub fn set_speed(&mut self, speed: i8) {
         match self {
-            Encoder::AOM {
-                options, ..
-            } => options.insert(
+            Encoder::AOM { options, .. } => options.insert(
                 "cpu-used".to_owned(),
                 CLIParameter::new_number("--", "=", speed as f64),
             ),
-            Encoder::RAV1E {
-                options, ..
-            } => options.insert(
+            Encoder::RAV1E { options, .. } => options.insert(
                 "speed".to_owned(),
                 CLIParameter::new_number("--", " ", speed as f64),
             ),
-            Encoder::SVTAV1 {
-                options, ..
-            } => options.insert(
+            Encoder::SVTAV1 { options, .. } => options.insert(
                 "preset".to_owned(),
                 CLIParameter::new_number("--", " ", speed as f64),
             ),
-            Encoder::AVM {
-                options, ..
-            } => options.insert(
+            Encoder::AVM { options, .. } => options.insert(
                 "cpu-used".to_owned(),
                 CLIParameter::new_number("--", "=", speed as f64),
             ),
-            Encoder::VPX {
-                options, ..
-            } => options.insert(
+            Encoder::VPX { options, .. } => options.insert(
                 "cpu-used".to_owned(),
                 CLIParameter::new_number("--", "=", speed as f64),
             ),
-            Encoder::X264 {
-                options, ..
-            } => options.insert(
+            Encoder::X264 { options, .. } => options.insert(
                 "preset".to_owned(),
-                CLIParameter::new_string("--", " ", match speed {
-                    i8::MIN..=0 => "placebo",
-                    1 => "veryslow",
-                    2 => "slower",
-                    3 => "slow",
-                    4 => "medium",
-                    5 => "fast",
-                    6 => "faster",
-                    7 => "veryfast",
-                    8 => "superfast",
-                    9..=i8::MAX => "ultrafast",
-                }),
+                CLIParameter::new_string(
+                    "--",
+                    " ",
+                    match speed {
+                        i8::MIN..=0 => "placebo",
+                        1 => "veryslow",
+                        2 => "slower",
+                        3 => "slow",
+                        4 => "medium",
+                        5 => "fast",
+                        6 => "faster",
+                        7 => "veryfast",
+                        8 => "superfast",
+                        9..=i8::MAX => "ultrafast",
+                    },
+                ),
             ),
-            Encoder::X265 {
-                options, ..
-            } => options.insert(
+            Encoder::X265 { options, .. } => options.insert(
                 "preset".to_owned(),
-                CLIParameter::new_string("--", " ", match speed {
-                    i8::MIN..=0 => "placebo",
-                    1 => "veryslow",
-                    2 => "slower",
-                    3 => "slow",
-                    4 => "medium",
-                    5 => "fast",
-                    6 => "faster",
-                    7 => "veryfast",
-                    8 => "superfast",
-                    9..=i8::MAX => "ultrafast",
-                }),
+                CLIParameter::new_string(
+                    "--",
+                    " ",
+                    match speed {
+                        i8::MIN..=0 => "placebo",
+                        1 => "veryslow",
+                        2 => "slower",
+                        3 => "slow",
+                        4 => "medium",
+                        5 => "fast",
+                        6 => "faster",
+                        7 => "veryfast",
+                        8 => "superfast",
+                        9..=i8::MAX => "ultrafast",
+                    },
+                ),
             ),
-            Encoder::VVenC {
-                options, ..
-            } => options.insert(
+            Encoder::VVenC { options, .. } => options.insert(
                 "preset".to_owned(),
-                CLIParameter::new_string("--", " ", match speed {
-                    i8::MIN..=0 => "slower",
-                    1 => "slow",
-                    2 => "medium",
-                    3 => "fast",
-                    4..=i8::MAX => "faster",
-                }),
+                CLIParameter::new_string(
+                    "--",
+                    " ",
+                    match speed {
+                        i8::MIN..=0 => "slower",
+                        1 => "slow",
+                        2 => "medium",
+                        3 => "fast",
+                        4..=i8::MAX => "faster",
+                    },
+                ),
             ),
-            Encoder::FFmpeg {
-                options, ..
-            } => options.insert(
+            Encoder::FFmpeg { options, .. } => options.insert(
                 "preset".to_owned(),
                 CLIParameter::new_number("-", " ", speed as f64),
             ),
@@ -1288,85 +1217,43 @@ impl Encoder {
     #[inline]
     pub fn speed(&self) -> Option<String> {
         match self {
-            Encoder::AOM {
-                options, ..
-            } => options.get("cpu-used").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(value.to_string()),
+            Encoder::AOM { options, .. } => options.get("cpu-used").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(value.to_string()),
                 _ => None,
             }),
-            Encoder::RAV1E {
-                options, ..
-            } => options.get("speed").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(value.to_string()),
+            Encoder::RAV1E { options, .. } => options.get("speed").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(value.to_string()),
                 _ => None,
             }),
-            Encoder::SVTAV1 {
-                options, ..
-            } => options.get("preset").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(value.to_string()),
+            Encoder::SVTAV1 { options, .. } => options.get("preset").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(value.to_string()),
                 _ => None,
             }),
-            Encoder::AVM {
-                options, ..
-            } => options.get("cpu-used").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(value.to_string()),
+            Encoder::AVM { options, .. } => options.get("cpu-used").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(value.to_string()),
                 _ => None,
             }),
-            Encoder::VPX {
-                options, ..
-            } => options.get("cpu-used").and_then(|p| match p {
-                CLIParameter::Number {
-                    value, ..
-                } => Some(value.to_string()),
+            Encoder::VPX { options, .. } => options.get("cpu-used").and_then(|p| match p {
+                CLIParameter::Number { value, .. } => Some(value.to_string()),
                 _ => None,
             }),
-            Encoder::X264 {
-                options, ..
-            } => options.get("preset").and_then(|p| match p {
-                CLIParameter::String {
-                    value, ..
-                } => Some(value.clone()),
+            Encoder::X264 { options, .. } => options.get("preset").and_then(|p| match p {
+                CLIParameter::String { value, .. } => Some(value.clone()),
                 _ => None,
             }),
-            Encoder::X265 {
-                options, ..
-            } => options.get("preset").and_then(|p| match p {
-                CLIParameter::String {
-                    value, ..
-                } => Some(value.clone()),
-                CLIParameter::Number {
-                    value, ..
-                } => Some(value.to_string()),
+            Encoder::X265 { options, .. } => options.get("preset").and_then(|p| match p {
+                CLIParameter::String { value, .. } => Some(value.clone()),
+                CLIParameter::Number { value, .. } => Some(value.to_string()),
                 _ => None,
             }),
-            Encoder::VVenC {
-                options, ..
-            } => options.get("preset").and_then(|p| match p {
-                CLIParameter::String {
-                    value, ..
-                } => Some(value.clone()),
-                CLIParameter::Number {
-                    value, ..
-                } => Some(value.to_string()),
+            Encoder::VVenC { options, .. } => options.get("preset").and_then(|p| match p {
+                CLIParameter::String { value, .. } => Some(value.clone()),
+                CLIParameter::Number { value, .. } => Some(value.to_string()),
                 _ => None,
             }),
-            Encoder::FFmpeg {
-                options, ..
-            } => options.get("preset").and_then(|p| match p {
-                CLIParameter::String {
-                    value, ..
-                } => Some(value.clone()),
-                CLIParameter::Number {
-                    value, ..
-                } => Some(value.to_string()),
+            Encoder::FFmpeg { options, .. } => options.get("preset").and_then(|p| match p {
+                CLIParameter::String { value, .. } => Some(value.clone()),
+                CLIParameter::Number { value, .. } => Some(value.to_string()),
                 _ => None,
             }),
         }
@@ -1403,9 +1290,7 @@ impl Encoder {
     #[inline]
     pub fn version_text(&self) -> Option<String> {
         match self {
-            Encoder::AOM {
-                ..
-            } => {
+            Encoder::AOM { .. } => {
                 let result = Command::new(self.executable())
                     .arg("--help")
                     .stdin(Stdio::null())
@@ -1423,9 +1308,7 @@ impl Encoder {
                         .to_string(),
                 )
             },
-            Encoder::RAV1E {
-                ..
-            } => {
+            Encoder::RAV1E { .. } => {
                 let result = Command::new(self.executable())
                     .arg("--version")
                     .stdin(Stdio::null())
@@ -1435,9 +1318,7 @@ impl Encoder {
                 let version_line = stdout.lines().find(|line| line.starts_with("rav1e"))?;
                 Some(version_line.to_string())
             },
-            Encoder::VPX {
-                ..
-            } => {
+            Encoder::VPX { .. } => {
                 let result = Command::new(self.executable())
                     .arg("--help")
                     .stdin(Stdio::null())
@@ -1455,9 +1336,7 @@ impl Encoder {
                         .to_string(),
                 )
             },
-            Encoder::SVTAV1 {
-                ..
-            } => {
+            Encoder::SVTAV1 { .. } => {
                 let result = Command::new(self.executable())
                     .arg("--version")
                     .stdin(Stdio::null())
@@ -1467,9 +1346,7 @@ impl Encoder {
                 let version_line = stdout.lines().find(|line| line.starts_with("SVT-AV1"))?;
                 Some(version_line.to_string())
             },
-            Encoder::AVM {
-                ..
-            } => {
+            Encoder::AVM { .. } => {
                 let result = Command::new(self.executable())
                     .arg("--help")
                     .stdin(Stdio::null())
@@ -1487,9 +1364,7 @@ impl Encoder {
                         .to_string(),
                 )
             },
-            Encoder::X264 {
-                ..
-            } => {
+            Encoder::X264 { .. } => {
                 let result = Command::new(self.executable())
                     .arg("--version")
                     .stdin(Stdio::null())
@@ -1506,9 +1381,7 @@ impl Encoder {
                         .to_string(),
                 )
             },
-            Encoder::X265 {
-                ..
-            } => {
+            Encoder::X265 { .. } => {
                 let result = Command::new(self.executable())
                     .arg("--version")
                     .stdin(Stdio::null())
@@ -1525,9 +1398,7 @@ impl Encoder {
                         .to_string(),
                 )
             },
-            Encoder::VVenC {
-                ..
-            } => {
+            Encoder::VVenC { .. } => {
                 let result = Command::new(self.executable())
                     .arg("--version")
                     .stdin(Stdio::null())
@@ -1537,9 +1408,7 @@ impl Encoder {
                 let version_line = stdout.lines().find(|line| line.starts_with("vvencapp"))?;
                 Some(version_line.to_string())
             },
-            Encoder::FFmpeg {
-                ..
-            } => {
+            Encoder::FFmpeg { .. } => {
                 let result = Command::new(self.executable()).stdin(Stdio::null()).output().ok()?;
                 let stderr = String::from_utf8_lossy(&result.stderr);
                 let version_line = stderr.lines().find(|line| line.starts_with("ffmpeg"))?;
@@ -1553,11 +1422,11 @@ impl Default for Encoder {
     #[inline]
     fn default() -> Self {
         Self::SVTAV1 {
-            executable:        None,
-            pass:              EncoderPasses::All(1),
-            options:           HashMap::new(),
-            photon_noise:      None,
-            ffmpeg_filter:     None,
+            executable: None,
+            pass: EncoderPasses::All(1),
+            options: HashMap::new(),
+            photon_noise: None,
+            ffmpeg_filter: None,
             append_color_data: true,
         }
     }
@@ -1565,24 +1434,24 @@ impl Default for Encoder {
 
 #[derive(Debug, Clone, Copy)]
 pub struct EncodeProgress {
-    pub pass:  (u8, u8),
+    pub pass: (u8, u8),
     pub frame: usize,
     pub usage: EncodeResourceUsage,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EncodeResourceUsage {
-    pub cpu:    f32,
+    pub cpu: f32,
     pub memory: u64,
 }
 
 #[derive(Debug, Error, Clone)]
 pub struct EncoderResult {
-    pub encoder:    EncoderBase,
+    pub encoder: EncoderBase,
     pub parameters: Vec<String>,
-    pub status:     std::process::ExitStatus,
-    pub stdout:     StringOrBytes,
-    pub stderr:     StringOrBytes,
+    pub status: std::process::ExitStatus,
+    pub stdout: StringOrBytes,
+    pub stderr: StringOrBytes,
 }
 
 impl Display for EncoderResult {
@@ -1622,20 +1491,19 @@ mod tests {
 
     fn clip_info() -> ClipInfo {
         ClipInfo {
-            num_frames:                    24,
-            format_info:
-                crate::core::input::pixel_format::PixelFormat::VapourSynth {
-                    bit_depth: 10
-                },
-            frame_rate:                    av_format::rational::Rational64::new(24, 1),
-            resolution:                    (1920, 1080),
-            color_range:                   None,
-            color_primaries:               Some(ColorPrimaries::BT2020),
+            num_frames: 24,
+            format_info: crate::core::input::pixel_format::PixelFormat::VapourSynth {
+                bit_depth: 10,
+            },
+            frame_rate: av_format::rational::Rational64::new(24, 1),
+            resolution: (1920, 1080),
+            color_range: None,
+            color_primaries: Some(ColorPrimaries::BT2020),
             color_transfer_characteristic: Some(TransferCharacteristic::SMPTE2084),
-            color_space:                   Some(ColorSpace::BT2020NCL),
-            chroma_location:               None,
-            mastering_display:             None,
-            content_light_level:           None,
+            color_space: Some(ColorSpace::BT2020NCL),
+            chroma_location: None,
+            mastering_display: None,
+            content_light_level: None,
         }
     }
 
@@ -1705,7 +1573,7 @@ mod tests {
         );
         let clip_info = ClipInfo {
             content_light_level: Some(av_decoders::ContentLightLevel {
-                max_cll:  1000,
+                max_cll: 1000,
                 max_fall: 400,
             }),
             ..clip_info()
@@ -1736,11 +1604,14 @@ mod tests {
     #[test]
     fn ffmpeg_colour_data_precedes_the_input() {
         let encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, true);
-        let parameters =
-            encoder.parameters_with_output((1, 1), &PathBuf::from("output.mkv"), &ClipInfo {
+        let parameters = encoder.parameters_with_output(
+            (1, 1),
+            &PathBuf::from("output.mkv"),
+            &ClipInfo {
                 chroma_location: Some(av_decoders::ChromaLocation::Left),
                 ..clip_info()
-            });
+            },
+        );
         let input = parameters
             .iter()
             .position(|argument| argument == "-i")

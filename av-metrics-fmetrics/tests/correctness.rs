@@ -5,18 +5,9 @@
 use std::sync::Mutex;
 
 use av_metrics_fmetrics::{
-    FmetricsApi,
-    FmetricsButteraugliOptions,
-    FmetricsColorspace,
-    FmetricsCvvdpDisplayModel,
-    FmetricsCvvdpResult,
-    FmetricsErr,
-    FmetricsImg,
-    FmetricsMetric,
-    FmetricsWorkspace,
-    cvvdp_version,
-    fmetrics_version,
-    is_available,
+    FmetricsApi, FmetricsButteraugliOptions, FmetricsColorspace, FmetricsCvvdpDisplayModel,
+    FmetricsCvvdpResult, FmetricsErr, FmetricsImg, FmetricsMetric, FmetricsWorkspace,
+    cvvdp_version, fmetrics_version, is_available,
 };
 
 /// Serialises every call into the library.

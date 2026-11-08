@@ -48,7 +48,7 @@ impl Samples for RawPlane<'_> {
 /// through to check the raw reader.
 #[cfg(test)]
 struct PlaneRows<'a, T: Pixel> {
-    rows:  Vec<&'a [T]>,
+    rows: Vec<&'a [T]>,
     width: usize,
 }
 
@@ -56,17 +56,14 @@ struct PlaneRows<'a, T: Pixel> {
 impl<'a, T: Pixel> PlaneRows<'a, T> {
     fn new(plane: &'a Plane<T>) -> Self {
         Self {
-            rows:  plane.rows().collect(),
+            rows: plane.rows().collect(),
             width: plane.width(),
         }
     }
 
     #[cfg(test)]
     fn from_rows(rows: Vec<&'a [T]>, width: usize) -> Self {
-        Self {
-            rows,
-            width,
-        }
+        Self { rows, width }
     }
 }
 
@@ -128,10 +125,10 @@ fn tile<S: Samples>(luma: &S, chroma: Option<(&S, &S)>, bit_depth: usize) -> Vec
     let luma = box_average(luma);
     let (cb, cr) = match chroma {
         Some((cb, cr)) => (box_average(cb), box_average(cr)),
-        None => (vec![c_offset; WIDTH * HEIGHT], vec![
-            c_offset;
-            WIDTH * HEIGHT
-        ]),
+        None => (
+            vec![c_offset; WIDTH * HEIGHT],
+            vec![c_offset; WIDTH * HEIGHT],
+        ),
     };
 
     let mut tile = Vec::with_capacity(TILE_LEN);

@@ -7,35 +7,35 @@ use ratatui::{
 use crate::utils::time_display::seconds_to_hms;
 
 pub struct ProgressBar {
-    pub color:               Color,
-    pub processing_title:    String,
-    pub completed_title:     String,
-    pub top_right_title:     String,
+    pub color: Color,
+    pub processing_title: String,
+    pub completed_title: String,
+    pub top_right_title: String,
     pub bottom_center_title: String,
-    pub unit:                String,
-    pub unit_per_second:     String,
-    pub initial_completed:   u64,
-    pub completed:           u64,
-    pub total:               u64,
+    pub unit: String,
+    pub unit_per_second: String,
+    pub initial_completed: u64,
+    pub completed: u64,
+    pub total: u64,
     /// Whether to render the inner label (e.g. `0/100 Frames (0.00FPS)`).
     /// When `false`, only the percentage in the title is shown.
-    pub show_label:          bool,
+    pub show_label: bool,
 }
 
 impl Default for ProgressBar {
     fn default() -> Self {
         Self {
-            color:               crate::theme::Theme::current().main,
-            processing_title:    String::new(),
-            completed_title:     String::new(),
-            top_right_title:     String::new(),
+            color: crate::theme::Theme::current().main,
+            processing_title: String::new(),
+            completed_title: String::new(),
+            top_right_title: String::new(),
             bottom_center_title: String::new(),
-            unit:                String::new(),
-            unit_per_second:     String::new(),
-            initial_completed:   0,
-            completed:           0,
-            total:               0,
-            show_label:          true,
+            unit: String::new(),
+            unit_per_second: String::new(),
+            initial_completed: 0,
+            completed: 0,
+            total: 0,
+            show_label: true,
         }
     }
 }

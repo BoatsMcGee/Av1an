@@ -12,8 +12,7 @@ where
     pub speed_quantizers: Vec<(i8, f64)>,
 }
 
-impl SequenceConfigHandler for SpeedScalerConfig {
-}
+impl SequenceConfigHandler for SpeedScalerConfig {}
 
 pub trait SpeedScalerConfigHandler
 where

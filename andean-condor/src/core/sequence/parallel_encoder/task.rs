@@ -16,11 +16,11 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Task {
     pub original_index: usize,
-    pub index:          usize,
-    pub frame_indices:  Vec<usize>,
-    pub sub_scenes:     Option<Vec<SubScene>>,
-    pub encoder:        Encoder,
-    pub output:         PathBuf,
+    pub index: usize,
+    pub frame_indices: Vec<usize>,
+    pub sub_scenes: Option<Vec<SubScene>>,
+    pub encoder: Encoder,
+    pub output: PathBuf,
 }
 
 /// Channel plumbing that persists scene results as they finish rather than
@@ -29,19 +29,19 @@ pub(super) struct ResultStream<'a, F>
 where
     F: FnMut(Vec<ParallelEncoderResult>) -> Result<()>,
 {
-    pub(super) results_tx:      crossbeam_channel::Sender<ParallelEncoderResult>,
-    pub(super) results_rx:      &'a crossbeam_channel::Receiver<ParallelEncoderResult>,
+    pub(super) results_tx: crossbeam_channel::Sender<ParallelEncoderResult>,
+    pub(super) results_rx: &'a crossbeam_channel::Receiver<ParallelEncoderResult>,
     pub(super) finished_scenes: Arc<Semaphore>,
-    pub(super) on_results:      &'a mut F,
+    pub(super) on_results: &'a mut F,
 }
 
 /// One finished scene encode.
 #[derive(Debug, Clone)]
 pub struct ParallelEncoderResult {
-    pub scene:   usize,
+    pub scene: usize,
     pub started: std::time::SystemTime,
-    pub ended:   std::time::SystemTime,
-    pub bytes:   u64,
+    pub ended: std::time::SystemTime,
+    pub bytes: u64,
     pub bitrate: f64,
-    pub result:  EncoderResult,
+    pub result: EncoderResult,
 }

@@ -16,19 +16,19 @@ pub struct SceneDetectorData
 where
     Self: Default,
 {
-    pub scenecut_scores:   Option<BTreeMap<usize, ScenecutScore>>,
+    pub scenecut_scores: Option<BTreeMap<usize, ScenecutScore>>,
     /// Per-frame TransNetV2 transition probabilities, absolute frame index.
     pub transnetv2_scores: Option<BTreeMap<usize, f32>>,
-    pub created_on:        SystemTime,
+    pub created_on: SystemTime,
 }
 
 impl Default for SceneDetectorData {
     #[inline]
     fn default() -> Self {
         Self {
-            scenecut_scores:   None,
+            scenecut_scores: None,
             transnetv2_scores: None,
-            created_on:        SystemTime::now(),
+            created_on: SystemTime::now(),
         }
     }
 }
@@ -44,11 +44,10 @@ where
     Self: SequenceConfigHandler,
 {
     pub method: SceneDetectionMethod,
-    pub input:  Option<InputModel>,
+    pub input: Option<InputModel>,
 }
 
-impl SequenceConfigHandler for SceneDetectorConfig {
-}
+impl SequenceConfigHandler for SceneDetectorConfig {}
 
 // Not `Copy`: the TransNetV2 variant carries a `PathBuf` model override.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -60,20 +59,20 @@ pub enum SceneDetectionMethod {
     AVSceneChange {
         minimum_length: usize,
         maximum_length: usize,
-        method:         ScenecutMethod,
+        method: ScenecutMethod,
         /// Keep the per-frame scenecut scores in `SceneDetectorData`. Off by
         /// default: the scores flood the JSON config and nothing reads them.
-        save_scores:    bool,
+        save_scores: bool,
     },
     /// TransNetV2 neural network via ONNX Runtime. `model_path` pins the
     /// model file; when unset it is resolved from the standard locations.
     TransNetV2 {
         minimum_length: usize,
         maximum_length: usize,
-        model_path:     Option<PathBuf>,
+        model_path: Option<PathBuf>,
         /// Keep the per-frame transition probabilities in `SceneDetectorData`.
         /// Off by default: they flood the JSON config and nothing reads them.
-        save_scores:    bool,
+        save_scores: bool,
     },
 }
 
@@ -84,8 +83,8 @@ impl Default for SceneDetectionMethod {
             minimum_length: DEFAULT_MIN_SCENE_LENGTH_FRAMES as usize,
             maximum_length: (DEFAULT_MIN_SCENE_LENGTH_FRAMES as usize
                 * DEFAULT_MAX_SCENE_LENGTH_SECONDS as usize),
-            method:         ScenecutMethod::Standard,
-            save_scores:    false,
+            method: ScenecutMethod::Standard,
+            save_scores: false,
         }
     }
 }
@@ -241,22 +240,22 @@ pub enum ScenecutMethod {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ScenecutScore {
-    pub inter_cost:             f64,
-    pub imp_block_cost:         f64,
+    pub inter_cost: f64,
+    pub imp_block_cost: f64,
     pub backward_adjusted_cost: f64,
-    pub forward_adjusted_cost:  f64,
-    pub threshold:              f64,
+    pub forward_adjusted_cost: f64,
+    pub threshold: f64,
 }
 
 impl ScenecutScore {
     #[inline]
     pub fn from_scenecutresult(result: &ScenecutResult) -> Self {
         Self {
-            inter_cost:             result.inter_cost,
-            imp_block_cost:         result.imp_block_cost,
+            inter_cost: result.inter_cost,
+            imp_block_cost: result.imp_block_cost,
             backward_adjusted_cost: result.backward_adjusted_cost,
-            forward_adjusted_cost:  result.forward_adjusted_cost,
-            threshold:              result.threshold,
+            forward_adjusted_cost: result.forward_adjusted_cost,
+            threshold: result.threshold,
         }
     }
 }

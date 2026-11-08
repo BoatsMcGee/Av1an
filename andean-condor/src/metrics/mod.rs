@@ -88,8 +88,8 @@ impl std::fmt::Display for Engine {
 #[must_use]
 pub fn engine(metric: &QualityMetric, input_is_vapoursynth: bool) -> Option<Engine> {
     let availability = Availability {
-        vship:       av_metrics_vship::is_available(),
-        fmetrics:    av_metrics_fmetrics::is_available(),
+        vship: av_metrics_vship::is_available(),
+        fmetrics: av_metrics_fmetrics::is_available(),
         // A branch in this crate rather than a library, so never absent.
         vapoursynth: true,
     };
@@ -105,8 +105,8 @@ pub fn engine(metric: &QualityMetric, input_is_vapoursynth: bool) -> Option<Engi
 /// the one the test machine happens to provide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Availability {
-    vship:       bool,
-    fmetrics:    bool,
+    vship: bool,
+    fmetrics: bool,
     vapoursynth: bool,
 }
 
@@ -168,27 +168,27 @@ mod tests {
     fn ssimulacra2() -> QualityMetric {
         QualityMetric::SSIMULACRA2 {
             target_range: (74.0, 76.0),
-            resolution:   None,
-            threads:      None,
-            gpu_id:       None,
+            resolution: None,
+            threads: None,
+            gpu_id: None,
         }
     }
 
     fn xpsnr() -> QualityMetric {
         QualityMetric::XPSNR {
             target_range: (45.0, 55.0),
-            resolution:   None,
+            resolution: None,
         }
     }
 
     fn butteraugli() -> QualityMetric {
         QualityMetric::BUTTERAUGLI {
-            target_range:         (1.0, 3.0),
-            resolution:           None,
-            threads:              None,
+            target_range: (1.0, 3.0),
+            resolution: None,
+            threads: None,
             intensity_multiplier: None,
-            norm:                 None,
-            gpu_id:               None,
+            norm: None,
+            gpu_id: None,
         }
     }
 
@@ -230,8 +230,8 @@ mod tests {
         // A machine with a working GPU behaves as it did before fmetrics
         // existed, whatever else is installed.
         let with_vship = Availability {
-            vship:       true,
-            fmetrics:    true,
+            vship: true,
+            fmetrics: true,
             vapoursynth: true,
         };
         for vapoursynth in [true, false] {
@@ -246,8 +246,8 @@ mod tests {
     #[test]
     fn fmetrics_is_reachable_only_where_it_is_actually_cheaper() {
         let both = Availability {
-            vship:       false,
-            fmetrics:    true,
+            vship: false,
+            fmetrics: true,
             vapoursynth: true,
         };
         let no_plugin = Availability {
@@ -277,8 +277,8 @@ mod tests {
     fn no_available_engine_means_the_plugin_not_a_guess() {
         // `None` is the signal for "use your VapourSynth branch".
         let nothing = Availability {
-            vship:       false,
-            fmetrics:    false,
+            vship: false,
+            fmetrics: false,
             vapoursynth: true,
         };
         for vapoursynth in [true, false] {
@@ -290,8 +290,8 @@ mod tests {
     fn a_metric_with_no_native_engine_falls_through_to_the_plugin() {
         // XPSNR has no libvship or fmetrics implementation.
         let with_everything = Availability {
-            vship:       true,
-            fmetrics:    true,
+            vship: true,
+            fmetrics: true,
             vapoursynth: true,
         };
         assert_eq!(engine_order(&xpsnr(), false, with_everything), None);
@@ -326,11 +326,11 @@ mod tests {
         // it here would promise a fallback that does not exist.
         assert!(!plugin_available(&QualityMetric::VMAF {
             target_range: (85.0, 95.0),
-            resolution:   None,
-            scaler:       "area".to_owned(),
-            threads:      4,
-            model:        None,
-            features:     Vec::new(),
+            resolution: None,
+            scaler: "area".to_owned(),
+            threads: 4,
+            model: None,
+            features: Vec::new(),
         }));
     }
 

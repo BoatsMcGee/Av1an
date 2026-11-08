@@ -7,13 +7,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         zoomvtools::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -23,31 +21,31 @@ use crate::vapoursynth::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Degrain {
     /// Only used for script generation
-    pub clip_name:       Option<NodeVariableName>,
+    pub clip_name: Option<NodeVariableName>,
     /// Only used for script generation
     pub super_clip_name: Option<NodeVariableName>,
     /// Only used for script generation
-    pub mvbw_name:       Option<NodeVariableName>,
+    pub mvbw_name: Option<NodeVariableName>,
     /// Only used for script generation
-    pub mvfw_name:       Option<NodeVariableName>,
+    pub mvfw_name: Option<NodeVariableName>,
     /// SAD at which a reference block's weight reaches zero. Default 400.
-    pub thsad:           Option<u32>,
+    pub thsad: Option<u32>,
     /// Chroma SAD threshold. Defaults to thsad.
-    pub thsadc:          Option<u32>,
+    pub thsadc: Option<u32>,
     /// Which planes to process: -1=all, 0=luma, 1=chroma U, 2=chroma V.
     /// Default -1.
-    pub plane:           Option<i32>,
+    pub plane: Option<i32>,
     /// Maximum absolute change per pixel (luma). Default 0.
-    pub limit:           Option<u32>,
+    pub limit: Option<u32>,
     /// Maximum absolute change per pixel (chroma). Defaults to limit.
-    pub limitc:          Option<u32>,
+    pub limitc: Option<u32>,
     /// Scene-change SAD threshold. Default 130.
-    pub thscd1:          Option<u32>,
+    pub thscd1: Option<u32>,
     /// Percentage of blocks that must be "changed" for scene change. Default
     /// 18.
-    pub thscd2:          Option<u32>,
+    pub thscd2: Option<u32>,
     /// CPU optimizations. Default 4.
-    pub opt:             Option<u32>,
+    pub opt: Option<u32>,
 }
 
 impl Plugin for Degrain {
@@ -93,40 +91,43 @@ impl Degrain {
         arguments
             .set_node("clip", clip)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
         arguments.set_node("super_clip", super_clip).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "super_clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         arguments
             .set_node("mvbw", mvbw)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "mvbw".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
         arguments
             .set_node("mvfw", mvfw)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "mvfw".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("thsad", self.thsad),
-            ("thsadc", self.thsadc),
-            ("limit", self.limit),
-            ("limitc", self.limitc),
-            ("thscd1", self.thscd1),
-            ("thscd2", self.thscd2),
-            ("opt", self.opt),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("thsad", self.thsad),
+                ("thsadc", self.thsadc),
+                ("limit", self.limit),
+                ("limitc", self.limitc),
+                ("thscd1", self.thscd1),
+                ("thscd2", self.thscd2),
+                ("opt", self.opt),
+            ],
+        )?;
         // plane is signed (-1 = all)
         Self::argument_set_int(&mut arguments, "plane", self.plane.map(|d| d as i64))?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;

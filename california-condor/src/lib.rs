@@ -7,8 +7,7 @@ use tracing::{debug, info, level_filters::LevelFilter};
 
 use crate::{
     commands::{
-        Commands,
-        CondorCli,
+        Commands, CondorCli,
         handlers::{
             benchmarker::benchmarker_handler,
             concatenate::concatenate_handler,
@@ -30,15 +29,9 @@ use crate::{
     configuration::Configuration,
     logging::init_logging,
     tui::{
-        run_benchmarker_tui,
-        run_bitrate_optimizer_tui,
-        run_noise_detector_tui,
-        run_noise_scaler_tui,
-        run_parallel_encoder_tui,
-        run_quality_check_tui,
-        run_scene_concatenator_tui,
-        run_scene_detector_tui,
-        run_speed_scaler_tui,
+        run_benchmarker_tui, run_bitrate_optimizer_tui, run_noise_detector_tui,
+        run_noise_scaler_tui, run_parallel_encoder_tui, run_quality_check_tui,
+        run_scene_concatenator_tui, run_scene_detector_tui, run_speed_scaler_tui,
         run_target_quality_tui,
     },
     zoner::Zoner,
@@ -189,11 +182,7 @@ fn run() -> anyhow::Result<()> {
 
             run_benchmarker(&configuration, &save_file)?;
         },
-        Some(Commands::Zone {
-            zones,
-            dry_run,
-            ..
-        }) => {
+        Some(Commands::Zone { zones, dry_run, .. }) => {
             let (configuration, save_file) = zone_handler(config_path.as_deref(), &zones)?;
             if dry_run {
                 info!(
@@ -207,10 +196,7 @@ fn run() -> anyhow::Result<()> {
                 run_zoner(&configuration, &save_file)?;
             }
         },
-        Some(Commands::Scenes {
-            index,
-            action,
-        }) => {
+        Some(Commands::Scenes { index, action }) => {
             // The index comes first and is optional: without an action the
             // addressed scenes are printed, which is what a bare
             // `condor scenes` performs for the whole list.
@@ -400,9 +386,7 @@ fn run() -> anyhow::Result<()> {
 
             run_quality_check(&configuration, &save_file)?;
         },
-        Some(Commands::Clean {
-            all: _,
-        }) => {
+        Some(Commands::Clean { all: _ }) => {
             todo!();
         },
         None => {

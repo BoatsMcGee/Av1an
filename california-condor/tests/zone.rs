@@ -73,16 +73,19 @@ mod tests {
             .args(["zone", "0 240 replace x265 \"--crf 18\"", "480 -1 svt-av1 \"--preset 3\""])
             .assert()
             .success();
-        assert_info_logs(result.get_output(), &[
-            "Zoner: applying 2 zones to 5 scenes",
-            "zone 1 (0..240) modified encoder settings for scene 0..121 (svt-av1 -> x265)",
-            "zone 1 (0..240) modified encoder settings for scene 121..240",
-            "zone 2 (480..720) modified encoder settings for scene 480..528",
-            "zone 2 (480..720) modified encoder settings for scene 528..720",
-            "zone 1 (0..240) matched 2 scenes, modified 2, split 0, added 0 (0 unchanged)",
-            "Zoner finished: 2 zones, 4 scene changes across zones, 0 scenes added (5 -> 5 \
+        assert_info_logs(
+            result.get_output(),
+            &[
+                "Zoner: applying 2 zones to 5 scenes",
+                "zone 1 (0..240) modified encoder settings for scene 0..121 (svt-av1 -> x265)",
+                "zone 1 (0..240) modified encoder settings for scene 121..240",
+                "zone 2 (480..720) modified encoder settings for scene 480..528",
+                "zone 2 (480..720) modified encoder settings for scene 528..720",
+                "zone 1 (0..240) matched 2 scenes, modified 2, split 0, added 0 (0 unchanged)",
+                "Zoner finished: 2 zones, 4 scene changes across zones, 0 scenes added (5 -> 5 \
              total), 0 warnings",
-        ]);
+            ],
+        );
         assert!(
             !String::from_utf8_lossy(&result.get_output().stderr)
                 .contains("modified encoder settings for scene 240..480"),
@@ -133,9 +136,12 @@ mod tests {
             .arg("zone")
             .assert()
             .success();
-        assert_info_logs(repeated.get_output(), &["Zoner: the scenes already \
+        assert_info_logs(
+            repeated.get_output(),
+            &["Zoner: the scenes already \
                                                    record a zoning pass; nothing \
-                                                   to apply"]);
+                                                   to apply"],
+        );
         let stderr = String::from_utf8_lossy(&repeated.get_output().stderr);
         assert!(
             !stderr.contains("Zoner finished") && !stderr.contains("applying"),
@@ -162,11 +168,14 @@ mod tests {
             .args(["zone", "0 240 x264 \"--crf 20\""])
             .assert()
             .success();
-        assert_info_logs(mismatched.get_output(), &[
-            "zone 1 (0..240) matched 2 scenes, modified 0, split 0, added 0 (2 unchanged)",
-            "Zoner finished: 1 zones, 0 scene changes across zones, 0 scenes added (5 -> 5 \
+        assert_info_logs(
+            mismatched.get_output(),
+            &[
+                "zone 1 (0..240) matched 2 scenes, modified 0, split 0, added 0 (2 unchanged)",
+                "Zoner finished: 1 zones, 0 scene changes across zones, 0 scenes added (5 -> 5 \
              total), 2 warnings",
-        ]);
+            ],
+        );
     }
 
     #[serial]
@@ -278,13 +287,16 @@ mod tests {
                 .args(args)
                 .assert()
                 .success();
-            assert_info_logs(result.get_output(), &[
-                "Zoner dry-run:",
-                "modified encoder settings for scene 0..121",
-                "split scene 0..121 into 2 scenes (1 added)",
-                "matched 1 scenes, modified 1, split 1, added 1 (0 unchanged)",
-                "no configuration changes were saved",
-            ]);
+            assert_info_logs(
+                result.get_output(),
+                &[
+                    "Zoner dry-run:",
+                    "modified encoder settings for scene 0..121",
+                    "split scene 0..121 into 2 scenes (1 added)",
+                    "matched 1 scenes, modified 1, split 1, added 1 (0 unchanged)",
+                    "no configuration changes were saved",
+                ],
+            );
             let stderr = String::from_utf8_lossy(&result.get_output().stderr);
             assert!(stderr.contains("scene index 0") && stderr.contains("saved encode results"));
             assert!(stderr.contains("scene index 4 has an existing encode/probe file"));
@@ -374,15 +386,18 @@ mod tests {
             .args(["zone", "zones.json"])
             .assert()
             .success();
-        assert_info_logs(result.get_output(), &[
-            "zone 1 (0..240) split scene 0..121 into 2 scenes (1 added), frame ranges: [(0, 60), \
+        assert_info_logs(
+            result.get_output(),
+            &[
+                "zone 1 (0..240) split scene 0..121 into 2 scenes (1 added), frame ranges: [(0, 60), \
              (60, 121)]",
-            "zone 1 (0..240) split scene 121..240 into 2 scenes (1 added), frame ranges: [(121, \
+                "zone 1 (0..240) split scene 121..240 into 2 scenes (1 added), frame ranges: [(121, \
              180), (180, 240)]",
-            "zone 1 (0..240) matched 2 scenes, modified 2, split 2, added 2 (0 unchanged)",
-            "Zoner finished: 1 zones, 2 scene changes across zones, 2 scenes added (5 -> 7 \
+                "zone 1 (0..240) matched 2 scenes, modified 2, split 2, added 2 (0 unchanged)",
+                "Zoner finished: 1 zones, 2 scene changes across zones, 2 scenes added (5 -> 7 \
              total), 0 warnings",
-        ]);
+            ],
+        );
 
         let (config, _) =
             load_configuration(Some(&config_path)).expect("load_configuration should succeed");

@@ -10,11 +10,7 @@ use crate::{
     config::{PoolMethod, VmafConfig, VmafModel},
     error::VmafError,
     ffi::{
-        self,
-        VmafConfiguration,
-        VmafModel as VmafModelHandle,
-        VmafModelConfig,
-        VmafPicture,
+        self, VmafConfiguration, VmafModel as VmafModelHandle, VmafModelConfig, VmafPicture,
         VmafPixelFormat,
     },
 };
@@ -23,11 +19,11 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoFormat {
     /// Width in pixels.
-    pub width:           u32,
+    pub width: u32,
     /// Height in pixels.
-    pub height:          u32,
+    pub height: u32,
     /// Bits per channel: 8, 10, 12 or 16.
-    pub bit_depth:       u32,
+    pub bit_depth: u32,
     /// Chroma subsampling.
     pub chroma_sampling: ChromaSubsampling,
 }
@@ -47,15 +43,15 @@ pub struct VideoFormat {
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneSource {
     /// Width in pixels (samples per row, not bytes).
-    pub width:        usize,
+    pub width: usize,
     /// Height in pixels.
-    pub height:       usize,
+    pub height: usize,
     /// Samples from one row to the next. May be negative for bottom-up images.
-    pub stride:       isize,
+    pub stride: isize,
     /// Offset of the first visible sample from `data`.
-    pub data_origin:  usize,
+    pub data_origin: usize,
     /// Pointer to the start of the underlying allocation.
-    data:             *const u8,
+    data: *const u8,
     /// Bytes per sample, as passed to libvmaf.
     bytes_per_sample: usize,
 }
@@ -210,7 +206,7 @@ impl VideoFormat {
 #[derive(Debug, Clone, Default)]
 pub struct FrameScore {
     /// The pooled model score for this frame.
-    pub score:    f64,
+    pub score: f64,
     /// Per-feature scores, keyed by libvmaf feature name.
     pub features: Vec<(String, f64)>,
 }
@@ -226,21 +222,21 @@ pub struct FrameScore {
 /// libvmaf documents as not safe for concurrent use. It is [`Send`] so it can
 /// be moved into a worker, but must not be shared.
 pub struct VmafScorer {
-    context:           Context,
-    config:            VmafConfig,
-    format:            VideoFormat,
-    model:             *mut VmafModelHandle,
+    context: Context,
+    config: VmafConfig,
+    format: VideoFormat,
+    model: *mut VmafModelHandle,
     /// Feature keys used to read pooled values back, e.g. `psnr_y`.
-    feature_names:     Vec<CString>,
+    feature_names: Vec<CString>,
     /// Reference picture, pooled from libvmaf and reused across frames.
     reference_picture: VmafPicture,
     /// Distorted picture, pooled from libvmaf and reused across frames.
     distorted_picture: VmafPicture,
     /// Scratch buffers for the C strings handed to `vmaf_init`.
-    _model_spec:       CString,
-    scored:            usize,
+    _model_spec: CString,
+    scored: usize,
     /// Ensures `!Sync`, because a context is single-threaded.
-    _not_sync:         PhantomData<*mut ()>,
+    _not_sync: PhantomData<*mut ()>,
 }
 
 impl Drop for VmafScorer {
@@ -304,15 +300,15 @@ impl VmafScorer {
         let api = ffi::VmafApi::load()?;
 
         let configuration = VmafConfiguration {
-            log_level:   backend::LOG_LEVEL_ERROR,
-            n_threads:   config.n_threads,
+            log_level: backend::LOG_LEVEL_ERROR,
+            n_threads: config.n_threads,
             // Always 1. libvmaf applies this as a gate on the *spatial*
             // extractors only, so a higher value would leave the frames in
             // between with no score at all. Subsample by submitting every n-th
             // frame pair instead.
             n_subsample: 1,
-            cpumask:     0,
-            gpumask:     0,
+            cpumask: 0,
+            gpumask: 0,
         };
 
         let geometry = backend::Geometry {
@@ -388,7 +384,7 @@ impl VmafScorer {
                 .join(", ");
 
             return Err(VmafError::ModelNotFound {
-                model:  load_spec.to_string_lossy().into_owned(),
+                model: load_spec.to_string_lossy().into_owned(),
                 reason: format!(
                     "loading the model returned status {status}. This libvmaf build appears to \
                      have no built-in models, and no matching model file was found. Pass an \
@@ -606,9 +602,7 @@ impl VmafScorer {
                 // silently misattribute it to the wrong frame, so a missing
                 // score is an error rather than something to
                 // skip over.
-                return Err(VmafError::MissingScore {
-                    index,
-                });
+                return Err(VmafError::MissingScore { index });
             }
         }
 
@@ -972,9 +966,7 @@ impl VmafScorer {
             // it would return a shorter vector and shift every
             // later score into the wrong slot.
             let Some(frame) = self.score_at(index)? else {
-                return Err(VmafError::MissingScore {
-                    index,
-                });
+                return Err(VmafError::MissingScore { index });
             };
             scores.push(frame.score);
         }
@@ -1123,9 +1115,9 @@ mod tests {
     #[test]
     fn pixel_format_mapping_matches_libvmaf() {
         let format = |chroma| VideoFormat {
-            width:           64,
-            height:          64,
-            bit_depth:       10,
+            width: 64,
+            height: 64,
+            bit_depth: 10,
             chroma_sampling: chroma,
         };
 

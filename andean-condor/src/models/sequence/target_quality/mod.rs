@@ -7,10 +7,7 @@ use crate::models::{
     sequence::{
         SequenceConfigHandler,
         target_quality::types::{
-            DEFAULT_MAXIMUM_PROBES,
-            InterpolationMethod,
-            QualityMetric,
-            QualityPass,
+            DEFAULT_MAXIMUM_PROBES, InterpolationMethod, QualityMetric, QualityPass,
             TargetQualityProbing,
         },
     },
@@ -23,13 +20,13 @@ pub struct TargetQualityConfig
 where
     Self: SequenceConfigHandler,
 {
-    pub metric:          QualityMetric,
-    pub maximum_probes:  u8,
+    pub metric: QualityMetric,
+    pub maximum_probes: u8,
     pub quantizer_range: (u32, u32),
-    pub interpolators:   (InterpolationMethod, InterpolationMethod),
-    pub input:           Option<InputModel>,
-    pub metric_input:    Option<InputModel>,
-    pub probing:         TargetQualityProbing,
+    pub interpolators: (InterpolationMethod, InterpolationMethod),
+    pub input: Option<InputModel>,
+    pub metric_input: Option<InputModel>,
+    pub probing: TargetQualityProbing,
     // Completion is determined by target and max probes, date from final quality pass
 }
 
@@ -37,22 +34,21 @@ impl Default for TargetQualityConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            metric:          QualityMetric::default(),
-            maximum_probes:  DEFAULT_MAXIMUM_PROBES,
+            metric: QualityMetric::default(),
+            maximum_probes: DEFAULT_MAXIMUM_PROBES,
             quantizer_range: (0, 51),
-            interpolators:   (
+            interpolators: (
                 InterpolationMethod::FritschCarlson,
                 InterpolationMethod::Pchip,
             ),
-            input:           None,
-            metric_input:    None,
-            probing:         TargetQualityProbing::default(),
+            input: None,
+            metric_input: None,
+            probing: TargetQualityProbing::default(),
         }
     }
 }
 
-impl SequenceConfigHandler for TargetQualityConfig {
-}
+impl SequenceConfigHandler for TargetQualityConfig {}
 
 pub trait TargetQualityConfigHandler {
     fn target_quality(&self) -> Result<&Option<TargetQualityConfig>>;
@@ -70,9 +66,7 @@ where
 impl Default for TargetQualityData {
     #[inline]
     fn default() -> Self {
-        Self {
-            passes: Vec::new()
-        }
+        Self { passes: Vec::new() }
     }
 }
 

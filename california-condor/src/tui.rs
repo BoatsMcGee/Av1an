@@ -11,17 +11,11 @@ use andean_condor::{
         Condor,
         input::{Input, OpenProgress, clip_info::ClipInfo},
         sequence::{
-            Sequence,
-            benchmarker::Benchmarker,
-            bitrate_optimizer::BitrateOptimizer,
-            noise_detector::NoiseDetector,
-            noise_scaler::NoiseScaler,
-            parallel_encoder::ParallelEncoder,
-            quality_check::QualityCheck,
-            scene_concatenator::SceneConcatenator,
-            scene_detector::SceneDetector,
-            speed_scaler::SpeedScaler,
-            target_quality::TargetQuality,
+            Sequence, benchmarker::Benchmarker, bitrate_optimizer::BitrateOptimizer,
+            noise_detector::NoiseDetector, noise_scaler::NoiseScaler,
+            parallel_encoder::ParallelEncoder, quality_check::QualityCheck,
+            scene_concatenator::SceneConcatenator, scene_detector::SceneDetector,
+            speed_scaler::SpeedScaler, target_quality::TargetQuality,
         },
     },
     models::input::Input as InputModel,
@@ -32,13 +26,9 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     apps::{
-        TuiApp,
-        benchmarker::BenchmarkerApp,
-        noise_detection::NoiseDetectionApp,
-        parallel_encoder::ParallelEncoderApp,
-        quality_check::QualityCheckApp,
-        scene_concatenator::SceneConcatenatorApp,
-        scene_detection::SceneDetectionApp,
+        TuiApp, benchmarker::BenchmarkerApp, noise_detection::NoiseDetectionApp,
+        parallel_encoder::ParallelEncoderApp, quality_check::QualityCheckApp,
+        scene_concatenator::SceneConcatenatorApp, scene_detection::SceneDetectionApp,
         target_quality::TargetQualityApp,
     },
     configuration::{CliSequenceConfig, CliSequenceData},
@@ -59,11 +49,7 @@ pub fn open_input(data: &InputModel, cancelled: &Arc<AtomicBool>) -> Result<(Inp
     let mut input = Input::ensure_indexed(
         data,
         |progress| {
-            let OpenProgress::Indexing {
-                current,
-                total,
-            } = progress
-            else {
+            let OpenProgress::Indexing { current, total } = progress else {
                 return;
             };
             if total == 0 {
@@ -242,9 +228,7 @@ pub fn run_noise_detector_tui(
         return Ok(());
     }
 
-    let mut noise_detector = NoiseDetector {
-        input,
-    };
+    let mut noise_detector = NoiseDetector { input };
 
     debug!("Validating Noise Detector"); // Input should alrady be validated but just in case
     let (_, validation_warnings) = noise_detector.validate(condor)?;

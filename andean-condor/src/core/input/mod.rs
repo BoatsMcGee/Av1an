@@ -17,10 +17,7 @@ pub use crate::core::input::ffms2_filter::{ChromaSampling, Ffms2Filter};
 use crate::{
     core::input::clip_info::ClipInfo,
     models::input::{
-        ImportMethod,
-        Input as InputModel,
-        VapourSynthImportMethod,
-        VapourSynthScriptSource,
+        ImportMethod, Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource,
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
@@ -54,32 +51,32 @@ pub enum OpenProgress {
 
 pub enum Input {
     Video {
-        path:           PathBuf,
-        import_method:  ImportMethod,
-        filters:        Vec<Ffms2Filter>,
+        path: PathBuf,
+        import_method: ImportMethod,
+        filters: Vec<Ffms2Filter>,
         /// The stream's format before `filters` is applied, which is what a
         /// filter's unset fields resolve against. `decoder`'s details describe
         /// the *filtered* output.
         source_details: VideoDetails,
-        decoder:        Decoder,
-        clip_info:      Option<ClipInfo>,
+        decoder: Decoder,
+        clip_info: Option<ClipInfo>,
     },
     VapourSynth {
-        path:          PathBuf,
+        path: PathBuf,
         import_method: VapourSynthImportMethod,
-        cache_path:    Option<PathBuf>,
-        filters:       Vec<VapourSynthFilter>,
-        decoder:       Decoder,
-        clip_info:     Option<ClipInfo>,
+        cache_path: Option<PathBuf>,
+        filters: Vec<VapourSynthFilter>,
+        decoder: Decoder,
+        clip_info: Option<ClipInfo>,
     },
     VapourSynthScript {
-        source:              VapourSynthScriptSource,
-        variables:           HashMap<String, String>,
-        index:               u8,
-        filters:             Vec<VapourSynthFilter>,
+        source: VapourSynthScriptSource,
+        variables: HashMap<String, String>,
+        index: u8,
+        filters: Vec<VapourSynthFilter>,
         stream_concurrently: bool,
-        decoder:             Decoder,
-        clip_info:           Option<ClipInfo>,
+        decoder: Decoder,
+        clip_info: Option<ClipInfo>,
     },
 }
 
@@ -94,9 +91,9 @@ impl Input {
                 filters,
                 ..
             } => InputModel::Video {
-                path:          path.clone(),
+                path: path.clone(),
                 import_method: import_method.clone(),
-                filters:       filters.clone(),
+                filters: filters.clone(),
             },
             Input::VapourSynth {
                 path,
@@ -105,10 +102,10 @@ impl Input {
                 filters,
                 ..
             } => InputModel::VapourSynth {
-                path:          path.clone(),
+                path: path.clone(),
                 import_method: import_method.clone(),
-                cache_path:    cache_path.clone(),
-                filters:       filters.clone(),
+                cache_path: cache_path.clone(),
+                filters: filters.clone(),
             },
             Input::VapourSynthScript {
                 source,
@@ -118,10 +115,10 @@ impl Input {
                 stream_concurrently,
                 ..
             } => InputModel::VapourSynthScript {
-                source:              source.clone(),
-                variables:           variables.clone(),
-                index:               *index,
-                filters:             filters.clone(),
+                source: source.clone(),
+                variables: variables.clone(),
+                index: *index,
+                filters: filters.clone(),
                 stream_concurrently: *stream_concurrently,
             },
         }
@@ -131,16 +128,10 @@ impl Input {
     #[inline]
     pub fn validate(data: &InputModel) -> Result<()> {
         match data {
-            InputModel::Video {
-                path, ..
-            } => ffms2::validate(path),
+            InputModel::Video { path, .. } => ffms2::validate(path),
             // TODO: Check if VapourSynth + plugin is installed and static cache it
-            InputModel::VapourSynth {
-                path, ..
-            } => vapoursynth::validate(path),
-            InputModel::VapourSynthScript {
-                source, ..
-            } => vapoursynth::validate_script(source),
+            InputModel::VapourSynth { path, .. } => vapoursynth::validate(path),
+            InputModel::VapourSynthScript { source, .. } => vapoursynth::validate_script(source),
         }
     }
 
@@ -148,15 +139,10 @@ impl Input {
     #[inline]
     pub fn from_data(data: &InputModel) -> Result<Self> {
         match data {
-            InputModel::Video {
-                ..
-            } => ffms2::from_video(data),
-            InputModel::VapourSynth {
-                ..
-            }
-            | InputModel::VapourSynthScript {
-                ..
-            } => vapoursynth::from_vapoursynth(data, None),
+            InputModel::Video { .. } => ffms2::from_video(data),
+            InputModel::VapourSynth { .. } | InputModel::VapourSynthScript { .. } => {
+                vapoursynth::from_vapoursynth(data, None)
+            },
         }
     }
 
@@ -208,9 +194,7 @@ impl Input {
                 // Validated here too: indexing must fail on a missing file
                 // with the same error `from_video` would have given.
                 Input::validate(data)?;
-                let ImportMethod::FFMS2 {
-                    cache_path, ..
-                } = import_method;
+                let ImportMethod::FFMS2 { cache_path, .. } = import_method;
                 // If no `.ffindex` exists yet this is the index `from_video`
                 // would otherwise build itself; if one does it returns at once
                 // and `from_video` reads it straight from the cache.
@@ -218,26 +202,19 @@ impl Input {
                     path,
                     cache_path.as_deref(),
                     Some(&mut |current, total| {
-                        progress(OpenProgress::Indexing {
-                            current,
-                            total,
-                        });
+                        progress(OpenProgress::Indexing { current, total });
                     }),
                     cancelled,
                 )?;
                 progress(OpenProgress::Opening);
                 ffms2::from_video(data)
             },
-            InputModel::VapourSynth {
-                ..
-            } => {
+            InputModel::VapourSynth { .. } => {
                 vapoursynth::index_source(data, &mut progress, cancelled)?;
                 progress(OpenProgress::Opening);
                 vapoursynth::from_vapoursynth(data, None)
             },
-            InputModel::VapourSynthScript {
-                ..
-            } => {
+            InputModel::VapourSynthScript { .. } => {
                 progress(OpenProgress::Opening);
                 vapoursynth::from_vapoursynth(data, None)
             },
@@ -256,15 +233,9 @@ impl Input {
     #[inline]
     pub fn decoder(&mut self) -> &mut Decoder {
         match self {
-            Input::Video {
-                decoder, ..
-            }
-            | Input::VapourSynth {
-                decoder, ..
-            }
-            | Input::VapourSynthScript {
-                decoder, ..
-            } => decoder,
+            Input::Video { decoder, .. }
+            | Input::VapourSynth { decoder, .. }
+            | Input::VapourSynthScript { decoder, .. } => decoder,
         }
     }
 
@@ -283,9 +254,7 @@ impl Input {
     pub fn clip_info(&mut self) -> Result<ClipInfo> {
         let slot = match self {
             Input::Video {
-                decoder,
-                clip_info,
-                ..
+                decoder, clip_info, ..
             } => {
                 if clip_info.is_none() {
                     *clip_info = Some(ffms2::clip_info(decoder)?);
@@ -293,14 +262,10 @@ impl Input {
                 clip_info.as_ref()
             },
             Input::VapourSynth {
-                decoder,
-                clip_info,
-                ..
+                decoder, clip_info, ..
             }
             | Input::VapourSynthScript {
-                decoder,
-                clip_info,
-                ..
+                decoder, clip_info, ..
             } => {
                 if clip_info.is_none() {
                     *clip_info = Some(vapoursynth::clip_info(decoder)?);
@@ -353,17 +318,10 @@ impl Input {
     pub fn y4m_frame(&mut self, index: usize) -> Result<Cursor<Vec<u8>>> {
         let mut stream = Cursor::new(Vec::new());
         match self {
-            Input::Video {
-                decoder, ..
-            } => {
+            Input::Video { decoder, .. } => {
                 ffms2::y4m_frame(decoder, index, stream.get_mut())?;
             },
-            Input::VapourSynth {
-                decoder, ..
-            }
-            | Input::VapourSynthScript {
-                decoder, ..
-            } => {
+            Input::VapourSynth { decoder, .. } | Input::VapourSynthScript { decoder, .. } => {
                 vapoursynth::y4m_frame(decoder, index, stream.get_mut())?;
             },
         }
@@ -381,9 +339,7 @@ impl Input {
         frame_indices: &[usize],
     ) -> Result<()> {
         match self {
-            Input::Video {
-                decoder, ..
-            } => {
+            Input::Video { decoder, .. } => {
                 let result = ffms2::y4m_frames(decoder, frame_indices, |frame| {
                     frame_sender.send(Cursor::new(frame))?;
                     Ok(())
@@ -391,12 +347,7 @@ impl Input {
                 drop(frame_sender);
                 result?;
             },
-            Input::VapourSynth {
-                decoder, ..
-            }
-            | Input::VapourSynthScript {
-                decoder, ..
-            } => {
+            Input::VapourSynth { decoder, .. } | Input::VapourSynthScript { decoder, .. } => {
                 let window = frame_feed::request_window();
                 vapoursynth::y4m_frames(
                     &vapoursynth::output_node(decoder)?,
@@ -418,12 +369,10 @@ impl Input {
     #[must_use]
     pub fn streams_concurrently(&self) -> bool {
         match self {
-            Input::Video {
-                ..
-            } => true,
-            Input::VapourSynth {
-                import_method, ..
-            } => vapoursynth::streams_concurrently(import_method),
+            Input::Video { .. } => true,
+            Input::VapourSynth { import_method, .. } => {
+                vapoursynth::streams_concurrently(import_method)
+            },
             Input::VapourSynthScript {
                 stream_concurrently,
                 ..
@@ -439,9 +388,7 @@ impl Input {
     pub fn frame_sources(&mut self, count: usize) -> Result<Vec<FrameSource<'_>>> {
         let data = self.as_data();
         match self {
-            Input::Video {
-                ..
-            } => Ok(std::iter::repeat_with(|| FrameSource {
+            Input::Video { .. } => Ok(std::iter::repeat_with(|| FrameSource {
                 kind: FrameSourceKind::Native(data.clone()),
             })
             .take(count)
@@ -467,9 +414,7 @@ impl Input {
                     })
                     .collect()
             }),
-            Input::VapourSynthScript {
-                decoder, ..
-            } => {
+            Input::VapourSynthScript { decoder, .. } => {
                 // Every source shares the script's output node.
                 let node = vapoursynth::output_node(decoder)?;
                 Ok(std::iter::repeat_with(|| FrameSource {
@@ -605,9 +550,7 @@ mod tests {
             let tag = Input::y4m_chroma_tag(bit_depth, chroma);
             let format =
                 ffms2_pixel_format(bit_depth, chroma).expect("FFMS2 should support this format");
-            let info = PixelFormat::FFmpeg {
-                format,
-            };
+            let info = PixelFormat::FFmpeg { format };
 
             assert_eq!(
                 info.as_bit_depth().expect("bit depth should resolve"),
@@ -654,33 +597,35 @@ mod tests {
 
         let ten_bit = Ffms2Filter::OutputFormat {
             bit_depth: Some(10),
-            chroma:    None,
-            width:     None,
-            height:    None,
+            chroma: None,
+            width: None,
+            height: None,
         };
-        assert_eq!(ten_bit.to_vapoursynth_filters(&baseline), vec![
-            VapourSynthFilter::Resize {
+        assert_eq!(
+            ten_bit.to_vapoursynth_filters(&baseline),
+            vec![VapourSynthFilter::Resize {
                 scaler: Some(Scaler::Bicubic),
-                width:  None,
+                width: None,
                 height: None,
                 format: Some(FFPixelFormat::YUV420P10LE),
-            }
-        ]);
+            }]
+        );
 
         let downscale = Ffms2Filter::OutputFormat {
             bit_depth: None,
-            chroma:    None,
-            width:     Some(1280),
-            height:    Some(720),
+            chroma: None,
+            width: Some(1280),
+            height: Some(720),
         };
-        assert_eq!(downscale.to_vapoursynth_filters(&baseline), vec![
-            VapourSynthFilter::Resize {
+        assert_eq!(
+            downscale.to_vapoursynth_filters(&baseline),
+            vec![VapourSynthFilter::Resize {
                 scaler: Some(Scaler::Bicubic),
-                width:  Some(1280),
+                width: Some(1280),
                 height: Some(720),
                 format: None,
-            }
-        ]);
+            }]
+        );
     }
 
     /// A filter matching the decoded stream is a no-op and must not add work.
@@ -690,17 +635,17 @@ mod tests {
 
         let noop = Ffms2Filter::OutputFormat {
             bit_depth: Some(10),
-            chroma:    Some(ChromaSampling::Yuv420),
-            width:     Some(1920),
-            height:    Some(1080),
+            chroma: Some(ChromaSampling::Yuv420),
+            width: Some(1920),
+            height: Some(1080),
         };
         assert!(noop.to_vapoursynth_filters(&baseline).is_empty());
 
         let empty = Ffms2Filter::OutputFormat {
             bit_depth: None,
-            chroma:    None,
-            width:     None,
-            height:    None,
+            chroma: None,
+            width: None,
+            height: None,
         };
         assert!(empty.to_vapoursynth_filters(&baseline).is_empty());
     }
@@ -716,17 +661,17 @@ mod tests {
         let filters = [
             Ffms2Filter::OutputFormat {
                 bit_depth: Some(10),
-                chroma:    Some(ChromaSampling::Yuv444),
-                width:     None,
-                height:    None,
+                chroma: Some(ChromaSampling::Yuv444),
+                width: None,
+                height: None,
             },
             // Unset fields inherit from the previous filter, as they do when the
             // decoder applies them in sequence.
             Ffms2Filter::OutputFormat {
                 bit_depth: None,
-                chroma:    None,
-                width:     Some(1280),
-                height:    Some(720),
+                chroma: None,
+                width: Some(1280),
+                height: Some(720),
             },
         ];
 
@@ -774,19 +719,22 @@ mod tests {
             .iter()
             .flat_map(|filter| filter.to_vapoursynth_filters(&source))
             .collect::<Vec<_>>();
-        assert_eq!(converted, vec![
-            VapourSynthFilter::Resize {
-                scaler: Some(Scaler::Bicubic),
-                width:  None,
-                height: None,
-                format: Some(FFPixelFormat::YUV444P10LE),
-            },
-            VapourSynthFilter::Resize {
-                scaler: Some(Scaler::Bicubic),
-                width:  Some(1280),
-                height: Some(720),
-                format: None,
-            },
-        ]);
+        assert_eq!(
+            converted,
+            vec![
+                VapourSynthFilter::Resize {
+                    scaler: Some(Scaler::Bicubic),
+                    width: None,
+                    height: None,
+                    format: Some(FFPixelFormat::YUV444P10LE),
+                },
+                VapourSynthFilter::Resize {
+                    scaler: Some(Scaler::Bicubic),
+                    width: Some(1280),
+                    height: Some(720),
+                    format: None,
+                },
+            ]
+        );
     }
 }

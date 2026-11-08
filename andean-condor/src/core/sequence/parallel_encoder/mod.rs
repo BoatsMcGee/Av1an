@@ -11,8 +11,7 @@ use crate::{
         sequence::{Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status},
     },
     models::sequence::{
-        SequenceConfigHandler,
-        SequenceDataHandler,
+        SequenceConfigHandler, SequenceDataHandler,
         parallel_encoder::{ParallelEncoderConfigHandler, ParallelEncoderDataHandler},
     },
 };
@@ -31,9 +30,9 @@ pub use task::{ParallelEncoderResult, Task};
 pub(super) const STREAM_WINDOW: usize = 8;
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Parallel Encoder",
+    name: "Parallel Encoder",
     description: "Encodes a set of scenes in parallel until all scenes are encoded.",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 pub struct ParallelEncoder {
@@ -96,11 +95,11 @@ where
             // VapourSynth inputs may cache here, which is why this is separate
             // from validate.
             progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                id:         DETAILS.name.to_owned(),
+                id: DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Custom {
-                    name:      DETAILS.name.to_owned(),
+                    name: DETAILS.name.to_owned(),
                     completed: 0.0,
-                    total:     1.0,
+                    total: 1.0,
                 },
             }))?;
             input.clip_info()?;
@@ -228,10 +227,10 @@ where
             }
 
             let data = crate::models::Condor {
-                input:           input_data.clone(),
-                output:          output.as_data(),
-                encoder:         encoder.clone(),
-                scenes:          scenes.clone(),
+                input: input_data.clone(),
+                output: output.as_data(),
+                encoder: encoder.clone(),
+                scenes: scenes.clone(),
                 sequence_config: sequence_config.clone(),
             };
             (save_callback)(data)?;
@@ -268,9 +267,7 @@ where
 impl Default for ParallelEncoder {
     #[inline]
     fn default() -> Self {
-        Self {
-            input: None
-        }
+        Self { input: None }
     }
 }
 
@@ -279,9 +276,7 @@ impl ParallelEncoder {
 
     #[inline]
     pub fn new(input: Option<Input>) -> Self {
-        ParallelEncoder {
-            input,
-        }
+        ParallelEncoder { input }
     }
 
     #[inline]

@@ -10,9 +10,7 @@ use andean_condor::models::{
     sequence::{noise_detector::NoiseDetectorData, noise_scaler::NoiseScalerConfig},
 };
 use california_condor::{
-    commands::handlers::load_configuration,
-    test_helpers::*,
-    utils::hash_path::hash_path,
+    commands::handlers::load_configuration, test_helpers::*, utils::hash_path::hash_path,
 };
 use common::condor_cmd;
 use config_helpers::{init_config, load};
@@ -88,13 +86,13 @@ mod tests {
         let mut config = default_config(&test_video, &output, &temp_abs);
         config.condor.sequence_config.noise_detector = Some(NoiseDetectorConfig::default());
         config.condor.encoder.set_photon_noise(Some(PhotonNoise {
-            iso:        100,
+            iso: 100,
             chroma_iso: None,
-            width:      None,
-            height:     None,
-            c_y:        None,
-            ccb:        None,
-            ccr:        None,
+            width: None,
+            height: None,
+            c_y: None,
+            ccb: None,
+            ccr: None,
         }));
         let expected_noise = |index| match index {
             0 => 0.0,
@@ -107,18 +105,18 @@ mod tests {
         config.condor.scenes = test_video.mock_scenes(&config.condor.encoder);
         config.condor.scenes.iter_mut().enumerate().for_each(|(index, scene)| {
             scene.encoder.set_photon_noise(Some(PhotonNoise {
-                iso:        100,
+                iso: 100,
                 chroma_iso: None,
-                width:      None,
-                height:     None,
-                c_y:        None,
-                ccb:        None,
-                ccr:        None,
+                width: None,
+                height: None,
+                c_y: None,
+                ccb: None,
+                ccr: None,
             }));
             scene.sequence_data.noise_detection = Some(NoiseDetectorData {
                 created_on: SystemTime::now(),
-                noise:      expected_noise(index),
-                luminance:  0.0,
+                noise: expected_noise(index),
+                luminance: 0.0,
             });
         });
         config.save(&config_path).expect("configuration save should succeed");
@@ -148,25 +146,25 @@ mod tests {
             _ => 100,
         };
         expected_config.condor.sequence_config.noise_scaler = Some(NoiseScalerConfig {
-            threshold:      0.0002,
+            threshold: 0.0002,
             minimum_scaler: 1.0,
             maximum_scaler: 2.0,
-            scale_chroma:   true,
+            scale_chroma: true,
         });
         expected_config.condor.scenes.iter_mut().enumerate().for_each(|(index, scene)| {
             scene.encoder.set_photon_noise(Some(PhotonNoise {
-                iso:        expected_isos(index),
+                iso: expected_isos(index),
                 chroma_iso: None,
-                width:      None,
-                height:     None,
-                c_y:        None,
-                ccb:        None,
-                ccr:        None,
+                width: None,
+                height: None,
+                c_y: None,
+                ccb: None,
+                ccr: None,
             }));
             scene.sequence_data.noise_detection = Some(NoiseDetectorData {
                 created_on: SystemTime::now(),
-                noise:      expected_noise(index),
-                luminance:  0.0,
+                noise: expected_noise(index),
+                luminance: 0.0,
             });
         });
 

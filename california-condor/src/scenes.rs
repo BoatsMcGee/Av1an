@@ -35,7 +35,7 @@ pub enum ScenesError {
     FrameNotBeforeEnd {
         index: usize,
         frame: usize,
-        end:   usize,
+        end: usize,
     },
     #[error("scene {index} would be empty: end frame {frame} is not after its start frame {start}")]
     FrameNotAfterStart {
@@ -56,18 +56,18 @@ pub enum ScenesError {
     EmptySubScene { start: usize, end: usize },
     #[error("sub-scene range {start}..{end} lies outside scene {scene_start}..{scene_end}")]
     SubSceneOutsideScene {
-        start:       usize,
-        end:         usize,
+        start: usize,
+        end: usize,
         scene_start: usize,
-        scene_end:   usize,
+        scene_end: usize,
     },
     #[error(
         "sub-scene range {start}..{end} overlaps or precedes the range ending at {previous_end}; \
          ranges must ascend"
     )]
     SubScenesOutOfOrder {
-        start:        usize,
-        end:          usize,
+        start: usize,
+        end: usize,
         previous_end: usize,
     },
     #[error("sub-scene range `{text}` must be written as START-END, e.g. `240-480`")]
@@ -93,10 +93,7 @@ pub fn require_scene_mut(
     index: usize,
 ) -> Result<&mut Scene<CliSequenceData>, ScenesError> {
     let count = scenes.len();
-    scenes.get_mut(index).ok_or(ScenesError::NoSuchScene {
-        index,
-        count,
-    })
+    scenes.get_mut(index).ok_or(ScenesError::NoSuchScene { index, count })
 }
 
 /// Which scenes an index argument addresses.
@@ -163,10 +160,7 @@ impl FromStr for SceneSelection {
                     let start: usize = start.trim().parse().map_err(|_| format())?;
                     let end: usize = end.trim().parse().map_err(|_| format())?;
                     if start > end {
-                        return Err(ScenesError::SelectionRangeReversed {
-                            start,
-                            end,
-                        });
+                        return Err(ScenesError::SelectionRangeReversed { start, end });
                     }
                     (start, end)
                 },
@@ -216,11 +210,7 @@ pub fn set_start(
 ) -> Result<Vec<usize>, ScenesError> {
     let end = require_scene(scenes, index)?.end_frame;
     if frame >= end {
-        return Err(ScenesError::FrameNotBeforeEnd {
-            index,
-            frame,
-            end,
-        });
+        return Err(ScenesError::FrameNotBeforeEnd { index, frame, end });
     }
     let scene = require_scene_mut(scenes, index)?;
     scene.start_frame = frame;
@@ -333,10 +323,7 @@ pub fn validate_sub_scenes(
     for sub_scene in sub_scenes {
         let (start, end) = (sub_scene.start_frame, sub_scene.end_frame);
         if start >= end {
-            return Err(ScenesError::EmptySubScene {
-                start,
-                end,
-            });
+            return Err(ScenesError::EmptySubScene { start, end });
         }
         if start < scene.start_frame || end > scene.end_frame {
             return Err(ScenesError::SubSceneOutsideScene {
@@ -598,9 +585,10 @@ mod tests {
 
     #[test]
     fn scene_selections_resolve_to_ascending_duplicate_free_indices() {
-        assert_eq!(SceneSelection::All.resolve(3).expect("three scenes"), vec![
-            0, 1, 2
-        ]);
+        assert_eq!(
+            SceneSelection::All.resolve(3).expect("three scenes"),
+            vec![0, 1, 2]
+        );
         assert!(
             SceneSelection::All.resolve(0).expect("no scenes").is_empty(),
             "an empty list has nothing to address"

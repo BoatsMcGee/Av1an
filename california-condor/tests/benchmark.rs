@@ -1,7 +1,5 @@
 use california_condor::{
-    commands::handlers::load_configuration,
-    test_helpers::*,
-    utils::hash_path::hash_path,
+    commands::handlers::load_configuration, test_helpers::*, utils::hash_path::hash_path,
 };
 
 #[path = "common.rs"]
@@ -17,8 +15,7 @@ mod tests {
     use andean_condor::{
         ffmpeg::FFPixelFormat,
         models::{
-            encoder::cli_parameter::CLIParameter,
-            input::Input,
+            encoder::cli_parameter::CLIParameter, input::Input,
             sequence::benchmarker::BenchmarkerConfig,
         },
         vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
@@ -90,13 +87,10 @@ mod tests {
 
         // Mock an existing config file with scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
-        if let Input::VapourSynth {
-            filters, ..
-        } = &mut config.condor.input
-        {
+        if let Input::VapourSynth { filters, .. } = &mut config.condor.input {
             *filters = vec![VapourSynthFilter::Resize {
                 scaler: Some(Scaler::Bicubic),
-                width:  Some(WIDTH),
+                width: Some(WIDTH),
                 height: Some(HEIGHT),
                 format: Some(FFPixelFormat::YUV420P10LE),
             }];

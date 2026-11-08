@@ -24,18 +24,18 @@ use crate::{
 #[derive(Clone)]
 pub struct NoiseDetectionState {
     pub frames_processed: u64,
-    pub total_frames:     u64,
-    pub scene_noise:      BTreeMap<u64, f64>,
+    pub total_frames: u64,
+    pub scene_noise: BTreeMap<u64, f64>,
 }
 
 pub struct NoiseDetectionApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
-    pub started:                    std::time::Instant,
-    pub total_frames:               u64,
-    pub clip_info:                  ClipInfo,
-    attempted_cancel:               bool,
-    shared_progress:                SharedProgress<NoiseDetectionState>,
-    cached_state:                   NoiseDetectionState,
+    pub started: std::time::Instant,
+    pub total_frames: u64,
+    pub clip_info: ClipInfo,
+    attempted_cancel: bool,
+    shared_progress: SharedProgress<NoiseDetectionState>,
+    cached_state: NoiseDetectionState,
 }
 
 impl TuiApp for NoiseDetectionApp {
@@ -72,10 +72,7 @@ impl TuiApp for NoiseDetectionApp {
     fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool {
         match status {
             SequenceStatus::Whole(Status::Processing {
-                completion:
-                    SequenceCompletion::Frames {
-                        completed, ..
-                    },
+                completion: SequenceCompletion::Frames { completed, .. },
                 ..
             }) => {
                 state.frames_processed = completed;
@@ -89,28 +86,18 @@ impl TuiApp for NoiseDetectionApp {
                 }
                 true
             },
-            SequenceStatus::Subprocess {
-                parent,
-                child,
-            } => match (parent, child) {
+            SequenceStatus::Subprocess { parent, child } => match (parent, child) {
                 (
                     Status::Processing {
                         completion:
                             SequenceCompletion::Custom {
-                                completed,
-                                total,
-                                ..
+                                completed, total, ..
                             },
                         ..
                     },
                     Status::Processing {
                         id,
-                        completion:
-                            SequenceCompletion::SceneQuality {
-                                index,
-                                score,
-                                ..
-                            },
+                        completion: SequenceCompletion::SceneQuality { index, score, .. },
                     },
                 ) if id == "Noise" => {
                     state.frames_processed = completed as u64;
@@ -198,25 +185,25 @@ impl TuiApp for NoiseDetectionApp {
         frame.render_widget(chart, layout[1]);
 
         let progress_bar = ProgressBar {
-            color:               main,
-            processing_title:    if self.attempted_cancel {
+            color: main,
+            processing_title: if self.attempted_cancel {
                 "Shutting down...".to_owned()
             } else {
                 "Detecting Noisy Scenes...".to_owned()
             },
-            completed_title:     if self.attempted_cancel {
+            completed_title: if self.attempted_cancel {
                 "Noise Detection Aborted".to_owned()
             } else {
                 "Noise Detection Completed".to_owned()
             },
-            top_right_title:     format!("{} found", state.scene_noise.len()),
+            top_right_title: format!("{} found", state.scene_noise.len()),
             bottom_center_title: String::new(),
-            unit_per_second:     "SPS".to_owned(),
-            unit:                "Scene".to_owned(),
-            initial_completed:   0,
-            completed:           self.cached_state.frames_processed,
-            total:               self.total_frames,
-            show_label:          true,
+            unit_per_second: "SPS".to_owned(),
+            unit: "Scene".to_owned(),
+            initial_completed: 0,
+            completed: self.cached_state.frames_processed,
+            total: self.total_frames,
+            show_label: true,
         };
         let progress_bar = progress_bar.generate(Some(self.started));
         frame.render_widget(progress_bar, layout[2]);

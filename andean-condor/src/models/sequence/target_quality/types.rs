@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
 
 use crate::{
-    models::encoder::cli_parameter::CLIParameter,
-    vapoursynth::plugins::vship::cvvdp::DisplayModel,
+    models::encoder::cli_parameter::CLIParameter, vapoursynth::plugins::vship::cvvdp::DisplayModel,
 };
 
 pub static DEFAULT_MAXIMUM_PROBES: u8 = 4;
@@ -78,37 +77,37 @@ pub enum VmafFeature {
 pub enum QualityMetric {
     VMAF {
         target_range: (f64, f64),
-        resolution:   Option<(u32, u32)>,
-        scaler:       String,
-        threads:      usize,
-        model:        Option<PathBuf>,
-        features:     Vec<VmafFeature>,
+        resolution: Option<(u32, u32)>,
+        scaler: String,
+        threads: usize,
+        model: Option<PathBuf>,
+        features: Vec<VmafFeature>,
     },
     SSIMULACRA2 {
         target_range: (f64, f64),
-        resolution:   Option<(u32, u32)>,
-        threads:      Option<u8>,
-        gpu_id:       Option<u8>,
+        resolution: Option<(u32, u32)>,
+        threads: Option<u8>,
+        gpu_id: Option<u8>,
     },
     BUTTERAUGLI {
-        target_range:         (f64, f64),
-        resolution:           Option<(u32, u32)>,
-        threads:              Option<u8>,
+        target_range: (f64, f64),
+        resolution: Option<(u32, u32)>,
+        threads: Option<u8>,
         intensity_multiplier: Option<f64>,
-        norm:                 Option<u8>,
-        gpu_id:               Option<u8>,
+        norm: Option<u8>,
+        gpu_id: Option<u8>,
     },
     XPSNR {
         target_range: (f64, f64),
-        resolution:   Option<(u32, u32)>,
+        resolution: Option<(u32, u32)>,
     },
     CVVDP {
-        target_range:      (f64, f64),
-        resolution:        Option<(u32, u32)>,
-        display_model:     Option<DisplayModel>,
+        target_range: (f64, f64),
+        resolution: Option<(u32, u32)>,
+        display_model: Option<DisplayModel>,
         resize_to_display: Option<bool>,
-        disable_temporal:  Option<bool>,
-        gpu_id:            Option<u8>,
+        disable_temporal: Option<bool>,
+        gpu_id: Option<u8>,
     },
 }
 
@@ -117,9 +116,9 @@ impl Default for QualityMetric {
     fn default() -> Self {
         Self::SSIMULACRA2 {
             target_range: DEFAULT_SSIMULACRA2_TARGET_RANGE,
-            resolution:   None,
-            threads:      None,
-            gpu_id:       None,
+            resolution: None,
+            threads: None,
+            gpu_id: None,
         }
     }
 }
@@ -128,63 +127,43 @@ impl QualityMetric {
     #[inline]
     pub fn score_within_target(&self, score: f64) -> bool {
         match self {
-            QualityMetric::VMAF {
-                target_range, ..
-            } => score >= target_range.0 && score <= target_range.1,
-            QualityMetric::SSIMULACRA2 {
-                target_range, ..
-            } => score >= target_range.0 && score <= target_range.1,
-            QualityMetric::BUTTERAUGLI {
-                target_range, ..
-            } => score >= target_range.0 && score <= target_range.1,
-            QualityMetric::XPSNR {
-                target_range, ..
-            } => score >= target_range.0 && score <= target_range.1,
-            QualityMetric::CVVDP {
-                target_range, ..
-            } => score >= target_range.0 && score <= target_range.1,
+            QualityMetric::VMAF { target_range, .. } => {
+                score >= target_range.0 && score <= target_range.1
+            },
+            QualityMetric::SSIMULACRA2 { target_range, .. } => {
+                score >= target_range.0 && score <= target_range.1
+            },
+            QualityMetric::BUTTERAUGLI { target_range, .. } => {
+                score >= target_range.0 && score <= target_range.1
+            },
+            QualityMetric::XPSNR { target_range, .. } => {
+                score >= target_range.0 && score <= target_range.1
+            },
+            QualityMetric::CVVDP { target_range, .. } => {
+                score >= target_range.0 && score <= target_range.1
+            },
         }
     }
 
     #[inline]
     pub fn target_range(&self) -> (f64, f64) {
         match self {
-            QualityMetric::VMAF {
-                target_range, ..
-            } => *target_range,
-            QualityMetric::SSIMULACRA2 {
-                target_range, ..
-            } => *target_range,
-            QualityMetric::BUTTERAUGLI {
-                target_range, ..
-            } => *target_range,
-            QualityMetric::XPSNR {
-                target_range, ..
-            } => *target_range,
-            QualityMetric::CVVDP {
-                target_range, ..
-            } => *target_range,
+            QualityMetric::VMAF { target_range, .. } => *target_range,
+            QualityMetric::SSIMULACRA2 { target_range, .. } => *target_range,
+            QualityMetric::BUTTERAUGLI { target_range, .. } => *target_range,
+            QualityMetric::XPSNR { target_range, .. } => *target_range,
+            QualityMetric::CVVDP { target_range, .. } => *target_range,
         }
     }
 
     #[inline]
     pub fn target_range_mut(&mut self) -> &mut (f64, f64) {
         match self {
-            QualityMetric::VMAF {
-                target_range, ..
-            } => target_range,
-            QualityMetric::SSIMULACRA2 {
-                target_range, ..
-            } => target_range,
-            QualityMetric::BUTTERAUGLI {
-                target_range, ..
-            } => target_range,
-            QualityMetric::XPSNR {
-                target_range, ..
-            } => target_range,
-            QualityMetric::CVVDP {
-                target_range, ..
-            } => target_range,
+            QualityMetric::VMAF { target_range, .. } => target_range,
+            QualityMetric::SSIMULACRA2 { target_range, .. } => target_range,
+            QualityMetric::BUTTERAUGLI { target_range, .. } => target_range,
+            QualityMetric::XPSNR { target_range, .. } => target_range,
+            QualityMetric::CVVDP { target_range, .. } => target_range,
         }
     }
 
@@ -196,21 +175,11 @@ impl QualityMetric {
     #[inline]
     pub fn friendly_name(&self) -> &'static str {
         match self {
-            QualityMetric::VMAF {
-                ..
-            } => "VMAF",
-            QualityMetric::SSIMULACRA2 {
-                ..
-            } => "SSIMULACRA2",
-            QualityMetric::BUTTERAUGLI {
-                ..
-            } => "butteraugli",
-            QualityMetric::XPSNR {
-                ..
-            } => "XPSNR",
-            QualityMetric::CVVDP {
-                ..
-            } => "CVVDP",
+            QualityMetric::VMAF { .. } => "VMAF",
+            QualityMetric::SSIMULACRA2 { .. } => "SSIMULACRA2",
+            QualityMetric::BUTTERAUGLI { .. } => "butteraugli",
+            QualityMetric::XPSNR { .. } => "XPSNR",
+            QualityMetric::CVVDP { .. } => "CVVDP",
         }
     }
 }
@@ -218,8 +187,8 @@ impl QualityMetric {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct TargetQualityProbing {
     pub encoder_options: Option<HashMap<String, CLIParameter>>,
-    pub strategy:        ProbeStrategy,
-    pub statistic:       ProbeStatistic,
+    pub strategy: ProbeStrategy,
+    pub statistic: ProbeStatistic,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
@@ -231,7 +200,7 @@ pub enum ProbeStrategy {
     },
     Subset {
         position: SubsetProbePosition,
-        length:   SubsetProbeLength,
+        length: SubsetProbeLength,
     },
 }
 
@@ -240,17 +209,12 @@ impl ProbeStrategy {
     pub fn frame_indices(&self, start: usize, end: usize) -> Vec<usize> {
         match self {
             ProbeStrategy::Whole => (start..end).collect::<Vec<_>>(),
-            ProbeStrategy::Skip {
-                skip,
-            } => (start..end)
+            ProbeStrategy::Skip { skip } => (start..end)
                 .filter(|index| {
                     (index - start) == 0 || (index - start).is_multiple_of(*skip as usize)
                 })
                 .collect::<Vec<_>>(),
-            ProbeStrategy::Subset {
-                position,
-                length,
-            } => {
+            ProbeStrategy::Subset { position, length } => {
                 let max_length = end - start;
                 let length = match length {
                     SubsetProbeLength::Percentage(percentage) => {
@@ -338,9 +302,7 @@ impl ProbeStatistic {
             ProbeStatistic::Percentile(index) => *scores
                 .get((*index / 100.0 * scores.len() as f64) as usize)
                 .unwrap_or(&scores[0]),
-            ProbeStatistic::StandardDeviationDistance {
-                sigma,
-            } => {
+            ProbeStatistic::StandardDeviationDistance { sigma } => {
                 let average = ProbeStatistic::Mean.calculate(&scores);
                 let minimum = ProbeStatistic::Minimum.calculate(&scores);
                 let maximum = ProbeStatistic::Maximum.calculate(&scores);
@@ -385,11 +347,11 @@ impl ProbeStatistic {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QualityPass {
-    pub quantizer:    f64,
-    pub scores:       Vec<f64>,
-    pub bitrate:      f64,
+    pub quantizer: f64,
+    pub scores: Vec<f64>,
+    pub bitrate: f64,
     /// Must be in milliseconds since UNIX Epoch
-    pub started_on:   u128,
+    pub started_on: u128,
     /// Must be in milliseconds since UNIX Epoch
     pub completed_on: u128,
 }
@@ -398,10 +360,10 @@ impl Default for QualityPass {
     #[inline]
     fn default() -> Self {
         Self {
-            quantizer:    0.0,
-            scores:       Vec::new(),
-            bitrate:      0.0,
-            started_on:   0,
+            quantizer: 0.0,
+            scores: Vec::new(),
+            bitrate: 0.0,
+            started_on: 0,
             completed_on: 0,
         }
     }
@@ -426,10 +388,7 @@ mod tests {
             serde_json::from_str(legacy).expect("a config without gpu_id should load");
 
         assert!(
-            matches!(metric, QualityMetric::SSIMULACRA2 {
-                gpu_id: None,
-                ..
-            }),
+            matches!(metric, QualityMetric::SSIMULACRA2 { gpu_id: None, .. }),
             "an omitted gpu_id should read as unset, got {metric:?}"
         );
     }

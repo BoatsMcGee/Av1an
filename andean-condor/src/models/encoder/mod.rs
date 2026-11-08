@@ -63,12 +63,16 @@ impl EncoderBase {
     pub fn default_parameters(&self) -> HashMap<String, CLIParameter> {
         match self {
             EncoderBase::AOM => {
-                let mut parameters = CLIParameter::new_numbers("--", "=", &[
-                    ("threads", 8.0),
-                    ("cpu-used", 6.0),
-                    ("cq-level", 30.0),
-                    ("kf-max-dist", 9999.0),
-                ]);
+                let mut parameters = CLIParameter::new_numbers(
+                    "--",
+                    "=",
+                    &[
+                        ("threads", 8.0),
+                        ("cpu-used", 6.0),
+                        ("cq-level", 30.0),
+                        ("kf-max-dist", 9999.0),
+                    ],
+                );
                 parameters.insert(
                     "end-usage".to_owned(),
                     CLIParameter::new_string("--", "=", "q"),
@@ -76,11 +80,11 @@ impl EncoderBase {
                 parameters
             },
             EncoderBase::RAV1E => {
-                let mut parameters = CLIParameter::new_numbers("--", " ", &[
-                    ("speed", 8.0),
-                    ("quantizer", 100.0),
-                    ("keyint", 0.0),
-                ]);
+                let mut parameters = CLIParameter::new_numbers(
+                    "--",
+                    " ",
+                    &[("speed", 8.0), ("quantizer", 100.0), ("keyint", 0.0)],
+                );
                 parameters.insert(
                     "no-scene-detection".to_owned(),
                     CLIParameter::new_bool("--", true),
@@ -89,15 +93,19 @@ impl EncoderBase {
                 parameters
             },
             EncoderBase::VPX => {
-                let mut parameters = CLIParameter::new_numbers("--", "=", &[
-                    ("profile", 2.0),
-                    ("threads", 4.0),
-                    ("cpu-used", 2.0),
-                    ("cq-level", 30.0),
-                    ("row-mt", 1.0),
-                    ("auto-alt-ref", 6.0),
-                    ("kf-max-dist", 9999.0),
-                ]);
+                let mut parameters = CLIParameter::new_numbers(
+                    "--",
+                    "=",
+                    &[
+                        ("profile", 2.0),
+                        ("threads", 4.0),
+                        ("cpu-used", 2.0),
+                        ("cq-level", 30.0),
+                        ("row-mt", 1.0),
+                        ("auto-alt-ref", 6.0),
+                        ("kf-max-dist", 9999.0),
+                    ],
+                );
                 parameters.insert("b".to_owned(), CLIParameter::new_number("-", " ", 10.0));
                 let string_defaults =
                     CLIParameter::new_strings("--", "=", &[("codec", "vp9"), ("end-usage", "q")]);
@@ -105,21 +113,24 @@ impl EncoderBase {
                 parameters.extend(string_defaults);
                 parameters
             },
-            EncoderBase::SVTAV1 => CLIParameter::new_numbers("--", " ", &[
-                ("preset", 4.0),
-                ("keyint", 0.0),
-                ("scd", 0.0),
-                ("rc", 0.0),
-                ("crf", 25.0),
-                ("progress", 2.0),
-            ]),
+            EncoderBase::SVTAV1 => CLIParameter::new_numbers(
+                "--",
+                " ",
+                &[
+                    ("preset", 4.0),
+                    ("keyint", 0.0),
+                    ("scd", 0.0),
+                    ("rc", 0.0),
+                    ("crf", 25.0),
+                    ("progress", 2.0),
+                ],
+            ),
             EncoderBase::AVM => {
-                let mut parameters = CLIParameter::new_numbers("--", "=", &[
-                    ("threads", 8.0),
-                    ("cpu-used", 6.0),
-                    ("qp", 30.0),
-                    ("kf-max-dist", 9999.0),
-                ]);
+                let mut parameters = CLIParameter::new_numbers(
+                    "--",
+                    "=",
+                    &[("threads", 8.0), ("cpu-used", 6.0), ("qp", 30.0), ("kf-max-dist", 9999.0)],
+                );
                 parameters.insert(
                     "end-usage".to_owned(),
                     CLIParameter::new_string("--", "=", "q"),
@@ -129,22 +140,25 @@ impl EncoderBase {
             EncoderBase::X264 => {
                 let mut parameters =
                     CLIParameter::new_numbers("--", " ", &[("crf", 25.0), ("scenecut", 0.0)]);
-                parameters.extend(CLIParameter::new_strings("--", "=", &[
-                    ("preset", "slow"),
-                    ("keyint", "infinite"),
-                    ("log-level", "error"),
-                    ("demuxer", "y4m"),
-                ]));
+                parameters.extend(CLIParameter::new_strings(
+                    "--",
+                    "=",
+                    &[
+                        ("preset", "slow"),
+                        ("keyint", "infinite"),
+                        ("log-level", "error"),
+                        ("demuxer", "y4m"),
+                    ],
+                ));
                 parameters.extend(CLIParameter::new_bools("--", &[("stitchable", true)]));
                 parameters
             },
             EncoderBase::X265 => {
-                let mut parameters = CLIParameter::new_numbers("--", " ", &[
-                    ("crf", 25.0),
-                    ("level-idc", 5.0),
-                    ("keyint", -1.0),
-                    ("scenecut", 0.0),
-                ]);
+                let mut parameters = CLIParameter::new_numbers(
+                    "--",
+                    " ",
+                    &[("crf", 25.0), ("level-idc", 5.0), ("keyint", -1.0), ("scenecut", 0.0)],
+                );
                 parameters.extend(CLIParameter::new_numbers("-", " ", &[("D", 10.0)]));
                 parameters.extend(CLIParameter::new_bools("--", &[("y4m", true)]));
                 parameters.extend(CLIParameter::new_strings("--", " ", &[("preset", "slow")]));
@@ -167,10 +181,11 @@ impl EncoderBase {
                 match pass {
                     (1, 1) => parameters,
                     (1, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", "=", &[
-                            ("passes", 2.0),
-                            ("pass", 1.0),
-                        ]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            "=",
+                            &[("passes", 2.0), ("pass", 1.0)],
+                        ));
                         parameters.insert(
                             "fpf".to_owned(),
                             CLIParameter::new_string(
@@ -183,10 +198,11 @@ impl EncoderBase {
                         parameters
                     },
                     (_, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", "=", &[
-                            ("passes", 2.0),
-                            ("pass", 2.0),
-                        ]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            "=",
+                            &[("passes", 2.0), ("pass", 2.0)],
+                        ));
                         parameters.insert(
                             "fpf".to_owned(),
                             CLIParameter::new_string(
@@ -206,28 +222,32 @@ impl EncoderBase {
                 match pass {
                     (1, 1) => parameters,
                     (1, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", " ", &[
-                            ("passes", 2.0),
-                            ("pass", 1.0),
-                        ]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            " ",
+                            &[("passes", 2.0), ("pass", 1.0)],
+                        ));
                         parameters.extend(CLIParameter::new_bools("--", &[("quiet", true)]));
-                        parameters.extend(CLIParameter::new_strings("--", " ", &[(
-                            "first-pass",
-                            &format!("{}.stat", first_pass_file_name),
-                        )]));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            " ",
+                            &[("first-pass", &format!("{}.stat", first_pass_file_name))],
+                        ));
 
                         parameters
                     },
                     (_, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", " ", &[
-                            ("passes", 2.0),
-                            ("pass", 2.0),
-                        ]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            " ",
+                            &[("passes", 2.0), ("pass", 2.0)],
+                        ));
                         parameters.extend(CLIParameter::new_bools("--", &[("quiet", true)]));
-                        parameters.extend(CLIParameter::new_strings("--", " ", &[(
-                            "second-pass",
-                            &format!("{}.stat", first_pass_file_name),
-                        )]));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            " ",
+                            &[("second-pass", &format!("{}.stat", first_pass_file_name))],
+                        ));
 
                         parameters
                     },
@@ -243,26 +263,30 @@ impl EncoderBase {
                         parameters
                     },
                     (1, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", "=", &[
-                            ("passes", 2.0),
-                            ("pass", 1.0),
-                        ]));
-                        parameters.extend(CLIParameter::new_strings("--", "=", &[(
-                            "fpf",
-                            &format!("{}.log", first_pass_file_name),
-                        )]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            "=",
+                            &[("passes", 2.0), ("pass", 1.0)],
+                        ));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            "=",
+                            &[("fpf", &format!("{}.log", first_pass_file_name))],
+                        ));
 
                         parameters
                     },
                     (_, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", "=", &[
-                            ("passes", 2.0),
-                            ("pass", 2.0),
-                        ]));
-                        parameters.extend(CLIParameter::new_strings("--", "=", &[(
-                            "fpf",
-                            &format!("{}.log", first_pass_file_name),
-                        )]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            "=",
+                            &[("passes", 2.0), ("pass", 2.0)],
+                        ));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            "=",
+                            &[("fpf", &format!("{}.log", first_pass_file_name))],
+                        ));
 
                         parameters
                     },
@@ -274,10 +298,11 @@ impl EncoderBase {
                 match pass {
                     (1, 1) => parameters,
                     (1, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", " ", &[
-                            ("irefresh-type", 2.0),
-                            ("pass", 1.0),
-                        ]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            " ",
+                            &[("irefresh-type", 2.0), ("pass", 1.0)],
+                        ));
 
                         parameters.insert(
                             "stats".to_owned(),
@@ -291,10 +316,11 @@ impl EncoderBase {
                         parameters
                     },
                     (_, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", " ", &[
-                            ("irefresh-type", 2.0),
-                            ("pass", 2.0),
-                        ]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            " ",
+                            &[("irefresh-type", 2.0), ("pass", 2.0)],
+                        ));
 
                         parameters.insert(
                             "stats".to_owned(),
@@ -314,10 +340,11 @@ impl EncoderBase {
                 match pass {
                     (1, 1) => parameters,
                     (1, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", "=", &[
-                            ("passes", 2.0),
-                            ("pass", 1.0),
-                        ]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            "=",
+                            &[("passes", 2.0), ("pass", 1.0)],
+                        ));
                         parameters.insert(
                             "fpf".to_owned(),
                             CLIParameter::new_string(
@@ -330,10 +357,11 @@ impl EncoderBase {
                         parameters
                     },
                     (_, _) => {
-                        parameters.extend(CLIParameter::new_numbers("--", "=", &[
-                            ("passes", 2.0),
-                            ("pass", 2.0),
-                        ]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            "=",
+                            &[("passes", 2.0), ("pass", 2.0)],
+                        ));
                         parameters.insert(
                             "fpf".to_owned(),
                             CLIParameter::new_string(
@@ -354,19 +382,21 @@ impl EncoderBase {
                     (1, 1) => parameters,
                     (1, _) => {
                         parameters.extend(CLIParameter::new_numbers("--", " ", &[("pass", 1.0)]));
-                        parameters.extend(CLIParameter::new_strings("--", " ", &[(
-                            "stats",
-                            &format!("{}.log", first_pass_file_name),
-                        )]));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            " ",
+                            &[("stats", &format!("{}.log", first_pass_file_name))],
+                        ));
 
                         parameters
                     },
                     (_, _) => {
                         parameters.extend(CLIParameter::new_numbers("--", " ", &[("pass", 2.0)]));
-                        parameters.extend(CLIParameter::new_strings("--", " ", &[(
-                            "stats",
-                            &format!("{}.log", first_pass_file_name),
-                        )]));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            " ",
+                            &[("stats", &format!("{}.log", first_pass_file_name))],
+                        ));
 
                         parameters
                     },
@@ -381,14 +411,18 @@ impl EncoderBase {
                         parameters
                             .extend(CLIParameter::new_bools("--", &[("repeat-headers", true)]));
                         parameters.extend(CLIParameter::new_numbers("--", " ", &[("pass", 1.0)]));
-                        parameters.extend(CLIParameter::new_strings("--", " ", &[
-                            ("log-level", "error"),
-                            ("stats", &format!("{}.log", first_pass_file_name)),
-                            (
-                                "analysis-reuse-file",
-                                &format!("{}_analysis.dat", first_pass_file_name),
-                            ),
-                        ]));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            " ",
+                            &[
+                                ("log-level", "error"),
+                                ("stats", &format!("{}.log", first_pass_file_name)),
+                                (
+                                    "analysis-reuse-file",
+                                    &format!("{}_analysis.dat", first_pass_file_name),
+                                ),
+                            ],
+                        ));
 
                         parameters
                     },
@@ -396,14 +430,18 @@ impl EncoderBase {
                         parameters
                             .extend(CLIParameter::new_bools("--", &[("repeat-headers", true)]));
                         parameters.extend(CLIParameter::new_numbers("--", " ", &[("pass", 2.0)]));
-                        parameters.extend(CLIParameter::new_strings("--", " ", &[
-                            ("log-level", "error"),
-                            ("stats", &format!("{}.log", first_pass_file_name)),
-                            (
-                                "analysis-reuse-file",
-                                &format!("{}_analysis.dat", first_pass_file_name),
-                            ),
-                        ]));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            " ",
+                            &[
+                                ("log-level", "error"),
+                                ("stats", &format!("{}.log", first_pass_file_name)),
+                                (
+                                    "analysis-reuse-file",
+                                    &format!("{}_analysis.dat", first_pass_file_name),
+                                ),
+                            ],
+                        ));
 
                         parameters
                     },
@@ -415,28 +453,32 @@ impl EncoderBase {
                 match pass {
                     (1, 1) => parameters,
                     (1, passes) => {
-                        parameters.extend(CLIParameter::new_numbers("--", " ", &[(
-                            "passes",
-                            passes as f64,
-                        )]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            " ",
+                            &[("passes", passes as f64)],
+                        ));
                         parameters.extend(CLIParameter::new_numbers("--", " ", &[("pass", 1.0)]));
-                        parameters.extend(CLIParameter::new_strings("--", " ", &[(
-                            "rcstatsfile",
-                            &format!("{}.json", first_pass_file_name),
-                        )]));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            " ",
+                            &[("rcstatsfile", &format!("{}.json", first_pass_file_name))],
+                        ));
 
                         parameters
                     },
                     (_, passes) => {
-                        parameters.extend(CLIParameter::new_numbers("--", " ", &[(
-                            "passes",
-                            passes as f64,
-                        )]));
+                        parameters.extend(CLIParameter::new_numbers(
+                            "--",
+                            " ",
+                            &[("passes", passes as f64)],
+                        ));
                         parameters.extend(CLIParameter::new_numbers("--", " ", &[("pass", 2.0)]));
-                        parameters.extend(CLIParameter::new_strings("--", " ", &[(
-                            "rcstatsfile",
-                            &format!("{}.json", first_pass_file_name),
-                        )]));
+                        parameters.extend(CLIParameter::new_strings(
+                            "--",
+                            " ",
+                            &[("rcstatsfile", &format!("{}.json", first_pass_file_name))],
+                        ));
 
                         parameters
                     },
@@ -480,108 +522,108 @@ impl EncoderBase {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum Encoder {
     AOM {
-        executable:        Option<PathBuf>,
-        pass:              EncoderPasses,
-        options:           HashMap<String, CLIParameter>,
-        photon_noise:      Option<PhotonNoise>,
+        executable: Option<PathBuf>,
+        pass: EncoderPasses,
+        options: HashMap<String, CLIParameter>,
+        photon_noise: Option<PhotonNoise>,
         /// FFmpeg filtergraph applied to the frames before they reach this
         /// encoder. Requires FFmpeg in PATH.
-        ffmpeg_filter:     Option<String>,
+        ffmpeg_filter: Option<String>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters.
         #[serde(default = "crate::models::sequence::scene_concatenator::common::default_true")]
         append_color_data: bool,
     },
     RAV1E {
-        executable:        Option<PathBuf>,
-        pass:              EncoderPasses,
-        options:           HashMap<String, CLIParameter>,
-        photon_noise:      Option<PhotonNoise>,
+        executable: Option<PathBuf>,
+        pass: EncoderPasses,
+        options: HashMap<String, CLIParameter>,
+        photon_noise: Option<PhotonNoise>,
         /// FFmpeg filtergraph applied to the frames before they reach this
         /// encoder. Requires FFmpeg in PATH.
-        ffmpeg_filter:     Option<String>,
+        ffmpeg_filter: Option<String>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters.
         #[serde(default = "crate::models::sequence::scene_concatenator::common::default_true")]
         append_color_data: bool,
     },
     VPX {
-        executable:        Option<PathBuf>,
-        pass:              EncoderPasses,
-        options:           HashMap<String, CLIParameter>,
+        executable: Option<PathBuf>,
+        pass: EncoderPasses,
+        options: HashMap<String, CLIParameter>,
         /// FFmpeg filtergraph applied to the frames before they reach this
         /// encoder. Requires FFmpeg in PATH.
-        ffmpeg_filter:     Option<String>,
+        ffmpeg_filter: Option<String>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters.
         #[serde(default = "crate::models::sequence::scene_concatenator::common::default_true")]
         append_color_data: bool,
     },
     SVTAV1 {
-        executable:        Option<PathBuf>,
-        pass:              EncoderPasses,
-        options:           HashMap<String, CLIParameter>,
-        photon_noise:      Option<PhotonNoise>,
+        executable: Option<PathBuf>,
+        pass: EncoderPasses,
+        options: HashMap<String, CLIParameter>,
+        photon_noise: Option<PhotonNoise>,
         /// FFmpeg filtergraph applied to the frames before they reach this
         /// encoder. Requires FFmpeg in PATH.
-        ffmpeg_filter:     Option<String>,
+        ffmpeg_filter: Option<String>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters.
         #[serde(default = "crate::models::sequence::scene_concatenator::common::default_true")]
         append_color_data: bool,
     },
     AVM {
-        executable:        Option<PathBuf>,
-        pass:              EncoderPasses,
-        options:           HashMap<String, CLIParameter>,
-        photon_noise:      Option<PhotonNoise>,
+        executable: Option<PathBuf>,
+        pass: EncoderPasses,
+        options: HashMap<String, CLIParameter>,
+        photon_noise: Option<PhotonNoise>,
         /// FFmpeg filtergraph applied to the frames before they reach this
         /// encoder. Requires FFmpeg in PATH.
-        ffmpeg_filter:     Option<String>,
+        ffmpeg_filter: Option<String>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters.
         #[serde(default = "crate::models::sequence::scene_concatenator::common::default_true")]
         append_color_data: bool,
     },
     X264 {
-        executable:        Option<PathBuf>,
-        pass:              EncoderPasses,
-        options:           HashMap<String, CLIParameter>,
+        executable: Option<PathBuf>,
+        pass: EncoderPasses,
+        options: HashMap<String, CLIParameter>,
         /// FFmpeg filtergraph applied to the frames before they reach this
         /// encoder. Requires FFmpeg in PATH.
-        ffmpeg_filter:     Option<String>,
+        ffmpeg_filter: Option<String>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters.
         #[serde(default = "crate::models::sequence::scene_concatenator::common::default_true")]
         append_color_data: bool,
     },
     X265 {
-        executable:        Option<PathBuf>,
-        pass:              EncoderPasses,
-        options:           HashMap<String, CLIParameter>,
+        executable: Option<PathBuf>,
+        pass: EncoderPasses,
+        options: HashMap<String, CLIParameter>,
         /// FFmpeg filtergraph applied to the frames before they reach this
         /// encoder. Requires FFmpeg in PATH.
-        ffmpeg_filter:     Option<String>,
+        ffmpeg_filter: Option<String>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters.
         #[serde(default = "crate::models::sequence::scene_concatenator::common::default_true")]
         append_color_data: bool,
     },
     VVenC {
-        executable:        Option<PathBuf>,
-        pass:              EncoderPasses,
-        options:           HashMap<String, CLIParameter>,
+        executable: Option<PathBuf>,
+        pass: EncoderPasses,
+        options: HashMap<String, CLIParameter>,
         /// FFmpeg filtergraph applied to the frames before they reach this
         /// encoder. Requires FFmpeg in PATH.
-        ffmpeg_filter:     Option<String>,
+        ffmpeg_filter: Option<String>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters.
         #[serde(default = "crate::models::sequence::scene_concatenator::common::default_true")]
         append_color_data: bool,
     },
     FFmpeg {
-        executable:        Option<PathBuf>,
-        options:           HashMap<String, CLIParameter>,
+        executable: Option<PathBuf>,
+        options: HashMap<String, CLIParameter>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters.
         #[serde(default = "crate::models::sequence::scene_concatenator::common::default_true")]
@@ -593,33 +635,15 @@ impl Encoder {
     #[inline]
     pub fn base(&self) -> EncoderBase {
         match self {
-            Encoder::AOM {
-                ..
-            } => EncoderBase::AOM,
-            Encoder::RAV1E {
-                ..
-            } => EncoderBase::RAV1E,
-            Encoder::VPX {
-                ..
-            } => EncoderBase::VPX,
-            Encoder::SVTAV1 {
-                ..
-            } => EncoderBase::SVTAV1,
-            Encoder::AVM {
-                ..
-            } => EncoderBase::AVM,
-            Encoder::X264 {
-                ..
-            } => EncoderBase::X264,
-            Encoder::X265 {
-                ..
-            } => EncoderBase::X265,
-            Encoder::VVenC {
-                ..
-            } => EncoderBase::VVenC,
-            Encoder::FFmpeg {
-                ..
-            } => EncoderBase::FFmpeg,
+            Encoder::AOM { .. } => EncoderBase::AOM,
+            Encoder::RAV1E { .. } => EncoderBase::RAV1E,
+            Encoder::VPX { .. } => EncoderBase::VPX,
+            Encoder::SVTAV1 { .. } => EncoderBase::SVTAV1,
+            Encoder::AVM { .. } => EncoderBase::AVM,
+            Encoder::X264 { .. } => EncoderBase::X264,
+            Encoder::X265 { .. } => EncoderBase::X265,
+            Encoder::VVenC { .. } => EncoderBase::VVenC,
+            Encoder::FFmpeg { .. } => EncoderBase::FFmpeg,
         }
     }
 
@@ -703,66 +727,30 @@ impl Encoder {
     #[inline]
     pub fn passes(&self) -> EncoderPasses {
         match self {
-            Encoder::AOM {
-                pass, ..
-            } => *pass,
-            Encoder::RAV1E {
-                pass, ..
-            } => *pass,
-            Encoder::VPX {
-                pass, ..
-            } => *pass,
-            Encoder::SVTAV1 {
-                pass, ..
-            } => *pass,
-            Encoder::AVM {
-                pass, ..
-            } => *pass,
-            Encoder::X264 {
-                pass, ..
-            } => *pass,
-            Encoder::X265 {
-                pass, ..
-            } => *pass,
-            Encoder::VVenC {
-                pass, ..
-            } => *pass,
-            Encoder::FFmpeg {
-                ..
-            } => EncoderPasses::All(1),
+            Encoder::AOM { pass, .. } => *pass,
+            Encoder::RAV1E { pass, .. } => *pass,
+            Encoder::VPX { pass, .. } => *pass,
+            Encoder::SVTAV1 { pass, .. } => *pass,
+            Encoder::AVM { pass, .. } => *pass,
+            Encoder::X264 { pass, .. } => *pass,
+            Encoder::X265 { pass, .. } => *pass,
+            Encoder::VVenC { pass, .. } => *pass,
+            Encoder::FFmpeg { .. } => EncoderPasses::All(1),
         }
     }
 
     #[inline]
     pub fn passes_mut(&mut self) -> Option<&mut EncoderPasses> {
         match self {
-            Encoder::AOM {
-                pass, ..
-            } => Some(pass),
-            Encoder::RAV1E {
-                pass, ..
-            } => Some(pass),
-            Encoder::VPX {
-                pass, ..
-            } => Some(pass),
-            Encoder::SVTAV1 {
-                pass, ..
-            } => Some(pass),
-            Encoder::AVM {
-                pass, ..
-            } => Some(pass),
-            Encoder::X264 {
-                pass, ..
-            } => Some(pass),
-            Encoder::X265 {
-                pass, ..
-            } => Some(pass),
-            Encoder::VVenC {
-                pass, ..
-            } => Some(pass),
-            Encoder::FFmpeg {
-                ..
-            } => None,
+            Encoder::AOM { pass, .. } => Some(pass),
+            Encoder::RAV1E { pass, .. } => Some(pass),
+            Encoder::VPX { pass, .. } => Some(pass),
+            Encoder::SVTAV1 { pass, .. } => Some(pass),
+            Encoder::AVM { pass, .. } => Some(pass),
+            Encoder::X264 { pass, .. } => Some(pass),
+            Encoder::X265 { pass, .. } => Some(pass),
+            Encoder::VVenC { pass, .. } => Some(pass),
+            Encoder::FFmpeg { .. } => None,
         }
     }
 
@@ -777,66 +765,30 @@ impl Encoder {
     #[inline]
     pub fn parameters(&self) -> &HashMap<String, CLIParameter> {
         match self {
-            Encoder::AOM {
-                options, ..
-            } => options,
-            Encoder::RAV1E {
-                options, ..
-            } => options,
-            Encoder::VPX {
-                options, ..
-            } => options,
-            Encoder::SVTAV1 {
-                options, ..
-            } => options,
-            Encoder::AVM {
-                options, ..
-            } => options,
-            Encoder::X264 {
-                options, ..
-            } => options,
-            Encoder::X265 {
-                options, ..
-            } => options,
-            Encoder::VVenC {
-                options, ..
-            } => options,
-            Encoder::FFmpeg {
-                options, ..
-            } => options,
+            Encoder::AOM { options, .. } => options,
+            Encoder::RAV1E { options, .. } => options,
+            Encoder::VPX { options, .. } => options,
+            Encoder::SVTAV1 { options, .. } => options,
+            Encoder::AVM { options, .. } => options,
+            Encoder::X264 { options, .. } => options,
+            Encoder::X265 { options, .. } => options,
+            Encoder::VVenC { options, .. } => options,
+            Encoder::FFmpeg { options, .. } => options,
         }
     }
 
     #[inline]
     pub fn parameters_mut(&mut self) -> &mut HashMap<String, CLIParameter> {
         match self {
-            Encoder::AOM {
-                options, ..
-            } => options,
-            Encoder::RAV1E {
-                options, ..
-            } => options,
-            Encoder::VPX {
-                options, ..
-            } => options,
-            Encoder::SVTAV1 {
-                options, ..
-            } => options,
-            Encoder::AVM {
-                options, ..
-            } => options,
-            Encoder::X264 {
-                options, ..
-            } => options,
-            Encoder::X265 {
-                options, ..
-            } => options,
-            Encoder::VVenC {
-                options, ..
-            } => options,
-            Encoder::FFmpeg {
-                options, ..
-            } => options,
+            Encoder::AOM { options, .. } => options,
+            Encoder::RAV1E { options, .. } => options,
+            Encoder::VPX { options, .. } => options,
+            Encoder::SVTAV1 { options, .. } => options,
+            Encoder::AVM { options, .. } => options,
+            Encoder::X264 { options, .. } => options,
+            Encoder::X265 { options, .. } => options,
+            Encoder::VVenC { options, .. } => options,
+            Encoder::FFmpeg { options, .. } => options,
         }
     }
 
@@ -851,33 +803,15 @@ impl Encoder {
     #[inline]
     pub fn ffmpeg_filter(&self) -> Option<&str> {
         match self {
-            Encoder::AOM {
-                ffmpeg_filter, ..
-            }
-            | Encoder::RAV1E {
-                ffmpeg_filter, ..
-            }
-            | Encoder::VPX {
-                ffmpeg_filter, ..
-            }
-            | Encoder::SVTAV1 {
-                ffmpeg_filter, ..
-            }
-            | Encoder::AVM {
-                ffmpeg_filter, ..
-            }
-            | Encoder::X264 {
-                ffmpeg_filter, ..
-            }
-            | Encoder::X265 {
-                ffmpeg_filter, ..
-            }
-            | Encoder::VVenC {
-                ffmpeg_filter, ..
-            } => ffmpeg_filter.as_deref(),
-            Encoder::FFmpeg {
-                ..
-            } => None,
+            Encoder::AOM { ffmpeg_filter, .. }
+            | Encoder::RAV1E { ffmpeg_filter, .. }
+            | Encoder::VPX { ffmpeg_filter, .. }
+            | Encoder::SVTAV1 { ffmpeg_filter, .. }
+            | Encoder::AVM { ffmpeg_filter, .. }
+            | Encoder::X264 { ffmpeg_filter, .. }
+            | Encoder::X265 { ffmpeg_filter, .. }
+            | Encoder::VVenC { ffmpeg_filter, .. } => ffmpeg_filter.as_deref(),
+            Encoder::FFmpeg { .. } => None,
         }
     }
 
@@ -885,18 +819,10 @@ impl Encoder {
     #[inline]
     pub fn photon_noise(&self) -> Option<&PhotonNoise> {
         match self {
-            Encoder::AOM {
-                photon_noise, ..
-            }
-            | Encoder::RAV1E {
-                photon_noise, ..
-            }
-            | Encoder::SVTAV1 {
-                photon_noise, ..
-            }
-            | Encoder::AVM {
-                photon_noise, ..
-            } => photon_noise.as_ref(),
+            Encoder::AOM { photon_noise, .. }
+            | Encoder::RAV1E { photon_noise, .. }
+            | Encoder::SVTAV1 { photon_noise, .. }
+            | Encoder::AVM { photon_noise, .. } => photon_noise.as_ref(),
             _ => None,
         }
     }
@@ -905,33 +831,15 @@ impl Encoder {
     #[inline]
     pub fn custom_executable(&self) -> Option<&PathBuf> {
         match self {
-            Encoder::AOM {
-                executable, ..
-            }
-            | Encoder::RAV1E {
-                executable, ..
-            }
-            | Encoder::VPX {
-                executable, ..
-            }
-            | Encoder::SVTAV1 {
-                executable, ..
-            }
-            | Encoder::AVM {
-                executable, ..
-            }
-            | Encoder::X264 {
-                executable, ..
-            }
-            | Encoder::X265 {
-                executable, ..
-            }
-            | Encoder::VVenC {
-                executable, ..
-            }
-            | Encoder::FFmpeg {
-                executable, ..
-            } => executable.as_ref(),
+            Encoder::AOM { executable, .. }
+            | Encoder::RAV1E { executable, .. }
+            | Encoder::VPX { executable, .. }
+            | Encoder::SVTAV1 { executable, .. }
+            | Encoder::AVM { executable, .. }
+            | Encoder::X264 { executable, .. }
+            | Encoder::X265 { executable, .. }
+            | Encoder::VVenC { executable, .. }
+            | Encoder::FFmpeg { executable, .. } => executable.as_ref(),
         }
     }
 
@@ -940,40 +848,31 @@ impl Encoder {
     pub fn set_executable(&mut self, executable: Option<PathBuf>) {
         match self {
             Encoder::AOM {
-                executable: binary,
-                ..
+                executable: binary, ..
             }
             | Encoder::RAV1E {
-                executable: binary,
-                ..
+                executable: binary, ..
             }
             | Encoder::VPX {
-                executable: binary,
-                ..
+                executable: binary, ..
             }
             | Encoder::SVTAV1 {
-                executable: binary,
-                ..
+                executable: binary, ..
             }
             | Encoder::AVM {
-                executable: binary,
-                ..
+                executable: binary, ..
             }
             | Encoder::X264 {
-                executable: binary,
-                ..
+                executable: binary, ..
             }
             | Encoder::X265 {
-                executable: binary,
-                ..
+                executable: binary, ..
             }
             | Encoder::VVenC {
-                executable: binary,
-                ..
+                executable: binary, ..
             }
             | Encoder::FFmpeg {
-                executable: binary,
-                ..
+                executable: binary, ..
             } => *binary = executable,
         }
     }
@@ -984,33 +883,15 @@ impl Encoder {
     #[inline]
     pub fn set_ffmpeg_filter(&mut self, filter: Option<String>) {
         match self {
-            Encoder::AOM {
-                ffmpeg_filter, ..
-            }
-            | Encoder::RAV1E {
-                ffmpeg_filter, ..
-            }
-            | Encoder::VPX {
-                ffmpeg_filter, ..
-            }
-            | Encoder::SVTAV1 {
-                ffmpeg_filter, ..
-            }
-            | Encoder::AVM {
-                ffmpeg_filter, ..
-            }
-            | Encoder::X264 {
-                ffmpeg_filter, ..
-            }
-            | Encoder::X265 {
-                ffmpeg_filter, ..
-            }
-            | Encoder::VVenC {
-                ffmpeg_filter, ..
-            } => *ffmpeg_filter = filter,
-            Encoder::FFmpeg {
-                ..
-            } => {},
+            Encoder::AOM { ffmpeg_filter, .. }
+            | Encoder::RAV1E { ffmpeg_filter, .. }
+            | Encoder::VPX { ffmpeg_filter, .. }
+            | Encoder::SVTAV1 { ffmpeg_filter, .. }
+            | Encoder::AVM { ffmpeg_filter, .. }
+            | Encoder::X264 { ffmpeg_filter, .. }
+            | Encoder::X265 { ffmpeg_filter, .. }
+            | Encoder::VVenC { ffmpeg_filter, .. } => *ffmpeg_filter = filter,
+            Encoder::FFmpeg { .. } => {},
         }
     }
 

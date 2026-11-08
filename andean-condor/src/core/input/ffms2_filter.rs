@@ -98,11 +98,11 @@ pub enum Ffms2Filter {
         /// Target bits per component: 8, 10 or 12.
         bit_depth: Option<u8>,
         /// Target chroma subsampling.
-        chroma:    Option<ChromaSampling>,
+        chroma: Option<ChromaSampling>,
         /// Target width in pixels.
-        width:     Option<u32>,
+        width: Option<u32>,
         /// Target height in pixels.
-        height:    Option<u32>,
+        height: Option<u32>,
     },
 }
 
@@ -244,9 +244,7 @@ impl Ffms2Filter {
     #[must_use]
     pub fn output_format(&self) -> Option<FFPixelFormat> {
         let Ffms2Filter::OutputFormat {
-            bit_depth,
-            chroma,
-            ..
+            bit_depth, chroma, ..
         } = self;
         let bit_depth = (*bit_depth)?;
         let chroma = (*chroma)?;
@@ -286,7 +284,7 @@ impl Ffms2Filter {
         let changes_format = bit_depth != baseline.bit_depth || chroma != baseline.chroma_sampling;
         vec![VapourSynthFilter::Resize {
             scaler: Some(Scaler::Bicubic),
-            width:  (width != baseline.width).then_some(width),
+            width: (width != baseline.width).then_some(width),
             height: (height != baseline.height).then_some(height),
             format: changes_format.then(|| ffms2_pixel_format(bit_depth, chroma)).flatten(),
         }]
@@ -400,12 +398,15 @@ mod tests {
         let filter = Ffms2Filter::from_str("output-format:bit_depth=10;chroma=420;")
             .expect("output-format should parse");
 
-        assert_eq!(filter, Ffms2Filter::OutputFormat {
-            bit_depth: Some(10),
-            chroma:    Some(ChromaSampling::Yuv420),
-            width:     None,
-            height:    None,
-        });
+        assert_eq!(
+            filter,
+            Ffms2Filter::OutputFormat {
+                bit_depth: Some(10),
+                chroma: Some(ChromaSampling::Yuv420),
+                width: None,
+                height: None,
+            }
+        );
     }
 
     #[test]
@@ -413,12 +414,15 @@ mod tests {
         let filter = Ffms2Filter::from_str("output-format:width=1280;height=720;")
             .expect("output-format should parse");
 
-        assert_eq!(filter, Ffms2Filter::OutputFormat {
-            bit_depth: None,
-            chroma:    None,
-            width:     Some(1280),
-            height:    Some(720),
-        });
+        assert_eq!(
+            filter,
+            Ffms2Filter::OutputFormat {
+                bit_depth: None,
+                chroma: None,
+                width: Some(1280),
+                height: Some(720),
+            }
+        );
         // Scaling alone does not change the pixel format.
         assert_eq!(filter.output_format(), None);
     }
@@ -428,12 +432,15 @@ mod tests {
         let filter = Ffms2Filter::from_str("output-format")
             .expect("output-format with no args should parse");
 
-        assert_eq!(filter, Ffms2Filter::OutputFormat {
-            bit_depth: None,
-            chroma:    None,
-            width:     None,
-            height:    None,
-        });
+        assert_eq!(
+            filter,
+            Ffms2Filter::OutputFormat {
+                bit_depth: None,
+                chroma: None,
+                width: None,
+                height: None,
+            }
+        );
         assert_eq!(filter.output_format(), None);
     }
 
@@ -458,9 +465,9 @@ mod tests {
     fn output_format_maps_depth_and_chroma() {
         let ten_bit_420 = Ffms2Filter::OutputFormat {
             bit_depth: Some(10),
-            chroma:    Some(ChromaSampling::Yuv420),
-            width:     None,
-            height:    None,
+            chroma: Some(ChromaSampling::Yuv420),
+            width: None,
+            height: None,
         };
         assert_eq!(
             ten_bit_420.output_format(),
@@ -469,9 +476,9 @@ mod tests {
 
         let eight_bit_444 = Ffms2Filter::OutputFormat {
             bit_depth: Some(8),
-            chroma:    Some(ChromaSampling::Yuv444),
-            width:     Some(1920),
-            height:    Some(1080),
+            chroma: Some(ChromaSampling::Yuv444),
+            width: Some(1920),
+            height: Some(1080),
         };
         assert_eq!(eight_bit_444.output_format(), Some(FFPixelFormat::YUV444P));
     }
@@ -510,7 +517,7 @@ mod tests {
     fn converts_vapoursynth_resize_to_native() {
         let ten_bit = VapourSynthFilter::Resize {
             scaler: Some(Scaler::Bicubic),
-            width:  None,
+            width: None,
             height: None,
             format: Some(FFPixelFormat::YUV420P10LE),
         };
@@ -518,15 +525,15 @@ mod tests {
             Ffms2Filter::from_vapoursynth_filter(&ten_bit),
             Some(Ffms2Filter::OutputFormat {
                 bit_depth: Some(10),
-                chroma:    Some(ChromaSampling::Yuv420),
-                width:     None,
-                height:    None,
+                chroma: Some(ChromaSampling::Yuv420),
+                width: None,
+                height: None,
             })
         );
 
         let downscale = VapourSynthFilter::Resize {
             scaler: Some(Scaler::Lanczos),
-            width:  Some(1280),
+            width: Some(1280),
             height: Some(720),
             format: None,
         };
@@ -534,9 +541,9 @@ mod tests {
             Ffms2Filter::from_vapoursynth_filter(&downscale),
             Some(Ffms2Filter::OutputFormat {
                 bit_depth: None,
-                chroma:    None,
-                width:     Some(1280),
-                height:    Some(720),
+                chroma: None,
+                width: Some(1280),
+                height: Some(720),
             })
         );
     }
@@ -546,7 +553,7 @@ mod tests {
     fn eight_bit_resize_leaves_depth_unset() {
         let eight_bit = VapourSynthFilter::Resize {
             scaler: None,
-            width:  None,
+            width: None,
             height: None,
             format: Some(FFPixelFormat::YUV420P),
         };
@@ -554,9 +561,9 @@ mod tests {
             Ffms2Filter::from_vapoursynth_filter(&eight_bit),
             Some(Ffms2Filter::OutputFormat {
                 bit_depth: None,
-                chroma:    Some(ChromaSampling::Yuv420),
-                width:     None,
-                height:    None,
+                chroma: Some(ChromaSampling::Yuv420),
+                width: None,
+                height: None,
             })
         );
     }
@@ -564,10 +571,10 @@ mod tests {
     #[test]
     fn non_resize_filters_have_no_native_equivalent() {
         let crop = VapourSynthFilter::Crop {
-            top:    Some(140),
+            top: Some(140),
             bottom: None,
-            left:   None,
-            right:  None,
+            left: None,
+            right: None,
         };
         assert_eq!(Ffms2Filter::from_vapoursynth_filter(&crop), None);
     }

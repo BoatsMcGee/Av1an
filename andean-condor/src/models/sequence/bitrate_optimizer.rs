@@ -14,8 +14,7 @@ where
     pub bitrate_sigma_threshold: Option<u8>,
 }
 
-impl SequenceConfigHandler for BitrateOptimizerConfig {
-}
+impl SequenceConfigHandler for BitrateOptimizerConfig {}
 
 pub trait BitrateOptimizerConfigHandler {
     fn bitrate_optimizer(&self) -> Result<&BitrateOptimizerConfig>;

@@ -54,39 +54,17 @@ pub mod ffi;
 mod scorer;
 
 pub use config::{
-    ButteraugliParams,
-    CvvdpParams,
-    DEFAULT_HANDLER_THREADS,
-    PoolMethod,
-    VshipConfig,
-    VshipMetric,
-    colorspace_from_details,
-    sample_for_bit_depth,
-    subsample_for_chroma,
+    ButteraugliParams, CvvdpParams, DEFAULT_HANDLER_THREADS, PoolMethod, VshipConfig, VshipMetric,
+    colorspace_from_details, sample_for_bit_depth, subsample_for_chroma,
 };
 pub use error::VshipError;
 pub use ffi::{
-    VshipBackend,
-    VshipChromaLocation,
-    VshipChromaSubsample,
-    VshipColorFamily,
-    VshipColorspace,
-    VshipCropRectangle,
-    VshipDeviceInfo,
-    VshipPrimaries,
-    VshipRange,
-    VshipSample,
-    VshipTransferFunction,
-    VshipYuvMatrix,
+    VshipBackend, VshipChromaLocation, VshipChromaSubsample, VshipColorFamily, VshipColorspace,
+    VshipCropRectangle, VshipDeviceInfo, VshipPrimaries, VshipRange, VshipSample,
+    VshipTransferFunction, VshipYuvMatrix,
 };
 pub use scorer::{
-    FrameScore,
-    PlaneSet,
-    PlaneSource,
-    VideoFormat,
-    VshipDevice,
-    VshipScorer,
-    devices,
+    FrameScore, PlaneSet, PlaneSource, VideoFormat, VshipDevice, VshipScorer, devices,
 };
 
 /// The runtime libvship version string, if libvship is loaded and usable.

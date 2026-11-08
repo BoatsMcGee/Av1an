@@ -18,13 +18,13 @@ pub type TrackMap = HashMap<u32, MkvmergeTrack>;
 pub struct MkvmergeConfig {
     /// Per-track overrides for the main input. `None` copies all tracks.
     #[serde(default)]
-    pub tracks:       Option<TrackMap>,
+    pub tracks: Option<TrackMap>,
     /// Chapter handling. `None` copies the source's chapters.
     #[serde(default)]
-    pub chapters:     Option<Chapters>,
+    pub chapters: Option<Chapters>,
     /// Global metadata/tags. `None` copies the source's global tags.
     #[serde(default)]
-    pub metadata:     Option<Metadata>,
+    pub metadata: Option<Metadata>,
     /// Additional files merged alongside the encoded scenes.
     #[serde(default)]
     pub extra_inputs: Vec<MkvmergeExtraInput>,
@@ -33,10 +33,10 @@ pub struct MkvmergeConfig {
 /// An additional source file merged into the output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct MkvmergeExtraInput {
-    pub path:     PathBuf,
+    pub path: PathBuf,
     /// Per-track overrides for this file. `None` copies all its tracks.
     #[serde(default)]
-    pub tracks:   Option<TrackMap>,
+    pub tracks: Option<TrackMap>,
     /// Chapter handling for this file. `None` copies its chapters.
     #[serde(default)]
     pub chapters: Option<Chapters>,
@@ -132,40 +132,40 @@ impl MkvmergeTrack {
 pub struct TrackOptions {
     /// Whether to copy this track. Defaults to `true`.
     #[serde(default = "default_true")]
-    pub copy:              bool,
+    pub copy: bool,
     /// Track name (`--track-name`).
     #[serde(default)]
-    pub name:              Option<String>,
+    pub name: Option<String>,
     /// ISO 639-2 language code (`--language`).
     #[serde(default)]
-    pub language:          Option<String>,
+    pub language: Option<String>,
     /// Delay in milliseconds (`--sync`).
     #[serde(default)]
-    pub delay:             Option<i64>,
+    pub delay: Option<i64>,
     /// Default-track flag (`--default-track-flag`).
     #[serde(default)]
-    pub default_track:     Option<bool>,
+    pub default_track: Option<bool>,
     /// Forced-display flag (`--forced-display-flag`).
     #[serde(default)]
-    pub forced:            Option<bool>,
+    pub forced: Option<bool>,
     /// Track-enabled flag (`--track-enabled-flag`).
     #[serde(default)]
-    pub enabled:           Option<bool>,
+    pub enabled: Option<bool>,
     /// Hearing-impaired flag (`--hearing-impaired-flag`).
     #[serde(default)]
-    pub hearing_impaired:  Option<bool>,
+    pub hearing_impaired: Option<bool>,
     /// Visual-impaired flag (`--visual-impaired-flag`).
     #[serde(default)]
-    pub visual_impaired:   Option<bool>,
+    pub visual_impaired: Option<bool>,
     /// Text-descriptions flag (`--text-descriptions-flag`).
     #[serde(default)]
     pub text_descriptions: Option<bool>,
     /// Original-language flag (`--original-flag`).
     #[serde(default)]
-    pub original:          Option<bool>,
+    pub original: Option<bool>,
     /// Commentary flag (`--commentary-flag`).
     #[serde(default)]
-    pub commentary:        Option<bool>,
+    pub commentary: Option<bool>,
 }
 
 impl TrackOptions {
@@ -208,16 +208,16 @@ impl TrackOptions {
 /// Pixel cropping parameters, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Crop {
-    pub left:   u32,
-    pub top:    u32,
-    pub right:  u32,
+    pub left: u32,
+    pub top: u32,
+    pub right: u32,
     pub bottom: u32,
 }
 
 /// Display dimensions, in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DisplayDimensions {
-    pub width:  u32,
+    pub width: u32,
     pub height: u32,
 }
 
@@ -225,25 +225,25 @@ pub struct DisplayDimensions {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ChromaSubsample {
     pub horizontal: u32,
-    pub vertical:   u32,
+    pub vertical: u32,
 }
 
 /// Horizontal/vertical chroma siting.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ChromaSiting {
     pub horizontal: u32,
-    pub vertical:   u32,
+    pub vertical: u32,
 }
 
 /// CIE 1931 red/green/blue chromaticity coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ChromaticityCoordinates {
-    pub red_x:   f32,
-    pub red_y:   f32,
+    pub red_x: f32,
+    pub red_y: f32,
     pub green_x: f32,
     pub green_y: f32,
-    pub blue_x:  f32,
-    pub blue_y:  f32,
+    pub blue_x: f32,
+    pub blue_y: f32,
 }
 
 /// CIE 1931 white-point coordinates.
@@ -258,65 +258,65 @@ pub struct WhiteColorCoordinates {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct VideoTrack {
     #[serde(flatten)]
-    pub track:                    TrackOptions,
+    pub track: TrackOptions,
     /// `--cropping`.
     #[serde(default)]
-    pub crop:                     Option<Crop>,
+    pub crop: Option<Crop>,
     /// `--display-dimensions`.
     #[serde(default)]
-    pub display_dimensions:       Option<DisplayDimensions>,
+    pub display_dimensions: Option<DisplayDimensions>,
     /// `--aspect-ratio` (a ratio, e.g. `16/9`). Mutually exclusive with
     /// `display_dimensions` and `aspect_ratio_factor`.
     #[serde(default)]
-    pub aspect_ratio:             Option<String>,
+    pub aspect_ratio: Option<String>,
     /// `--aspect-ratio-factor`.
     #[serde(default)]
-    pub aspect_ratio_factor:      Option<String>,
+    pub aspect_ratio_factor: Option<String>,
     /// `--color-primaries`.
     #[serde(default)]
-    pub color_primaries:          Option<u32>,
+    pub color_primaries: Option<u32>,
     /// `--color-transfer-characteristics`.
     #[serde(default)]
     pub transfer_characteristics: Option<u32>,
     /// `--color-matrix-coefficients`.
     #[serde(default)]
-    pub matrix_coefficients:      Option<u32>,
+    pub matrix_coefficients: Option<u32>,
     /// `--color-range`.
     #[serde(default)]
-    pub color_range:              Option<u32>,
+    pub color_range: Option<u32>,
     /// `--color-bits-per-channel`.
     #[serde(default)]
-    pub color_bits_per_channel:   Option<u32>,
+    pub color_bits_per_channel: Option<u32>,
     /// `--chroma-subsample`.
     #[serde(default)]
-    pub chroma_subsample:         Option<ChromaSubsample>,
+    pub chroma_subsample: Option<ChromaSubsample>,
     /// `--chroma-siting`.
     #[serde(default)]
-    pub chroma_siting:            Option<ChromaSiting>,
+    pub chroma_siting: Option<ChromaSiting>,
     /// `--max-content-light` (MaxCLL).
     #[serde(default)]
-    pub max_content_light:        Option<u32>,
+    pub max_content_light: Option<u32>,
     /// `--max-frame-light` (MaxFALL).
     #[serde(default)]
-    pub max_frame_light:          Option<u32>,
+    pub max_frame_light: Option<u32>,
     /// `--max-luminance`.
     #[serde(default)]
-    pub max_luminance:            Option<f32>,
+    pub max_luminance: Option<f32>,
     /// `--min-luminance`.
     #[serde(default)]
-    pub min_luminance:            Option<f32>,
+    pub min_luminance: Option<f32>,
     /// `--chromaticity-coordinates`.
     #[serde(default)]
     pub chromaticity_coordinates: Option<ChromaticityCoordinates>,
     /// `--white-color-coordinates`.
     #[serde(default)]
-    pub white_color_coordinates:  Option<WhiteColorCoordinates>,
+    pub white_color_coordinates: Option<WhiteColorCoordinates>,
     /// `--stereo-mode`.
     #[serde(default)]
-    pub stereo_mode:              Option<String>,
+    pub stereo_mode: Option<String>,
     /// `--field-order`.
     #[serde(default)]
-    pub field_order:              Option<u32>,
+    pub field_order: Option<u32>,
 }
 
 impl VideoTrack {
@@ -414,10 +414,10 @@ impl VideoTrack {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AudioTrack {
     #[serde(flatten)]
-    pub track:          TrackOptions,
+    pub track: TrackOptions,
     /// `--aac-is-sbr`.
     #[serde(default)]
-    pub aac_is_sbr:     Option<bool>,
+    pub aac_is_sbr: Option<bool>,
     /// `--reduce-to-core`.
     #[serde(default)]
     pub reduce_to_core: Option<bool>,
@@ -453,13 +453,13 @@ pub enum Compression {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SubtitleTrack {
     #[serde(flatten)]
-    pub track:       TrackOptions,
+    pub track: TrackOptions,
     /// `--compression`.
     #[serde(default)]
     pub compression: Option<Compression>,
     /// `--sub-charset`.
     #[serde(default)]
-    pub charset:     Option<String>,
+    pub charset: Option<String>,
 }
 
 impl SubtitleTrack {
@@ -494,19 +494,19 @@ impl SubtitleTrack {
 pub struct AttachmentTrack {
     /// Whether to copy this attachment. Defaults to `true`.
     #[serde(default = "default_true")]
-    pub copy:                   bool,
+    pub copy: bool,
     /// A file to attach to the output.
     #[serde(default)]
-    pub path:                   Option<PathBuf>,
+    pub path: Option<PathBuf>,
     /// `--attachment-name`.
     #[serde(default)]
-    pub attachment_name:        Option<String>,
+    pub attachment_name: Option<String>,
     /// `--attachment-description`.
     #[serde(default)]
     pub attachment_description: Option<String>,
     /// `--attachment-mime-type`.
     #[serde(default)]
-    pub attachment_mime_type:   Option<String>,
+    pub attachment_mime_type: Option<String>,
 }
 
 impl MkvmergeConfig {
@@ -621,10 +621,7 @@ impl MkvmergeConfig {
             for (id, track) in tracks {
                 match track {
                     MkvmergeTrack::Video(_) if *id != 0 => {
-                        return Err(MkvmergeConfigError::VideoTrackNotZero {
-                            id: *id
-                        }
-                        .into());
+                        return Err(MkvmergeConfigError::VideoTrackNotZero { id: *id }.into());
                     },
                     MkvmergeTrack::Attachment(attachment)
                         if attachment.path.is_none()
@@ -632,12 +629,8 @@ impl MkvmergeConfig {
                                 || attachment.attachment_description.is_some()
                                 || attachment.attachment_mime_type.is_some()) =>
                     {
-                        warnings.push(
-                            MkvmergeConfigError::AttachmentFieldsIgnored {
-                                id: *id
-                            }
-                            .into(),
-                        );
+                        warnings
+                            .push(MkvmergeConfigError::AttachmentFieldsIgnored { id: *id }.into());
                     },
                     _ => (),
                 }
@@ -649,24 +642,14 @@ impl MkvmergeConfig {
                 .as_ref()
                 .is_some_and(|chapters| chapters.language.is_some() || chapters.charset.is_some())
             {
-                warnings.push(
-                    MkvmergeConfigError::ExtraInputChaptersGlobal {
-                        index,
-                    }
-                    .into(),
-                );
+                warnings.push(MkvmergeConfigError::ExtraInputChaptersGlobal { index }.into());
             }
             if extra
                 .metadata
                 .as_ref()
                 .is_some_and(|metadata| metadata.title.is_some() || !metadata.tags.is_empty())
             {
-                warnings.push(
-                    MkvmergeConfigError::ExtraInputMetadataGlobal {
-                        index,
-                    }
-                    .into(),
-                );
+                warnings.push(MkvmergeConfigError::ExtraInputMetadataGlobal { index }.into());
             }
         }
         Ok(warnings)
@@ -899,9 +882,9 @@ mod tests {
     #[test]
     fn tags_xml_escapes_values() {
         let mut metadata = Metadata {
-            copy:  true,
+            copy: true,
             title: Some("A & B".to_owned()),
-            tags:  HashMap::new(),
+            tags: HashMap::new(),
         };
         metadata.tags.insert("BPS".to_owned(), "<1000>".to_owned());
         let xml = tags_xml(&metadata);

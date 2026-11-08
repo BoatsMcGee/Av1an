@@ -5,9 +5,7 @@ mod config_helpers;
 
 use andean_condor::models::sequence::quality_check::QualityCheckConfig;
 use california_condor::{
-    commands::handlers::load_configuration,
-    test_helpers::*,
-    utils::hash_path::hash_path,
+    commands::handlers::load_configuration, test_helpers::*, utils::hash_path::hash_path,
 };
 use common::condor_cmd;
 use config_helpers::{init_config, load};
@@ -20,13 +18,8 @@ mod tests {
             encoder::cli_parameter::CLIParameter,
             input::{Input, VapourSynthImportMethod},
             sequence::target_quality::types::{
-                DEFAULT_XPSNR_TARGET_RANGE,
-                ProbeStatistic,
-                ProbeStrategy,
-                QualityMetric,
-                QualityMetric as MetricModel,
-                SubsetProbeLength,
-                SubsetProbePosition,
+                DEFAULT_XPSNR_TARGET_RANGE, ProbeStatistic, ProbeStrategy, QualityMetric,
+                QualityMetric as MetricModel, SubsetProbeLength, SubsetProbePosition,
             },
         },
         vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
@@ -68,13 +61,10 @@ mod tests {
 
         // Mock an existing config file with scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
-        if let Input::VapourSynth {
-            filters, ..
-        } = &mut config.condor.input
-        {
+        if let Input::VapourSynth { filters, .. } = &mut config.condor.input {
             *filters = vec![VapourSynthFilter::Resize {
                 scaler: None,
-                width:  Some(WIDTH),
+                width: Some(WIDTH),
                 height: Some(HEIGHT),
                 format: Some(FFPixelFormat::YUV420P10LE),
             }];
@@ -120,25 +110,23 @@ mod tests {
 
         let mut expected_config = config;
         expected_config.condor.sequence_config.quality_check = Some(QualityCheckConfig {
-            metric:    QualityMetric::XPSNR {
+            metric: QualityMetric::XPSNR {
                 target_range: DEFAULT_XPSNR_TARGET_RANGE,
-                resolution:   None,
+                resolution: None,
             },
-            strategy:  ProbeStrategy::Subset {
+            strategy: ProbeStrategy::Subset {
                 position: SubsetProbePosition::Middle,
-                length:   SubsetProbeLength::Frames(SCORED_FRAMES),
+                length: SubsetProbeLength::Frames(SCORED_FRAMES),
             },
             statistic: ProbeStatistic::Mean,
             // The metric input records the filters it was given, scaler included.
-            input:     Some(Input::VapourSynth {
-                path:          input_abs,
-                import_method: VapourSynthImportMethod::FFMS2 {
-                    index: None
-                },
-                cache_path:    None,
-                filters:       vec![VapourSynthFilter::Resize {
+            input: Some(Input::VapourSynth {
+                path: input_abs,
+                import_method: VapourSynthImportMethod::FFMS2 { index: None },
+                cache_path: None,
+                filters: vec![VapourSynthFilter::Resize {
                     scaler: Some(Scaler::Bicubic),
-                    width:  Some(WIDTH),
+                    width: Some(WIDTH),
                     height: Some(HEIGHT),
                     format: Some(FFPixelFormat::YUV420P10LE),
                 }],
@@ -241,7 +229,7 @@ mod tests {
             check.strategy,
             ProbeStrategy::Subset {
                 position: SubsetProbePosition::End,
-                length:   SubsetProbeLength::Percentage(25.0),
+                length: SubsetProbeLength::Percentage(25.0),
             },
             "strategy is set"
         );

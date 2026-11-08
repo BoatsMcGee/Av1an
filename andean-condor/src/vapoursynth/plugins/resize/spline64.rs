@@ -6,43 +6,34 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         resize::{
-            ChromaLocation,
-            ColorPrimaries,
-            DOCS,
-            DitherType,
-            ID,
-            MatrixCoefficients,
-            NAME,
-            Range,
+            ChromaLocation, ColorPrimaries, DOCS, DitherType, ID, MatrixCoefficients, NAME, Range,
             TransferCharacteristics,
         },
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
 
 #[derive(Debug, Clone, Default)]
 pub struct Spline64 {
-    pub width:        Option<u32>,
-    pub height:       Option<u32>,
-    pub format:       Option<vapoursynth::format::PresetFormat>,
-    pub matrix:       Option<MatrixCoefficients>,
-    pub matrix_in:    Option<MatrixCoefficients>,
-    pub transfer:     Option<TransferCharacteristics>,
-    pub transfer_in:  Option<TransferCharacteristics>,
-    pub primaries:    Option<ColorPrimaries>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub format: Option<vapoursynth::format::PresetFormat>,
+    pub matrix: Option<MatrixCoefficients>,
+    pub matrix_in: Option<MatrixCoefficients>,
+    pub transfer: Option<TransferCharacteristics>,
+    pub transfer_in: Option<TransferCharacteristics>,
+    pub primaries: Option<ColorPrimaries>,
     pub primaries_in: Option<ColorPrimaries>,
-    pub range:        Option<Range>,
-    pub range_in:     Option<Range>,
-    pub chromaloc:    Option<ChromaLocation>,
+    pub range: Option<Range>,
+    pub range_in: Option<Range>,
+    pub chromaloc: Option<ChromaLocation>,
     pub chromaloc_in: Option<ChromaLocation>,
-    pub dither_type:  Option<DitherType>,
+    pub dither_type: Option<DitherType>,
 }
 
 impl Plugin for Spline64 {
@@ -86,29 +77,35 @@ impl Spline64 {
         arguments
             .set_node("clip", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("width", self.width.map(|i| i as i64)),
-            ("height", self.height.map(|i| i as i64)),
-            ("format", self.format.map(|e| e as i64)),
-            ("matrix", self.matrix.map(|e| e as i64)),
-            ("matrix_in", self.matrix_in.map(|e| e as i64)),
-            ("transfer", self.transfer.map(|e| e as i64)),
-            ("transfer_in", self.transfer_in.map(|e| e as i64)),
-            ("primaries", self.primaries.map(|e| e as i64)),
-            ("primaries_in", self.primaries_in.map(|e| e as i64)),
-            ("range", self.range.map(|e| e as i64)),
-            ("range_in", self.range_in.map(|e| e as i64)),
-            ("chromaloc", self.chromaloc.map(|e| e as i64)),
-            ("chromaloc_in", self.chromaloc_in.map(|e| e as i64)),
-        ])?;
-        Self::arguments_set(&mut arguments, vec![(
-            "dither_type",
-            self.dither_type.map(|dt| dt.to_string().into_bytes()).as_deref(),
-        )])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("width", self.width.map(|i| i as i64)),
+                ("height", self.height.map(|i| i as i64)),
+                ("format", self.format.map(|e| e as i64)),
+                ("matrix", self.matrix.map(|e| e as i64)),
+                ("matrix_in", self.matrix_in.map(|e| e as i64)),
+                ("transfer", self.transfer.map(|e| e as i64)),
+                ("transfer_in", self.transfer_in.map(|e| e as i64)),
+                ("primaries", self.primaries.map(|e| e as i64)),
+                ("primaries_in", self.primaries_in.map(|e| e as i64)),
+                ("range", self.range.map(|e| e as i64)),
+                ("range_in", self.range_in.map(|e| e as i64)),
+                ("chromaloc", self.chromaloc.map(|e| e as i64)),
+                ("chromaloc_in", self.chromaloc_in.map(|e| e as i64)),
+            ],
+        )?;
+        Self::arguments_set(
+            &mut arguments,
+            vec![(
+                "dither_type",
+                self.dither_type.map(|dt| dt.to_string().into_bytes()).as_deref(),
+            )],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         Ok(node)

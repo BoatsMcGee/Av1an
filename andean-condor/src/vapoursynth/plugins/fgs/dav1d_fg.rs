@@ -12,22 +12,22 @@ use crate::{
 /// struct can be safely re-interpreted as bytes.
 #[repr(C)]
 pub(crate) struct Dav1dFilmGrainDataRaw {
-    seed:                     u32,
-    num_y_points:             i32,
-    y_points:                 [[u8; 2]; 14],
+    seed: u32,
+    num_y_points: i32,
+    y_points: [[u8; 2]; 14],
     chroma_scaling_from_luma: i32,
-    num_uv_points:            [i32; 2],
-    uv_points:                [[[u8; 2]; 10]; 2],
-    scaling_shift:            i32,
-    ar_coeff_lag:             i32,
-    ar_coeffs_y:              [i8; 24],
-    ar_coeffs_uv:             [[i8; 28]; 2],
-    ar_coeff_shift:           u64,
-    grain_scale_shift:        i32,
-    uv_mult:                  [i32; 2],
-    uv_luma_mult:             [i32; 2],
-    uv_offset:                [i32; 2],
-    overlap_flag:             i32,
+    num_uv_points: [i32; 2],
+    uv_points: [[[u8; 2]; 10]; 2],
+    scaling_shift: i32,
+    ar_coeff_lag: i32,
+    ar_coeffs_y: [i8; 24],
+    ar_coeffs_uv: [[i8; 28]; 2],
+    ar_coeff_shift: u64,
+    grain_scale_shift: i32,
+    uv_mult: [i32; 2],
+    uv_luma_mult: [i32; 2],
+    uv_offset: [i32; 2],
+    overlap_flag: i32,
     clip_to_restricted_range: i32,
 }
 
@@ -119,25 +119,31 @@ impl FGS {
         let width = self.photon_noise.width.or(width).unwrap_or(1920);
         let height = self.photon_noise.height.or(height).unwrap_or(1080);
 
-        let mut params = generate_photon_noise_params(0, u64::MAX, av1_grain::NoiseGenArgs {
-            iso_setting: self.photon_noise.iso,
-            width,
-            height,
-            transfer_function,
-            chroma_grain: self
-                .photon_noise
-                .chroma_iso
-                .is_some_and(|c_iso| c_iso == self.photon_noise.iso),
-            random_seed: None,
-            full_range: matches!(color_range, Some(ColorRange::Full)),
-        });
+        let mut params = generate_photon_noise_params(
+            0,
+            u64::MAX,
+            av1_grain::NoiseGenArgs {
+                iso_setting: self.photon_noise.iso,
+                width,
+                height,
+                transfer_function,
+                chroma_grain: self
+                    .photon_noise
+                    .chroma_iso
+                    .is_some_and(|c_iso| c_iso == self.photon_noise.iso),
+                random_seed: None,
+                full_range: matches!(color_range, Some(ColorRange::Full)),
+            },
+        );
 
         // Separate chroma ISO override (when chroma_iso != iso)
         if let Some(chroma_iso) = self.photon_noise.chroma_iso
             && chroma_iso != self.photon_noise.iso
         {
-            let chroma_params =
-                generate_photon_noise_params(0, u64::MAX, av1_grain::NoiseGenArgs {
+            let chroma_params = generate_photon_noise_params(
+                0,
+                u64::MAX,
+                av1_grain::NoiseGenArgs {
                     iso_setting: chroma_iso,
                     width,
                     height,
@@ -145,7 +151,8 @@ impl FGS {
                     chroma_grain: true,
                     random_seed: None,
                     full_range: matches!(color_range, Some(ColorRange::Full)),
-                });
+                },
+            );
             params.scaling_points_cr = chroma_params.scaling_points_cr;
             params.scaling_points_cb = chroma_params.scaling_points_cb;
         }

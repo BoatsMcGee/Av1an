@@ -3,9 +3,7 @@ use std::path::{Path, PathBuf};
 use andean_condor::{
     core::input::Input,
     models::sequence::scene_detector::{
-        SceneDetectionMethod as CoreSceneDetectionMethod,
-        SceneDetectorConfig,
-        ScenecutMethod,
+        SceneDetectionMethod as CoreSceneDetectionMethod, SceneDetectorConfig, ScenecutMethod,
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
@@ -16,16 +14,12 @@ use thiserror::Error;
 
 use crate::{
     commands::{
-        DecoderMethod,
-        SceneDetectionMethod,
+        DecoderMethod, SceneDetectionMethod,
         config::{ConfigAction, ConfigCommand, InputOverride, PropertyChange, Toggle},
         handlers::{
             apply_input_override,
             config::{edit, ensure_override_requested},
-            configure_override_input,
-            configure_temp,
-            load_configuration,
-            warn_missing_path,
+            configure_override_input, configure_temp, load_configuration, warn_missing_path,
         },
     },
     configuration::Configuration,
@@ -232,7 +226,7 @@ pub enum DetectScenesSet {
     Method {
         /// The detection algorithm to use.
         #[arg(value_name = "ALGORITHM")]
-        algorithm:      DetectionAlgorithm,
+        algorithm: DetectionAlgorithm,
         /// Smallest scene length to accept, in frames.
         #[arg(long, value_name = "Frames")]
         minimum_frames: Option<usize>,
@@ -241,16 +235,16 @@ pub enum DetectScenesSet {
         maximum_frames: Option<usize>,
         /// Scenecut algorithm used by *avscenechange*.
         #[arg(long, value_name = "Method")]
-        method:         Option<ScenecutAlgorithm>,
+        method: Option<ScenecutAlgorithm>,
         /// ONNX model file used by *transnetv2*.
         #[arg(long, value_name = "Path")]
-        model_path:     Option<PathBuf>,
+        model_path: Option<PathBuf>,
         /// Keep the per-frame detection scores in the saved results.
         ///
         /// Bare `--save-scores` means on; `--save-scores off` turns it off.
         /// Omitted keeps the current setting.
         #[arg(long, value_name = "on|off", num_args = 0..=1, default_missing_value = "on")]
-        save_scores:    Option<Toggle>,
+        save_scores: Option<Toggle>,
     },
     /// Read from this input instead of the main input.
     ///
@@ -332,9 +326,7 @@ impl DetectScenesCrud {
                 maximum_length,
                 method: method.map_or_else(
                     || match &current {
-                        CoreSceneDetectionMethod::AVSceneChange {
-                            method, ..
-                        } => *method,
+                        CoreSceneDetectionMethod::AVSceneChange { method, .. } => *method,
                         _ => ScenecutMethod::Standard,
                     },
                     Into::into,
@@ -345,9 +337,7 @@ impl DetectScenesCrud {
                 minimum_length,
                 maximum_length,
                 model_path: model_path.cloned().or_else(|| match &current {
-                    CoreSceneDetectionMethod::TransNetV2 {
-                        model_path, ..
-                    } => model_path.clone(),
+                    CoreSceneDetectionMethod::TransNetV2 { model_path, .. } => model_path.clone(),
                     _ => None,
                 }),
                 save_scores: scores,
@@ -413,9 +403,7 @@ impl ConfigCommand for DetectScenesCrud {
                 Self::validate(Self::section(configuration))?;
                 PropertyChange::new("method", &Self::section(configuration).method)
             },
-            DetectScenesSet::Input {
-                args,
-            } => {
+            DetectScenesSet::Input { args } => {
                 Self::apply_input(configuration, args)?;
                 Self::validate(Self::section(configuration))?;
                 PropertyChange::new("input", &Self::section(configuration).input)
@@ -455,15 +443,9 @@ impl ConfigCommand for DetectScenesCrud {
 /// algorithm stores scores at all, the default (off) otherwise.
 fn current_scores(current: &CoreSceneDetectionMethod) -> bool {
     match current {
-        CoreSceneDetectionMethod::AVSceneChange {
-            save_scores, ..
-        }
-        | CoreSceneDetectionMethod::TransNetV2 {
-            save_scores, ..
-        } => *save_scores,
-        CoreSceneDetectionMethod::None {
-            ..
-        } => false,
+        CoreSceneDetectionMethod::AVSceneChange { save_scores, .. }
+        | CoreSceneDetectionMethod::TransNetV2 { save_scores, .. } => *save_scores,
+        CoreSceneDetectionMethod::None { .. } => false,
     }
 }
 
@@ -478,8 +460,7 @@ mod tests {
         models::{
             input::{Input, VapourSynthImportMethod},
             sequence::scene_detector::{
-                SceneDetectionMethod as SceneDetectionMethodModel,
-                ScenecutMethod,
+                SceneDetectionMethod as SceneDetectionMethodModel, ScenecutMethod,
             },
         },
         vapoursynth::plugins::resize::Scaler,
@@ -577,7 +558,7 @@ mod tests {
             .to_path_buf();
         let custom_filters = vec![VapourSynthFilter::Resize {
             scaler: Some(Scaler::Point),
-            width:  Some(960),
+            width: Some(960),
             height: Some(540),
             format: None,
         }];
@@ -588,19 +569,17 @@ mod tests {
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
-            path:          input_abs.clone(),
-            import_method: VapourSynthImportMethod::FFMS2 {
-                index: None
-            },
-            cache_path:    None,
-            filters:       custom_filters.clone(),
+            path: input_abs.clone(),
+            import_method: VapourSynthImportMethod::FFMS2 { index: None },
+            cache_path: None,
+            filters: custom_filters.clone(),
         });
         expected_config.condor.sequence_config.scene_detector.method =
             SceneDetectionMethodModel::AVSceneChange {
                 minimum_length: expected_min,
                 maximum_length: expected_max,
-                method:         ScenecutMethod::Fast,
-                save_scores:    false,
+                method: ScenecutMethod::Fast,
+                save_scores: false,
             };
         // immutable shadow
         let expected_config = expected_config;
@@ -667,18 +646,16 @@ mod tests {
         let config_path = temp.path().join("condor.json");
         let custom_filters = vec![VapourSynthFilter::Resize {
             scaler: Some(Scaler::Point),
-            width:  Some(960),
+            width: Some(960),
             height: Some(540),
             format: None,
         }];
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
-            path:          input_abs.clone(),
-            import_method: VapourSynthImportMethod::BestSource {
-                index: None
-            },
-            cache_path:    None,
-            filters:       custom_filters.clone(),
+            path: input_abs.clone(),
+            import_method: VapourSynthImportMethod::BestSource { index: None },
+            cache_path: None,
+            filters: custom_filters.clone(),
         });
         // `condor.input` is left as the default config has it, so `check_input`
         // inside `check_basic_config` fails if the filters leak onto it.
@@ -733,15 +710,8 @@ mod tests {
         );
         assert_eq!(
             match scd_input {
-                Input::VapourSynth {
-                    path, ..
-                }
-                | Input::Video {
-                    path, ..
-                } => path,
-                Input::VapourSynthScript {
-                    ..
-                } => panic!("Scene Detector input is a script"),
+                Input::VapourSynth { path, .. } | Input::Video { path, .. } => path,
+                Input::VapourSynthScript { .. } => panic!("Scene Detector input is a script"),
             },
             &input_abs,
             "Scene Detector input inherits the main input's path"

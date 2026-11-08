@@ -5,10 +5,8 @@ use andean_condor::models::{
     encoder::{Encoder, EncoderBase, EncoderPasses},
     scene::{Scene, SubScene},
     sequence::{
-        parallel_encoder::ParallelEncoderData,
-        quality_check::QualityCheckData,
-        scene_detector::SceneDetectorData,
-        target_quality::TargetQualityData,
+        parallel_encoder::ParallelEncoderData, quality_check::QualityCheckData,
+        scene_detector::SceneDetectorData, target_quality::TargetQualityData,
     },
 };
 use anyhow::{Result, bail};
@@ -29,15 +27,8 @@ use crate::{
     },
     configuration::{CliSequenceData, Configuration},
     scenes::{
-        ScenesError,
-        overlapping_scenes,
-        parse_sub_scene_range,
-        require_scene,
-        require_scene_mut,
-        set_end,
-        set_start,
-        sorted_insert_index,
-        validate_sub_scenes,
+        ScenesError, overlapping_scenes, parse_sub_scene_range, require_scene, require_scene_mut,
+        set_end, set_start, sorted_insert_index, validate_sub_scenes,
     },
     zoner::ZonerData,
 };
@@ -52,16 +43,12 @@ pub(super) fn apply_set(
     let scenes = &mut configuration.condor.scenes;
 
     Ok(match set {
-        ScenesSet::Start {
-            frame,
-        } => {
+        ScenesSet::Start { frame } => {
             let overlaps = set_start(scenes, index, *frame)?;
             warn_about_overlaps(scenes, index, &overlaps);
             ("start_frame", frame_range(require_scene(scenes, index)?))
         },
-        ScenesSet::End {
-            frame,
-        } => {
+        ScenesSet::End { frame } => {
             let overlaps = set_end(scenes, index, *frame)?;
             warn_about_overlaps(scenes, index, &overlaps);
             ("end_frame", frame_range(require_scene(scenes, index)?))
@@ -114,9 +101,7 @@ pub(super) fn apply_set(
             }
             ("encoder", serde_json::to_value(&scene.encoder)?)
         },
-        ScenesSet::Executable {
-            path,
-        } => {
+        ScenesSet::Executable { path } => {
             warn_missing_path("encoder executable", path);
             let scene = require_scene_mut(scenes, index)?;
             scene.encoder.set_executable(Some(path.clone()));
@@ -125,9 +110,7 @@ pub(super) fn apply_set(
                 serde_json::to_value(scene.encoder.custom_executable())?,
             )
         },
-        ScenesSet::Passes {
-            value,
-        } => {
+        ScenesSet::Passes { value } => {
             let scene = require_scene_mut(scenes, index)?;
             let base = scene.encoder.base();
             let Some(passes) = scene.encoder.passes_mut() else {
@@ -136,9 +119,7 @@ pub(super) fn apply_set(
             *passes = EncoderPasses::All(*value);
             ("passes", serde_json::to_value(scene.encoder.passes())?)
         },
-        ScenesSet::Params {
-            params,
-        } => {
+        ScenesSet::Params { params } => {
             let scene = require_scene_mut(scenes, index)?;
             configure_encoder(
                 &mut scene.encoder,
@@ -152,10 +133,7 @@ pub(super) fn apply_set(
             )?;
             ("params", serde_json::to_value(scene.encoder.parameters())?)
         },
-        ScenesSet::PhotonNoise {
-            iso,
-            chroma_noise,
-        } => {
+        ScenesSet::PhotonNoise { iso, chroma_noise } => {
             let scene = require_scene_mut(scenes, index)?;
             let base = scene.encoder.base();
             if !base.supports_photon_noise() {
@@ -176,9 +154,7 @@ pub(super) fn apply_set(
                 serde_json::to_value(scene.encoder.photon_noise())?,
             )
         },
-        ScenesSet::FfmpegFilter {
-            filter,
-        } => {
+        ScenesSet::FfmpegFilter { filter } => {
             let scene = require_scene_mut(scenes, index)?;
             let base = scene.encoder.base();
             if base == EncoderBase::FFmpeg {
@@ -199,9 +175,7 @@ pub(super) fn apply_set(
                 serde_json::to_value(scene.encoder.ffmpeg_filter())?,
             )
         },
-        ScenesSet::AppendColorData {
-            value,
-        } => {
+        ScenesSet::AppendColorData { value } => {
             let enabled = value.unwrap_or(Toggle::On).enabled();
             let scene = require_scene_mut(scenes, index)?;
             scene.encoder.set_append_color_data(enabled);
@@ -210,9 +184,7 @@ pub(super) fn apply_set(
                 serde_json::to_value(scene.encoder.append_color_data())?,
             )
         },
-        ScenesSet::SubScenes {
-            ranges,
-        } => {
+        ScenesSet::SubScenes { ranges } => {
             let sub_scenes = parse_sub_scenes(ranges)?;
             let scene = require_scene_mut(scenes, index)?;
             validate_sub_scenes(scene, sub_scenes.as_deref().unwrap_or_default())?;
@@ -335,10 +307,7 @@ pub(super) fn add_scene(
     placement: Placement,
 ) -> Result<usize> {
     if start >= end {
-        bail!(ScenesError::EmptyScene {
-            start,
-            end
-        });
+        bail!(ScenesError::EmptyScene { start, end });
     }
     let encoder = configuration.condor.encoder.clone();
     let scenes = &mut configuration.condor.scenes;
@@ -351,13 +320,16 @@ pub(super) fn add_scene(
             after + 1
         },
     };
-    scenes.insert(position, Scene {
-        start_frame: start,
-        end_frame: end,
-        sub_scenes: None,
-        encoder,
-        sequence_data: CliSequenceData::default(),
-    });
+    scenes.insert(
+        position,
+        Scene {
+            start_frame: start,
+            end_frame: end,
+            sub_scenes: None,
+            encoder,
+            sequence_data: CliSequenceData::default(),
+        },
+    );
     let overlaps = overlapping_scenes(scenes, position, start, end);
     warn_about_overlaps(scenes, position, &overlaps);
 

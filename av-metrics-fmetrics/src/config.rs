@@ -113,9 +113,9 @@ pub enum SampleRange {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ColorInfo {
     /// The YUV to RGB matrix.
-    pub matrix:    YuvMatrix,
+    pub matrix: YuvMatrix,
     /// Sample range.
-    pub range:     SampleRange,
+    pub range: SampleRange,
     /// Source bit depth.
     pub bit_depth: usize,
     /// Whether the source carries HDR values.
@@ -126,7 +126,7 @@ pub struct ColorInfo {
     ///
     /// [`av_decoders`] reports no transfer function, so this is set by the
     /// caller rather than detected.
-    pub hdr:       bool,
+    pub hdr: bool,
 }
 
 impl ColorInfo {
@@ -155,12 +155,12 @@ impl ColorInfo {
         }
 
         Ok(Self {
-            matrix:    matrix_for_resolution(details.height),
+            matrix: matrix_for_resolution(details.height),
             // Declared rather than guessed: unflagged SD and HD is limited, and
             // assuming full would lift the shadows of every clip.
-            range:     SampleRange::Limited,
+            range: SampleRange::Limited,
             bit_depth: details.bit_depth,
-            hdr:       false,
+            hdr: false,
         })
     }
 
@@ -248,20 +248,20 @@ pub const fn colorspace_from_details(details: &VideoDetails) -> crate::ffi::Fmet
 #[derive(Debug, Clone)]
 pub struct FmetricsConfig {
     /// The metric to compute.
-    pub metric:                 FmetricsMetric,
+    pub metric: FmetricsMetric,
     /// Worker count for the per-pair metrics.
-    pub threads:                u32,
+    pub threads: u32,
     /// CVVDP display model.
-    pub display_model:          crate::ffi::FmetricsCvvdpDisplayModel,
+    pub display_model: crate::ffi::FmetricsCvvdpDisplayModel,
     /// CVVDP frame rate, in frames per second.
     ///
     /// Required for CVVDP: its temporal filter is parameterised by the rate,
     /// and a rate of zero accumulates error silently rather than failing.
-    pub frame_rate:             f32,
+    pub frame_rate: f32,
     /// Butteraugli p-norm exponent.
-    pub butteraugli_pnorm:      Option<i32>,
+    pub butteraugli_pnorm: Option<i32>,
     /// Butteraugli intensity target.
-    pub intensity_target:       f32,
+    pub intensity_target: f32,
     /// Whether a temporal context's history is cleared at a discontinuity.
     ///
     /// The C API has no `disableTemporal` argument, only
@@ -411,7 +411,7 @@ impl FmetricsConfig {
     pub const fn butteraugli_options(&self) -> crate::ffi::FmetricsButteraugliOptions {
         crate::ffi::FmetricsButteraugliOptions {
             intensity_target: self.intensity_target,
-            pnorm:            match self.butteraugli_pnorm {
+            pnorm: match self.butteraugli_pnorm {
                 Some(pnorm) => pnorm,
                 None => DEFAULT_PNORM,
             },

@@ -19,9 +19,7 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Cursor, Read, Write},
     path::{Path, PathBuf},
     sync::{
-        self,
-        Arc,
-        Mutex,
+        self, Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -38,9 +36,7 @@ use crate::{
         encoder::{Container, EncodeProgress, EncoderCapability},
         input::Input,
         sequence::{
-            SequenceCompletion,
-            SequenceStatus,
-            Status,
+            SequenceCompletion, SequenceStatus, Status,
             ffmpeg_filter::FfmpegFilter,
             parallel_encoder::{ParallelEncoderError, ParallelEncoderResult, Task},
         },
@@ -61,9 +57,9 @@ const RESERVED_OPTIONS: &[&str] =
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Zone {
     /// First stream frame of the zone (inclusive).
-    pub start:     usize,
+    pub start: usize,
     /// Last stream frame of the zone (inclusive).
-    pub end:       usize,
+    pub end: usize,
     /// The scene's quantizer, applied to the whole zone.
     pub quantizer: f64,
 }
@@ -148,9 +144,9 @@ impl fmt::Display for DifferingField {
 /// them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ZonePlan {
-    zones:          Vec<Zone>,
+    zones: Vec<Zone>,
     /// `--zones` value (x264) or zonefile body (x265).
-    zone_option:    String,
+    zone_option: String,
     /// qpfile body forcing an IDR at every zone start past the first; empty
     /// when none are needed.
     qpfile_content: String,
@@ -470,10 +466,10 @@ impl ZoneEncoder {
             for progress in encode_progress_rx {
                 if progress.pass.0 == progress.pass.1 && progress.frame > 0 {
                     relay_tx.send(SequenceStatus::Whole(Status::Processing {
-                        id:         "Zone Encoder".to_owned(),
+                        id: "Zone Encoder".to_owned(),
                         completion: SequenceCompletion::Frames {
                             completed: (progress.frame as u64).min(total_frames as u64),
-                            total:     total_frames as u64,
+                            total: total_frames as u64,
                         },
                     }))?;
                 }
@@ -807,14 +803,14 @@ fn is_frame_start(codec: Codec, segment: &[u8]) -> bool {
 /// splitting here cannot corrupt the bitstream. One segment (at most one NAL
 /// unit) is buffered at a time.
 struct NalReader<R: BufRead> {
-    inner:    R,
-    pending:  Vec<u8>,
+    inner: R,
+    pending: Vec<u8>,
     /// Index in `pending` of the start code opening the segment being
     /// collected, once one has been found.
-    current:  Option<usize>,
+    current: Option<usize>,
     /// Where to resume the start-code scan while `current` is `None`.
     searched: usize,
-    eof:      bool,
+    eof: bool,
 }
 
 impl<R: BufRead> NalReader<R> {
@@ -915,10 +911,7 @@ mod tests {
 
     /// Sets the photon noise the noise scaler would have written for a scene.
     fn set_photon_noise_iso(encoder: &mut Encoder, iso: u32) {
-        let Encoder::SVTAV1 {
-            photon_noise, ..
-        } = encoder
-        else {
+        let Encoder::SVTAV1 { photon_noise, .. } = encoder else {
             panic!("only SVT-AV1 carries photon noise");
         };
         *photon_noise = Some(PhotonNoise {
@@ -947,23 +940,26 @@ mod tests {
     fn zones_cover_every_frame_of_every_scene() {
         let tasks = vec![task(0, 5, x264(20.0)), task(1, 3, x264(30.0)), task(2, 7, x264(40.5))];
         let zones = ZonePlan::from_tasks(&tasks).expect("zones built");
-        assert_eq!(zones, vec![
-            Zone {
-                start:     0,
-                end:       4,
-                quantizer: 20.0,
-            },
-            Zone {
-                start:     5,
-                end:       7,
-                quantizer: 30.0,
-            },
-            Zone {
-                start:     8,
-                end:       14,
-                quantizer: 40.5,
-            },
-        ]);
+        assert_eq!(
+            zones,
+            vec![
+                Zone {
+                    start: 0,
+                    end: 4,
+                    quantizer: 20.0,
+                },
+                Zone {
+                    start: 5,
+                    end: 7,
+                    quantizer: 30.0,
+                },
+                Zone {
+                    start: 8,
+                    end: 14,
+                    quantizer: 40.5,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -973,9 +969,7 @@ mod tests {
         let tasks = vec![task(0, 5, x264(20.0)), task(1, 3, scene)];
         assert_eq!(
             ZonePlan::try_build(&tasks),
-            Err(ZoneIneligible::NoQuantizer {
-                scene: 1
-            })
+            Err(ZoneIneligible::NoQuantizer { scene: 1 })
         );
     }
 
@@ -1064,10 +1058,13 @@ mod tests {
         set_photon_noise_iso(&mut second, 12000);
         let tasks = vec![task(0, 5, first), task(1, 3, second)];
         let reason = ZonePlan::try_build(&tasks).expect_err("scenes differ");
-        assert_eq!(reason, ZoneIneligible::DifferingEncoder {
-            scene: 1,
-            field: DifferingField::PhotonNoise,
-        });
+        assert_eq!(
+            reason,
+            ZoneIneligible::DifferingEncoder {
+                scene: 1,
+                field: DifferingField::PhotonNoise,
+            }
+        );
         assert_eq!(
             reason.to_string(),
             "scene 1 differs from the first scene beyond the quantizer: photon_noise"
@@ -1108,9 +1105,7 @@ mod tests {
         let tasks = vec![task(0, 5, encoder)];
         assert_eq!(
             ZonePlan::try_build(&tasks),
-            Err(ZoneIneligible::NotSinglePass {
-                scene: 0
-            })
+            Err(ZoneIneligible::NotSinglePass { scene: 0 })
         );
     }
 
@@ -1124,9 +1119,7 @@ mod tests {
         let tasks = vec![task(0, 5, encoder)];
         assert_eq!(
             ZonePlan::try_build(&tasks),
-            Err(ZoneIneligible::ReservedOption {
-                scene: 0
-            })
+            Err(ZoneIneligible::ReservedOption { scene: 0 })
         );
     }
 
@@ -1218,8 +1211,7 @@ mod tests {
             apply_zone_options(&mut encoder, &plan, &directory).expect("options applied");
         let zones = encoder.parameters().get("zones").expect("zones option");
         let CLIParameter::String {
-            value: zones_value,
-            ..
+            value: zones_value, ..
         } = zones
         else {
             panic!("zones option should be a string");
@@ -1786,9 +1778,10 @@ mod tests {
         // first, and the trailing zeros ride with the last.
         assert_eq!(segments.len(), 5);
         // The orphan leading zero stays with the first segment.
-        assert_eq!(segments[0], vec![
-            0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f
-        ]);
+        assert_eq!(
+            segments[0],
+            vec![0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1f]
+        );
         assert!(segments[2].starts_with(&[0x00, 0x00, 0x01, 0x65]));
     }
 
@@ -1860,36 +1853,35 @@ mod tests {
         let tasks = vec![
             Task {
                 original_index: 0,
-                index:          0,
-                frame_indices:  (0..2).collect(),
-                sub_scenes:     None,
-                encoder:        x264(20.0),
-                output:         directory.join("scene0.ivf"),
+                index: 0,
+                frame_indices: (0..2).collect(),
+                sub_scenes: None,
+                encoder: x264(20.0),
+                output: directory.join("scene0.ivf"),
             },
             Task {
                 original_index: 1,
-                index:          1,
-                frame_indices:  (0..3).collect(),
-                sub_scenes:     None,
-                encoder:        x264(30.0),
-                output:         directory.join("scene1.ivf"),
+                index: 1,
+                frame_indices: (0..3).collect(),
+                sub_scenes: None,
+                encoder: x264(30.0),
+                output: directory.join("scene1.ivf"),
             },
             Task {
                 original_index: 2,
-                index:          2,
-                frame_indices:  (0..1).collect(),
-                sub_scenes:     None,
-                encoder:        x264(40.0),
-                output:         directory.join("scene2.ivf"),
+                index: 2,
+                frame_indices: (0..1).collect(),
+                sub_scenes: None,
+                encoder: x264(40.0),
+                output: directory.join("scene2.ivf"),
             },
         ];
         let split = split_ivf(&whole, &tasks, "ivf").expect("split");
         // 32-byte header + frame headers + payloads.
-        assert_eq!(split, vec![
-            (32 + 12 + 3 + 12 + 5, 2),
-            (32 + 12 + 7 + 12 + 2 + 12 + 9, 3),
-            (32 + 12 + 4, 1)
-        ]);
+        assert_eq!(
+            split,
+            vec![(32 + 12 + 3 + 12 + 5, 2), (32 + 12 + 7 + 12 + 2 + 12 + 9, 3), (32 + 12 + 4, 1)]
+        );
         for task in &tasks {
             assert!(task.output.exists(), "{} saved", task.output.display());
         }
@@ -1928,27 +1920,27 @@ mod tests {
         let tasks = vec![
             Task {
                 original_index: 0,
-                index:          0,
-                frame_indices:  (0..2).collect(),
-                sub_scenes:     None,
-                encoder:        x264(20.0),
-                output:         directory.join("scene0.264"),
+                index: 0,
+                frame_indices: (0..2).collect(),
+                sub_scenes: None,
+                encoder: x264(20.0),
+                output: directory.join("scene0.264"),
             },
             Task {
                 original_index: 1,
-                index:          1,
-                frame_indices:  (0..3).collect(),
-                sub_scenes:     None,
-                encoder:        x264(30.0),
-                output:         directory.join("scene1.264"),
+                index: 1,
+                frame_indices: (0..3).collect(),
+                sub_scenes: None,
+                encoder: x264(30.0),
+                output: directory.join("scene1.264"),
             },
             Task {
                 original_index: 2,
-                index:          2,
-                frame_indices:  (0..1).collect(),
-                sub_scenes:     None,
-                encoder:        x264(40.0),
-                output:         directory.join("scene2.264"),
+                index: 2,
+                frame_indices: (0..1).collect(),
+                sub_scenes: None,
+                encoder: x264(40.0),
+                output: directory.join("scene2.264"),
             },
         ];
         let split = split_annexb(&whole, Codec::H264, &tasks, "264").expect("split");

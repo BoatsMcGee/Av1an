@@ -14,13 +14,8 @@ use std::{sync::atomic::AtomicBool, time::Instant};
 
 use anyhow::{Result, bail};
 use av_metrics_fmetrics::{
-    ColorInfo,
-    FmetricsConfig,
-    FmetricsCvvdpDisplayModel,
-    FmetricsMetric,
-    FmetricsScorer,
-    PlaneSet as MetricPlaneSet,
-    PlaneSource as MetricPlaneSource,
+    ColorInfo, FmetricsConfig, FmetricsCvvdpDisplayModel, FmetricsMetric, FmetricsScorer,
+    PlaneSet as MetricPlaneSet, PlaneSource as MetricPlaneSource,
 };
 
 use crate::{
@@ -37,21 +32,10 @@ use crate::{
 #[must_use]
 pub const fn fmetrics_metric_for(metric: &QualityMetric) -> Option<FmetricsMetric> {
     match metric {
-        QualityMetric::SSIMULACRA2 {
-            ..
-        } => Some(FmetricsMetric::Ssimulacra2),
-        QualityMetric::BUTTERAUGLI {
-            ..
-        } => Some(FmetricsMetric::Butteraugli),
-        QualityMetric::CVVDP {
-            ..
-        } => Some(FmetricsMetric::Cvvdp),
-        QualityMetric::VMAF {
-            ..
-        }
-        | QualityMetric::XPSNR {
-            ..
-        } => None,
+        QualityMetric::SSIMULACRA2 { .. } => Some(FmetricsMetric::Ssimulacra2),
+        QualityMetric::BUTTERAUGLI { .. } => Some(FmetricsMetric::Butteraugli),
+        QualityMetric::CVVDP { .. } => Some(FmetricsMetric::Cvvdp),
+        QualityMetric::VMAF { .. } | QualityMetric::XPSNR { .. } => None,
     }
 }
 
@@ -83,9 +67,7 @@ pub fn native_supported(metric: &QualityMetric) -> bool {
 #[inline]
 pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<FmetricsConfig> {
     match metric {
-        QualityMetric::SSIMULACRA2 {
-            threads, ..
-        } => {
+        QualityMetric::SSIMULACRA2 { threads, .. } => {
             Ok(FmetricsConfig::new(FmetricsMetric::Ssimulacra2)
                 .with_threads(worker_threads(*threads)))
         },
@@ -126,12 +108,7 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<Fmetrics
             }
             Ok(config)
         },
-        QualityMetric::VMAF {
-            ..
-        }
-        | QualityMetric::XPSNR {
-            ..
-        } => {
+        QualityMetric::VMAF { .. } | QualityMetric::XPSNR { .. } => {
             bail!("{} has no fmetrics equivalent", metric.friendly_name());
         },
     }
@@ -203,10 +180,8 @@ pub fn score_probed_frames(
     // Which Butteraugli norm is the headline depends on the configuration, not
     // the metric, and `target_range` is calibrated against the plugin's
     // choice.
-    let butteraugli_uses_q_norm = matches!(config, QualityMetric::BUTTERAUGLI {
-        norm: Some(_),
-        ..
-    });
+    let butteraugli_uses_q_norm =
+        matches!(config, QualityMetric::BUTTERAUGLI { norm: Some(_), .. });
 
     let color = ColorInfo::from_details(&reference_details).map_err(describe_error)?;
 
@@ -412,12 +387,12 @@ mod tests {
         }
 
         let butteraugli = QualityMetric::BUTTERAUGLI {
-            target_range:         (1.0, 3.0),
-            resolution:           None,
-            threads:              None,
+            target_range: (1.0, 3.0),
+            resolution: None,
+            threads: None,
             intensity_multiplier: None,
-            norm:                 None,
-            gpu_id:               None,
+            norm: None,
+            gpu_id: None,
         };
 
         // Each metric must produce one score per selected frame. CVVDP is the
@@ -476,12 +451,12 @@ mod tests {
         );
 
         let butteraugli = QualityMetric::BUTTERAUGLI {
-            target_range:         (1.0, 3.0),
-            resolution:           None,
-            threads:              None,
+            target_range: (1.0, 3.0),
+            resolution: None,
+            threads: None,
             intensity_multiplier: None,
-            norm:                 None,
-            gpu_id:               None,
+            norm: None,
+            gpu_id: None,
         };
         let distances = score_pair(&butteraugli, 30).expect("Butteraugli scores");
         assert!(
@@ -515,12 +490,12 @@ mod tests {
         );
         assert_eq!(
             fmetrics_metric_for(&QualityMetric::BUTTERAUGLI {
-                target_range:         (1.0, 3.0),
-                resolution:           None,
-                threads:              None,
+                target_range: (1.0, 3.0),
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 None,
-                gpu_id:               None,
+                norm: None,
+                gpu_id: None,
             }),
             Some(FmetricsMetric::Butteraugli)
         );
@@ -531,18 +506,18 @@ mod tests {
         assert!(
             fmetrics_metric_for(&QualityMetric::XPSNR {
                 target_range: (45.0, 55.0),
-                resolution:   None,
+                resolution: None,
             })
             .is_none()
         );
         assert!(
             fmetrics_metric_for(&QualityMetric::VMAF {
                 target_range: (85.0, 95.0),
-                resolution:   None,
-                scaler:       "area".to_owned(),
-                threads:      4,
-                model:        None,
-                features:     Vec::new(),
+                resolution: None,
+                scaler: "area".to_owned(),
+                threads: 4,
+                model: None,
+                features: Vec::new(),
             })
             .is_none()
         );
@@ -560,7 +535,7 @@ mod tests {
         assert!(
             !native_supported(&QualityMetric::XPSNR {
                 target_range: (45.0, 55.0),
-                resolution:   None,
+                resolution: None,
             }),
             "a metric fmetrics cannot score is never supported, whatever the library state"
         );
@@ -617,12 +592,12 @@ mod tests {
     fn a_display_model_reaches_the_config() {
         let config = scorer_config(
             &QualityMetric::CVVDP {
-                target_range:      (40.0, 50.0),
-                resolution:        None,
-                display_model:     Some(DisplayModel::StandardHDRPQ),
+                target_range: (40.0, 50.0),
+                resolution: None,
+                display_model: Some(DisplayModel::StandardHDRPQ),
                 resize_to_display: None,
-                disable_temporal:  None,
-                gpu_id:            None,
+                disable_temporal: None,
+                gpu_id: None,
             },
             24.0,
         )
@@ -681,7 +656,7 @@ mod tests {
         let error = scorer_config(
             &QualityMetric::XPSNR {
                 target_range: (45.0, 55.0),
-                resolution:   None,
+                resolution: None,
             },
             24.0,
         )

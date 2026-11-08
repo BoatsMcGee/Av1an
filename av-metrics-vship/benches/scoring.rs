@@ -19,12 +19,7 @@ mod common;
 use std::hint::black_box;
 
 use av_metrics_vship::{
-    PoolMethod,
-    VideoFormat,
-    VshipConfig,
-    VshipMetric,
-    VshipScorer,
-    is_available,
+    PoolMethod, VideoFormat, VshipConfig, VshipMetric, VshipScorer, is_available,
 };
 use common::{Distortion, SyntheticPair};
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};

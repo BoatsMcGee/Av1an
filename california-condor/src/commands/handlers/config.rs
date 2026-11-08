@@ -73,25 +73,19 @@ pub fn edit<C: ConfigCommand>(
     action: &ConfigAction<C::Key, C::Set>,
 ) -> Result<()> {
     match action {
-        ConfigAction::Info {
-            key,
-        } => {
+        ConfigAction::Info { key } => {
             let (configuration, _) = load_configuration(config_path)?;
             let value = C::render(&configuration, key.as_ref())?;
             print_json(&value)?;
         },
-        ConfigAction::Set {
-            setting,
-        } => {
+        ConfigAction::Set { setting } => {
             let (mut configuration, path) = load_configuration(config_path)?;
             let change = C::apply(&mut configuration, setting)?;
             configuration.save(&path)?;
             warn_stale(C::subject());
             announce(C::subject(), &change, false);
         },
-        ConfigAction::Reset {
-            key,
-        } => {
+        ConfigAction::Reset { key } => {
             let (mut configuration, path) = load_configuration(config_path)?;
             let Some(change) = C::restore(&mut configuration, key.as_ref())? else {
                 return Ok(());

@@ -17,11 +17,7 @@ use crate::{
         encoder::EncoderCapability,
         input::Input,
         sequence::{
-            Sequence,
-            SequenceCompletion,
-            SequenceDetails,
-            SequenceStatus,
-            Status,
+            Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status,
             parallel_encoder::{ParallelEncoder, Task as ParallelEncoderTask},
             scene_concatenator::SceneConcatenator,
             zone_encoder::{ZoneEncoder, ZonePlan},
@@ -32,14 +28,11 @@ use crate::{
         encoder::{Encoder, EncoderBase, cli_parameter::CLIParameter},
         input::{ImportMethod, Input as InputModel},
         sequence::{
-            SequenceConfigHandler,
-            SequenceDataHandler,
+            SequenceConfigHandler, SequenceDataHandler,
             parallel_encoder::ParallelEncoderConfigHandler,
             scene_concatenator::{ConcatMethod, SceneConcatenatorConfigHandler},
             target_quality::{
-                TargetQualityConfig,
-                TargetQualityConfigHandler,
-                TargetQualityData,
+                TargetQualityConfig, TargetQualityConfigHandler, TargetQualityData,
                 TargetQualityDataHandler,
                 types::{InterpolationMethod, QualityMetric, QualityPass},
             },
@@ -49,14 +42,12 @@ use crate::{
     vapoursynth::{
         get_core,
         plugins::{
-            MetricPluginFunction,
-            PluginFunction,
+            MetricPluginFunction, PluginFunction,
             ffms2::Source,
             resize::bicubic::Bicubic,
             standard::{splice::Splice, trim::Trim},
             vship::{
-                butteraugli::BUTTERAUGLI,
-                cvvdp::CVVDP,
+                butteraugli::BUTTERAUGLI, cvvdp::CVVDP,
                 ssimulacra2::SSIMULACRA2 as VSHIPSSIMULACRA2,
             },
             vszip::{ssimulacra2::SSIMULACRA2, xpsnr::XPSNR},
@@ -65,14 +56,14 @@ use crate::{
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Target Quality",
+    name: "Target Quality",
     description: "Determine the optimal quantizer for a given video quality metric score per \
                   scene.",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 pub struct TargetQuality {
-    pub input:        Option<Input>,
+    pub input: Option<Input>,
     pub metric_input: Option<Input>,
 }
 
@@ -140,21 +131,21 @@ where
         // may begin a lengthy caching process, hence the separation
         // between validate and initialize.
         progress_tx.send(SequenceStatus::Whole(Status::Processing {
-            id:         DETAILS.name.to_owned(),
+            id: DETAILS.name.to_owned(),
             completion: SequenceCompletion::Custom {
-                name:      DETAILS.name.to_owned(),
+                name: DETAILS.name.to_owned(),
                 completed: 0.0,
-                total:     if metric_input.is_some() { 2.0 } else { 1.0 },
+                total: if metric_input.is_some() { 2.0 } else { 1.0 },
             },
         }))?;
         input.clip_info()?;
         if let Some(metric_input) = metric_input {
             progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                id:         DETAILS.name.to_owned(),
+                id: DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Custom {
-                    name:      DETAILS.name.to_owned(),
+                    name: DETAILS.name.to_owned(),
                     completed: 1.0,
-                    total:     2.0,
+                    total: 2.0,
                 },
             }))?;
             metric_input.clip_info()?;
@@ -213,10 +204,10 @@ where
             }
 
             progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                id:         DETAILS.name.to_owned(),
+                id: DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Passes {
                     completed: pass - 1,
-                    total:     pass,
+                    total: pass,
                 },
             }))?;
 
@@ -319,17 +310,11 @@ where
                         config.interpolators,
                         &quantizer_score_history,
                         match task.encoder {
-                            Encoder::X264 {
-                                ..
-                            }
-                            | Encoder::X265 {
-                                ..
-                            } => 0.25,
-                            Encoder::SVTAV1 {
-                                ..
-                            } if task
-                                .encoder
-                                .supports_capability(EncoderCapability::SvtAv1QuarterStepCrf) =>
+                            Encoder::X264 { .. } | Encoder::X265 { .. } => 0.25,
+                            Encoder::SVTAV1 { .. }
+                                if task.encoder.supports_capability(
+                                    EncoderCapability::SvtAv1QuarterStepCrf,
+                                ) =>
                             {
                                 0.25
                             },
@@ -370,92 +355,68 @@ where
             thread::spawn(move || -> Result<()> {
                 for progress in pass_progress_rx {
                     match progress {
-                        SequenceStatus::Whole(Status::Processing {
-                            id,
-                            completion,
-                        }) if id == "Encode" => {
+                        SequenceStatus::Whole(Status::Processing { id, completion })
+                            if id == "Encode" =>
+                        {
                             #[allow(clippy::collapsible_match)]
-                            if let SequenceCompletion::Frames {
-                                completed,
-                                total,
-                            } = completion
-                            {
+                            if let SequenceCompletion::Frames { completed, total } = completion {
                                 progress_tx_clone.send(SequenceStatus::Subprocess {
                                     parent: Status::Processing {
-                                        id:         DETAILS.name.to_owned(),
+                                        id: DETAILS.name.to_owned(),
                                         completion: SequenceCompletion::Passes {
                                             completed: pass,
-                                            total:     config.maximum_probes,
+                                            total: config.maximum_probes,
                                         },
                                     },
-                                    child:  Status::Processing {
+                                    child: Status::Processing {
                                         id,
-                                        completion: SequenceCompletion::Frames {
-                                            completed,
-                                            total,
-                                        },
+                                        completion: SequenceCompletion::Frames { completed, total },
                                     },
                                 })?;
                             }
                         },
-                        SequenceStatus::Whole(Status::Completed {
-                            id,
-                        }) if id == "Encode" => {
+                        SequenceStatus::Whole(Status::Completed { id }) if id == "Encode" => {
                             progress_tx_clone.send(SequenceStatus::Subprocess {
                                 parent: Status::Processing {
-                                    id:         DETAILS.name.to_owned(),
+                                    id: DETAILS.name.to_owned(),
                                     completion: SequenceCompletion::Passes {
                                         completed: pass,
-                                        total:     config.maximum_probes,
+                                        total: config.maximum_probes,
                                     },
                                 },
-                                child:  Status::Completed {
-                                    id,
-                                },
+                                child: Status::Completed { id },
                             })?;
                         },
-                        SequenceStatus::Whole(Status::Processing {
-                            id,
-                            completion,
-                        }) if id == "Compare" => {
+                        SequenceStatus::Whole(Status::Processing { id, completion })
+                            if id == "Compare" =>
+                        {
                             #[allow(clippy::collapsible_match)]
-                            if let SequenceCompletion::Frames {
-                                completed,
-                                total,
-                            } = completion
-                            {
+                            if let SequenceCompletion::Frames { completed, total } = completion {
                                 progress_tx_clone.send(SequenceStatus::Subprocess {
                                     parent: Status::Processing {
-                                        id:         DETAILS.name.to_owned(),
+                                        id: DETAILS.name.to_owned(),
                                         completion: SequenceCompletion::Passes {
                                             completed: pass,
-                                            total:     config.maximum_probes,
+                                            total: config.maximum_probes,
                                         },
                                     },
-                                    child:  Status::Processing {
+                                    child: Status::Processing {
                                         id,
-                                        completion: SequenceCompletion::Frames {
-                                            completed,
-                                            total,
-                                        },
+                                        completion: SequenceCompletion::Frames { completed, total },
                                     },
                                 })?;
                             }
                         },
-                        SequenceStatus::Whole(Status::Completed {
-                            id,
-                        }) if id == "Compare" => {
+                        SequenceStatus::Whole(Status::Completed { id }) if id == "Compare" => {
                             progress_tx_clone.send(SequenceStatus::Subprocess {
                                 parent: Status::Processing {
-                                    id:         DETAILS.name.to_owned(),
+                                    id: DETAILS.name.to_owned(),
                                     completion: SequenceCompletion::Passes {
                                         completed: pass,
-                                        total:     config.maximum_probes,
+                                        total: config.maximum_probes,
                                     },
                                 },
-                                child:  Status::Completed {
-                                    id,
-                                },
+                                child: Status::Completed { id },
                             })?;
                         },
                         _ => (),
@@ -531,15 +492,8 @@ where
                     config.interpolators,
                     &quantizer_score_history,
                     match completed_task.encoder {
-                        Encoder::X264 {
-                            ..
-                        }
-                        | Encoder::X265 {
-                            ..
-                        } => 0.25,
-                        Encoder::SVTAV1 {
-                            ..
-                        } => 1.0, // TODO: Implement svt_av1_supports_quarter_steps()
+                        Encoder::X264 { .. } | Encoder::X265 { .. } => 0.25,
+                        Encoder::SVTAV1 { .. } => 1.0, // TODO: Implement svt_av1_supports_quarter_steps()
                         _ => 1.0,
                     },
                 )?;
@@ -558,19 +512,19 @@ where
 
                 progress_tx.send(SequenceStatus::Subprocess {
                     parent: Status::Processing {
-                        id:         DETAILS.name.to_owned(),
+                        id: DETAILS.name.to_owned(),
                         completion: SequenceCompletion::Passes {
                             completed: pass,
-                            total:     config.maximum_probes,
+                            total: config.maximum_probes,
                         },
                     },
-                    child:  Status::Processing {
-                        id:         "Quality".to_owned(),
+                    child: Status::Processing {
+                        id: "Quality".to_owned(),
                         completion: SequenceCompletion::SceneQuality {
-                            index:     completed_task.original_index as u64,
+                            index: completed_task.original_index as u64,
                             quantizer: quality_pass.quantizer,
-                            score:     config.probing.statistic.calculate(&quality_pass.scores),
-                            bitrate:   quality_pass.bitrate,
+                            score: config.probing.statistic.calculate(&quality_pass.scores),
+                            bitrate: quality_pass.bitrate,
                         },
                     },
                 })?;
@@ -646,11 +600,11 @@ impl TargetQuality {
                 }
 
                 Encoder::AOM {
-                    executable:        executable.clone(),
-                    pass:              *pass,
-                    options:           sanitized_options,
-                    photon_noise:      None,
-                    ffmpeg_filter:     ffmpeg_filter.clone(),
+                    executable: executable.clone(),
+                    pass: *pass,
+                    options: sanitized_options,
+                    photon_noise: None,
+                    ffmpeg_filter: ffmpeg_filter.clone(),
                     append_color_data: *append_color_data,
                 }
             },
@@ -679,17 +633,15 @@ impl TargetQuality {
                 }
 
                 Encoder::RAV1E {
-                    executable:        executable.clone(),
-                    pass:              *pass,
-                    options:           sanitized_options,
-                    photon_noise:      None,
-                    ffmpeg_filter:     ffmpeg_filter.clone(),
+                    executable: executable.clone(),
+                    pass: *pass,
+                    options: sanitized_options,
+                    photon_noise: None,
+                    ffmpeg_filter: ffmpeg_filter.clone(),
                     append_color_data: *append_color_data,
                 }
             },
-            Encoder::VPX {
-                ..
-            } => encoder.clone(),
+            Encoder::VPX { .. } => encoder.clone(),
             Encoder::SVTAV1 {
                 executable,
                 pass,
@@ -723,11 +675,11 @@ impl TargetQuality {
                 }
 
                 Encoder::SVTAV1 {
-                    executable:        executable.clone(),
-                    pass:              *pass,
-                    options:           sanitized_options,
-                    photon_noise:      None,
-                    ffmpeg_filter:     ffmpeg_filter.clone(),
+                    executable: executable.clone(),
+                    pass: *pass,
+                    options: sanitized_options,
+                    photon_noise: None,
+                    ffmpeg_filter: ffmpeg_filter.clone(),
                     append_color_data: *append_color_data,
                 }
             },
@@ -754,26 +706,18 @@ impl TargetQuality {
                 }
 
                 Encoder::AVM {
-                    executable:        executable.clone(),
-                    pass:              *pass,
-                    options:           sanitized_options,
-                    photon_noise:      None,
-                    ffmpeg_filter:     ffmpeg_filter.clone(),
+                    executable: executable.clone(),
+                    pass: *pass,
+                    options: sanitized_options,
+                    photon_noise: None,
+                    ffmpeg_filter: ffmpeg_filter.clone(),
                     append_color_data: *append_color_data,
                 }
             },
-            Encoder::X264 {
-                ..
-            } => encoder.clone(),
-            Encoder::X265 {
-                ..
-            } => encoder.clone(),
-            Encoder::VVenC {
-                ..
-            } => encoder.clone(),
-            Encoder::FFmpeg {
-                ..
-            } => encoder.clone(),
+            Encoder::X264 { .. } => encoder.clone(),
+            Encoder::X265 { .. } => encoder.clone(),
+            Encoder::VVenC { .. } => encoder.clone(),
+            Encoder::FFmpeg { .. } => encoder.clone(),
         }
     }
 
@@ -849,17 +793,15 @@ impl TargetQuality {
                         } = completion
                         {
                             progress_tx_clone.send(SequenceStatus::Whole(Status::Processing {
-                                id:         "Encode".to_owned(),
+                                id: "Encode".to_owned(),
                                 completion: SequenceCompletion::Frames {
                                     completed: frames_already_completed as u64 + completed,
-                                    total:     total_frames as u64,
+                                    total: total_frames as u64,
                                 },
                             }))?;
                         }
                     },
-                    SequenceStatus::Whole(Status::Completed {
-                        id: _,
-                    }) => {
+                    SequenceStatus::Whole(Status::Completed { id: _ }) => {
                         progress_tx_clone.send(SequenceStatus::Whole(Status::Completed {
                             id: "Encode".to_owned(),
                         }))?;
@@ -969,25 +911,17 @@ impl TargetQuality {
                     SequenceStatus::Whole(Status::Processing {
                         id: _fn_name,
                         completion,
-                    }) => {
+                    }) =>
+                    {
                         #[allow(clippy::collapsible_match)]
-                        if let SequenceCompletion::Frames {
-                            completed,
-                            total,
-                        } = completion
-                        {
+                        if let SequenceCompletion::Frames { completed, total } = completion {
                             progress_tx_clone.send(SequenceStatus::Whole(Status::Processing {
-                                id:         "Compare".to_owned(),
-                                completion: SequenceCompletion::Frames {
-                                    completed,
-                                    total,
-                                },
+                                id: "Compare".to_owned(),
+                                completion: SequenceCompletion::Frames { completed, total },
                             }))?;
                         }
                     },
-                    SequenceStatus::Whole(Status::Completed {
-                        id: _,
-                    }) => {
+                    SequenceStatus::Whole(Status::Completed { id: _ }) => {
                         progress_tx_clone.send(SequenceStatus::Whole(Status::Completed {
                             id: "Compare".to_owned(),
                         }))?;
@@ -1011,14 +945,14 @@ impl TargetQuality {
 
             let reference = metric_input.decoder();
             let mut distorted = Input::from_video(&InputModel::Video {
-                path:          output.clone(),
+                path: output.clone(),
                 import_method: ImportMethod::FFMS2 {
-                    index:      None,
+                    index: None,
                     cache_path: None,
                 },
                 // The probe output is already in the metric input's format, so
                 // it must not be converted again.
-                filters:       Vec::new(),
+                filters: Vec::new(),
             })?;
 
             // The probe encode contains only the frames this pass selected, so
@@ -1044,18 +978,18 @@ impl TargetQuality {
                 if declare_compare {
                     declare_compare = false;
                     let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                        id:         "Compare".to_owned(),
+                        id: "Compare".to_owned(),
                         completion: SequenceCompletion::Frames {
                             completed: 0,
-                            total:     probed.len() as u64,
+                            total: probed.len() as u64,
                         },
                     }));
                 }
                 let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                    id:         "Compare".to_owned(),
+                    id: "Compare".to_owned(),
                     completion: SequenceCompletion::Frames {
                         completed: (position + 1) as u64,
-                        total:     probed.len() as u64,
+                        total: probed.len() as u64,
                     },
                 }));
             };
@@ -1184,15 +1118,10 @@ impl TargetQuality {
             };
             let v_input = v_input_owned.as_mut();
             let decoder = match metric_input {
-                Input::VapourSynth {
-                    decoder, ..
-                }
-                | Input::VapourSynthScript {
-                    decoder, ..
-                } => decoder,
-                Input::Video {
-                    ..
-                } => v_input.expect("Video Input exists").decoder(),
+                Input::VapourSynth { decoder, .. } | Input::VapourSynthScript { decoder, .. } => {
+                    decoder
+                },
+                Input::Video { .. } => v_input.expect("Video Input exists").decoder(),
             };
             let vapoursynth_decoder =
                 decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
@@ -1234,9 +1163,7 @@ impl TargetQuality {
 
             match &config.metric {
                 // Always scored above, since VMAF has no plugin branch here.
-                QualityMetric::VMAF {
-                    ..
-                } => {
+                QualityMetric::VMAF { .. } => {
                     unreachable!("VMAF is scored natively above, not here")
                 },
                 QualityMetric::SSIMULACRA2 {
@@ -1311,9 +1238,7 @@ impl TargetQuality {
                         compare_progress_tx,
                     )?
                 },
-                QualityMetric::XPSNR {
-                    resolution, ..
-                } => {
+                QualityMetric::XPSNR { resolution, .. } => {
                     let (reference_node, distorted_node) =
                         if let Some((width, height)) = *resolution {
                             let resize = Bicubic {
@@ -1571,7 +1496,7 @@ impl Default for TargetQuality {
     #[inline]
     fn default() -> Self {
         Self {
-            input:        None,
+            input: None,
             metric_input: None,
         }
     }
@@ -1580,10 +1505,10 @@ impl Default for TargetQuality {
 #[derive(Debug, Clone)]
 pub struct Task {
     pub original_index: usize,
-    pub frame_indices:  Vec<usize>,
-    pub encoder:        Encoder,
-    pub output:         PathBuf,
-    pub passes:         Vec<QualityPass>,
+    pub frame_indices: Vec<usize>,
+    pub encoder: Encoder,
+    pub output: PathBuf,
+    pub passes: Vec<QualityPass>,
 }
 
 #[derive(Debug, Clone, Error)]
@@ -1620,10 +1545,10 @@ mod tests {
     fn task_with_passes(index: usize, passes: usize) -> Task {
         Task {
             original_index: index,
-            frame_indices:  vec![0, 1],
-            encoder:        Default::default(),
-            output:         Default::default(),
-            passes:         vec![Default::default(); passes],
+            frame_indices: vec![0, 1],
+            encoder: Default::default(),
+            output: Default::default(),
+            passes: vec![Default::default(); passes],
         }
     }
 
@@ -1635,11 +1560,11 @@ mod tests {
             bytes: 1000 * (scene as u64 + 1),
             bitrate: 100.0 * (scene as f64 + 1.0),
             result: EncoderResult {
-                encoder:    EncoderBase::X264,
+                encoder: EncoderBase::X264,
                 parameters: Vec::new(),
-                status:     Default::default(),
-                stdout:     StringOrBytes::from(Vec::new()),
-                stderr:     StringOrBytes::from(Vec::new()),
+                status: Default::default(),
+                stdout: StringOrBytes::from(Vec::new()),
+                stderr: StringOrBytes::from(Vec::new()),
             },
         })
     }
@@ -1647,9 +1572,9 @@ mod tests {
     fn ssimulacra2() -> QualityMetric {
         QualityMetric::SSIMULACRA2 {
             target_range: (74.0, 76.0),
-            resolution:   None,
-            threads:      None,
-            gpu_id:       None,
+            resolution: None,
+            threads: None,
+            gpu_id: None,
         }
     }
 
@@ -1755,12 +1680,12 @@ mod tests {
     #[test]
     fn verified_quantizer_handles_inverse_metric() {
         let butteraugli = QualityMetric::BUTTERAUGLI {
-            target_range:         (0.8, 1.2),
-            resolution:           None,
-            threads:              None,
+            target_range: (0.8, 1.2),
+            resolution: None,
+            threads: None,
             intensity_multiplier: None,
-            norm:                 None,
-            gpu_id:               None,
+            norm: None,
+            gpu_id: None,
         };
         let history = [(20.0, 0.6), (28.0, 0.95), (32.0, 1.15), (40.0, 1.6)];
         assert_eq!(
@@ -1785,19 +1710,19 @@ mod tests {
             if declared {
                 declared = false;
                 tx.send(SequenceStatus::Whole(Status::Processing {
-                    id:         "Compare".to_owned(),
+                    id: "Compare".to_owned(),
                     completion: SequenceCompletion::Frames {
                         completed: 0,
-                        total:     total as u64,
+                        total: total as u64,
                     },
                 }))
                 .expect("send the phase declaration");
             }
             tx.send(SequenceStatus::Whole(Status::Processing {
-                id:         "Compare".to_owned(),
+                id: "Compare".to_owned(),
                 completion: SequenceCompletion::Frames {
                     completed: (position + 1) as u64,
-                    total:     total as u64,
+                    total: total as u64,
                 },
             }))
             .expect("send progress");
@@ -1812,11 +1737,7 @@ mod tests {
             .iter()
             .filter_map(|status| match status {
                 SequenceStatus::Whole(Status::Processing {
-                    completion:
-                        SequenceCompletion::Frames {
-                            completed,
-                            total,
-                        },
+                    completion: SequenceCompletion::Frames { completed, total },
                     ..
                 }) => Some((completed, total)),
                 _ => None,
@@ -1869,20 +1790,17 @@ mod tests {
     #[test]
     fn a_probe_encoder_drops_the_photon_noise() {
         let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
-        let Encoder::SVTAV1 {
-            photon_noise, ..
-        } = &mut encoder
-        else {
+        let Encoder::SVTAV1 { photon_noise, .. } = &mut encoder else {
             panic!("the base is SVT-AV1");
         };
         *photon_noise = Some(PhotonNoise {
-            iso:        12000,
+            iso: 12000,
             chroma_iso: Some(4000),
-            width:      None,
-            height:     None,
-            c_y:        None,
-            ccb:        None,
-            ccr:        None,
+            width: None,
+            height: None,
+            c_y: None,
+            ccb: None,
+            ccr: None,
         });
 
         let Encoder::SVTAV1 {

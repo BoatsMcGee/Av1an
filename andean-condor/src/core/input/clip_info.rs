@@ -4,11 +4,7 @@
 //! FFmpeg/libavutil (H.273) numbering both decoders report.
 
 pub use av_decoders::{
-    ChromaLocation,
-    ColorPrimaries,
-    ColorSpace,
-    ContentLightLevel,
-    MasteringDisplayMetadata,
+    ChromaLocation, ColorPrimaries, ColorSpace, ContentLightLevel, MasteringDisplayMetadata,
     TransferCharacteristic,
 };
 use av_format::rational::Rational64;
@@ -22,23 +18,23 @@ pub use av1_grain::TransferFunction;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClipInfo {
-    pub num_frames:                    usize,
-    pub format_info:                   PixelFormat,
-    pub frame_rate:                    Rational64,
-    pub resolution:                    (Width, Height),
-    pub color_range:                   Option<ColorRange>,
+    pub num_frames: usize,
+    pub format_info: PixelFormat,
+    pub frame_rate: Rational64,
+    pub resolution: (Width, Height),
+    pub color_range: Option<ColorRange>,
     /// The source's colour primaries (gamut), if the decoder reported them.
-    pub color_primaries:               Option<ColorPrimaries>,
+    pub color_primaries: Option<ColorPrimaries>,
     /// The source's transfer characteristics, if the decoder reported them.
     pub color_transfer_characteristic: Option<TransferCharacteristic>,
     /// The source's matrix coefficients, if the decoder reported them.
-    pub color_space:                   Option<ColorSpace>,
+    pub color_space: Option<ColorSpace>,
     /// The source's chroma sample location, if the decoder reported it.
-    pub chroma_location:               Option<ChromaLocation>,
+    pub chroma_location: Option<ChromaLocation>,
     /// SMPTE ST 2086 mastering display metadata, if the source carries it.
-    pub mastering_display:             Option<MasteringDisplayMetadata>,
+    pub mastering_display: Option<MasteringDisplayMetadata>,
     /// CTA-861.3 content light level metadata, if the source carries it.
-    pub content_light_level:           Option<ContentLightLevel>,
+    pub content_light_level: Option<ContentLightLevel>,
 }
 
 impl ClipInfo {

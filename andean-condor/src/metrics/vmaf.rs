@@ -19,14 +19,8 @@ use std::{
 
 use anyhow::{Result, bail};
 use av_metrics_vmaf::{
-    BackendPreference,
-    PlaneSet as MetricPlaneSet,
-    PlaneSource as MetricPlaneSource,
-    VideoFormat,
-    VmafConfig as ScorerConfig,
-    VmafError,
-    VmafModel,
-    VmafScorer,
+    BackendPreference, PlaneSet as MetricPlaneSet, PlaneSource as MetricPlaneSource, VideoFormat,
+    VmafConfig as ScorerConfig, VmafError, VmafModel, VmafScorer,
 };
 
 use crate::{
@@ -174,9 +168,9 @@ pub fn score_probed_frames(
     let opened = Instant::now();
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
     let mut scorer = VmafScorer::new(scorer_config(config)?, format).map_err(describe_error)?;
@@ -294,9 +288,7 @@ fn describe_error(error: VmafError) -> anyhow::Error {
             "libvmaf is not installed. Install it, or set VMAF_LIB_DIR to the directory \
              containing it. See the av-metrics-vmaf README for per-distro instructions."
         ),
-        VmafError::ModelNotFound {
-            model, ..
-        } => anyhow::anyhow!(
+        VmafError::ModelNotFound { model, .. } => anyhow::anyhow!(
             "libvmaf could not load the VMAF model `{model}`. Some libvmaf builds ship without \
              the built-in models compiled in; pass an explicit model path instead."
         ),
@@ -342,11 +334,11 @@ mod tests {
     fn zero_threads_expands_to_one_worker_per_available_core() {
         let configured = QualityMetric::VMAF {
             target_range: (94.0, 96.0),
-            resolution:   None,
-            scaler:       String::new(),
-            threads:      0,
-            model:        None,
-            features:     vec![],
+            resolution: None,
+            scaler: String::new(),
+            threads: 0,
+            model: None,
+            features: vec![],
         };
         let config = scorer_config(&configured).expect("config should build");
         let available = std::thread::available_parallelism().map_or(1, |p| p.get());
@@ -400,11 +392,11 @@ mod tests {
     fn an_explicit_model_path_wins_over_the_feature_selectors() {
         let configured = QualityMetric::VMAF {
             target_range: (94.0, 96.0),
-            resolution:   None,
-            scaler:       String::new(),
-            threads:      1,
-            model:        Some(std::path::PathBuf::from("/nonexistent/model.json")),
-            features:     vec![VmafFeature::Neg],
+            resolution: None,
+            scaler: String::new(),
+            threads: 1,
+            model: Some(std::path::PathBuf::from("/nonexistent/model.json")),
+            features: vec![VmafFeature::Neg],
         };
         let config = scorer_config(&configured).expect("config should build");
         assert!(
@@ -427,9 +419,9 @@ mod tests {
     fn a_non_vmaf_metric_is_rejected() {
         let other = QualityMetric::SSIMULACRA2 {
             target_range: (74.0, 76.0),
-            resolution:   None,
-            threads:      None,
-            gpu_id:       None,
+            resolution: None,
+            threads: None,
+            gpu_id: None,
         };
         assert!(scorer_config(&other).is_err());
     }

@@ -101,10 +101,7 @@ pub(super) fn aggregate(label: &str, name: Option<&str>, values: Vec<Value>) -> 
         Value::Array(values)
     };
     let property = name.map_or_else(|| label.to_owned(), |name| format!("{label} {name}"));
-    PropertyChange {
-        property,
-        value,
-    }
+    PropertyChange { property, value }
 }
 
 /// The half-open frames each addressed scene covers, as `START-END` pairs:

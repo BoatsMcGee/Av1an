@@ -17,8 +17,7 @@ use crate::{
         handlers::{
             apply_input_override,
             config::{edit, ensure_override_requested},
-            configure_input,
-            load_configuration,
+            configure_input, load_configuration,
         },
     },
     configuration::Configuration,
@@ -171,8 +170,8 @@ pub type DetectNoiseAction = ConfigAction<DetectNoiseKey, DetectNoiseSet>;
 pub enum DetectNoiseConfigError {
     #[error("invalid {which} filter `{value}`: {reason}")]
     InvalidFilter {
-        which:  &'static str,
-        value:  String,
+        which: &'static str,
+        value: String,
         reason: String,
     },
 }
@@ -258,15 +257,11 @@ impl ConfigCommand for DetectNoiseCrud {
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         match set {
-            DetectNoiseSet::Input {
-                args,
-            } => {
+            DetectNoiseSet::Input { args } => {
                 Self::apply_input(configuration, args)?;
                 PropertyChange::new("input", &Self::section_mut(configuration).input)
             },
-            DetectNoiseSet::ReferenceFilters {
-                filters,
-            } => {
+            DetectNoiseSet::ReferenceFilters { filters } => {
                 let filters = Self::parse_filters("reference", filters)?;
                 Self::section_mut(configuration).reference_filters = filters;
                 PropertyChange::new(
@@ -274,9 +269,7 @@ impl ConfigCommand for DetectNoiseCrud {
                     &Self::section_mut(configuration).reference_filters,
                 )
             },
-            DetectNoiseSet::DenoisedFilters {
-                filters,
-            } => {
+            DetectNoiseSet::DenoisedFilters { filters } => {
                 let filters = Self::parse_filters("denoised", filters)?;
                 Self::section_mut(configuration).denoised_filters = filters;
                 PropertyChange::new(
@@ -299,7 +292,7 @@ impl ConfigCommand for DetectNoiseCrud {
             configuration.condor.sequence_config.noise_detector = None;
             return Ok(Some(PropertyChange {
                 property: "section".to_owned(),
-                value:    Value::Null,
+                value: Value::Null,
             }));
         }
         let detector = Self::section_mut(configuration);
@@ -443,43 +436,41 @@ mod tests {
             .to_path_buf();
         let custom_vs_args = vec!["noise_level=2".to_string()];
         let custom_reference_filters = vec![VapourSynthFilter::WNNM {
-            sigma:                Some(vec![2.0, 0.0, 0.0]),
-            block_size:           None,
-            block_step:           None,
-            group_size:           None,
-            bm_range:             None,
-            radius:               None,
-            ps_num:               None,
-            ps_range:             None,
-            residual:             None,
+            sigma: Some(vec![2.0, 0.0, 0.0]),
+            block_size: None,
+            block_step: None,
+            group_size: None,
+            bm_range: None,
+            radius: None,
+            ps_num: None,
+            ps_range: None,
+            residual: None,
             adaptive_aggregation: None,
         }];
         let custom_denoised_filters = vec![VapourSynthFilter::WNNM {
-            sigma:                Some(vec![4.0, 0.0, 0.0]),
-            block_size:           None,
-            block_step:           None,
-            group_size:           None,
-            bm_range:             None,
-            radius:               None,
-            ps_num:               None,
-            ps_range:             None,
-            residual:             None,
+            sigma: Some(vec![4.0, 0.0, 0.0]),
+            block_size: None,
+            block_step: None,
+            group_size: None,
+            bm_range: None,
+            radius: None,
+            ps_num: None,
+            ps_range: None,
+            residual: None,
             adaptive_aggregation: None,
         }];
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         let input_filters = expected_config.condor.input.vapoursynth_filters().to_vec();
         expected_config.condor.sequence_config.noise_detector = Some(NoiseDetectorConfig {
-            input:             Some(InputModel::VapourSynth {
-                path:          input_abs.clone(),
-                import_method: VapourSynthImportMethod::FFMS2 {
-                    index: None
-                },
-                cache_path:    None,
-                filters:       input_filters,
+            input: Some(InputModel::VapourSynth {
+                path: input_abs.clone(),
+                import_method: VapourSynthImportMethod::FFMS2 { index: None },
+                cache_path: None,
+                filters: input_filters,
             }),
             reference_filters: custom_reference_filters.clone(),
-            denoised_filters:  custom_denoised_filters.clone(),
+            denoised_filters: custom_denoised_filters.clone(),
         });
         // immutable shadow
         let expected_config = expected_config;

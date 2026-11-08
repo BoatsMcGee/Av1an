@@ -53,15 +53,9 @@ pub fn config(
 ) -> Result<()> {
     match action {
         None => info(config_path, index, None),
-        Some(ScenesAction::Info {
-            key,
-        }) => info(config_path, index, key.as_ref()),
-        Some(ScenesAction::Set {
-            setting,
-        }) => set(config_path, index, setting),
-        Some(ScenesAction::Reset {
-            key,
-        }) => reset(config_path, index, key.as_ref()),
+        Some(ScenesAction::Info { key }) => info(config_path, index, key.as_ref()),
+        Some(ScenesAction::Set { setting }) => set(config_path, index, setting),
+        Some(ScenesAction::Reset { key }) => reset(config_path, index, key.as_ref()),
         Some(ScenesAction::Delete) => delete(config_path, index),
         Some(ScenesAction::Add {
             start,

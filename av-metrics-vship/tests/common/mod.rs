@@ -250,13 +250,13 @@ fn write_sample(buffer: &mut [u8], offset: usize, sample_bytes: usize, value: u3
 /// A generated clip, ready to be decoded.
 pub struct SyntheticClip {
     /// The raw y4m bytes.
-    pub data:            Vec<u8>,
+    pub data: Vec<u8>,
     /// Clip width in pixels.
-    pub width:           usize,
+    pub width: usize,
     /// Clip height in pixels.
-    pub height:          usize,
+    pub height: usize,
     /// Bits per channel actually used.
-    pub bit_depth:       u8,
+    pub bit_depth: u8,
     /// Chroma subsampling actually used.
     pub chroma_sampling: ChromaSubsampling,
 }

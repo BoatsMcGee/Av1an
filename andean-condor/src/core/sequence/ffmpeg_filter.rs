@@ -29,7 +29,7 @@ const STDOUT_READ_SIZE: usize = 64 * 1024;
 /// a frame consumer.
 pub struct FfmpegFilter {
     receiver: Receiver<Cursor<Vec<u8>>>,
-    failure:  Arc<Mutex<Option<String>>>,
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl FfmpegFilter {

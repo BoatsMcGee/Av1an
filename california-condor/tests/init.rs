@@ -3,10 +3,7 @@ use andean_condor::{
     ffmpeg::FFPixelFormat,
     models::{
         encoder::{
-            Encoder,
-            EncoderBase,
-            EncoderPasses,
-            cli_parameter::CLIParameter,
+            Encoder, EncoderBase, EncoderPasses, cli_parameter::CLIParameter,
             photon_noise::PhotonNoise,
         },
         input::{Input as InputModel, VapourSynthImportMethod},
@@ -18,9 +15,7 @@ use andean_condor::{
     vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
 };
 use california_condor::{
-    commands::handlers::load_configuration,
-    test_helpers::*,
-    utils::hash_path::hash_path,
+    commands::handlers::load_configuration, test_helpers::*, utils::hash_path::hash_path,
 };
 
 #[path = "common.rs"]
@@ -155,55 +150,54 @@ mod tests {
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.input = InputModel::VapourSynth {
-            path:          input_abs,
-            import_method: VapourSynthImportMethod::FFMS2 {
-                index: None
-            },
-            cache_path:    None,
-            filters:       vec![
+            path: input_abs,
+            import_method: VapourSynthImportMethod::FFMS2 { index: None },
+            cache_path: None,
+            filters: vec![
                 VapourSynthFilter::Trim {
                     start: Some(24),
-                    end:   None,
+                    end: None,
                 },
                 VapourSynthFilter::Resize {
                     scaler: Some(Scaler::Bilinear),
-                    width:  Some(1280),
+                    width: Some(1280),
                     height: Some(720),
                     format: Some(FFPixelFormat::YUV420P),
                 },
             ],
         };
         let mut custom_encoder_parameters = EncoderBase::AOM.default_parameters();
-        custom_encoder_parameters.extend(CLIParameter::new_numbers("--", "=", &[
-            ("cpu-used", 4.0),
-            ("cq-level", 23.0),
-        ]));
+        custom_encoder_parameters.extend(CLIParameter::new_numbers(
+            "--",
+            "=",
+            &[("cpu-used", 4.0), ("cq-level", 23.0)],
+        ));
         expected_config.condor.encoder = Encoder::AOM {
-            executable:        None,
-            pass:              EncoderPasses::All(2),
-            options:           custom_encoder_parameters,
-            photon_noise:      Some(PhotonNoise {
-                iso:        400,
+            executable: None,
+            pass: EncoderPasses::All(2),
+            options: custom_encoder_parameters,
+            photon_noise: Some(PhotonNoise {
+                iso: 400,
                 chroma_iso: None,
-                width:      None,
-                height:     None,
-                c_y:        None,
-                ccb:        None,
-                ccr:        None,
+                width: None,
+                height: None,
+                c_y: None,
+                ccb: None,
+                ccr: None,
             }),
-            ffmpeg_filter:     None,
+            ffmpeg_filter: None,
             append_color_data: true,
         };
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(8);
         expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
             input: None,
             metric: QualityMetric::CVVDP {
-                target_range:      (9.4, 9.6),
-                resolution:        None,
-                display_model:     None,
+                target_range: (9.4, 9.6),
+                resolution: None,
+                display_model: None,
                 resize_to_display: None,
-                disable_temporal:  None,
-                gpu_id:            None,
+                disable_temporal: None,
+                gpu_id: None,
             },
             quantizer_range: TargetQuality::default_quantizer_range(&EncoderBase::AOM),
             ..Default::default()
@@ -266,10 +260,13 @@ mod tests {
             .success();
         let input = load(&config_path).condor.input;
         assert!(
-            matches!(input, Input::Video {
-                import_method: ImportMethod::FFMS2 { .. },
-                ..
-            }),
+            matches!(
+                input,
+                Input::Video {
+                    import_method: ImportMethod::FFMS2 { .. },
+                    ..
+                }
+            ),
             "root input is {input:?}"
         );
 

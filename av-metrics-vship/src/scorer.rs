@@ -19,28 +19,14 @@ use v_frame::chroma::ChromaSubsampling;
 
 use crate::{
     config::{
-        ButteraugliParams,
-        PoolMethod,
-        VshipConfig,
-        VshipMetric,
-        colorspace_from_details,
+        ButteraugliParams, PoolMethod, VshipConfig, VshipMetric, colorspace_from_details,
         to_c_string,
     },
     error::VshipError,
     ffi::{
-        self,
-        VshipApi,
-        VshipBackend,
-        VshipColorspace,
-        VshipDeviceInfo,
-        VshipHandle,
-        VshipInitButteraugli_1,
-        VshipInitCvvdp_1,
-        VshipInitSsimulacra2_1,
-        VshipScoreButteraugli,
-        VshipScoreCvvdp,
-        VshipScoreSsimulacra2,
-        VshipStructType,
+        self, VshipApi, VshipBackend, VshipColorspace, VshipDeviceInfo, VshipHandle,
+        VshipInitButteraugli_1, VshipInitCvvdp_1, VshipInitSsimulacra2_1, VshipScoreButteraugli,
+        VshipScoreCvvdp, VshipScoreSsimulacra2, VshipStructType,
     },
 };
 
@@ -106,12 +92,7 @@ pub fn devices() -> Result<Vec<VshipDevice>, VshipError> {
     let count = api.device_count()?;
 
     Ok((0..count)
-        .filter_map(|id| {
-            api.device_info(id).ok().map(|info| VshipDevice {
-                id,
-                info,
-            })
-        })
+        .filter_map(|id| api.device_info(id).ok().map(|info| VshipDevice { id, info }))
         .collect())
 }
 
@@ -123,7 +104,7 @@ pub fn devices() -> Result<Vec<VshipDevice>, VshipError> {
 #[derive(Debug, Clone, Copy)]
 pub struct VshipDevice {
     /// The device's index, which is the `gpu_id` that selects it.
-    pub id:   u32,
+    pub id: u32,
     /// What libvship reports about it.
     pub info: VshipDeviceInfo,
 }
@@ -144,11 +125,11 @@ impl VshipDevice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoFormat {
     /// Width in pixels.
-    pub width:           u32,
+    pub width: u32,
     /// Height in pixels.
-    pub height:          u32,
+    pub height: u32,
     /// Bits per channel: 8, 9, 10, 12, 14 or 16.
-    pub bit_depth:       u32,
+    pub bit_depth: u32,
     /// Chroma subsampling.
     pub chroma_sampling: ChromaSubsampling,
 }
@@ -159,9 +140,9 @@ impl VideoFormat {
     #[must_use]
     pub fn from_details(details: &VideoDetails) -> Self {
         Self {
-            width:           details.width as u32,
-            height:          details.height as u32,
-            bit_depth:       details.bit_depth as u32,
+            width: details.width as u32,
+            height: details.height as u32,
+            bit_depth: details.bit_depth as u32,
             chroma_sampling: details.chroma_sampling,
         }
     }
@@ -179,19 +160,19 @@ impl VideoFormat {
     ) -> Result<VshipColorspace, VshipError> {
         colorspace_from_details(
             &VideoDetails {
-                width:                         self.width as usize,
-                height:                        self.height as usize,
-                bit_depth:                     self.bit_depth as usize,
-                chroma_sampling:               self.chroma_sampling,
-                frame_rate:                    av_decoders::Rational32::new(0, 1),
-                total_frames:                  None,
-                color_range:                   None,
-                color_primaries:               None,
+                width: self.width as usize,
+                height: self.height as usize,
+                bit_depth: self.bit_depth as usize,
+                chroma_sampling: self.chroma_sampling,
+                frame_rate: av_decoders::Rational32::new(0, 1),
+                total_frames: None,
+                color_range: None,
+                color_primaries: None,
                 color_transfer_characteristic: None,
-                color_space:                   None,
-                chroma_location:               None,
-                mastering_display:             None,
-                content_light_level:           None,
+                color_space: None,
+                chroma_location: None,
+                mastering_display: None,
+                content_light_level: None,
             },
             target_resolution,
         )
@@ -213,17 +194,17 @@ impl VideoFormat {
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneSource {
     /// Width in pixels, that is samples per row rather than bytes.
-    width:            usize,
+    width: usize,
     /// Height in pixels.
-    height:           usize,
+    height: usize,
     /// Bytes from one row to the next. May be negative for bottom-up images.
-    stride:           isize,
+    stride: isize,
     /// Offset of the first visible sample of row 0 from `data`.
-    data_origin:      usize,
+    data_origin: usize,
     /// Bytes per sample, as libvship sees them.
     bytes_per_sample: usize,
     /// Pointer to the start of the underlying allocation.
-    data:             *const u8,
+    data: *const u8,
 }
 
 impl PlaneSource {
@@ -354,11 +335,11 @@ fn plane_source<T: Pixel>(
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct FrameScore {
     /// SSIMULACRA2's value, or CVVDP's running mean. `None` for Butteraugli.
-    pub score:    Option<f64>,
+    pub score: Option<f64>,
     /// Butteraugli's configured-norm value.
-    pub norm_q:   Option<f64>,
+    pub norm_q: Option<f64>,
     /// Butteraugli's L3 norm.
-    pub norm_3:   Option<f64>,
+    pub norm_3: Option<f64>,
     /// Butteraugli's Linfinity norm.
     pub norm_inf: Option<f64>,
 }
@@ -418,9 +399,9 @@ impl FrameScore {
 /// that use them.
 struct CvvdpStrings {
     /// Display model key, always present.
-    model_key:                  CString,
+    model_key: CString,
     /// Display model JSON path, or null when none is configured.
-    model_config_json:          *const c_char,
+    model_config_json: *const c_char,
     /// Backing storage for `model_config_json`, kept alive beside the pointer.
     _model_config_json_storage: Option<CString>,
 }
@@ -452,7 +433,7 @@ impl CvvdpStrings {
 /// is not `Send` on its own, because libvship documents a handler as belonging
 /// to one thread; the pool below instead gives each worker its own handler.
 struct MetricHandler {
-    handle:         VshipHandle,
+    handle: VshipHandle,
     src_colorspace: VshipColorspace,
     dis_colorspace: VshipColorspace,
 }
@@ -744,13 +725,13 @@ fn chroma_dimensions(colorspace: &VshipColorspace) -> Result<(i64, i64), VshipEr
 /// The handler pool.
 struct Pool {
     /// The handlers, indexed by worker.
-    handlers:   Vec<MetricHandler>,
+    handlers: Vec<MetricHandler>,
     /// The next handler to use, for a non-temporal metric.
-    next:       usize,
+    next: usize,
     /// The index the pool last saw, or `None` before the first pair.
     last_index: Option<u32>,
     /// How many pairs have been submitted, and so the next sequential index.
-    submitted:  u32,
+    submitted: u32,
 }
 
 /// A vship scoring session.
@@ -771,12 +752,12 @@ struct Pool {
 /// A `VshipScorer` is [`Send`] so it can be moved into a worker, but it is not
 /// [`Sync`]: one scorer owns its whole pool and drives it serially.
 pub struct VshipScorer {
-    api:       &'static VshipApi,
-    config:    VshipConfig,
-    metric:    VshipMetric,
+    api: &'static VshipApi,
+    config: VshipConfig,
+    metric: VshipMetric,
     /// The handlers, behind a mutex so the pool can be moved between threads
     /// while each handler stays owned by one of them.
-    handlers:  Mutex<Pool>,
+    handlers: Mutex<Pool>,
     /// Ensures `!Sync`, because a scorer drives its pool serially.
     _not_sync: PhantomData<*mut ()>,
 }
@@ -944,8 +925,8 @@ impl VshipScorer {
         let api = VshipApi::load()?;
         let gpu_id = default_gpu_id().ok_or_else(|| VshipError::CallFailed {
             function: "Vship_GetDeviceCount",
-            status:   0,
-            message:  "libvship reported no compute devices".to_owned(),
+            status: 0,
+            message: "libvship reported no compute devices".to_owned(),
         })?;
 
         api.device_info(gpu_id)
@@ -1468,9 +1449,9 @@ mod tests {
     #[test]
     fn frame_score_picks_the_metric_specific_value() {
         let score = FrameScore {
-            score:    Some(0.9),
-            norm_q:   Some(1.5),
-            norm_3:   Some(2.0),
+            score: Some(0.9),
+            norm_q: Some(1.5),
+            norm_3: Some(2.0),
             norm_inf: Some(3.0),
         };
 

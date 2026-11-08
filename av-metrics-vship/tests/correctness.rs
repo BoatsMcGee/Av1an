@@ -15,32 +15,11 @@ use std::mem::{align_of, size_of};
 
 use av_decoders::VideoDetails;
 use av_metrics_vship::{
-    FrameScore,
-    PlaneSet,
-    PlaneSource,
-    PoolMethod,
-    VideoFormat,
-    VshipBackend,
-    VshipChromaLocation,
-    VshipChromaSubsample,
-    VshipColorFamily,
-    VshipColorspace,
-    VshipConfig,
-    VshipCropRectangle,
-    VshipError,
-    VshipMetric,
-    VshipPrimaries,
-    VshipRange,
-    VshipSample,
-    VshipScorer,
-    VshipTransferFunction,
-    VshipYuvMatrix,
-    colorspace_from_details,
-    device_name,
-    is_available,
-    libvship_version,
-    sample_for_bit_depth,
-    subsample_for_chroma,
+    FrameScore, PlaneSet, PlaneSource, PoolMethod, VideoFormat, VshipBackend, VshipChromaLocation,
+    VshipChromaSubsample, VshipColorFamily, VshipColorspace, VshipConfig, VshipCropRectangle,
+    VshipError, VshipMetric, VshipPrimaries, VshipRange, VshipSample, VshipScorer,
+    VshipTransferFunction, VshipYuvMatrix, colorspace_from_details, device_name, is_available,
+    libvship_version, sample_for_bit_depth, subsample_for_chroma,
 };
 use common::{Distortion, SyntheticClip, SyntheticPair};
 use v_frame::chroma::ChromaSubsampling;
@@ -227,19 +206,19 @@ fn a_temporal_metric_builds_exactly_one_handler() {
 fn colorspace_layout_matches_the_c_header() {
     #[repr(C)]
     struct Expected {
-        width:             i64,
-        height:            i64,
-        target_width:      i64,
-        target_height:     i64,
-        sample:            VshipSample,
-        range:             VshipRange,
-        subsampling:       VshipChromaSubsample,
-        chroma_location:   VshipChromaLocation,
-        color_family:      VshipColorFamily,
-        yuv_matrix:        VshipYuvMatrix,
+        width: i64,
+        height: i64,
+        target_width: i64,
+        target_height: i64,
+        sample: VshipSample,
+        range: VshipRange,
+        subsampling: VshipChromaSubsample,
+        chroma_location: VshipChromaLocation,
+        color_family: VshipColorFamily,
+        yuv_matrix: VshipYuvMatrix,
         transfer_function: VshipTransferFunction,
-        primaries:         VshipPrimaries,
-        crop:              VshipCropRectangle,
+        primaries: VshipPrimaries,
+        crop: VshipCropRectangle,
     }
 
     assert_eq!(size_of::<VshipColorspace>(), size_of::<Expected>());

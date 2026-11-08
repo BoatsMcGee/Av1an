@@ -9,8 +9,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    configuration::CliSequenceData,
-    scenes::sub_scenes_within,
+    configuration::CliSequenceData, scenes::sub_scenes_within,
     utils::parameter_parser::EncoderParamsParser,
 };
 
@@ -23,16 +22,16 @@ use crate::{
 pub struct Zone {
     /// First frame of the zone (inclusive). `None` is the input's first frame.
     #[serde(default)]
-    pub start_frame:    Option<usize>,
+    pub start_frame: Option<usize>,
     /// End of the zone (exclusive). `None` is the input's last frame.
     #[serde(default)]
-    pub end_frame:      Option<usize>,
+    pub end_frame: Option<usize>,
     /// Splits scenes longer than this, so no scene a zone matches exceeds it.
     #[serde(default)]
     pub maximum_frames: Option<usize>,
     /// The encoder override applied to the zone's scenes. `None` only splits.
     #[serde(default)]
-    pub encoder:        Option<ZoneEncoder>,
+    pub encoder: Option<ZoneEncoder>,
 }
 
 impl Zone {
@@ -133,19 +132,19 @@ pub struct ZoneEncoderMerge {
     /// are left unchanged, which keeps one encoder's parameters off another's
     /// command line.
     #[serde(default)]
-    pub base:              Option<EncoderBase>,
+    pub base: Option<EncoderBase>,
     /// The encoder binary to use instead of the base's default.
     #[serde(default)]
-    pub executable:        Option<PathBuf>,
+    pub executable: Option<PathBuf>,
     /// The encoder options to merge into (or replace) the scene's.
     #[serde(default)]
-    pub options:           Option<ZoneOptions>,
+    pub options: Option<ZoneOptions>,
     /// The Photon Noise table to merge into (or replace) the scene's.
     #[serde(default)]
-    pub photon_noise:      Option<ZonePhotonNoise>,
+    pub photon_noise: Option<ZonePhotonNoise>,
     /// The FFmpeg filtergraph to apply to the scene's frames.
     #[serde(default)]
-    pub ffmpeg_filter:     Option<String>,
+    pub ffmpeg_filter: Option<String>,
     /// Whether to append the source's colour and HDR metadata to the scene's
     /// encoder parameters.
     #[serde(default)]
@@ -285,19 +284,19 @@ pub enum ZonePhotonNoise {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ZonePhotonNoiseBody {
     #[serde(default)]
-    pub iso:        Option<u32>,
+    pub iso: Option<u32>,
     #[serde(default)]
     pub chroma_iso: Option<u32>,
     #[serde(default)]
-    pub width:      Option<u32>,
+    pub width: Option<u32>,
     #[serde(default)]
-    pub height:     Option<u32>,
+    pub height: Option<u32>,
     #[serde(default)]
-    pub c_y:        Option<Vec<i8>>,
+    pub c_y: Option<Vec<i8>>,
     #[serde(default)]
-    pub ccb:        Option<Vec<i8>>,
+    pub ccb: Option<Vec<i8>>,
     #[serde(default)]
-    pub ccr:        Option<Vec<i8>>,
+    pub ccr: Option<Vec<i8>>,
 }
 
 impl ZonePhotonNoiseBody {
@@ -393,10 +392,10 @@ fn split(scene: &Scene<CliSequenceData>, maximum_frames: usize) -> Vec<Scene<Cli
             let start = scene.start_frame + piece * frames / pieces;
             let end = scene.start_frame + (piece + 1) * frames / pieces;
             Scene {
-                start_frame:   start,
-                end_frame:     end,
-                sub_scenes:    sub_scenes_within(scene.sub_scenes.as_deref(), start, end),
-                encoder:       scene.encoder.clone(),
+                start_frame: start,
+                end_frame: end,
+                sub_scenes: sub_scenes_within(scene.sub_scenes.as_deref(), start, end),
+                encoder: scene.encoder.clone(),
                 sequence_data: scene.sequence_data.clone(),
             }
         })
@@ -643,13 +642,13 @@ mod tests {
         assert_eq!(
             encoder.photon_noise(),
             Some(&PhotonNoise {
-                iso:        800,
+                iso: 800,
                 chroma_iso: None,
-                width:      None,
-                height:     None,
-                c_y:        None,
-                ccb:        None,
-                ccr:        None,
+                width: None,
+                height: None,
+                c_y: None,
+                ccb: None,
+                ccr: None,
             }),
             "a replacement keeps none of the scene's table"
         );
@@ -762,11 +761,11 @@ mod tests {
         scene.sub_scenes = Some(vec![
             SubScene {
                 start_frame: 10,
-                end_frame:   20,
+                end_frame: 20,
             },
             SubScene {
                 start_frame: 400,
-                end_frame:   420,
+                end_frame: 420,
             },
         ]);
         let zone = Zone {
@@ -804,7 +803,7 @@ mod tests {
             scenes[0].sub_scenes,
             Some(vec![SubScene {
                 start_frame: 10,
-                end_frame:   20,
+                end_frame: 20,
             }]),
             "a sub-scene stays with the piece it starts in"
         );
@@ -812,7 +811,7 @@ mod tests {
             scenes[4].sub_scenes,
             Some(vec![SubScene {
                 start_frame: 400,
-                end_frame:   420,
+                end_frame: 420,
             }]),
             "a later sub-scene moves to its own piece"
         );
@@ -914,11 +913,11 @@ mod tests {
         source.sub_scenes = Some(vec![
             SubScene {
                 start_frame: 40,
-                end_frame:   60,
+                end_frame: 60,
             },
             SubScene {
                 start_frame: 50,
-                end_frame:   50,
+                end_frame: 50,
             },
         ]);
         let zone = Zone {
@@ -930,14 +929,14 @@ mod tests {
             pieces[0].sub_scenes,
             Some(vec![SubScene {
                 start_frame: 40,
-                end_frame:   50,
+                end_frame: 50,
             }])
         );
         assert_eq!(
             pieces[1].sub_scenes,
             Some(vec![SubScene {
                 start_frame: 50,
-                end_frame:   60,
+                end_frame: 60,
             }])
         );
     }
@@ -987,22 +986,22 @@ mod tests {
     #[test]
     fn normalization_round_trips_through_json() {
         let zone = Zone {
-            start_frame:    Some(0),
-            end_frame:      Some(100),
+            start_frame: Some(0),
+            end_frame: Some(100),
             maximum_frames: Some(100),
-            encoder:        Some(ZoneEncoder::Merge(ZoneEncoderMerge {
-                base:              Some(EncoderBase::SVTAV1),
-                executable:        Some(PathBuf::from("/tools/fish")),
-                options:           Some(ZoneOptions::Merge(ZoneOptionsBody::Params(
+            encoder: Some(ZoneEncoder::Merge(ZoneEncoderMerge {
+                base: Some(EncoderBase::SVTAV1),
+                executable: Some(PathBuf::from("/tools/fish")),
+                options: Some(ZoneOptions::Merge(ZoneOptionsBody::Params(
                     "--preset 3 --crf 23".to_owned(),
                 ))),
-                photon_noise:      Some(ZonePhotonNoise::Replace(ZonePhotonNoiseBody {
+                photon_noise: Some(ZonePhotonNoise::Replace(ZonePhotonNoiseBody {
                     iso: Some(400),
                     chroma_iso: Some(800),
                     c_y: Some(vec![34, -1, 32]),
                     ..Default::default()
                 })),
-                ffmpeg_filter:     Some("crop=iw-16:ih-16".to_owned()),
+                ffmpeg_filter: Some("crop=iw-16:ih-16".to_owned()),
                 append_color_data: None,
             })),
         };

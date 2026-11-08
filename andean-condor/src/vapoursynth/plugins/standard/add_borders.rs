@@ -8,24 +8,22 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         standard::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AddBorders {
-    pub top:    Option<u32>,
+    pub top: Option<u32>,
     pub bottom: Option<u32>,
-    pub left:   Option<u32>,
-    pub right:  Option<u32>,
-    pub color:  Option<Vec<f64>>,
+    pub left: Option<u32>,
+    pub right: Option<u32>,
+    pub color: Option<Vec<f64>>,
 }
 
 impl Plugin for AddBorders {
@@ -60,16 +58,19 @@ impl AddBorders {
         arguments
             .set_node("clip", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("top", self.top),
-            ("bottom", self.bottom),
-            ("left", self.left),
-            ("right", self.right),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("top", self.top),
+                ("bottom", self.bottom),
+                ("left", self.left),
+                ("right", self.right),
+            ],
+        )?;
         Self::arguments_set_float_arrays(&mut arguments, vec![("color", self.color)])?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 

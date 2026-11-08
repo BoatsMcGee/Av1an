@@ -6,18 +6,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
 pub enum CLIParameter {
     String {
-        prefix:    String,
+        prefix: String,
         delimiter: String,
-        value:     String,
+        value: String,
     },
     Number {
-        prefix:    String,
+        prefix: String,
         delimiter: String,
-        value:     f64,
+        value: f64,
     },
     Bool {
         prefix: String,
-        value:  bool,
+        value: bool,
     },
 }
 
@@ -25,9 +25,9 @@ impl CLIParameter {
     #[inline]
     pub fn new_string(prefix: &str, delimiter: &str, value: &str) -> CLIParameter {
         CLIParameter::String {
-            prefix:    prefix.to_owned(),
+            prefix: prefix.to_owned(),
             delimiter: delimiter.to_owned(),
-            value:     value.to_owned(),
+            value: value.to_owned(),
         }
     }
 
@@ -104,9 +104,7 @@ impl CLIParameter {
     pub fn matches(&self, other: &CLIParameter) -> bool {
         match self {
             CLIParameter::String {
-                prefix,
-                delimiter,
-                ..
+                prefix, delimiter, ..
             } => match other {
                 CLIParameter::String {
                     prefix: other_prefix,
@@ -116,9 +114,7 @@ impl CLIParameter {
                 _ => false,
             },
             CLIParameter::Number {
-                prefix,
-                delimiter,
-                ..
+                prefix, delimiter, ..
             } => match other {
                 CLIParameter::Number {
                     prefix: other_prefix,
@@ -127,9 +123,7 @@ impl CLIParameter {
                 } => prefix == other_prefix && delimiter == other_delimiter,
                 _ => false,
             },
-            CLIParameter::Bool {
-                prefix, ..
-            } => match other {
+            CLIParameter::Bool { prefix, .. } => match other {
                 CLIParameter::Bool {
                     prefix: other_prefix,
                     ..
@@ -156,10 +150,7 @@ impl CLIParameter {
             } => {
                 format!("{}{}{}{}", prefix, name, delimiter, value)
             },
-            CLIParameter::Bool {
-                prefix,
-                value,
-            } => {
+            CLIParameter::Bool { prefix, value } => {
                 if *value {
                     format!("{}{}", prefix, name)
                 } else {
@@ -194,10 +185,7 @@ impl CLIParameter {
                     None,
                 ),
             },
-            CLIParameter::Bool {
-                prefix,
-                value,
-            } => {
+            CLIParameter::Bool { prefix, value } => {
                 if *value {
                     (Some(format!("{}{}", prefix, name)), None)
                 } else {
@@ -210,15 +198,9 @@ impl CLIParameter {
     #[inline]
     pub fn to_string_value(&self) -> String {
         match self {
-            CLIParameter::String {
-                value, ..
-            } => value.clone(),
-            CLIParameter::Number {
-                value, ..
-            } => value.to_string(),
-            CLIParameter::Bool {
-                value, ..
-            } => value.to_string(),
+            CLIParameter::String { value, .. } => value.clone(),
+            CLIParameter::Number { value, .. } => value.to_string(),
+            CLIParameter::Bool { value, .. } => value.to_string(),
         }
     }
 }

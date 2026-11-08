@@ -5,13 +5,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PhotonNoise {
-    pub iso:        u32,
+    pub iso: u32,
     pub chroma_iso: Option<u32>,
-    pub width:      Option<u32>,
-    pub height:     Option<u32>,
-    pub c_y:        Option<Vec<i8>>,
-    pub ccb:        Option<Vec<i8>>,
-    pub ccr:        Option<Vec<i8>>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub c_y: Option<Vec<i8>>,
+    pub ccb: Option<Vec<i8>>,
+    pub ccr: Option<Vec<i8>>,
 }
 
 impl Hash for PhotonNoise {

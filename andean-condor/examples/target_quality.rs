@@ -7,23 +7,14 @@ use std::{
 
 use andean_condor::{
     core::{
-        Condor,
-        SaveCallback,
-        SequenceProgressEvent,
-        SequenceType,
+        Condor, SaveCallback, SequenceProgressEvent, SequenceType,
         input::Input,
         output::Output,
         sequence::{
-            Sequence,
-            SequenceStatus,
-            Status,
-            benchmarker::Benchmarker,
-            bitrate_optimizer::BitrateOptimizer,
-            parallel_encoder::ParallelEncoder,
-            scene_concatenator::SceneConcatenator,
-            scene_detector::SceneDetector,
-            speed_scaler::SpeedScaler,
-            target_quality::TargetQuality,
+            Sequence, SequenceStatus, Status, benchmarker::Benchmarker,
+            bitrate_optimizer::BitrateOptimizer, parallel_encoder::ParallelEncoder,
+            scene_concatenator::SceneConcatenator, scene_detector::SceneDetector,
+            speed_scaler::SpeedScaler, target_quality::TargetQuality,
         },
     },
     ffmpeg::FFPixelFormat,
@@ -32,44 +23,28 @@ use andean_condor::{
         input::{Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource},
         output::Output as OutputModel,
         sequence::{
-            SequenceConfigHandler,
-            SequenceDataHandler,
+            SequenceConfigHandler, SequenceDataHandler,
             benchmarker::{BenchmarkerConfig, BenchmarkerConfigHandler},
             bitrate_optimizer::{BitrateOptimizerConfig, BitrateOptimizerConfigHandler},
             noise_detector::{NoiseDetectorData, NoiseDetectorDataHandler},
             parallel_encoder::{
-                ParallelEncoderConfig,
-                ParallelEncoderConfigHandler,
-                ParallelEncoderData,
+                ParallelEncoderConfig, ParallelEncoderConfigHandler, ParallelEncoderData,
                 ParallelEncoderDataHandler,
             },
             scene_concatenator::{
-                ConcatMethod,
-                SceneConcatenatorConfig,
-                SceneConcatenatorConfigHandler,
+                ConcatMethod, SceneConcatenatorConfig, SceneConcatenatorConfigHandler,
             },
             scene_detector::{
-                SceneDetectionMethod,
-                SceneDetectorConfig,
-                SceneDetectorData,
-                SceneDetectorDataHandler,
-                ScenecutMethod,
+                SceneDetectionMethod, SceneDetectorConfig, SceneDetectorData,
+                SceneDetectorDataHandler, ScenecutMethod,
             },
             speed_scaler::{SpeedScalerConfig, SpeedScalerConfigHandler},
             target_quality::{
-                TargetQualityConfig,
-                TargetQualityConfigHandler,
-                TargetQualityData,
+                TargetQualityConfig, TargetQualityConfigHandler, TargetQualityData,
                 TargetQualityDataHandler,
                 types::{
-                    DEFAULT_MAXIMUM_PROBES,
-                    InterpolationMethod,
-                    ProbeStatistic,
-                    ProbeStrategy,
-                    QualityMetric,
-                    SubsetProbeLength,
-                    SubsetProbePosition,
-                    TargetQualityProbing,
+                    DEFAULT_MAXIMUM_PROBES, InterpolationMethod, ProbeStatistic, ProbeStrategy,
+                    QualityMetric, SubsetProbeLength, SubsetProbePosition, TargetQualityProbing,
                 },
             },
         },
@@ -109,12 +84,10 @@ use serde::{Deserialize, Serialize};
 fn main() -> Result<()> {
     // Input: VapourSynth FFMS2
     let input_model = InputModel::VapourSynth {
-        path:          PathBuf::from("input.mp4"),
-        import_method: VapourSynthImportMethod::FFMS2 {
-            index: None
-        },
-        cache_path:    None,
-        filters:       Vec::new(),
+        path: PathBuf::from("input.mp4"),
+        import_method: VapourSynthImportMethod::FFMS2 { index: None },
+        cache_path: None,
+        filters: Vec::new(),
     };
     let mut input = Input::from_vapoursynth(&input_model, None)?;
 
@@ -127,8 +100,8 @@ fn main() -> Result<()> {
 
     // Output: output.mkv
     let output_model = OutputModel {
-        path:       PathBuf::from("output.mkv"),
-        tags:       HashMap::new(),
+        path: PathBuf::from("output.mkv"),
+        tags: HashMap::new(),
         video_tags: HashMap::new(),
     };
     let output = Output::new(&output_model)?;
@@ -141,41 +114,33 @@ fn main() -> Result<()> {
     );
     encoder_options.insert("crf".to_owned(), CLIParameter::new_number("--", " ", 20.0));
     let encoder = Encoder::X264 {
-        executable:        None,
-        pass:              EncoderPasses::All(1),
-        options:           encoder_options,
-        ffmpeg_filter:     None,
+        executable: None,
+        pass: EncoderPasses::All(1),
+        options: encoder_options,
+        ffmpeg_filter: None,
         append_color_data: true,
     };
 
     // Per-sequence VapourSynth script inputs, all reading script.vpy.
     let scd_input_model = InputModel::VapourSynthScript {
-        source:              VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
-        variables:           HashMap::from([("mode".to_owned(), "scene detection".to_owned())]),
-        index:               0,
-        filters:             resize_filters(Some(960), Some(540), None),
+        source: VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
+        variables: HashMap::from([("mode".to_owned(), "scene detection".to_owned())]),
+        index: 0,
+        filters: resize_filters(Some(960), Some(540), None),
         stream_concurrently: true,
     };
     let tq_input_model = InputModel::VapourSynthScript {
-        source:              VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
-        variables:           HashMap::from([("mode".to_owned(), "target quality".to_owned())]),
-        index:               0,
-        filters:             resize_filters(
-            Some(1280),
-            Some(720),
-            Some(FFPixelFormat::YUV420P10LE),
-        ),
+        source: VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
+        variables: HashMap::from([("mode".to_owned(), "target quality".to_owned())]),
+        index: 0,
+        filters: resize_filters(Some(1280), Some(720), Some(FFPixelFormat::YUV420P10LE)),
         stream_concurrently: true,
     };
     let pe_input_model = InputModel::VapourSynthScript {
-        source:              VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
-        variables:           HashMap::new(),
-        index:               0,
-        filters:             resize_filters(
-            Some(1280),
-            Some(720),
-            Some(FFPixelFormat::YUV420P10LE),
-        ),
+        source: VapourSynthScriptSource::Path(PathBuf::from("script.vpy")),
+        variables: HashMap::new(),
+        index: 0,
+        filters: resize_filters(Some(1280), Some(720), Some(FFPixelFormat::YUV420P10LE)),
         stream_concurrently: true,
     };
     let scd_input = Input::from_vapoursynth(&scd_input_model, None)?;
@@ -199,44 +164,44 @@ fn main() -> Result<()> {
     );
 
     let sequence_config = ExampleSequenceConfig {
-        scene_detector:     SceneDetectorConfig {
+        scene_detector: SceneDetectorConfig {
             method: scene_detection_method.clone(),
-            input:  Some(scd_input_model),
+            input: Some(scd_input_model),
         },
-        benchmarker:        BenchmarkerConfig::default(),
-        target_quality:     Some(TargetQualityConfig {
-            metric:          QualityMetric::SSIMULACRA2 {
+        benchmarker: BenchmarkerConfig::default(),
+        target_quality: Some(TargetQualityConfig {
+            metric: QualityMetric::SSIMULACRA2 {
                 target_range: (79.5, 80.5),
-                resolution:   None,
-                threads:      None,
-                gpu_id:       None,
+                resolution: None,
+                threads: None,
+                gpu_id: None,
             },
-            maximum_probes:  DEFAULT_MAXIMUM_PROBES,
+            maximum_probes: DEFAULT_MAXIMUM_PROBES,
             quantizer_range: TargetQuality::default_quantizer_range(&EncoderBase::X264),
-            interpolators:   (
+            interpolators: (
                 InterpolationMethod::FritschCarlson,
                 InterpolationMethod::Pchip,
             ),
-            input:           Some(tq_input_model),
-            metric_input:    None,
-            probing:         TargetQualityProbing {
+            input: Some(tq_input_model),
+            metric_input: None,
+            probing: TargetQualityProbing {
                 encoder_options: Some(probe_options),
-                strategy:        ProbeStrategy::Subset {
+                strategy: ProbeStrategy::Subset {
                     position: SubsetProbePosition::Middle,
-                    length:   SubsetProbeLength::Frames(5),
+                    length: SubsetProbeLength::Frames(5),
                 },
-                statistic:       ProbeStatistic::Mean,
+                statistic: ProbeStatistic::Mean,
             },
         }),
-        bitrate_optimizer:  BitrateOptimizerConfig {
+        bitrate_optimizer: BitrateOptimizerConfig {
             bitrate_sigma_threshold: Some(2),
         },
-        speed_scaler:       SpeedScalerConfig {
+        speed_scaler: SpeedScalerConfig {
             // (speed, quantizer): 5 is fast, 4 is medium, 1 is veryslow for
             // x264. See `Encoder::set_speed`.
             speed_quantizers: vec![(5, 10.0), (4, 15.0), (1, 30.0)],
         },
-        parallel_encoder:   ParallelEncoderConfig {
+        parallel_encoder: ParallelEncoderConfig {
             workers: None,
             input: Some(pe_input_model),
             ..ParallelEncoderConfig::new(&scenes_directory)
@@ -270,7 +235,7 @@ fn main() -> Result<()> {
 
     // Scene Detector: populate `condor.scenes` with AVSceneChange.
     let mut scene_detector = SceneDetector {
-        input:  Some(scd_input),
+        input: Some(scd_input),
         method: scene_detection_method,
     };
     run_sequence(
@@ -406,10 +371,7 @@ fn print_progress(event: &SequenceProgressEvent) {
 
     match &event.progress {
         SequenceStatus::Whole(status) => print_status(phase, event.details.name, status),
-        SequenceStatus::Subprocess {
-            parent,
-            child,
-        } => {
+        SequenceStatus::Subprocess { parent, child } => {
             print_status(phase, event.details.name, parent);
             print_status(phase, event.details.name, child);
         },
@@ -418,21 +380,13 @@ fn print_progress(event: &SequenceProgressEvent) {
 
 fn print_status(phase: &str, name: &str, status: &Status) {
     match status {
-        Status::Processing {
-            id,
-            completion,
-        } => {
+        Status::Processing { id, completion } => {
             println!("[{phase}] {name} ({id}): {completion:?}");
         },
-        Status::Completed {
-            id,
-        } => {
+        Status::Completed { id } => {
             println!("[{phase}] {name} ({id}): completed");
         },
-        Status::Failed {
-            id,
-            error,
-        } => {
+        Status::Failed { id, error } => {
             eprintln!("[{phase}] {name} ({id}): failed: {error}");
         },
     }
@@ -445,12 +399,12 @@ fn print_status(phase: &str, name: &str, status: &Status) {
 /// required by the `Benchmarker` and `SpeedScaler` sequences.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExampleSequenceConfig {
-    pub scene_detector:     SceneDetectorConfig,
-    pub benchmarker:        BenchmarkerConfig,
-    pub target_quality:     Option<TargetQualityConfig>,
-    pub bitrate_optimizer:  BitrateOptimizerConfig,
-    pub speed_scaler:       SpeedScalerConfig,
-    pub parallel_encoder:   ParallelEncoderConfig,
+    pub scene_detector: SceneDetectorConfig,
+    pub benchmarker: BenchmarkerConfig,
+    pub target_quality: Option<TargetQualityConfig>,
+    pub bitrate_optimizer: BitrateOptimizerConfig,
+    pub speed_scaler: SpeedScalerConfig,
+    pub parallel_encoder: ParallelEncoderConfig,
     pub scene_concatenator: SceneConcatenatorConfig,
 }
 
@@ -458,19 +412,18 @@ impl Default for ExampleSequenceConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            scene_detector:     SceneDetectorConfig::default(),
-            benchmarker:        BenchmarkerConfig::default(),
-            target_quality:     None,
-            bitrate_optimizer:  BitrateOptimizerConfig::default(),
-            speed_scaler:       SpeedScalerConfig::default(),
-            parallel_encoder:   ParallelEncoderConfig::default(),
+            scene_detector: SceneDetectorConfig::default(),
+            benchmarker: BenchmarkerConfig::default(),
+            target_quality: None,
+            bitrate_optimizer: BitrateOptimizerConfig::default(),
+            speed_scaler: SpeedScalerConfig::default(),
+            parallel_encoder: ParallelEncoderConfig::default(),
             scene_concatenator: SceneConcatenatorConfig::default(),
         }
     }
 }
 
-impl SequenceConfigHandler for ExampleSequenceConfig {
-}
+impl SequenceConfigHandler for ExampleSequenceConfig {}
 
 impl BenchmarkerConfigHandler for ExampleSequenceConfig {
     #[inline]
@@ -547,14 +500,13 @@ impl SpeedScalerConfigHandler for ExampleSequenceConfig {
 /// Sequence data for this example.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExampleSequenceData {
-    pub scene_detection:  SceneDetectorData,
-    pub noise_detection:  Option<NoiseDetectorData>,
-    pub target_quality:   TargetQualityData,
+    pub scene_detection: SceneDetectorData,
+    pub noise_detection: Option<NoiseDetectorData>,
+    pub target_quality: TargetQualityData,
     pub parallel_encoder: ParallelEncoderData,
 }
 
-impl SequenceDataHandler for ExampleSequenceData {
-}
+impl SequenceDataHandler for ExampleSequenceData {}
 
 impl SceneDetectorDataHandler for ExampleSequenceData {
     #[inline]

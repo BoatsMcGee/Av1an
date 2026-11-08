@@ -74,30 +74,15 @@ pub mod ffi;
 mod scorer;
 
 pub use config::{
-    ColorInfo,
-    DEFAULT_PNORM,
-    DEFAULT_THREADS,
-    FmetricsConfig,
-    FmetricsMetric,
-    SampleRange,
-    YuvMatrix,
-    colorspace_from_details,
-    matrix_for_resolution,
+    ColorInfo, DEFAULT_PNORM, DEFAULT_THREADS, FmetricsConfig, FmetricsMetric, SampleRange,
+    YuvMatrix, colorspace_from_details, matrix_for_resolution,
 };
 pub use convert::{PlaneSet, PlaneSource, RgbImage, RgbSource, RgbView, yuv_to_rgb};
 pub use error::FmetricsError;
 pub use ffi::{
-    FmetricsApi,
-    FmetricsButteraugliOptions,
-    FmetricsColorspace,
-    FmetricsCvvdpCtx,
-    FmetricsCvvdpDisplayModel,
-    FmetricsCvvdpDisplayParams,
-    FmetricsCvvdpResult,
-    FmetricsErr,
-    FmetricsImg,
-    FmetricsPixFmt,
-    FmetricsWorkspace,
+    FmetricsApi, FmetricsButteraugliOptions, FmetricsColorspace, FmetricsCvvdpCtx,
+    FmetricsCvvdpDisplayModel, FmetricsCvvdpDisplayParams, FmetricsCvvdpResult, FmetricsErr,
+    FmetricsImg, FmetricsPixFmt, FmetricsWorkspace,
 };
 pub use scorer::{FmetricsScorer, FrameScore};
 

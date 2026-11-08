@@ -61,9 +61,7 @@ impl VmafModel {
             Self::Uhd => Ok("vmaf_4k_v0.6.1".to_owned()),
             Self::Path(path) => {
                 if !path.is_file() {
-                    return Err(VmafError::ModelFileMissing {
-                        path: path.clone()
-                    });
+                    return Err(VmafError::ModelFileMissing { path: path.clone() });
                 }
                 Ok(path.display().to_string())
             },
@@ -464,13 +462,13 @@ pub enum BackendPreference {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct VmafConfig {
     /// The model to score against.
-    pub model:     VmafModel,
+    pub model: VmafModel,
     /// Additional feature extractors to compute.
-    pub features:  Vec<VmafFeature>,
+    pub features: Vec<VmafFeature>,
     /// Number of worker threads libvmaf should use. `0` lets libvmaf decide.
     pub n_threads: u32,
     /// Backend selection strategy.
-    pub backend:   BackendPreference,
+    pub backend: BackendPreference,
 }
 
 impl VmafConfig {

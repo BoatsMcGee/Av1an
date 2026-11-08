@@ -8,21 +8,19 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         standard::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectEvery {
-    pub cycle:           u32,
-    pub offsets:         Vec<u32>,
+    pub cycle: u32,
+    pub offsets: Vec<u32>,
     pub modify_duration: Option<bool>,
 }
 
@@ -56,17 +54,20 @@ impl SelectEvery {
         arguments
             .set_node("clip", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("cycle", Some(self.cycle as i64)),
-            (
-                "modify_duration",
-                self.modify_duration.map(|b| if b { 1 } else { 0 }),
-            ),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("cycle", Some(self.cycle as i64)),
+                (
+                    "modify_duration",
+                    self.modify_duration.map(|b| if b { 1 } else { 0 }),
+                ),
+            ],
+        )?;
         Self::argument_set_int_arrays(&mut arguments, vec![("offsets", Some(self.offsets))])?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 

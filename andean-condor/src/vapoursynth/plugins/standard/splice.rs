@@ -8,13 +8,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         standard::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -50,9 +48,9 @@ impl Splice {
         for node in nodes.iter() {
             arguments.append_node("clips", node).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: "clips".to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }

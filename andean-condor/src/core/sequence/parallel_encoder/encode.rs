@@ -3,8 +3,7 @@ use std::{
     fs,
     io::Cursor,
     sync::{
-        Arc,
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
@@ -15,8 +14,7 @@ use crossbeam_channel::Receiver;
 use tracing::{debug, trace};
 
 use super::{
-    ParallelEncoder,
-    STREAM_WINDOW,
+    ParallelEncoder, STREAM_WINDOW,
     error::ParallelEncoderError,
     progress::{drain_finished_results, first_filter_failure, relay_progress},
     task::{ParallelEncoderResult, ResultStream, Task},
@@ -60,8 +58,8 @@ pub(super) fn spawn_filter(
 /// A finished scene encode, and whether it is usable.
 pub(super) struct SceneOutcome {
     pub(super) temp_output: std::path::PathBuf,
-    pub(super) bytes:       u64,
-    pub(super) usable:      bool,
+    pub(super) bytes: u64,
+    pub(super) usable: bool,
 }
 
 /// Renames a usable encode to its final path, or discards it and flags the
@@ -76,11 +74,11 @@ pub(super) fn finalize_scene(
 ) -> Result<()> {
     if outcome.usable {
         size_tx.send(SequenceStatus::Whole(Status::Processing {
-            id:         scene.to_string(),
+            id: scene.to_string(),
             completion: SequenceCompletion::Custom {
-                name:      "size".to_owned(),
+                name: "size".to_owned(),
                 completed: outcome.bytes as f64,
-                total:     outcome.bytes as f64,
+                total: outcome.bytes as f64,
             },
         }))?;
         fs::rename(outcome.temp_output, output)?;
@@ -287,15 +285,18 @@ impl ParallelEncoder {
                     );
                     worker_semaphore.release(); // Release for next worker
                     decoder_semaphore_clone.release(); // Release for next decoder
-                    let parallel_result =
-                        report_result(&results_tx, &finished_scenes, ParallelEncoderResult {
+                    let parallel_result = report_result(
+                        &results_tx,
+                        &finished_scenes,
+                        ParallelEncoderResult {
                             scene: task.original_index,
                             started,
                             ended,
                             bytes,
                             bitrate,
                             result,
-                        })?;
+                        },
+                    )?;
                     Ok(Some(parallel_result))
                 });
 
@@ -355,7 +356,7 @@ impl ParallelEncoder {
             });
             if let Some(Some(first_error)) = first_error {
                 let err = ParallelEncoderError::EncoderFailed {
-                    scene:  first_error.scene,
+                    scene: first_error.scene,
                     result: first_error.result.clone(),
                 };
                 tracing::error!("{}", err);
@@ -390,8 +391,8 @@ mod tests {
         finalize_scene(
             SceneOutcome {
                 temp_output: temp_output.clone(),
-                bytes:       42,
-                usable:      true,
+                bytes: 42,
+                usable: true,
             },
             &output,
             3,
@@ -438,8 +439,8 @@ mod tests {
         finalize_scene(
             SceneOutcome {
                 temp_output: temp_output.clone(),
-                bytes:       42,
-                usable:      false,
+                bytes: 42,
+                usable: false,
             },
             &output,
             1,

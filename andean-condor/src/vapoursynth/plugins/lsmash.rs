@@ -11,8 +11,7 @@ use crate::vapoursynth::{
     VapourSynthError,
     plugins::{Plugin, PluginFunction},
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -237,16 +236,16 @@ impl LWLibavSource {
         let mut arguments = Self::arguments()?;
         let absolute_source_path =
             absolute(self.source).map_err(|_| VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  "Failed to get absolute path".to_owned(),
+                message: "Failed to get absolute path".to_owned(),
             })?;
         let absolute_cachefile = if let Some(cachefile) = self.cachefile {
             let absolute_cachefile_path =
                 absolute(cachefile).map_err(|_| VapourSynthError::PluginFunctionError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     function: Self::FUNCTION_NAME.to_owned(),
-                    message:  "Failed to get absolute path".to_owned(),
+                    message: "Failed to get absolute path".to_owned(),
                 })?;
             Some(absolute_cachefile_path)
         } else {
@@ -255,51 +254,57 @@ impl LWLibavSource {
         let absolute_cachedir = if let Some(cachedir) = self.cachedir {
             let absolute_cachedir_path =
                 absolute(cachedir).map_err(|_| VapourSynthError::PluginFunctionError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     function: Self::FUNCTION_NAME.to_owned(),
-                    message:  "Failed to get absolute path".to_owned(),
+                    message: "Failed to get absolute path".to_owned(),
                 })?;
             Some(absolute_cachedir_path)
         } else {
             None
         };
 
-        Self::arguments_set(&mut arguments, vec![
-            (
-                "source",
-                Some(absolute_source_path.display().to_string().as_bytes()),
-            ),
-            (
-                "cachefile",
-                absolute_cachefile.map(|p| p.display().to_string().into_bytes()).as_deref(),
-            ),
-            (
-                "cachedir",
-                absolute_cachedir.map(|p| p.display().to_string().into_bytes()).as_deref(),
-            ),
-            ("format", self.format.map(|s| s.into_bytes()).as_deref()),
-            ("decoder", self.decoder.map(|s| s.into_bytes()).as_deref()),
-            (
-                "ff_options",
-                self.ff_options.map(|s| s.into_bytes()).as_deref(),
-            ),
-        ])?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("stream_index", self.stream_index.map(|i| i as i64)),
-            ("threads", self.threads.map(|i| i as i64)),
-            ("cache", self.cache.map(|i| i as i64)),
-            ("seek_mode", self.seek_mode.map(|i| i as i64)),
-            ("seek_threshold", self.seek_threshold.map(|i| i as i64)),
-            ("dr", self.dr.map(|i| i as i64)),
-            ("fpsnum", self.fpsnum.map(|i| i as i64)),
-            ("fpsden", self.fpsden.map(|i| i as i64)),
-            ("variable", self.variable.map(|i| i as i64)),
-            ("repeat", self.repeat.map(|i| i as i64)),
-            ("dominance", self.dominance.map(|i| i as i64)),
-            ("prefer_hw", self.prefer_hw.map(|i| i as i64)),
-            ("ff_loglevel", self.ff_loglevel.map(|i| i as i64)),
-            ("rap_verification", self.rap_verification.map(|i| i as i64)),
-        ])?;
+        Self::arguments_set(
+            &mut arguments,
+            vec![
+                (
+                    "source",
+                    Some(absolute_source_path.display().to_string().as_bytes()),
+                ),
+                (
+                    "cachefile",
+                    absolute_cachefile.map(|p| p.display().to_string().into_bytes()).as_deref(),
+                ),
+                (
+                    "cachedir",
+                    absolute_cachedir.map(|p| p.display().to_string().into_bytes()).as_deref(),
+                ),
+                ("format", self.format.map(|s| s.into_bytes()).as_deref()),
+                ("decoder", self.decoder.map(|s| s.into_bytes()).as_deref()),
+                (
+                    "ff_options",
+                    self.ff_options.map(|s| s.into_bytes()).as_deref(),
+                ),
+            ],
+        )?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("stream_index", self.stream_index.map(|i| i as i64)),
+                ("threads", self.threads.map(|i| i as i64)),
+                ("cache", self.cache.map(|i| i as i64)),
+                ("seek_mode", self.seek_mode.map(|i| i as i64)),
+                ("seek_threshold", self.seek_threshold.map(|i| i as i64)),
+                ("dr", self.dr.map(|i| i as i64)),
+                ("fpsnum", self.fpsnum.map(|i| i as i64)),
+                ("fpsden", self.fpsden.map(|i| i as i64)),
+                ("variable", self.variable.map(|i| i as i64)),
+                ("repeat", self.repeat.map(|i| i as i64)),
+                ("dominance", self.dominance.map(|i| i as i64)),
+                ("prefer_hw", self.prefer_hw.map(|i| i as i64)),
+                ("ff_loglevel", self.ff_loglevel.map(|i| i as i64)),
+                ("rap_verification", self.rap_verification.map(|i| i as i64)),
+            ],
+        )?;
 
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 

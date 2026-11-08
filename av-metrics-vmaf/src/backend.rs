@@ -38,11 +38,11 @@ impl Display for Backend {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Geometry {
     /// Width in pixels.
-    pub width:        u32,
+    pub width: u32,
     /// Height in pixels.
-    pub height:       u32,
+    pub height: u32,
     /// Bits per channel.
-    pub bit_depth:    u32,
+    pub bit_depth: u32,
     /// Pixel format.
     pub pixel_format: crate::ffi::VmafPixelFormat,
 }
@@ -50,14 +50,14 @@ pub(crate) struct Geometry {
 /// A libvmaf scoring context, tagged with the backend it was initialised for.
 pub(crate) struct Context {
     /// The context pointer owned by libvmaf.
-    pub(crate) raw:     *mut crate::ffi::VmafContext,
+    pub(crate) raw: *mut crate::ffi::VmafContext,
     /// CUDA state imported into `raw`, released on drop when non-null.
     ///
     /// libvmaf copies the state during `vmaf_cuda_import_state`, but the
     /// original allocation is ours to free, so the pointer is retained
     /// here.
-    cuda_state:         *mut VmafCudaState,
-    api:                &'static VmafApi,
+    cuda_state: *mut VmafCudaState,
+    api: &'static VmafApi,
     /// The backend this context was created on.
     pub(crate) backend: Backend,
 }
@@ -128,8 +128,7 @@ fn raw_mut_picture(picture: &mut crate::ffi::VmafPicture) -> *mut crate::ffi::Vm
 // SAFETY: `VmafContext` is only ever used from the single worker that owns the
 // `Context`. libvmaf documents a context as not safe for concurrent use, and
 // the scorer never shares one across threads.
-unsafe impl Send for Context {
-}
+unsafe impl Send for Context {}
 
 impl Context {
     /// Create a CPU scoring context.
@@ -155,7 +154,7 @@ impl Context {
         if raw.is_null() {
             return Err(VmafError::CallFailed {
                 function: "vmaf_init",
-                status:   0,
+                status: 0,
             });
         }
 
@@ -169,15 +168,18 @@ impl Context {
         // SAFETY: `raw` is a live context and `geometry` describes the frames
         // that will be submitted.
         let status = unsafe {
-            (api.preallocate_pictures)(raw, crate::ffi::VmafPictureConfiguration {
-                pic_params: crate::ffi::VmafPictureConfigPictureParams {
-                    w:       geometry.width,
-                    h:       geometry.height,
-                    bpc:     geometry.bit_depth,
-                    pix_fmt: geometry.pixel_format,
+            (api.preallocate_pictures)(
+                raw,
+                crate::ffi::VmafPictureConfiguration {
+                    pic_params: crate::ffi::VmafPictureConfigPictureParams {
+                        w: geometry.width,
+                        h: geometry.height,
+                        bpc: geometry.bit_depth,
+                        pix_fmt: geometry.pixel_format,
+                    },
+                    pic_cnt: pool_size,
                 },
-                pic_cnt:    pool_size,
-            })
+            )
         };
         if status != 0 {
             // SAFETY: closing a context that failed to configure its pool.
@@ -210,19 +212,19 @@ impl Context {
         let Some(state_init) = api.cuda.state_init else {
             return Err(VmafError::CallFailed {
                 function: "vmaf_cuda_state_init",
-                status:   -1,
+                status: -1,
             });
         };
         let Some(import_state) = api.cuda.import_state else {
             return Err(VmafError::CallFailed {
                 function: "vmaf_cuda_import_state",
-                status:   -1,
+                status: -1,
             });
         };
         let Some(preallocate) = api.cuda.preallocate_pictures else {
             return Err(VmafError::CallFailed {
                 function: "vmaf_cuda_preallocate_pictures",
-                status:   -1,
+                status: -1,
             });
         };
 
@@ -233,9 +235,12 @@ impl Context {
         // libvmaf to create its own context.
         unsafe {
             crate::ffi::check(
-                state_init(&mut state, VmafCudaConfiguration {
-                    cu_ctx: std::ptr::null_mut(),
-                }),
+                state_init(
+                    &mut state,
+                    VmafCudaConfiguration {
+                        cu_ctx: std::ptr::null_mut(),
+                    },
+                ),
                 "vmaf_cuda_state_init",
             )?;
         }
@@ -243,7 +248,7 @@ impl Context {
         if state.is_null() {
             return Err(VmafError::CallFailed {
                 function: "vmaf_cuda_state_init",
-                status:   0,
+                status: 0,
             });
         }
 
@@ -261,15 +266,18 @@ impl Context {
         // it.
         let imported = unsafe {
             import_state(raw, state);
-            preallocate(raw, crate::ffi::VmafCudaPictureConfiguration {
-                pic_params:          crate::ffi::VmafCudaPictureConfigPictureParams {
-                    w:       geometry.width,
-                    h:       geometry.height,
-                    bpc:     geometry.bit_depth,
-                    pix_fmt: geometry.pixel_format,
+            preallocate(
+                raw,
+                crate::ffi::VmafCudaPictureConfiguration {
+                    pic_params: crate::ffi::VmafCudaPictureConfigPictureParams {
+                        w: geometry.width,
+                        h: geometry.height,
+                        bpc: geometry.bit_depth,
+                        pix_fmt: geometry.pixel_format,
+                    },
+                    pic_prealloc_method: crate::ffi::VmafCudaPicturePreallocationMethod::Device,
                 },
-                pic_prealloc_method: crate::ffi::VmafCudaPicturePreallocationMethod::Device,
-            })
+            )
         };
 
         if imported != 0 {
@@ -280,7 +288,7 @@ impl Context {
             }
             return Err(VmafError::CallFailed {
                 function: "vmaf_cuda_preallocate_pictures",
-                status:   imported,
+                status: imported,
             });
         }
 
@@ -337,7 +345,7 @@ pub(crate) fn initialise(
     } else if preference == BackendPreference::RequireCuda {
         return Err(VmafError::CallFailed {
             function: "vmaf_cuda_state_init",
-            status:   -1,
+            status: -1,
         });
     }
 

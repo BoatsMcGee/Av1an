@@ -25,9 +25,9 @@ pub enum FmetricsError {
         /// Name of the fmetrics function that failed.
         function: &'static str,
         /// The `FmetricsErr` value, as its integer.
-        code:     std::ffi::c_int,
+        code: std::ffi::c_int,
         /// The message fmetrics associates with that code.
-        message:  String,
+        message: String,
     },
 
     /// A configuration value could not be passed to fmetrics.
@@ -58,7 +58,7 @@ pub enum FmetricsError {
         /// How many workspaces the pool holds.
         workspaces: usize,
         /// Underlying reason.
-        reason:     String,
+        reason: String,
     },
 
     /// The reference and distorted inputs are not comparable.

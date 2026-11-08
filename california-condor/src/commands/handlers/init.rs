@@ -5,8 +5,7 @@ use andean_condor::{
     models::{
         encoder::Encoder,
         sequence::{
-            scene_concatenator::SceneConcatenatorConfig,
-            target_quality::TargetQualityConfig,
+            scene_concatenator::SceneConcatenatorConfig, target_quality::TargetQualityConfig,
         },
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
@@ -20,24 +19,17 @@ use tracing::{error, info, warn};
 use crate::{
     DEFAULT_CONFIG_PATH,
     commands::{
-        ConcatenationMethod,
-        CondorCliError,
-        DecoderMethod,
-        DiscardCategory,
-        EncoderMethod,
+        ConcatenationMethod, CondorCliError, DecoderMethod, DiscardCategory, EncoderMethod,
         QualityMetric as QualityMetricBase,
         config::{ConfigAction, ConfigCommand, InputOverride, PropertyChange},
         handlers::{
-            apply_input_filters,
-            apply_stream_concurrently,
+            apply_input_filters, apply_stream_concurrently,
             concatenate::{apply_discard, configure_concatenate},
             config::{edit, ensure_override_requested},
-            configure_input,
-            configure_temp,
+            configure_input, configure_temp,
             encode::{configure_encoder, configure_parallel_encoder},
             target_quality::{TargetQualityCrud, configure_target_quality},
-            warn_missing_path,
-            warn_unused_vs_args,
+            warn_missing_path, warn_unused_vs_args,
         },
     },
     configuration::Configuration,
@@ -169,13 +161,13 @@ pub enum InitSet {
     Encoder {
         /// The encoder to use.
         #[arg(long, value_name = "Encoder")]
-        encoder:      Option<EncoderMethod>,
+        encoder: Option<EncoderMethod>,
         /// Custom encoder binary path.
         #[arg(long, value_name = "Path")]
-        executable:   Option<PathBuf>,
+        executable: Option<PathBuf>,
         /// Encoder parameters (`--crf 16 --tune 0`), exactly like *--params*.
         #[arg(long, value_name = "Parameters", allow_hyphen_values = true)]
-        params:       Option<String>,
+        params: Option<String>,
         /// Photon Noise ISO applied to every scene.
         #[arg(long, value_name = "ISO")]
         photon_noise: Option<u32>,
@@ -337,15 +329,11 @@ impl ConfigCommand for InitCrud {
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         match set {
-            InitSet::Input {
-                args,
-            } => {
+            InitSet::Input { args } => {
                 Self::apply_input(configuration, args)?;
                 PropertyChange::new("input", &configuration.condor.input)
             },
-            InitSet::Output {
-                path,
-            } => {
+            InitSet::Output { path } => {
                 configuration.condor.output.path = path.clone();
                 PropertyChange::new("output", &configuration.condor.output)
             },
@@ -380,27 +368,21 @@ impl ConfigCommand for InitCrud {
                 }
                 PropertyChange::new("encoder", &configuration.condor.encoder)
             },
-            InitSet::Workers {
-                value,
-            } => {
+            InitSet::Workers { value } => {
                 configuration.condor.sequence_config.parallel_encoder.workers = Some(*value);
                 PropertyChange::new(
                     "workers",
                     configuration.condor.sequence_config.parallel_encoder.workers,
                 )
             },
-            InitSet::Concatenator {
-                method,
-            } => {
+            InitSet::Concatenator { method } => {
                 configure_concatenate(configuration, Some(method))?;
                 PropertyChange::new(
                     "concatenator",
                     &configuration.condor.sequence_config.scene_concatenator,
                 )
             },
-            InitSet::TargetMetric {
-                metric,
-            } => {
+            InitSet::TargetMetric { metric } => {
                 Self::target_quality_mut(configuration);
                 configure_target_quality(
                     configuration,
@@ -420,9 +402,7 @@ impl ConfigCommand for InitCrud {
                     &Self::target_quality_mut(configuration).metric,
                 )
             },
-            InitSet::Target {
-                value,
-            } => {
+            InitSet::Target { value } => {
                 if !value.is_finite() {
                     return Err(InitConfigError::TargetNotFinite.into());
                 }
@@ -520,10 +500,7 @@ mod tests {
         core::sequence::target_quality::TargetQuality,
         models::{
             encoder::{
-                Encoder,
-                EncoderBase,
-                EncoderPasses,
-                cli_parameter::CLIParameter,
+                Encoder, EncoderBase, EncoderPasses, cli_parameter::CLIParameter,
                 photon_noise::PhotonNoise,
             },
             input::{Input, VapourSynthImportMethod},
@@ -538,10 +515,7 @@ mod tests {
     use super::*;
     use crate::{
         commands::{
-            ConcatenationMethod,
-            DecoderMethod,
-            EncoderMethod,
-            QualityMetric as QualityMetricBase,
+            ConcatenationMethod, DecoderMethod, EncoderMethod, QualityMetric as QualityMetricBase,
             handlers::load_configuration,
         },
         test_helpers::{CwdGuard, check_basic_config, default_config, get_test_video},
@@ -626,10 +600,10 @@ mod tests {
             .as_path()
             .to_path_buf();
         let custom_filters = vec![VapourSynthFilter::Crop {
-            top:    Some(2),
+            top: Some(2),
             bottom: Some(2),
-            left:   None,
-            right:  None,
+            left: None,
+            right: None,
         }];
         let custom_vs_args = vec!["key=value".to_string()];
         let mut custom_encoder_parameters = EncoderBase::AOM.default_parameters();
@@ -640,27 +614,25 @@ mod tests {
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.input = Input::VapourSynth {
-            path:          input_abs,
-            import_method: VapourSynthImportMethod::FFMS2 {
-                index: None
-            },
-            cache_path:    None,
-            filters:       custom_filters.clone(),
+            path: input_abs,
+            import_method: VapourSynthImportMethod::FFMS2 { index: None },
+            cache_path: None,
+            filters: custom_filters.clone(),
         };
         expected_config.condor.encoder = Encoder::AOM {
-            executable:        None,
-            pass:              EncoderPasses::All(2),
-            options:           custom_encoder_parameters,
-            photon_noise:      Some(PhotonNoise {
-                iso:        4800,
+            executable: None,
+            pass: EncoderPasses::All(2),
+            options: custom_encoder_parameters,
+            photon_noise: Some(PhotonNoise {
+                iso: 4800,
                 chroma_iso: None,
-                width:      None,
-                height:     None,
-                c_y:        None,
-                ccb:        None,
-                ccr:        None,
+                width: None,
+                height: None,
+                c_y: None,
+                ccb: None,
+                ccr: None,
             }),
-            ffmpeg_filter:     None,
+            ffmpeg_filter: None,
             append_color_data: true,
         };
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(2);
@@ -668,9 +640,9 @@ mod tests {
             input: None,
             metric: QualityMetric::SSIMULACRA2 {
                 target_range: (74.0, 76.0),
-                resolution:   None,
-                threads:      None,
-                gpu_id:       None,
+                resolution: None,
+                threads: None,
+                gpu_id: None,
             },
             quantizer_range: TargetQuality::default_quantizer_range(&EncoderBase::AOM),
             ..Default::default()

@@ -24,28 +24,15 @@ use crate::{
         Condor,
         input::Input,
         sequence::{
-            Sequence,
-            SequenceCompletion,
-            SequenceDetails,
-            SequenceStatus,
-            Status,
+            Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status,
             parallel_encoder::ParallelEncoder,
         },
     },
     models::sequence::{
-        SequenceConfigHandler,
-        SequenceDataHandler,
+        SequenceConfigHandler, SequenceDataHandler,
         scene_concatenator::{
-            Chapters,
-            ConcatMethod,
-            FfmpegConfig,
-            FfmpegTrack,
-            FfmpegTrackMap,
-            FfmpegTrackOptions,
-            Metadata,
-            MkvmergeConfig,
-            MkvmergeExtraInput,
-            SceneConcatenatorConfigHandler,
+            Chapters, ConcatMethod, FfmpegConfig, FfmpegTrack, FfmpegTrackMap, FfmpegTrackOptions,
+            Metadata, MkvmergeConfig, MkvmergeExtraInput, SceneConcatenatorConfigHandler,
             mkvmerge::tags_xml,
         },
     },
@@ -56,9 +43,9 @@ mod ivf;
 mod mkvmerge;
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Scene Concatenator",
+    name: "Scene Concatenator",
     description: "Concatenates encoded scenes into a single output file",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 #[derive(Default)]
 pub struct SceneConcatenator {}
@@ -169,15 +156,8 @@ where
         let framerate = condor.input.clip_info()?.frame_rate;
         let input_path = {
             match &condor.input {
-                Input::Video {
-                    path, ..
-                }
-                | Input::VapourSynth {
-                    path, ..
-                } => Some(path.as_path()),
-                Input::VapourSynthScript {
-                    ..
-                } => None, // May be invalid/Optional in the future
+                Input::Video { path, .. } | Input::VapourSynth { path, .. } => Some(path.as_path()),
+                Input::VapourSynthScript { .. } => None, // May be invalid/Optional in the future
             }
         };
         let config = condor.sequence_config.scene_concatenator()?;
@@ -250,7 +230,7 @@ impl SceneConcatenator {
             return;
         }
         let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
-            id:         DETAILS.name.to_owned(),
+            id: DETAILS.name.to_owned(),
             completion: SequenceCompletion::Percentage(percentage.clamp(0.0, 100.0)),
         }));
     }

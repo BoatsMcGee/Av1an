@@ -38,17 +38,17 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameScore {
     /// SSIMULACRA2, higher is better.
-    pub ssimulacra2:   Option<f64>,
+    pub ssimulacra2: Option<f64>,
     /// Butteraugli, a distance where lower is better.
-    pub butteraugli:   Option<f64>,
+    pub butteraugli: Option<f64>,
     /// CVVDP's JOD, the headline measure, where higher is better.
-    pub cvvdp_jod:     Option<f64>,
+    pub cvvdp_jod: Option<f64>,
     /// CVVDP's quality score, which fmetrics reports alongside JOD.
     pub cvvdp_quality: Option<f64>,
     /// IW-SSIM, higher is better.
-    pub iwssim:        Option<f64>,
+    pub iwssim: Option<f64>,
     /// MS-SSIM, higher is better.
-    pub msssim:        Option<f64>,
+    pub msssim: Option<f64>,
 }
 
 impl FrameScore {
@@ -57,12 +57,12 @@ impl FrameScore {
     #[must_use]
     pub const fn with(metric: FmetricsMetric, value: f64) -> Self {
         Self {
-            ssimulacra2:   matches_if(metric, FmetricsMetric::Ssimulacra2, value),
-            butteraugli:   matches_if(metric, FmetricsMetric::Butteraugli, value),
-            cvvdp_jod:     matches_if(metric, FmetricsMetric::Cvvdp, value),
+            ssimulacra2: matches_if(metric, FmetricsMetric::Ssimulacra2, value),
+            butteraugli: matches_if(metric, FmetricsMetric::Butteraugli, value),
+            cvvdp_jod: matches_if(metric, FmetricsMetric::Cvvdp, value),
             cvvdp_quality: None,
-            iwssim:        matches_if(metric, FmetricsMetric::Iwssim, value),
-            msssim:        matches_if(metric, FmetricsMetric::Msssim, value),
+            iwssim: matches_if(metric, FmetricsMetric::Iwssim, value),
+            msssim: matches_if(metric, FmetricsMetric::Msssim, value),
         }
     }
 
@@ -72,12 +72,12 @@ impl FrameScore {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
-            ssimulacra2:   None,
-            butteraugli:   None,
-            cvvdp_jod:     None,
+            ssimulacra2: None,
+            butteraugli: None,
+            cvvdp_jod: None,
             cvvdp_quality: None,
-            iwssim:        None,
-            msssim:        None,
+            iwssim: None,
+            msssim: None,
         }
     }
 
@@ -134,7 +134,7 @@ struct Workspace {
     handle: FmetricsWorkspace,
     /// The next free index, or [`WorkspacePool::NONE`]. A free-list link, not
     /// workspace state.
-    next:   AtomicUsize,
+    next: AtomicUsize,
 }
 
 impl Workspace {
@@ -151,8 +151,8 @@ impl Workspace {
         if handle.is_null() {
             return Err(FmetricsError::CallFailed {
                 function: "fmetrics_workspace_create",
-                code:     0,
-                message:  "returned a null workspace".to_owned(),
+                code: 0,
+                message: "returned a null workspace".to_owned(),
             });
         }
         Ok(Self {
@@ -190,7 +190,7 @@ struct WorkspacePool {
     workspaces: Vec<Workspace>,
     /// The head of the free list, or [`WorkspacePool::NONE`] when all are in
     /// use.
-    free:       AtomicUsize,
+    free: AtomicUsize,
 }
 
 impl WorkspacePool {
@@ -252,15 +252,15 @@ impl WorkspacePool {
 /// accumulator.
 pub struct FmetricsScorer {
     /// The configuration this scorer was built from.
-    config:     FmetricsConfig,
+    config: FmetricsConfig,
     /// The colour properties both sides are read with.
-    color:      ColorInfo,
+    color: ColorInfo,
     /// The peak sample value for the source depth.
-    peak:       u32,
+    peak: u32,
     /// The colorspace both images are submitted as.
     colorspace: ffi::FmetricsColorspace,
     /// The per-pair workspaces or the CVVDP context.
-    inner:      Inner,
+    inner: Inner,
 }
 
 enum Inner {
@@ -276,9 +276,9 @@ enum Inner {
         /// geometry.
         context: FmetricsCvvdpCtx,
         /// Width the context was created for.
-        width:   c_int,
+        width: c_int,
         /// Height the context was created for.
-        height:  c_int,
+        height: c_int,
     },
 }
 
@@ -287,8 +287,7 @@ enum Inner {
 // automatic is that a temporal scorer's frames stay in order -- that is
 // enforced by `submit_pair_temporal` taking `&mut self`, not by the auto
 // traits.
-unsafe impl Sync for FmetricsScorer {
-}
+unsafe impl Sync for FmetricsScorer {}
 
 impl std::fmt::Debug for FmetricsScorer {
     #[inline]
@@ -323,8 +322,8 @@ impl FmetricsScorer {
         let inner = if config.is_temporal() {
             Inner::Temporal {
                 context: FmetricsCvvdpCtx(std::ptr::null_mut()),
-                width:   0,
-                height:  0,
+                width: 0,
+                height: 0,
             }
         } else {
             // One workspace per thread that may submit at once, so a caller
@@ -352,7 +351,7 @@ impl FmetricsScorer {
             Inner::PerPair {
                 pool: WorkspacePool {
                     workspaces: pool,
-                    free:       AtomicUsize::new(0),
+                    free: AtomicUsize::new(0),
                 },
             }
         };
@@ -408,12 +407,8 @@ impl FmetricsScorer {
     #[must_use]
     pub fn worker_count(&self) -> usize {
         match &self.inner {
-            Inner::PerPair {
-                pool,
-            } => pool.len().max(1),
-            Inner::Temporal {
-                ..
-            } => 1,
+            Inner::PerPair { pool } => pool.len().max(1),
+            Inner::Temporal { .. } => 1,
         }
     }
 
@@ -463,10 +458,7 @@ impl FmetricsScorer {
             });
         }
 
-        let Inner::PerPair {
-            pool,
-        } = &self.inner
-        else {
+        let Inner::PerPair { pool } = &self.inner else {
             return Err(FmetricsError::MetricUnavailable {
                 metric: self.config.metric.as_str().to_owned(),
                 reason: "a temporal metric needs `submit_pair_temporal`, which preserves frame \
@@ -500,7 +492,7 @@ impl FmetricsScorer {
         let Some(workspace) = pool.claim() else {
             return Err(FmetricsError::PoolExhausted {
                 workspaces: pool.len(),
-                reason:     "every workspace is in use; the scorer needs one workspace per thread \
+                reason: "every workspace is in use; the scorer needs one workspace per thread \
                              that submits at once"
                     .to_owned(),
             });
@@ -542,10 +534,7 @@ impl FmetricsScorer {
 
         Self::check_dimensions(&reference_image, &distorted_image)?;
 
-        let Inner::PerPair {
-            pool,
-        } = &self.inner
-        else {
+        let Inner::PerPair { pool } = &self.inner else {
             return Err(FmetricsError::MetricUnavailable {
                 metric: self.config.metric.as_str().to_owned(),
                 reason: "a temporal metric needs `submit_pair_temporal`, which preserves frame \
@@ -805,8 +794,8 @@ impl FmetricsScorer {
         if created.is_null() {
             return Err(FmetricsError::CallFailed {
                 function: "fmetrics_cvvdp_create",
-                code:     0,
-                message:  "returned a null context".to_owned(),
+                code: 0,
+                message: "returned a null context".to_owned(),
             });
         }
 
@@ -824,10 +813,7 @@ impl FmetricsScorer {
     /// Returns an error if fmetrics rejects the reset.
     #[inline]
     pub fn reset_temporal(&mut self) -> Result<(), FmetricsError> {
-        let Inner::Temporal {
-            context, ..
-        } = &mut self.inner
-        else {
+        let Inner::Temporal { context, .. } = &mut self.inner else {
             return Ok(());
         };
 
@@ -846,9 +832,7 @@ impl FmetricsScorer {
 impl Drop for FmetricsScorer {
     #[inline]
     fn drop(&mut self) {
-        if let Inner::Temporal {
-            context, ..
-        } = self.inner
+        if let Inner::Temporal { context, .. } = self.inner
             && !context.is_null()
             && let Ok(api) = FmetricsApi::load()
         {
@@ -1100,12 +1084,12 @@ mod tests {
     fn cvvdp_reports_jod_as_the_headline() {
         // JOD is the headline measure, so it is what `value` returns.
         let score = FrameScore {
-            ssimulacra2:   None,
-            butteraugli:   None,
-            cvvdp_jod:     Some(9.5),
+            ssimulacra2: None,
+            butteraugli: None,
+            cvvdp_jod: Some(9.5),
             cvvdp_quality: Some(120.0),
-            iwssim:        None,
-            msssim:        None,
+            iwssim: None,
+            msssim: None,
         };
         assert_eq!(score.value(FmetricsMetric::Cvvdp), Some(9.5));
         assert_eq!(score.cvvdp_quality, Some(120.0));

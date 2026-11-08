@@ -42,9 +42,9 @@ impl TrackKind {
 /// One track or stream of the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProbedTrack {
-    pub kind:         TrackKind,
+    pub kind: TrackKind,
     /// mkvmerge's track ID, absent when only `ffprobe` was available.
-    pub mkvmerge_id:  Option<u64>,
+    pub mkvmerge_id: Option<u64>,
     /// FFmpeg's stream index, absent when `ffprobe` was not run.
     pub ffmpeg_index: Option<u32>,
 }
@@ -111,13 +111,14 @@ pub fn probe(path: &Path, with_ffmpeg_streams: bool) -> Result<ProbedSource, Tra
         match_tracks_by_position(&mut tracks, streams);
     }
 
-    let source = ProbedSource {
-        tracks,
-    };
-    debug!("{}", TrackProbeError::Probed {
-        path:    path.to_path_buf(),
-        summary: summarize(&source),
-    });
+    let source = ProbedSource { tracks };
+    debug!(
+        "{}",
+        TrackProbeError::Probed {
+            path: path.to_path_buf(),
+            summary: summarize(&source),
+        }
+    );
 
     Ok(source)
 }
@@ -128,8 +129,8 @@ fn tracks_from_streams(streams: &[FfprobeStream]) -> Vec<ProbedTrack> {
         .iter()
         .filter_map(|stream| {
             Some(ProbedTrack {
-                kind:         stream.kind()?,
-                mkvmerge_id:  None,
+                kind: stream.kind()?,
+                mkvmerge_id: None,
                 ffmpeg_index: Some(stream.index),
             })
         })
@@ -163,7 +164,7 @@ pub enum TrackProbeError {
     MkvmergeNotRunnable { path: PathBuf, source: io::Error },
     #[error("mkvmerge could not identify {path}: {stderr}", path = .path.display())]
     MkvmergeIdentifyFailed {
-        path:   PathBuf,
+        path: PathBuf,
         stderr: String,
         source: serde_json::Error,
     },
@@ -176,7 +177,7 @@ pub enum TrackProbeError {
     FfprobeFailed { path: PathBuf, stderr: String },
     #[error("unexpected ffprobe output for {path}", path = .path.display())]
     FfprobeOutputUnreadable {
-        path:   PathBuf,
+        path: PathBuf,
         source: serde_json::Error,
     },
     #[error("{0}; probing the FFmpeg streams only")]
@@ -224,7 +225,7 @@ fn ffprobe_streams(path: &Path) -> Result<Vec<FfprobeStream>, TrackProbeError> {
 
     if !output.status.success() {
         return Err(TrackProbeError::FfprobeFailed {
-            path:   path.to_path_buf(),
+            path: path.to_path_buf(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
@@ -273,13 +274,13 @@ impl MkvmergeIdentify {
     /// The tracks and attachments this identification reports.
     fn tracks(&self) -> Vec<ProbedTrack> {
         let tracks = self.tracks.iter().map(|track| ProbedTrack {
-            kind:         track.kind(),
-            mkvmerge_id:  Some(track.id),
+            kind: track.kind(),
+            mkvmerge_id: Some(track.id),
             ffmpeg_index: None,
         });
         let attachments = self.attachments.iter().map(|attachment| ProbedTrack {
-            kind:         TrackKind::Attachment,
-            mkvmerge_id:  Some(attachment.id),
+            kind: TrackKind::Attachment,
+            mkvmerge_id: Some(attachment.id),
             ffmpeg_index: None,
         });
         tracks.chain(attachments).collect()
@@ -291,14 +292,14 @@ impl MkvmergeIdentify {
 #[derive(Debug, Deserialize)]
 struct MkvmergeIdentify {
     #[serde(default)]
-    tracks:      Vec<MkvmergeTrackInfo>,
+    tracks: Vec<MkvmergeTrackInfo>,
     #[serde(default)]
     attachments: Vec<MkvmergeAttachmentInfo>,
 }
 
 #[derive(Debug, Deserialize)]
 struct MkvmergeTrackInfo {
-    id:   u64,
+    id: u64,
     #[serde(rename = "type")]
     kind: String,
 }
@@ -329,7 +330,7 @@ struct FfprobeOutput {
 
 #[derive(Debug, Deserialize)]
 struct FfprobeStream {
-    index:      u32,
+    index: u32,
     #[serde(default)]
     codec_type: Option<String>,
 }
@@ -371,14 +372,11 @@ mod tests {
     fn probed() -> ProbedSource {
         let identified: MkvmergeIdentify =
             serde_json::from_str(mkvmerge_identify_json()).expect("identification parses");
-        let FfprobeOutput {
-            streams,
-        } = serde_json::from_str(ffprobe_json()).expect("ffprobe output parses");
+        let FfprobeOutput { streams } =
+            serde_json::from_str(ffprobe_json()).expect("ffprobe output parses");
         let mut tracks = identified.tracks();
         match_tracks_by_position(&mut tracks, &streams);
-        ProbedSource {
-            tracks,
-        }
+        ProbedSource { tracks }
     }
 
     /// mkvmerge's IDs come from its own list, attachments included.
@@ -418,7 +416,7 @@ mod tests {
     fn mkvmerge_track_types_are_mapped() {
         assert_eq!(
             MkvmergeTrackInfo {
-                id:   1,
+                id: 1,
                 kind: "subtitles".to_owned(),
             }
             .kind(),
@@ -426,7 +424,7 @@ mod tests {
         );
         assert_eq!(
             MkvmergeTrackInfo {
-                id:   2,
+                id: 2,
                 kind: "button".to_owned(),
             }
             .kind(),
@@ -440,16 +438,12 @@ mod tests {
         let identified: MkvmergeIdentify =
             serde_json::from_str(mkvmerge_identify_json()).expect("identification parses");
         let mut tracks = identified.tracks();
-        let FfprobeOutput {
-            streams,
-        } = serde_json::from_str(
+        let FfprobeOutput { streams } = serde_json::from_str(
             r#"{"streams":[{"index":0,"codec_type":"video"},{"index":1,"codec_type":"audio"}]}"#,
         )
         .expect("ffprobe output parses");
         match_tracks_by_position(&mut tracks, &streams);
-        let source = ProbedSource {
-            tracks,
-        };
+        let source = ProbedSource { tracks };
         assert_eq!(source.ffmpeg_indices(TrackKind::Audio), vec![1]);
         assert_eq!(
             source.ffmpeg_indices(TrackKind::Subtitle),
@@ -470,9 +464,8 @@ mod tests {
     /// since the FFmpeg settings are keyed by stream index.
     #[test]
     fn ffprobe_streams_alone_describe_a_source() {
-        let FfprobeOutput {
-            streams,
-        } = serde_json::from_str(ffprobe_json()).expect("ffprobe output parses");
+        let FfprobeOutput { streams } =
+            serde_json::from_str(ffprobe_json()).expect("ffprobe output parses");
         let source = ProbedSource {
             tracks: tracks_from_streams(&streams),
         };

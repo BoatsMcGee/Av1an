@@ -13,7 +13,7 @@ pub type Outputs = BTreeMap<OutputIndex, VariableName>;
 
 pub struct VapourSynthScript {
     pub imports: Imports,
-    pub lines:   Lines,
+    pub lines: Lines,
     pub outputs: Outputs,
 }
 

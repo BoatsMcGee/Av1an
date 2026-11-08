@@ -1,8 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        self,
-        Arc,
+        self, Arc,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -17,28 +16,21 @@ use crate::{
         Condor,
         input::Input,
         sequence::{
-            Sequence,
-            SequenceCompletion,
-            SequenceDetails,
-            SequenceStatus,
-            Status,
+            Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status,
             parallel_encoder::{ParallelEncoder, Task as ParallelEncodeTask},
         },
     },
     models::sequence::{
-        SequenceConfigHandler,
-        SequenceDataHandler,
-        benchmarker::BenchmarkerConfigHandler,
-        parallel_encoder::ParallelEncoderConfigHandler,
-        scene_detector::SceneDetectorDataHandler,
+        SequenceConfigHandler, SequenceDataHandler, benchmarker::BenchmarkerConfigHandler,
+        parallel_encoder::ParallelEncoderConfigHandler, scene_detector::SceneDetectorDataHandler,
     },
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Benchmarker",
+    name: "Benchmarker",
     description: "Measures how fast scenes can be encoded in parallel before no meaningful \
                   improvement is seen by adding more workers.",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 pub struct Benchmarker {
@@ -97,11 +89,11 @@ where
         // may begin a lengthy caching process, hence the separation
         // between validate and initialize.
         progress_tx.send(SequenceStatus::Whole(Status::Processing {
-            id:         DETAILS.name.to_owned(),
+            id: DETAILS.name.to_owned(),
             completion: SequenceCompletion::Custom {
-                name:      DETAILS.name.to_owned(),
+                name: DETAILS.name.to_owned(),
                 completed: 0.0,
-                total:     1.0,
+                total: 1.0,
             },
         }))?;
         input.clip_info()?;
@@ -196,7 +188,7 @@ where
                     Some(previous_result.workers);
 
                 progress_tx.send(SequenceStatus::Whole(Status::Failed {
-                    id:    current_result.workers.to_string(),
+                    id: current_result.workers.to_string(),
                     error: BenchmarkerError::ThresholdNotMet.to_string(),
                 }))?;
                 break;
@@ -223,9 +215,7 @@ where
 impl Default for Benchmarker {
     #[inline]
     fn default() -> Self {
-        Self {
-            input: None
-        }
+        Self { input: None }
     }
 }
 
@@ -252,44 +242,36 @@ impl Benchmarker {
                     SequenceStatus::Whole(Status::Processing {
                         id: _id,
                         completion,
-                    }) => {
+                    }) =>
+                    {
                         #[allow(clippy::collapsible_match)]
-                        if let SequenceCompletion::Frames {
-                            completed,
-                            total,
-                        } = completion
-                        {
+                        if let SequenceCompletion::Frames { completed, total } = completion {
                             frames_completed_clone.store(completed as usize, Ordering::SeqCst);
                             progress_tx_clone.send(SequenceStatus::Subprocess {
                                 parent: Status::Processing {
-                                    id:         DETAILS.name.to_string(),
+                                    id: DETAILS.name.to_string(),
                                     completion: SequenceCompletion::Passes {
                                         completed: workers,
-                                        total:     workers,
+                                        total: workers,
                                     },
                                 },
-                                child:  Status::Processing {
-                                    id:         workers.to_string(),
-                                    completion: SequenceCompletion::Frames {
-                                        completed,
-                                        total,
-                                    },
+                                child: Status::Processing {
+                                    id: workers.to_string(),
+                                    completion: SequenceCompletion::Frames { completed, total },
                                 },
                             })?;
                         }
                     },
-                    SequenceStatus::Whole(Status::Completed {
-                        id: _,
-                    }) => {
+                    SequenceStatus::Whole(Status::Completed { id: _ }) => {
                         progress_tx_clone.send(SequenceStatus::Subprocess {
                             parent: Status::Processing {
-                                id:         DETAILS.name.to_string(),
+                                id: DETAILS.name.to_string(),
                                 completion: SequenceCompletion::Passes {
                                     completed: workers,
-                                    total:     workers,
+                                    total: workers,
                                 },
                             },
-                            child:  Status::Completed {
+                            child: Status::Completed {
                                 id: workers.to_string(),
                             },
                         })?;
@@ -320,9 +302,9 @@ impl Benchmarker {
 }
 
 pub struct BenchmarkResult {
-    pub workers:        u8,
+    pub workers: u8,
     pub frames_encoded: usize,
-    pub time:           Duration,
+    pub time: Duration,
 }
 
 impl BenchmarkResult {

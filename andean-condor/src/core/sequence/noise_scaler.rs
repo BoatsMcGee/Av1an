@@ -10,8 +10,7 @@ use crate::{
     models::{
         encoder::Encoder,
         sequence::{
-            SequenceConfigHandler,
-            SequenceDataHandler,
+            SequenceConfigHandler, SequenceDataHandler,
             noise_detector::NoiseDetectorDataHandler,
             noise_scaler::{NoiseScalerConfigHandler, NoiseScalerData, NoiseScalerDataHandler},
         },
@@ -19,9 +18,9 @@ use crate::{
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Noise Scaler",
+    name: "Noise Scaler",
     description: "Scales the Photon Noise per scene based on Noise Detector results.",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 #[derive(Default)]
@@ -89,12 +88,9 @@ where
                 continue;
             }
             let scene_photon_noise = match &mut scene.encoder {
-                Encoder::AOM {
-                    photon_noise, ..
-                }
-                | Encoder::RAV1E {
-                    photon_noise, ..
-                } => photon_noise,
+                Encoder::AOM { photon_noise, .. } | Encoder::RAV1E { photon_noise, .. } => {
+                    photon_noise
+                },
                 Encoder::SVTAV1 {
                     options,
                     photon_noise,
@@ -134,9 +130,7 @@ where
                     scene_photon_noise.chroma_iso.map(|iso| (iso as f64 * scaler).round() as u32);
             }
 
-            *scene.sequence_data.get_noise_scaling_mut()? = Some(NoiseScalerData {
-                scaler,
-            });
+            *scene.sequence_data.get_noise_scaling_mut()? = Some(NoiseScalerData { scaler });
         }
 
         condor.save()?;

@@ -91,27 +91,21 @@ impl VshipChromaSubsample {
     #[inline]
     #[must_use]
     pub const fn yuv420() -> Self {
-        Self {
-            subw: 1, subh: 1
-        }
+        Self { subw: 1, subh: 1 }
     }
 
     /// 4:2:2 chroma.
     #[inline]
     #[must_use]
     pub const fn yuv422() -> Self {
-        Self {
-            subw: 1, subh: 0
-        }
+        Self { subw: 1, subh: 0 }
     }
 
     /// 4:4:4 chroma.
     #[inline]
     #[must_use]
     pub const fn yuv444() -> Self {
-        Self {
-            subw: 0, subh: 0
-        }
+        Self { subw: 0, subh: 0 }
     }
 }
 
@@ -227,13 +221,13 @@ pub enum VshipPrimaries {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct VshipCropRectangle {
     /// Rows removed from the top.
-    pub top:    c_int,
+    pub top: c_int,
     /// Rows removed from the bottom.
     pub bottom: c_int,
     /// Columns removed from the left.
-    pub left:   c_int,
+    pub left: c_int,
     /// Columns removed from the right.
-    pub right:  c_int,
+    pub right: c_int,
 }
 
 /// A complete description of one input picture.
@@ -244,31 +238,31 @@ pub struct VshipCropRectangle {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VshipColorspace {
     /// Luma width in pixels.
-    pub width:             i64,
+    pub width: i64,
     /// Luma height in pixels.
-    pub height:            i64,
+    pub height: i64,
     /// Width to scale the picture to before cropping, or -1 for no scaling.
-    pub target_width:      i64,
+    pub target_width: i64,
     /// Height to scale the picture to before cropping, or -1 for no scaling.
-    pub target_height:     i64,
+    pub target_height: i64,
     /// Sample type.
-    pub sample:            VshipSample,
+    pub sample: VshipSample,
     /// Luma/chroma range.
-    pub range:             VshipRange,
+    pub range: VshipRange,
     /// Chroma subsampling.
-    pub subsampling:       VshipChromaSubsample,
+    pub subsampling: VshipChromaSubsample,
     /// Chroma siting.
-    pub chroma_location:   VshipChromaLocation,
+    pub chroma_location: VshipChromaLocation,
     /// Colour family. Deprecated in the C header; [`Self::yuv_matrix`] decides.
-    pub color_family:      VshipColorFamily,
+    pub color_family: VshipColorFamily,
     /// YUV to RGB matrix.
-    pub yuv_matrix:        VshipYuvMatrix,
+    pub yuv_matrix: VshipYuvMatrix,
     /// Transfer function.
     pub transfer_function: VshipTransferFunction,
     /// Primaries.
-    pub primaries:         VshipPrimaries,
+    pub primaries: VshipPrimaries,
     /// Cropping applied after any scaling.
-    pub crop:              VshipCropRectangle,
+    pub crop: VshipCropRectangle,
 }
 
 impl VshipColorspace {
@@ -284,19 +278,17 @@ impl VshipColorspace {
             target_height: -1,
             sample: VshipSample::Uint8,
             range: VshipRange::Limited,
-            subsampling: VshipChromaSubsample {
-                subw: 1, subh: 1
-            },
+            subsampling: VshipChromaSubsample { subw: 1, subh: 1 },
             chroma_location: VshipChromaLocation::Left,
             color_family: VshipColorFamily::YUV,
             yuv_matrix: VshipYuvMatrix::Bt709,
             transfer_function: VshipTransferFunction::Bt709,
             primaries: VshipPrimaries::Bt709,
             crop: VshipCropRectangle {
-                top:    0,
+                top: 0,
                 bottom: 0,
-                left:   0,
-                right:  0,
+                left: 0,
+                right: 0,
             },
         }
     }
@@ -335,13 +327,13 @@ impl VshipBackend {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VshipVersion {
     /// Major version.
-    pub major:       c_int,
+    pub major: c_int,
     /// Minor version.
-    pub minor:       c_int,
+    pub minor: c_int,
     /// Patch version.
     pub minor_minor: c_int,
     /// Backend this build targets.
-    pub backend:     VshipBackend,
+    pub backend: VshipBackend,
 }
 
 /// A status code returned by every libvship entry point.
@@ -428,13 +420,13 @@ pub enum VshipStructType {
 #[derive(Debug, Clone, Copy)]
 pub struct VshipInitSsimulacra2_1 {
     /// Must be [`VshipStructType::InitSsimulacra2`].
-    pub struct_type:    VshipStructType,
+    pub struct_type: VshipStructType,
     /// Colorspace of the reference frames.
     pub src_colorspace: VshipColorspace,
     /// Colorspace of the distorted frames.
     pub dis_colorspace: VshipColorspace,
     /// Device index, as accepted by `Vship_GPUFullCheck`.
-    pub gpu_id:         c_int,
+    pub gpu_id: c_int,
 }
 
 /// Initialisation arguments for Butteraugli.
@@ -442,18 +434,18 @@ pub struct VshipInitSsimulacra2_1 {
 #[derive(Debug, Clone, Copy)]
 pub struct VshipInitButteraugli_1 {
     /// Must be [`VshipStructType::InitButteraugli`].
-    pub struct_type:          VshipStructType,
+    pub struct_type: VshipStructType,
     /// Colorspace of the reference frames.
-    pub src_colorspace:       VshipColorspace,
+    pub src_colorspace: VshipColorspace,
     /// Colorspace of the distorted frames.
-    pub dis_colorspace:       VshipColorspace,
+    pub dis_colorspace: VshipColorspace,
     /// Exponent of the norm to minimise. 2 by convention.
-    pub q_norm:               c_int,
+    pub q_norm: c_int,
     /// Peak display brightness in nits, which scales the metric's intensity
     /// weighting.
     pub intensity_multiplier: f32,
     /// Device index, as accepted by `Vship_GPUFullCheck`.
-    pub gpu_id:               c_int,
+    pub gpu_id: c_int,
 }
 
 /// Initialisation arguments for CVVDP.
@@ -461,23 +453,23 @@ pub struct VshipInitButteraugli_1 {
 #[derive(Debug, Clone, Copy)]
 pub struct VshipInitCvvdp_1 {
     /// Must be [`VshipStructType::InitCvvdp`].
-    pub struct_type:            VshipStructType,
+    pub struct_type: VshipStructType,
     /// Colorspace of the reference frames.
-    pub src_colorspace:         VshipColorspace,
+    pub src_colorspace: VshipColorspace,
     /// Colorspace of the distorted frames.
-    pub dis_colorspace:         VshipColorspace,
+    pub dis_colorspace: VshipColorspace,
     /// Frame rate in frames per second, which sets the motion speed the
     /// temporal model assumes.
-    pub fps:                    f32,
+    pub fps: f32,
     /// Whether to scale to the display resolution named by the model.
-    pub resize_to_display:      bool,
+    pub resize_to_display: bool,
     /// NUL-terminated model name, e.g. `standard_fhd`.
-    pub model_key_cstr:         *const c_char,
+    pub model_key_cstr: *const c_char,
     /// NUL-terminated path to a JSON display-configuration override, or null
     /// for none.
     pub model_config_json_cstr: *const c_char,
     /// Device index, as accepted by `Vship_GPUFullCheck`.
-    pub gpu_id:                 c_int,
+    pub gpu_id: c_int,
 }
 
 /// Output of `Vship_ComputeHandler` for SSIMULACRA2.
@@ -490,7 +482,7 @@ pub struct VshipScoreSsimulacra2 {
     pub struct_type: VshipStructType,
     /// Written by libvship. Higher is better, and 1.0 is the maximum for
     /// identical inputs.
-    pub score:       f64,
+    pub score: f64,
 }
 
 impl Default for VshipScoreSsimulacra2 {
@@ -498,7 +490,7 @@ impl Default for VshipScoreSsimulacra2 {
     fn default() -> Self {
         Self {
             struct_type: VshipStructType::ScoreSsimulacra2,
-            score:       0.0,
+            score: 0.0,
         }
     }
 }
@@ -513,15 +505,15 @@ pub struct VshipScoreButteraugli {
     /// Must be [`VshipStructType::ScoreButteraugli`]. The library checks it.
     pub struct_type: VshipStructType,
     /// Written by libvship. The score for the configured `Qnorm`.
-    pub norm_q:      f64,
+    pub norm_q: f64,
     /// Written by libvship. The L3 norm of the difference.
-    pub norm_3:      f64,
+    pub norm_3: f64,
     /// Written by libvship. The Linfinity norm of the difference.
-    pub norm_inf:    f64,
+    pub norm_inf: f64,
     /// Always null: this crate does not retrieve distortion maps.
-    pub dstp:        *const u8,
+    pub dstp: *const u8,
     /// Unused while `dstp` is null.
-    pub dst_stride:  i64,
+    pub dst_stride: i64,
 }
 
 impl Default for VshipScoreButteraugli {
@@ -529,11 +521,11 @@ impl Default for VshipScoreButteraugli {
     fn default() -> Self {
         Self {
             struct_type: VshipStructType::ScoreButteraugli,
-            norm_q:      0.0,
-            norm_3:      0.0,
-            norm_inf:    0.0,
-            dstp:        std::ptr::null(),
-            dst_stride:  0,
+            norm_q: 0.0,
+            norm_3: 0.0,
+            norm_inf: 0.0,
+            dstp: std::ptr::null(),
+            dst_stride: 0,
         }
     }
 }
@@ -549,11 +541,11 @@ pub struct VshipScoreCvvdp {
     /// Must be [`VshipStructType::ScoreCvvdp`]. The library checks it.
     pub struct_type: VshipStructType,
     /// Written by libvship. Higher is better.
-    pub score:       f64,
+    pub score: f64,
     /// Always null: this crate does not retrieve distortion maps.
-    pub dstp:        *const u8,
+    pub dstp: *const u8,
     /// Unused while `dstp` is null.
-    pub dst_stride:  i64,
+    pub dst_stride: i64,
 }
 
 impl Default for VshipScoreCvvdp {
@@ -561,9 +553,9 @@ impl Default for VshipScoreCvvdp {
     fn default() -> Self {
         Self {
             struct_type: VshipStructType::ScoreCvvdp,
-            score:       0.0,
-            dstp:        std::ptr::null(),
-            dst_stride:  0,
+            score: 0.0,
+            dstp: std::ptr::null(),
+            dst_stride: 0,
         }
     }
 }
@@ -677,15 +669,15 @@ impl Default for VshipVulkanFeatureMatrix {
 #[derive(Debug, Clone, Copy)]
 pub struct VshipDeviceInfo {
     /// Device name, NUL-padded.
-    pub name:                  [c_char; 256],
+    pub name: [c_char; 256],
     /// VRAM size in bytes.
-    pub vram_size:             u64,
+    pub vram_size: u64,
     /// Non-zero when the device is integrated.
-    pub integrated:            c_int,
+    pub integrated: c_int,
     /// Streaming multiprocessor count.
     pub multi_processor_count: c_int,
     /// Warp size.
-    pub warp_size:             c_int,
+    pub warp_size: c_int,
     /// Only populated for the Vulkan backend.
     pub vulkan_feature_matrix: VshipVulkanFeatureMatrix,
 }
@@ -719,11 +711,11 @@ impl Default for VshipDeviceInfo {
     fn default() -> Self {
         Self {
             // NUL-filled, which `name` trims to an empty string.
-            name:                  [0; 256],
-            vram_size:             0,
-            integrated:            0,
+            name: [0; 256],
+            vram_size: 0,
+            integrated: 0,
             multi_processor_count: 0,
-            warp_size:             0,
+            warp_size: 0,
             vulkan_feature_matrix: VshipVulkanFeatureMatrix::default(),
         }
     }
@@ -737,33 +729,33 @@ impl Default for VshipDeviceInfo {
 #[derive(Clone, Copy)]
 pub struct VshipApi {
     /// Reports the library version and backend.
-    pub get_version:                     GetVersion,
+    pub get_version: GetVersion,
     /// Counts the usable compute devices.
-    pub get_device_count:                GetDeviceCount,
+    pub get_device_count: GetDeviceCount,
     /// Describes one compute device.
-    pub get_device_info:                 GetDeviceInfo,
+    pub get_device_info: GetDeviceInfo,
     /// Verifies a device can actually run libvship.
-    pub gpu_full_check:                  GpuFullCheck,
+    pub gpu_full_check: GpuFullCheck,
     /// Expands a status code into its message.
-    pub get_error_message:               GetErrorMessage,
+    pub get_error_message: GetErrorMessage,
     /// Retrieves the process-wide last error.
-    pub get_detailed_last_error:         GetDetailedLastError,
+    pub get_detailed_last_error: GetDetailedLastError,
     /// Retrieves one handler's last error.
     pub get_detailed_last_error_handler: GetDetailedLastErrorHandler,
     /// Creates a metric handler for any metric.
-    pub init_handler:                    InitHandler,
+    pub init_handler: InitHandler,
     /// Destroys a metric handler.
-    pub free_handler:                    FreeHandler,
+    pub free_handler: FreeHandler,
     /// Scores one reference/distorted pair.
-    pub compute_handler:                 ComputeHandler,
+    pub compute_handler: ComputeHandler,
     /// Clears a temporal metric's frame history.
-    pub reset:                           Reset,
+    pub reset: Reset,
     /// Clears a temporal metric's accumulated score.
-    pub reset_score:                     ResetScore,
+    pub reset_score: ResetScore,
     /// Allocates host-pinned memory for plane uploads.
-    pub pinned_malloc2:                  Option<PinnedMalloc2>,
+    pub pinned_malloc2: Option<PinnedMalloc2>,
     /// Releases memory from `pinned_malloc2`.
-    pub pinned_free2:                    Option<PinnedFree2>,
+    pub pinned_free2: Option<PinnedFree2>,
 }
 
 impl VshipApi {
@@ -802,9 +794,7 @@ impl VshipApi {
         let status = unsafe { (self.get_device_count)(&raw mut count) };
         check(status, "Vship_GetDeviceCount")?;
 
-        u32::try_from(count).map_err(|_| VshipError::DeviceCount {
-            count,
-        })
+        u32::try_from(count).map_err(|_| VshipError::DeviceCount { count })
     }
 
     /// What libvship reports about one device.
@@ -950,22 +940,22 @@ fn resolve() -> Result<VshipApi, VshipException> {
     // `name`. The leaked `library` above keeps the code these point at
     // mapped.
     Ok(VshipApi {
-        get_version:                     required(library, b"Vship_GetVersion\0")?,
-        get_device_count:                required(library, b"Vship_GetDeviceCount\0")?,
-        get_device_info:                 required(library, b"Vship_GetDeviceInfo\0")?,
-        gpu_full_check:                  required(library, b"Vship_GPUFullCheck\0")?,
-        get_error_message:               required(library, b"Vship_GetErrorMessage\0")?,
-        get_detailed_last_error:         required(library, b"Vship_GetDetailedLastError\0")?,
+        get_version: required(library, b"Vship_GetVersion\0")?,
+        get_device_count: required(library, b"Vship_GetDeviceCount\0")?,
+        get_device_info: required(library, b"Vship_GetDeviceInfo\0")?,
+        gpu_full_check: required(library, b"Vship_GPUFullCheck\0")?,
+        get_error_message: required(library, b"Vship_GetErrorMessage\0")?,
+        get_detailed_last_error: required(library, b"Vship_GetDetailedLastError\0")?,
         get_detailed_last_error_handler: required(library, b"Vship_GetDetailedLastErrorHandler\0")?,
-        init_handler:                    required(library, b"Vship_InitHandler\0")?,
-        free_handler:                    required(library, b"Vship_FreeHandler\0")?,
-        compute_handler:                 required(library, b"Vship_ComputeHandler\0")?,
-        reset:                           required(library, b"Vship_Reset\0")?,
-        reset_score:                     required(library, b"Vship_ResetScore\0")?,
+        init_handler: required(library, b"Vship_InitHandler\0")?,
+        free_handler: required(library, b"Vship_FreeHandler\0")?,
+        compute_handler: required(library, b"Vship_ComputeHandler\0")?,
+        reset: required(library, b"Vship_Reset\0")?,
+        reset_score: required(library, b"Vship_ResetScore\0")?,
         // Optional: an older or trimmed build may not export the pinned-memory
         // entry points, in which case planes are uploaded from decoder memory.
-        pinned_malloc2:                  optional(library, b"Vship_PinnedMalloc2\0"),
-        pinned_free2:                    optional(library, b"Vship_PinnedFree2\0"),
+        pinned_malloc2: optional(library, b"Vship_PinnedMalloc2\0"),
+        pinned_free2: optional(library, b"Vship_PinnedFree2\0"),
     })
 }
 
@@ -1273,19 +1263,19 @@ mod tests {
         // Mirrors `typedef struct Vship_Colorspace_t` in VshipColor.h.
         #[repr(C)]
         struct Expected {
-            width:             i64,
-            height:            i64,
-            target_width:      i64,
-            target_height:     i64,
-            sample:            VshipSample,
-            range:             VshipRange,
-            subsampling:       VshipChromaSubsample,
-            chroma_location:   VshipChromaLocation,
-            color_family:      VshipColorFamily,
-            yuv_matrix:        VshipYuvMatrix,
+            width: i64,
+            height: i64,
+            target_width: i64,
+            target_height: i64,
+            sample: VshipSample,
+            range: VshipRange,
+            subsampling: VshipChromaSubsample,
+            chroma_location: VshipChromaLocation,
+            color_family: VshipColorFamily,
+            yuv_matrix: VshipYuvMatrix,
             transfer_function: VshipTransferFunction,
-            primaries:         VshipPrimaries,
-            crop:              VshipCropRectangle,
+            primaries: VshipPrimaries,
+            crop: VshipCropRectangle,
         }
 
         assert_eq!(size_of::<VshipColorspace>(), size_of::<Expected>());
@@ -1439,10 +1429,10 @@ mod tests {
         // Mirrors `typedef struct Vship_InitSSIMULACRA2_1` in VshipAPI.h.
         #[repr(C)]
         struct Expected {
-            struct_type:    VshipStructType,
+            struct_type: VshipStructType,
             src_colorspace: VshipColorspace,
             dis_colorspace: VshipColorspace,
-            gpu_id:         c_int,
+            gpu_id: c_int,
         }
 
         assert_eq!(size_of::<VshipInitSsimulacra2_1>(), size_of::<Expected>());
@@ -1454,12 +1444,12 @@ mod tests {
         // Mirrors `typedef struct Vship_InitButteraugli_1` in VshipAPI.h.
         #[repr(C)]
         struct Expected {
-            struct_type:          VshipStructType,
-            src_colorspace:       VshipColorspace,
-            dis_colorspace:       VshipColorspace,
-            q_norm:               c_int,
+            struct_type: VshipStructType,
+            src_colorspace: VshipColorspace,
+            dis_colorspace: VshipColorspace,
+            q_norm: c_int,
             intensity_multiplier: f32,
-            gpu_id:               c_int,
+            gpu_id: c_int,
         }
 
         assert_eq!(size_of::<VshipInitButteraugli_1>(), size_of::<Expected>());
@@ -1471,14 +1461,14 @@ mod tests {
         // Mirrors `typedef struct Vship_InitCVVDP_1` in VshipAPI.h.
         #[repr(C)]
         struct Expected {
-            struct_type:            VshipStructType,
-            src_colorspace:         VshipColorspace,
-            dis_colorspace:         VshipColorspace,
-            fps:                    f32,
-            resize_to_display:      bool,
-            model_key_cstr:         *const c_char,
+            struct_type: VshipStructType,
+            src_colorspace: VshipColorspace,
+            dis_colorspace: VshipColorspace,
+            fps: f32,
+            resize_to_display: bool,
+            model_key_cstr: *const c_char,
             model_config_json_cstr: *const c_char,
-            gpu_id:                 c_int,
+            gpu_id: c_int,
         }
 
         assert_eq!(size_of::<VshipInitCvvdp_1>(), size_of::<Expected>());
@@ -1491,7 +1481,7 @@ mod tests {
         #[repr(C)]
         struct Expected {
             struct_type: VshipStructType,
-            score:       f64,
+            score: f64,
         }
 
         assert_eq!(size_of::<VshipScoreSsimulacra2>(), size_of::<Expected>());
@@ -1504,11 +1494,11 @@ mod tests {
         #[repr(C)]
         struct Expected {
             struct_type: VshipStructType,
-            norm_q:      f64,
-            norm_3:      f64,
-            norm_inf:    f64,
-            dstp:        *const u8,
-            dst_stride:  i64,
+            norm_q: f64,
+            norm_3: f64,
+            norm_inf: f64,
+            dstp: *const u8,
+            dst_stride: i64,
         }
 
         assert_eq!(size_of::<VshipScoreButteraugli>(), size_of::<Expected>());
@@ -1521,9 +1511,9 @@ mod tests {
         #[repr(C)]
         struct Expected {
             struct_type: VshipStructType,
-            score:       f64,
-            dstp:        *const u8,
-            dst_stride:  i64,
+            score: f64,
+            dstp: *const u8,
+            dst_stride: i64,
         }
 
         assert_eq!(size_of::<VshipScoreCvvdp>(), size_of::<Expected>());
@@ -1535,10 +1525,10 @@ mod tests {
         // Mirrors the anonymous `Vship_Version` struct in VshipAPI.h.
         #[repr(C)]
         struct Expected {
-            major:       c_int,
-            minor:       c_int,
+            major: c_int,
+            minor: c_int,
             minor_minor: c_int,
-            backend:     VshipBackend,
+            backend: VshipBackend,
         }
 
         assert_eq!(size_of::<VshipVersion>(), size_of::<Expected>());
@@ -1550,11 +1540,11 @@ mod tests {
         // Mirrors `typedef struct Vship_DeviceInfo` in VshipAPI.h.
         #[repr(C)]
         struct Expected {
-            name:                  [c_char; 256],
-            vram_size:             u64,
-            integrated:            c_int,
+            name: [c_char; 256],
+            vram_size: u64,
+            integrated: c_int,
             multi_processor_count: c_int,
-            warp_size:             c_int,
+            warp_size: c_int,
             vulkan_feature_matrix: VshipVulkanFeatureMatrix,
         }
 

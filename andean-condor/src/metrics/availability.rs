@@ -24,34 +24,34 @@ use av_metrics_vmaf::VmafModel;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetricLibraryInfo {
     /// Display name, e.g. `libvship`.
-    pub name:      &'static str,
+    pub name: &'static str,
     /// Whether the library is loaded and usable right now.
     pub available: bool,
     /// The library version, when it loaded.
     ///
     /// `None` whenever `available` is `false`: a caller must never print a
     /// version for a library it reported as missing.
-    pub version:   Option<String>,
+    pub version: Option<String>,
     /// Extra `key: value` pairs describing the loaded library.
     ///
     /// Empty when the library did not load. Diagnostics rather than state, so
     /// their presence does not affect [`Self::available`].
-    pub details:   Vec<(&'static str, String)>,
+    pub details: Vec<(&'static str, String)>,
     /// Compute devices the library can use, for the GPU metric libraries.
     ///
     /// Empty for a CPU library, and for one that is absent. This is what a user
     /// needs in order to override the device choice, since the index here is
     /// the `gpu_id` that selects it.
-    pub devices:   Vec<MetricDeviceInfo>,
+    pub devices: Vec<MetricDeviceInfo>,
 }
 
 /// One compute device a metric library enumerated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetricDeviceInfo {
     /// The device's index, which is the value that selects it.
-    pub id:         u32,
+    pub id: u32,
     /// The device's reported name.
-    pub name:       String,
+    pub name: String,
     /// VRAM in bytes, or `None` when the library did not report a usable size.
     pub vram_bytes: Option<u64>,
     /// Whether the library classifies this device as integrated.

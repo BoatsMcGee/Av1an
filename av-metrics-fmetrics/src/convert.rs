@@ -63,11 +63,11 @@ impl RgbSource for RgbImage {
 /// nothing beyond the library call.
 #[derive(Debug, Clone, Copy)]
 pub struct RgbView<'a> {
-    data:   &'a [u8],
-    width:  usize,
+    data: &'a [u8],
+    width: usize,
     height: usize,
     stride: usize,
-    wide:   bool,
+    wide: bool,
 }
 
 impl<'a> RgbView<'a> {
@@ -192,15 +192,15 @@ pub trait RgbSource {
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneSource {
     /// Width in samples, not bytes.
-    pub width:            usize,
+    pub width: usize,
     /// Height in samples.
-    pub height:           usize,
+    pub height: usize,
     /// Samples from one row to the next. May be negative for bottom-up images.
-    pub stride:           isize,
+    pub stride: isize,
     /// Offset of the first visible sample from `data`.
-    pub data_origin:      usize,
+    pub data_origin: usize,
     /// Pointer to the start of the underlying allocation.
-    pub data:             *const u8,
+    pub data: *const u8,
     /// Bytes per sample.
     pub bytes_per_sample: usize,
 }
@@ -320,10 +320,10 @@ impl std::ops::Deref for PlaneSet {
 #[derive(Debug)]
 pub struct RgbImage {
     /// Interleaved samples, `u8` or `u16` according to [`RgbImage::is_wide`].
-    data:   Vec<u8>,
-    width:  usize,
+    data: Vec<u8>,
+    width: usize,
     height: usize,
-    wide:   bool,
+    wide: bool,
 }
 
 impl RgbImage {
@@ -437,13 +437,13 @@ struct Coefficients {
     /// Upper chroma bound, for the same reason as `y_max`.
     c_max: f32,
     /// Red's gain on the V difference.
-    r_v:   f32,
+    r_v: f32,
     /// Green's loss from the U difference.
-    g_u:   f32,
+    g_u: f32,
     /// Green's loss from the V difference.
-    g_v:   f32,
+    g_v: f32,
     /// Blue's gain on the U difference.
-    b_u:   f32,
+    b_u: f32,
 }
 
 impl Coefficients {
@@ -512,11 +512,11 @@ fn clamp_u16(value: f32) -> u16 {
 #[derive(Debug, Clone, Copy)]
 struct RowPlanes {
     /// Pointer to luma sample `(0, 0)`.
-    luma:   *const u8,
+    luma: *const u8,
     /// Pointer to chroma sample `(0, 0)` of each chroma plane.
     chroma: [*const u8; 2],
     /// Bytes per sample.
-    bytes:  usize,
+    bytes: usize,
 }
 
 impl RowPlanes {
@@ -888,10 +888,10 @@ mod tests {
         // only works if the expansion happens; skipping it would lift the
         // shadows of every limited-range clip.
         let limited = ColorInfo {
-            matrix:    YuvMatrix::Bt709,
-            range:     SampleRange::Limited,
+            matrix: YuvMatrix::Bt709,
+            range: SampleRange::Limited,
             bit_depth: 8,
-            hdr:       false,
+            hdr: false,
         };
         let neutral = vec![128u8; 4];
         // SAFETY: leaked buffers of the stated size.
@@ -994,10 +994,10 @@ mod tests {
     #[test]
     fn ten_bit_input_up_converts_rather_than_truncating() {
         let info = ColorInfo {
-            matrix:    YuvMatrix::Bt709,
-            range:     SampleRange::Full,
+            matrix: YuvMatrix::Bt709,
+            range: SampleRange::Full,
             bit_depth: 10,
-            hdr:       false,
+            hdr: false,
         };
         // SAFETY: leaked buffers of the stated size.
         let image = unsafe {
@@ -1059,10 +1059,10 @@ mod tests {
     fn hdr_flag_is_carried_rather_than_linearised() {
         // PQ/HLG samples pass through untouched; only the flag marks them.
         let info = ColorInfo {
-            matrix:    YuvMatrix::Bt2020,
-            range:     SampleRange::Limited,
+            matrix: YuvMatrix::Bt2020,
+            range: SampleRange::Limited,
             bit_depth: 10,
-            hdr:       true,
+            hdr: true,
         };
         // SAFETY: leaked buffers of the stated size.
         let image = unsafe {

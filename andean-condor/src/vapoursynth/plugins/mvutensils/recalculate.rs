@@ -8,13 +8,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         mvutensils::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -24,38 +22,38 @@ use crate::vapoursynth::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Recalculate {
     /// Only used for script generation
-    pub super_name:   Option<NodeVariableName>,
+    pub super_name: Option<NodeVariableName>,
     /// Only used for script generation
     pub vectors_name: Option<NodeVariableName>,
     /// Blocks whose SAD is below this keep their vector. Default 200.
-    pub thsad:        Option<u32>,
+    pub thsad: Option<u32>,
     /// Interpolate new vector field from neighbours. Default true.
-    pub smooth:       Option<bool>,
+    pub smooth: Option<bool>,
     /// Finer block size [h, v].
-    pub blksize:      Option<Vec<u32>>,
+    pub blksize: Option<Vec<u32>>,
     /// Finer overlap [h, v].
-    pub overlap:      Option<Vec<u32>>,
+    pub overlap: Option<Vec<u32>>,
     /// Search algorithm: 0=log/diamond, 1=exhaustive, 2=hex, 3=UMH, 4=horiz,
     /// 5=vert.
-    pub search:       Option<u32>,
+    pub search: Option<u32>,
     /// Search radius/step for chosen search.
-    pub searchparam:  Option<u32>,
+    pub searchparam: Option<u32>,
     /// Weight of motion-coherence penalty.
-    pub mvlambda:     Option<u32>,
+    pub mvlambda: Option<u32>,
     /// Include chroma planes in SAD/SATD metric.
-    pub chroma:       Option<bool>,
+    pub chroma: Option<bool>,
     /// Extra penalty for accepting a freshly searched vector.
-    pub pnew:         Option<u32>,
+    pub pnew: Option<u32>,
     /// Scan rows alternately for better predictor reuse.
-    pub meander:      Option<bool>,
+    pub meander: Option<bool>,
     /// Treat the clip as field-based.
-    pub fields:       Option<bool>,
+    pub fields: Option<bool>,
     /// Top field first.
-    pub tff:          Option<bool>,
+    pub tff: Option<bool>,
     /// Use SATD instead of SAD.
-    pub satd:         Option<bool>,
+    pub satd: Option<bool>,
     /// Prefix for frame properties.
-    pub prefix:       Option<String>,
+    pub prefix: Option<String>,
 }
 
 impl Plugin for Recalculate {
@@ -99,37 +97,40 @@ impl Recalculate {
         let mut arguments = Self::arguments()?;
         arguments.set_node("super", super_node).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "super".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         for vector_node in vectors.iter() {
             arguments.append_node("vectors", vector_node).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: "vectors".to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
-        Self::argument_set_int_arrays(&mut arguments, vec![
-            ("blksize", self.blksize),
-            ("overlap", self.overlap),
-        ])?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("thsad", self.thsad),
-            ("smooth", self.smooth.map(|b| if b { 1 } else { 0 })),
-            ("search", self.search),
-            ("searchparam", self.searchparam),
-            ("mvlambda", self.mvlambda),
-            ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
-            ("pnew", self.pnew),
-            ("meander", self.meander.map(|b| if b { 1 } else { 0 })),
-            ("fields", self.fields.map(|b| if b { 1 } else { 0 })),
-            ("tff", self.tff.map(|b| if b { 1 } else { 0 })),
-            ("satd", self.satd.map(|b| if b { 1 } else { 0 })),
-        ])?;
+        Self::argument_set_int_arrays(
+            &mut arguments,
+            vec![("blksize", self.blksize), ("overlap", self.overlap)],
+        )?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("thsad", self.thsad),
+                ("smooth", self.smooth.map(|b| if b { 1 } else { 0 })),
+                ("search", self.search),
+                ("searchparam", self.searchparam),
+                ("mvlambda", self.mvlambda),
+                ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
+                ("pnew", self.pnew),
+                ("meander", self.meander.map(|b| if b { 1 } else { 0 })),
+                ("fields", self.fields.map(|b| if b { 1 } else { 0 })),
+                ("tff", self.tff.map(|b| if b { 1 } else { 0 })),
+                ("satd", self.satd.map(|b| if b { 1 } else { 0 })),
+            ],
+        )?;
         Self::arguments_set(&mut arguments, vec![("prefix", self.prefix)])?;
         Self::invoke_and_get_node_array(core, arguments, "clip")
     }

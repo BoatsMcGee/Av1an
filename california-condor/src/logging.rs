@@ -21,19 +21,19 @@ pub const DEFAULT_LOG_LEVEL: LevelFilter = LevelFilter::DEBUG;
 // Define our module configuration structure
 #[derive(Debug, Clone)]
 struct ModuleConfig {
-    console_level:   LevelFilter,
-    file_level:      LevelFilter,
+    console_level: LevelFilter,
+    file_level: LevelFilter,
     console_enabled: bool,
-    file_enabled:    bool,
+    file_enabled: bool,
 }
 
 impl Default for ModuleConfig {
     fn default() -> Self {
         Self {
-            console_level:   DEFAULT_CONSOLE_LEVEL,
-            file_level:      DEFAULT_LOG_LEVEL,
+            console_level: DEFAULT_CONSOLE_LEVEL,
+            file_level: DEFAULT_LOG_LEVEL,
             console_enabled: true,
-            file_enabled:    true,
+            file_enabled: true,
         }
     }
 }
@@ -48,20 +48,26 @@ pub fn init_logging(
     let mut module_configs = HashMap::new();
 
     // Configure condor CLI module
-    module_configs.insert("california_condor", ModuleConfig {
-        console_level,
-        file_level,
-        console_enabled: true,
-        file_enabled: true,
-    });
+    module_configs.insert(
+        "california_condor",
+        ModuleConfig {
+            console_level,
+            file_level,
+            console_enabled: true,
+            file_enabled: true,
+        },
+    );
 
     // Configure core module
-    module_configs.insert("andean_condor", ModuleConfig {
-        console_level,
-        file_level,
-        console_enabled: true,
-        file_enabled: true,
-    });
+    module_configs.insert(
+        "andean_condor",
+        ModuleConfig {
+            console_level,
+            file_level,
+            console_enabled: true,
+            file_enabled: true,
+        },
+    );
 
     // Allow override through environment variables
     if let Ok(rust_log) = env::var("RUST_LOG") {

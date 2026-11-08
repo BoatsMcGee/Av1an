@@ -23,13 +23,13 @@ jobs:
       options: --user root
     steps:
       - uses: actions/checkout@v7
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
       - name: Validate formatting
         run: |
-          cargo fmt --all -- --check
+          cargo +stable fmt --all -- --check
 
   unit-tests:
     runs-on: ubuntu-latest

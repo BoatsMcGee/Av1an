@@ -7,23 +7,21 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         standard::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Crop {
-    pub top:    Option<u32>,
+    pub top: Option<u32>,
     pub bottom: Option<u32>,
-    pub left:   Option<u32>,
-    pub right:  Option<u32>,
+    pub left: Option<u32>,
+    pub right: Option<u32>,
 }
 
 impl Plugin for Crop {
@@ -57,16 +55,19 @@ impl Crop {
         arguments
             .set_node("clip", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("top", self.top),
-            ("bottom", self.bottom),
-            ("left", self.left),
-            ("right", self.right),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("top", self.top),
+                ("bottom", self.bottom),
+                ("left", self.left),
+                ("right", self.right),
+            ],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         Ok(node)
@@ -105,10 +106,10 @@ impl VapourSynthPluginScript for Crop {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CropAbs {
-    width:    u32,
-    height:   u32,
+    width: u32,
+    height: u32,
     pub left: Option<u32>,
-    pub top:  Option<u32>,
+    pub top: Option<u32>,
 }
 
 impl Plugin for CropAbs {
@@ -141,16 +142,19 @@ impl CropAbs {
         arguments
             .set_node("clip", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("width", Some(self.width)),
-            ("height", Some(self.height)),
-            ("left", self.left),
-            ("top", self.top),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("width", Some(self.width)),
+                ("height", Some(self.height)),
+                ("left", self.left),
+                ("top", self.top),
+            ],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         Ok(node)

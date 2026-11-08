@@ -8,17 +8,15 @@ use crate::{
         sequence::{Sequence, SequenceDetails, SequenceStatus},
     },
     models::sequence::{
-        SequenceConfigHandler,
-        SequenceDataHandler,
-        speed_scaler::SpeedScalerConfigHandler,
+        SequenceConfigHandler, SequenceDataHandler, speed_scaler::SpeedScalerConfigHandler,
     },
     utils::interpolators::natural_cubic_spline,
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Convex Hull",
+    name: "Convex Hull",
     description: "Applies a speed based on the quantiizer per scene.",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 #[derive(Default)]

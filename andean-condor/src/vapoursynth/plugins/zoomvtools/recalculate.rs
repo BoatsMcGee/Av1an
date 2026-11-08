@@ -7,13 +7,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         zoomvtools::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -25,45 +23,45 @@ pub struct Recalculate {
     /// Only used for script generation
     pub super_clip_name: Option<NodeVariableName>,
     /// Only used for script generation
-    pub vectors_name:    Option<NodeVariableName>,
+    pub vectors_name: Option<NodeVariableName>,
     /// Blocks whose SAD is below this keep their vector. Default 100.
-    pub thsad:           Option<u32>,
+    pub thsad: Option<u32>,
     /// Interpolate new vector field from neighbours. Default True.
-    pub smooth:          Option<bool>,
+    pub smooth: Option<bool>,
     /// Finer block size (horizontal). Default 8.
-    pub blksize:         Option<u32>,
+    pub blksize: Option<u32>,
     /// Finer block size (vertical). Defaults to blksize.
-    pub blksizev:        Option<u32>,
+    pub blksizev: Option<u32>,
     /// Search algorithm: 0=log/diamond, 1=exhaustive, 2=hex, 3=UMH, 4=horiz,
     /// 5=vert. Default 0.
-    pub search:          Option<u32>,
+    pub search: Option<u32>,
     /// Search radius/step for chosen search. Default 2.
-    pub searchparam:     Option<u32>,
+    pub searchparam: Option<u32>,
     /// Weight of motion-coherence penalty. Default 250.
-    pub lambda:          Option<u32>,
+    pub lambda: Option<u32>,
     /// Include chroma planes in SAD/SATD metric. Default True.
-    pub chroma:          Option<bool>,
+    pub chroma: Option<bool>,
     /// Use pre-defined settings for typical TV footage. Default True.
-    pub truemotion:      Option<bool>,
+    pub truemotion: Option<bool>,
     /// Extra penalty for accepting a freshly searched vector. Default 25.
-    pub pnew:            Option<u32>,
+    pub pnew: Option<u32>,
     /// Block overlap in pixels. Default 4.
-    pub overlap:         Option<u32>,
+    pub overlap: Option<u32>,
     /// Block overlap (vertical). Defaults to overlap.
-    pub overlapv:        Option<u32>,
+    pub overlapv: Option<u32>,
     /// Divide extra searches among levels. Default 0.
-    pub divide:          Option<u32>,
+    pub divide: Option<u32>,
     /// CPU optimizations. Default 4.
-    pub opt:             Option<u32>,
+    pub opt: Option<u32>,
     /// Scan rows alternately for better predictor reuse. Default True.
-    pub meander:         Option<bool>,
+    pub meander: Option<bool>,
     /// Treat the clip as field-based. Default False.
-    pub fields:          Option<bool>,
+    pub fields: Option<bool>,
     /// Top field first. Default False.
-    pub tff:             Option<bool>,
+    pub tff: Option<bool>,
     /// DCT transform to use: 0=no transform (SAD), 1=hadamard, 2=rows,
     /// 3=columns, 4=full. Default 0.
-    pub dct:             Option<u32>,
+    pub dct: Option<u32>,
 }
 
 impl Plugin for Recalculate {
@@ -112,38 +110,41 @@ impl Recalculate {
         let mut arguments = Self::arguments()?;
         arguments.set_node("super_clip", super_clip).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "super_clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         arguments.set_node("vectors", vectors).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "vectors".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("thsad", self.thsad),
-            ("smooth", self.smooth.map(|b| if b { 1 } else { 0 })),
-            ("blksize", self.blksize),
-            ("blksizev", self.blksizev),
-            ("search", self.search),
-            ("searchparam", self.searchparam),
-            ("lambda", self.lambda),
-            ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
-            ("truemotion", self.truemotion.map(|b| if b { 1 } else { 0 })),
-            ("pnew", self.pnew),
-            ("overlap", self.overlap),
-            ("overlapv", self.overlapv),
-            ("divide", self.divide),
-            ("opt", self.opt),
-            ("meander", self.meander.map(|b| if b { 1 } else { 0 })),
-            ("fields", self.fields.map(|b| if b { 1 } else { 0 })),
-            ("tff", self.tff.map(|b| if b { 1 } else { 0 })),
-            ("dct", self.dct),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("thsad", self.thsad),
+                ("smooth", self.smooth.map(|b| if b { 1 } else { 0 })),
+                ("blksize", self.blksize),
+                ("blksizev", self.blksizev),
+                ("search", self.search),
+                ("searchparam", self.searchparam),
+                ("lambda", self.lambda),
+                ("chroma", self.chroma.map(|b| if b { 1 } else { 0 })),
+                ("truemotion", self.truemotion.map(|b| if b { 1 } else { 0 })),
+                ("pnew", self.pnew),
+                ("overlap", self.overlap),
+                ("overlapv", self.overlapv),
+                ("divide", self.divide),
+                ("opt", self.opt),
+                ("meander", self.meander.map(|b| if b { 1 } else { 0 })),
+                ("fields", self.fields.map(|b| if b { 1 } else { 0 })),
+                ("tff", self.tff.map(|b| if b { 1 } else { 0 })),
+                ("dct", self.dct),
+            ],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
         Ok(node)
     }

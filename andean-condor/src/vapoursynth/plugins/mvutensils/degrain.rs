@@ -8,13 +8,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         mvutensils::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -23,28 +21,28 @@ use crate::vapoursynth::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Degrain {
     /// Only used for script generation
-    pub clip_name:    Option<NodeVariableName>,
+    pub clip_name: Option<NodeVariableName>,
     /// Only used for script generation
-    pub super_name:   Option<NodeVariableName>,
+    pub super_name: Option<NodeVariableName>,
     /// Only used for script generation
     pub vectors_name: Option<NodeVariableName>,
     /// SAD [luma, chroma] at which a reference block's weight reaches zero.
-    pub thsad:        Option<Vec<u32>>,
+    pub thsad: Option<Vec<u32>>,
     /// SAD [luma, chroma] for the furthest references.
-    pub thsad2:       Option<Vec<u32>>,
+    pub thsad2: Option<Vec<u32>>,
     /// Which planes to process. Default [0, 1, 2].
-    pub planes:       Option<Vec<u32>>,
+    pub planes: Option<Vec<u32>>,
     /// Maximum absolute change per pixel [luma, chroma]. Default [inf, inf].
-    pub limit:        Option<Vec<f64>>,
+    pub limit: Option<Vec<f64>>,
     /// Scene-change SAD threshold. Default 400.
-    pub thscd1:       Option<u32>,
+    pub thscd1: Option<u32>,
     /// Percentage of blocks that must be "changed" for scene change. Default
     /// 51.
-    pub thscd2:       Option<f64>,
+    pub thscd2: Option<f64>,
     /// Optional per-frame bias weights.
-    pub weights:      Option<Vec<u32>>,
+    pub weights: Option<Vec<u32>>,
     /// Prefix for frame properties.
-    pub prefix:       Option<String>,
+    pub prefix: Option<String>,
 }
 
 impl Plugin for Degrain {
@@ -87,37 +85,43 @@ impl Degrain {
         arguments
             .set_node("clip", clip)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
         arguments.set_node("super", super_node).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "super".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         for vector_node in vectors.iter() {
             arguments.append_node("vectors", vector_node).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: "vectors".to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
-        Self::argument_set_int_arrays(&mut arguments, vec![
-            ("thsad", self.thsad),
-            ("thsad2", self.thsad2),
-            ("planes", self.planes),
-            ("weights", self.weights),
-        ])?;
-        Self::arguments_set_float_arrays(&mut arguments, vec![
-            ("limit", self.limit),
-            // thscd2 is a float percentage (0-100)
-            ("thscd2", self.thscd2.map(|f| vec![f])),
-        ])?;
+        Self::argument_set_int_arrays(
+            &mut arguments,
+            vec![
+                ("thsad", self.thsad),
+                ("thsad2", self.thsad2),
+                ("planes", self.planes),
+                ("weights", self.weights),
+            ],
+        )?;
+        Self::arguments_set_float_arrays(
+            &mut arguments,
+            vec![
+                ("limit", self.limit),
+                // thscd2 is a float percentage (0-100)
+                ("thscd2", self.thscd2.map(|f| vec![f])),
+            ],
+        )?;
         Self::argument_set_ints(&mut arguments, vec![("thscd1", self.thscd1)])?;
         Self::arguments_set(&mut arguments, vec![("prefix", self.prefix)])?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;

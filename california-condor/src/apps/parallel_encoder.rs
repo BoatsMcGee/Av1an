@@ -19,9 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     apps::{SharedProgress, TuiApp},
     components::{
-        active_encoders::ActiveEncoders,
-        encoder_info::EncoderInfo,
-        input_info::InputInfo,
+        active_encoders::ActiveEncoders, encoder_info::EncoderInfo, input_info::InputInfo,
         progress_bar::ProgressBar,
     },
     configuration::CliSequenceData,
@@ -29,25 +27,25 @@ use crate::{
 
 #[derive(Clone)]
 pub struct ParallelEncoderState {
-    pub scenes:                 BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
-    pub active_encoders:        BTreeMap<u64, SceneEncoder>,
-    pub clip_info:              ClipInfo,
+    pub scenes: BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
+    pub active_encoders: BTreeMap<u64, SceneEncoder>,
+    pub clip_info: ClipInfo,
     pub completed_scenes_count: usize,
-    pub estimated_bitrate:      f64,
-    pub estimated_bytes:        u64,
+    pub estimated_bitrate: f64,
+    pub estimated_bytes: u64,
 }
 
 pub struct ParallelEncoderApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
-    pub started:                    std::time::Instant,
-    pub workers:                    u8,
-    pub encoder:                    Encoder,
-    pub initial_frames:             u64,
-    pub total_frames:               u64,
-    pub clip_info:                  ClipInfo,
-    attempted_cancel:               bool,
-    shared_progress:                SharedProgress<ParallelEncoderState>,
-    cached_state:                   ParallelEncoderState,
+    pub started: std::time::Instant,
+    pub workers: u8,
+    pub encoder: Encoder,
+    pub initial_frames: u64,
+    pub total_frames: u64,
+    pub clip_info: ClipInfo,
+    attempted_cancel: bool,
+    shared_progress: SharedProgress<ParallelEncoderState>,
+    cached_state: ParallelEncoderState,
 }
 
 impl TuiApp for ParallelEncoderApp {
@@ -84,14 +82,9 @@ impl TuiApp for ParallelEncoderApp {
     fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool {
         match status {
             SequenceStatus::Whole(status) => {
-                if let Status::Processing {
-                    id,
-                    completion,
-                } = status
+                if let Status::Processing { id, completion } = status
                     && let SequenceCompletion::Custom {
-                        name,
-                        completed,
-                        ..
+                        name, completed, ..
                     } = completion
                     && name == "size"
                 {
@@ -125,17 +118,10 @@ impl TuiApp for ParallelEncoderApp {
                 }
                 false
             },
-            SequenceStatus::Subprocess {
-                parent: _,
-                child,
-            } => match child {
+            SequenceStatus::Subprocess { parent: _, child } => match child {
                 Status::Processing {
                     id,
-                    completion:
-                        SequenceCompletion::PassFrames {
-                            passes,
-                            frames,
-                        },
+                    completion: SequenceCompletion::PassFrames { passes, frames },
                 } => {
                     let scene = id.parse::<u64>().expect("Scene index is a number");
                     let (current_pass, total_passes) = passes;
@@ -167,9 +153,7 @@ impl TuiApp for ParallelEncoderApp {
                     }
                     true
                 },
-                Status::Completed {
-                    id,
-                } => {
+                Status::Completed { id } => {
                     let scene = id.parse::<u64>().expect("Scene index is a number");
                     state.scenes.entry(scene).and_modify(|(completed, scene)| {
                         *completed = (scene.end_frame - scene.start_frame) as u64;
@@ -228,18 +212,18 @@ impl TuiApp for ParallelEncoderApp {
 
         let scenes_completed = self.cached_state.completed_scenes_count;
         let progress_bar = ProgressBar {
-            color:               main,
-            processing_title:    if self.attempted_cancel {
+            color: main,
+            processing_title: if self.attempted_cancel {
                 "Shutting down after Encoders complete...".to_owned()
             } else {
                 "Encoding Scenes...".to_owned()
             },
-            completed_title:     if self.attempted_cancel {
+            completed_title: if self.attempted_cancel {
                 "Encoding Aborted".to_owned()
             } else {
                 "Encoding Completed".to_owned()
             },
-            top_right_title:     if self.cached_state.estimated_bytes > 0 {
+            top_right_title: if self.cached_state.estimated_bytes > 0 {
                 format!(
                     "{:.1}kbps est. {:.1} MB",
                     self.cached_state.estimated_bitrate / 1e3,
@@ -253,12 +237,12 @@ impl TuiApp for ParallelEncoderApp {
                 scenes_completed,
                 self.cached_state.scenes.len()
             ),
-            unit_per_second:     "FPS".to_owned(),
-            unit:                "Frame".to_owned(),
-            initial_completed:   self.initial_frames,
-            completed:           total_frames_completed,
-            total:               total_frames,
-            show_label:          true,
+            unit_per_second: "FPS".to_owned(),
+            unit: "Frame".to_owned(),
+            initial_completed: self.initial_frames,
+            completed: total_frames_completed,
+            total: total_frames,
+            show_label: true,
         };
         let progress_bar = progress_bar.generate(Some(self.started));
         frame.render_widget(progress_bar, layout[2]);
@@ -335,39 +319,39 @@ impl ParallelEncoderApp {
 
 #[derive(Debug, Clone)]
 pub struct SceneEncoder {
-    pub scene:            Scene<CliSequenceData>,
-    pub started:          std::time::Instant,
-    pub current_pass:     u8,
-    pub total_passes:     u8,
+    pub scene: Scene<CliSequenceData>,
+    pub started: std::time::Instant,
+    pub current_pass: u8,
+    pub total_passes: u8,
     pub frames_processed: u64,
-    pub total_frames:     u64,
+    pub total_frames: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ParallelEncoderConsoleEvent {
     Progress {
-        scene:         SceneProgress,
+        scene: SceneProgress,
         current_frame: u64,
-        total_frames:  u64,
+        total_frames: u64,
     },
     NewScene {
         scene_index: u64,
         /// Must be milliseconds since UNIX Epoch
-        time:        u128,
+        time: u128,
     },
     SceneSize {
         scene_index: u64,
-        bytes:       u64,
+        bytes: u64,
     },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SceneProgress {
-    pub index:     u64,
-    current_pass:  u8,
-    total_passes:  u8,
+    pub index: u64,
+    current_pass: u8,
+    total_passes: u8,
     current_frame: u64,
-    total_frames:  u64,
+    total_frames: u64,
 }
 
 #[cfg(test)]
@@ -401,31 +385,29 @@ mod tests {
 
     fn clip_info() -> ClipInfo {
         ClipInfo {
-            num_frames:                    FRAMES,
-            format_info:                   PixelFormat::VapourSynth {
-                bit_depth: 10
-            },
-            frame_rate:                    av_format::rational::Rational64::new(24000, 1001),
-            resolution:                    (1920, 1080),
-            color_range:                   None,
-            color_primaries:               None,
+            num_frames: FRAMES,
+            format_info: PixelFormat::VapourSynth { bit_depth: 10 },
+            frame_rate: av_format::rational::Rational64::new(24000, 1001),
+            resolution: (1920, 1080),
+            color_range: None,
+            color_primaries: None,
             color_transfer_characteristic: Some(TransferCharacteristic::SMPTE2084),
-            color_space:                   None,
-            chroma_location:               None,
-            mastering_display:             None,
-            content_light_level:           None,
+            color_space: None,
+            chroma_location: None,
+            mastering_display: None,
+            content_light_level: None,
         }
     }
 
     fn scenes() -> BTreeMap<u64, (u64, Scene<CliSequenceData>)> {
         let video = TestVideo {
-            path:         PathBuf::new(),
-            width:        1920,
-            height:       1080,
-            frames:       FRAMES,
+            path: PathBuf::new(),
+            width: 1920,
+            height: 1080,
+            frames: FRAMES,
             fps_rational: (24000, 1001),
-            format:       FFPixelFormat::YUV420P,
-            scenes:       vec![(0, 100), (100, 200), (200, 300), (300, FRAMES)],
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 100), (100, 200), (200, 300), (300, FRAMES)],
         };
         video
             .mock_scenes(&encoder())
@@ -446,11 +428,11 @@ mod tests {
         assert_eq!(state.estimated_bytes, 0);
 
         let event = SequenceStatus::Whole(Status::Processing {
-            id:         "1".to_owned(),
+            id: "1".to_owned(),
             completion: SequenceCompletion::Custom {
-                name:      "size".to_owned(),
+                name: "size".to_owned(),
                 completed: 2_000_000.0,
-                total:     2_000_000.0,
+                total: 2_000_000.0,
             },
         });
         assert!(ParallelEncoderApp::map_progress(event, state));
@@ -473,15 +455,13 @@ mod tests {
 
         let completed = SequenceStatus::Subprocess {
             parent: Status::Processing {
-                id:         "Parallel Encoder".to_owned(),
+                id: "Parallel Encoder".to_owned(),
                 completion: SequenceCompletion::Frames {
                     completed: 0,
-                    total:     FRAMES as u64,
+                    total: FRAMES as u64,
                 },
             },
-            child:  Status::Completed {
-                id: "2".to_owned()
-            },
+            child: Status::Completed { id: "2".to_owned() },
         };
         assert!(ParallelEncoderApp::map_progress(completed, state));
 
@@ -511,14 +491,17 @@ mod tests {
         let all = scenes();
         for index in [1_u64, 2] {
             let state = app.cached_state_mut();
-            state.active_encoders.insert(index, SceneEncoder {
-                scene:            all[&index].1.clone(),
-                started:          std::time::Instant::now(),
-                current_pass:     1,
-                total_passes:     2,
-                frames_processed: 40,
-                total_frames:     100,
-            });
+            state.active_encoders.insert(
+                index,
+                SceneEncoder {
+                    scene: all[&index].1.clone(),
+                    started: std::time::Instant::now(),
+                    current_pass: 1,
+                    total_passes: 2,
+                    frames_processed: 40,
+                    total_frames: 100,
+                },
+            );
         }
 
         let mut terminal =

@@ -13,15 +13,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use av_metrics_vmaf::{
-    Backend,
-    BackendPreference,
-    PoolMethod,
-    VideoFormat,
-    VmafConfig,
-    VmafError,
-    VmafScorer,
-    is_available,
-    libvmaf_version,
+    Backend, BackendPreference, PoolMethod, VideoFormat, VmafConfig, VmafError, VmafScorer,
+    is_available, libvmaf_version,
 };
 use common::{Distortion, SyntheticPair};
 use v_frame::chroma::ChromaSubsampling;
@@ -77,9 +70,9 @@ fn scoring_reports_the_backend_in_use() {
     let pair = small_pair(Distortion::Mild);
     let details = *pair.reference.decoder().get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -95,9 +88,9 @@ fn cpu_only_preference_forces_the_cpu_backend() {
     let pair = small_pair(Distortion::Mild);
     let details = *pair.reference.decoder().get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -121,9 +114,9 @@ fn identical_clips_score_at_or_near_the_maximum() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -173,9 +166,9 @@ fn scores_decrease_as_distortion_increases() {
 
         let details = *reference.get_video_details();
         let format = VideoFormat {
-            width:           details.width as u32,
-            height:          details.height as u32,
-            bit_depth:       details.bit_depth as u32,
+            width: details.width as u32,
+            height: details.height as u32,
+            bit_depth: details.bit_depth as u32,
             chroma_sampling: details.chroma_sampling,
         };
 
@@ -226,9 +219,9 @@ fn frame_count_is_preserved_exactly() {
 
         let details = *reference.get_video_details();
         let format = VideoFormat {
-            width:           details.width as u32,
-            height:          details.height as u32,
-            bit_depth:       details.bit_depth as u32,
+            width: details.width as u32,
+            height: details.height as u32,
+            bit_depth: details.bit_depth as u32,
             chroma_sampling: details.chroma_sampling,
         };
 
@@ -255,9 +248,9 @@ fn the_callback_sees_every_score() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -294,9 +287,9 @@ fn draining_reports_final_scores_once_and_matches_the_finished_ones() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -373,9 +366,9 @@ fn mismatched_frame_counts_are_rejected() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -403,9 +396,9 @@ fn mismatched_resolutions_are_rejected() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -422,9 +415,9 @@ fn mismatched_resolutions_are_rejected() {
 #[test]
 fn a_missing_model_file_is_reported_before_scoring_starts() {
     let format = VideoFormat {
-        width:           64,
-        height:          48,
-        bit_depth:       8,
+        width: 64,
+        height: 48,
+        bit_depth: 8,
         chroma_sampling: ChromaSubsampling::Yuv420,
     };
 
@@ -470,9 +463,9 @@ fn ten_bit_content_scores() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -501,9 +494,9 @@ fn additional_features_are_reported() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -561,9 +554,9 @@ fn scoring_works_with_an_explicit_model_file() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -632,9 +625,9 @@ fn every_model_in_the_search_path_loads() {
     let pair = small_pair(Distortion::Moderate);
     let details = *pair.reference.decoder().get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -710,9 +703,9 @@ fn matches_the_reference_tools_on_a_real_clip() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 
@@ -774,9 +767,9 @@ fn the_frame_path_agrees_with_the_streaming_path() {
         let distorted = av_decoders::Decoder::from_file(&clip).expect("output opens");
         let details = *reference.get_video_details();
         let format = VideoFormat {
-            width:           details.width as u32,
-            height:          details.height as u32,
-            bit_depth:       details.bit_depth as u32,
+            width: details.width as u32,
+            height: details.height as u32,
+            bit_depth: details.bit_depth as u32,
             chroma_sampling: details.chroma_sampling,
         };
         (reference, distorted, format)
@@ -871,9 +864,9 @@ fn a_stock_model_resolves_from_a_directory() {
 
     let details = *reference.get_video_details();
     let format = VideoFormat {
-        width:           details.width as u32,
-        height:          details.height as u32,
-        bit_depth:       details.bit_depth as u32,
+        width: details.width as u32,
+        height: details.height as u32,
+        bit_depth: details.bit_depth as u32,
         chroma_sampling: details.chroma_sampling,
     };
 

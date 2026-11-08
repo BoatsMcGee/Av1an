@@ -1,8 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::{
-    models::input::Input as InputModel,
-    vapoursynth::vapoursynth_filters::VapourSynthFilter,
+    models::input::Input as InputModel, vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::{Result, bail};
 use tracing::{debug, error, trace, warn};
@@ -10,17 +9,11 @@ use tracing::{debug, error, trace, warn};
 use crate::{
     DEFAULT_CONFIG_PATH,
     commands::{
-        ConcatenationMethod,
-        CondorCliError,
-        DecoderMethod,
-        DiscardCategory,
-        EncoderMethod,
-        QualityMetric,
-        QualityProfile,
+        ConcatenationMethod, CondorCliError, DecoderMethod, DiscardCategory, EncoderMethod,
+        QualityMetric, QualityProfile,
         handlers::{
             concatenate::{apply_discard, configure_concatenate},
-            configure_input,
-            configure_temp,
+            configure_input, configure_temp,
             detect_scenes::configure_scene_detector,
             encode::{configure_encoder, configure_parallel_encoder},
             target_quality::configure_target_quality,
@@ -222,12 +215,8 @@ mod tests {
                 target_quality::{
                     TargetQualityConfig,
                     types::{
-                        ProbeStatistic,
-                        ProbeStrategy,
-                        QualityMetric,
-                        SubsetProbeLength,
-                        SubsetProbePosition,
-                        TargetQualityProbing,
+                        ProbeStatistic, ProbeStrategy, QualityMetric, SubsetProbeLength,
+                        SubsetProbePosition, TargetQualityProbing,
                     },
                 },
             },
@@ -239,28 +228,13 @@ mod tests {
     use super::*;
     use crate::{
         commands::{
-            ConcatenationMethod,
-            DecoderMethod,
-            EncoderMethod,
-            QualityMetric as QualityMetricBase,
+            ConcatenationMethod, DecoderMethod, EncoderMethod, QualityMetric as QualityMetricBase,
         },
         test_helpers::{
-            CwdGuard,
-            check_benchmarker,
-            check_bitrate_optimizer,
-            check_encoder,
-            check_input,
-            check_noise_detector,
-            check_noise_scaler,
-            check_output,
-            check_parallel_encoder,
-            check_scene_concatenator,
-            check_scene_detector,
-            check_speed_scaler,
-            check_target_quality,
-            default_config,
-            get_test_video,
-            vapoursynth_script,
+            CwdGuard, check_benchmarker, check_bitrate_optimizer, check_encoder, check_input,
+            check_noise_detector, check_noise_scaler, check_output, check_parallel_encoder,
+            check_scene_concatenator, check_scene_detector, check_speed_scaler,
+            check_target_quality, default_config, get_test_video, vapoursynth_script,
         },
         utils::hash_path::hash_path,
     };
@@ -422,20 +396,20 @@ mod tests {
             .as_path()
             .to_path_buf();
         let custom_filters = vec![VapourSynthFilter::Crop {
-            top:    Some(42),
+            top: Some(42),
             bottom: Some(42),
-            left:   None,
-            right:  None,
+            left: None,
+            right: None,
         }];
         let custom_scd_filters = vec![VapourSynthFilter::Crop {
-            top:    None,
+            top: None,
             bottom: None,
-            left:   Some(100),
-            right:  Some(100),
+            left: Some(100),
+            right: Some(100),
         }];
         let custom_tq_filters = vec![VapourSynthFilter::Resize {
             scaler: Some(Scaler::Lanczos),
-            width:  Some(960),
+            width: Some(960),
             height: Some(540),
             format: Some(FFPixelFormat::YUV444P10LE),
         }];
@@ -450,29 +424,27 @@ mod tests {
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.input = Input::Video {
-            path:          input_abs.clone(),
+            path: input_abs.clone(),
             import_method: ImportMethod::FFMS2 {
-                index:      None,
+                index: None,
                 cache_path: None,
             },
             // `--filters` replaces the default conversion, and a native FFMS2
             // input cannot crop, so nothing remains.
-            filters:       Vec::new(),
+            filters: Vec::new(),
         };
         expected_config.condor.encoder = Encoder::X265 {
-            executable:        None,
-            pass:              EncoderPasses::All(3),
-            options:           custom_encoder_parameters,
-            ffmpeg_filter:     None,
+            executable: None,
+            pass: EncoderPasses::All(3),
+            options: custom_encoder_parameters,
+            ffmpeg_filter: None,
             append_color_data: true,
         };
         expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
-            path:          input_abs.clone(),
-            import_method: VapourSynthImportMethod::BestSource {
-                index: None
-            },
-            cache_path:    None,
-            filters:       custom_scd_filters.clone(),
+            path: input_abs.clone(),
+            import_method: VapourSynthImportMethod::BestSource { index: None },
+            cache_path: None,
+            filters: custom_scd_filters.clone(),
         });
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(6);
         let mut tq_encoder_parameters = EncoderBase::X265.default_parameters();
@@ -482,22 +454,20 @@ mod tests {
         );
         expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
             input: Some(Input::VapourSynth {
-                path:          input_abs.clone(),
-                import_method: VapourSynthImportMethod::FFMS2 {
-                    index: None
-                },
-                cache_path:    None,
-                filters:       custom_tq_filters.clone(),
+                path: input_abs.clone(),
+                import_method: VapourSynthImportMethod::FFMS2 { index: None },
+                cache_path: None,
+                filters: custom_tq_filters.clone(),
             }),
             metric: QualityMetric::XPSNR {
                 target_range: (39.0, 41.0),
-                resolution:   None,
+                resolution: None,
             },
             quantizer_range: (4, 35),
             probing: TargetQualityProbing {
                 encoder_options: Some(tq_encoder_parameters),
-                statistic:       ProbeStatistic::Percentile(10.0),
-                strategy:        ProbeStrategy::Whole,
+                statistic: ProbeStatistic::Percentile(10.0),
+                strategy: ProbeStrategy::Whole,
             },
             ..Default::default()
         });
@@ -632,20 +602,20 @@ mod tests {
             .as_path()
             .to_path_buf();
         let custom_filters = vec![VapourSynthFilter::Crop {
-            top:    Some(42),
+            top: Some(42),
             bottom: Some(42),
-            left:   None,
-            right:  None,
+            left: None,
+            right: None,
         }];
         let custom_scd_filters = vec![VapourSynthFilter::Crop {
-            top:    None,
+            top: None,
             bottom: None,
-            left:   Some(100),
-            right:  Some(100),
+            left: Some(100),
+            right: Some(100),
         }];
         let custom_tq_filters = vec![VapourSynthFilter::Resize {
             scaler: Some(Scaler::Lanczos),
-            width:  Some(960),
+            width: Some(960),
             height: Some(540),
             format: Some(FFPixelFormat::YUV444P10LE),
         }];
@@ -660,29 +630,27 @@ mod tests {
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.input = Input::Video {
-            path:          input_abs.clone(),
+            path: input_abs.clone(),
             import_method: ImportMethod::FFMS2 {
-                index:      None,
+                index: None,
                 cache_path: None,
             },
             // `--filters` replaces the default conversion, and a native FFMS2
             // input cannot crop, so nothing remains.
-            filters:       Vec::new(),
+            filters: Vec::new(),
         };
         expected_config.condor.encoder = Encoder::X265 {
-            executable:        None,
-            pass:              EncoderPasses::All(3),
-            options:           custom_encoder_parameters,
-            ffmpeg_filter:     None,
+            executable: None,
+            pass: EncoderPasses::All(3),
+            options: custom_encoder_parameters,
+            ffmpeg_filter: None,
             append_color_data: true,
         };
         expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
-            path:          input_abs.clone(),
-            import_method: VapourSynthImportMethod::BestSource {
-                index: None
-            },
-            cache_path:    None,
-            filters:       custom_scd_filters.clone(),
+            path: input_abs.clone(),
+            import_method: VapourSynthImportMethod::BestSource { index: None },
+            cache_path: None,
+            filters: custom_scd_filters.clone(),
         });
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(6);
         let mut tq_encoder_parameters = EncoderBase::X265.default_parameters();
@@ -692,22 +660,20 @@ mod tests {
         );
         expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
             input: Some(Input::VapourSynth {
-                path:          input_abs.clone(),
-                import_method: VapourSynthImportMethod::FFMS2 {
-                    index: None
-                },
-                cache_path:    None,
-                filters:       custom_tq_filters.clone(),
+                path: input_abs.clone(),
+                import_method: VapourSynthImportMethod::FFMS2 { index: None },
+                cache_path: None,
+                filters: custom_tq_filters.clone(),
             }),
             metric: QualityMetric::XPSNR {
                 target_range: (39.0, 41.0),
-                resolution:   None,
+                resolution: None,
             },
             quantizer_range: (4, 35),
             probing: TargetQualityProbing {
                 encoder_options: Some(tq_encoder_parameters),
-                statistic:       ProbeStatistic::Percentile(10.0),
-                strategy:        ProbeStrategy::Whole,
+                statistic: ProbeStatistic::Percentile(10.0),
+                strategy: ProbeStrategy::Whole,
             },
             ..Default::default()
         });
@@ -834,10 +800,10 @@ mod tests {
         let mut custom_variables = HashMap::new();
         custom_variables.insert("key".to_owned(), "value".to_owned());
         expected_config.condor.input = Input::VapourSynthScript {
-            source:              VapourSynthScriptSource::Path(script_input_abs),
-            variables:           custom_variables,
-            index:               0,
-            filters:             custom_filters.clone(),
+            source: VapourSynthScriptSource::Path(script_input_abs),
+            variables: custom_variables,
+            index: 0,
+            filters: custom_filters.clone(),
             stream_concurrently: true,
         };
         let mut custom_encoder_parameters = EncoderBase::X264.default_parameters();
@@ -848,25 +814,25 @@ mod tests {
         custom_encoder_parameters
             .insert("crf".to_owned(), CLIParameter::new_number("--", " ", 12.0));
         expected_config.condor.encoder = Encoder::X264 {
-            executable:        None,
-            pass:              EncoderPasses::All(1),
-            options:           custom_encoder_parameters.clone(),
-            ffmpeg_filter:     None,
+            executable: None,
+            pass: EncoderPasses::All(1),
+            options: custom_encoder_parameters.clone(),
+            ffmpeg_filter: None,
             append_color_data: true,
         };
         if let Some(ref mut tq) = expected_config.condor.sequence_config.target_quality {
             tq.metric = QualityMetric::CVVDP {
-                target_range:      (9.4, 9.6),
-                resolution:        None,
-                display_model:     None,
+                target_range: (9.4, 9.6),
+                resolution: None,
+                display_model: None,
                 resize_to_display: None,
-                disable_temporal:  None,
-                gpu_id:            None,
+                disable_temporal: None,
+                gpu_id: None,
             };
             tq.probing.statistic = ProbeStatistic::RootMeanSquare;
             tq.probing.strategy = ProbeStrategy::Subset {
                 position: SubsetProbePosition::Middle,
-                length:   SubsetProbeLength::Percentage(25.0),
+                length: SubsetProbeLength::Percentage(25.0),
             };
             tq.quantizer_range.1 = 25;
         }

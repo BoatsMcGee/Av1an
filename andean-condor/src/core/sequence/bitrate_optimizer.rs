@@ -10,17 +10,15 @@ use crate::{
         sequence::{Sequence, SequenceDetails, SequenceStatus},
     },
     models::sequence::{
-        SequenceConfigHandler,
-        SequenceDataHandler,
-        bitrate_optimizer::BitrateOptimizerConfigHandler,
-        target_quality::TargetQualityDataHandler,
+        SequenceConfigHandler, SequenceDataHandler,
+        bitrate_optimizer::BitrateOptimizerConfigHandler, target_quality::TargetQualityDataHandler,
     },
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Bitrate Optimizer",
+    name: "Bitrate Optimizer",
     description: "Optimize scenes that exceed normal bitrate after targeting quality.",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 #[derive(Debug, Default)]

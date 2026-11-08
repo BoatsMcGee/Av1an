@@ -5,7 +5,7 @@ use ratatui::{
 };
 
 pub struct EncoderInfo {
-    pub encoder:        Encoder,
+    pub encoder: Encoder,
     pub parent_encoder: Option<Encoder>,
 }
 
@@ -38,15 +38,9 @@ impl EncoderInfo {
                 .collect::<Vec<_>>()
                 .join(" ");
 
-            Paragraph::new(Line::from(parameters_text)).wrap(Wrap {
-                trim: true
-            })
+            Paragraph::new(Line::from(parameters_text)).wrap(Wrap { trim: true })
         } else {
-            Paragraph::new(Line::from("---"))
-                .wrap(Wrap {
-                    trim: true
-                })
-                .centered()
+            Paragraph::new(Line::from("---")).wrap(Wrap { trim: true }).centered()
         };
 
         if bordered {

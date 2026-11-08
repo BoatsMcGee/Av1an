@@ -15,26 +15,12 @@ pub mod mkvmerge;
 
 pub use common::{Chapters, Metadata};
 pub use ffmpeg::{
-    FfmpegAttachmentTrack,
-    FfmpegConfig,
-    FfmpegExtraInput,
-    FfmpegTrack,
-    FfmpegTrackKind,
-    FfmpegTrackMap,
-    FfmpegTrackOptions,
+    FfmpegAttachmentTrack, FfmpegConfig, FfmpegExtraInput, FfmpegTrack, FfmpegTrackKind,
+    FfmpegTrackMap, FfmpegTrackOptions,
 };
 pub use mkvmerge::{
-    AttachmentTrack,
-    AudioTrack,
-    Compression,
-    MkvmergeConfig,
-    MkvmergeExtraInput,
-    MkvmergeTrack,
-    MkvmergeTrackKind,
-    SubtitleTrack,
-    TrackMap,
-    TrackOptions,
-    VideoTrack,
+    AttachmentTrack, AudioTrack, Compression, MkvmergeConfig, MkvmergeExtraInput, MkvmergeTrack,
+    MkvmergeTrackKind, SubtitleTrack, TrackMap, TrackOptions, VideoTrack,
 };
 
 pub trait SceneConcatenatorConfigHandler
@@ -51,18 +37,18 @@ where
     Self: SequenceConfigHandler,
 {
     /// The concatenation method and its output settings.
-    pub method:           ConcatMethod,
+    pub method: ConcatMethod,
     pub scenes_directory: PathBuf,
-    pub output:           Option<PathBuf>,
+    pub output: Option<PathBuf>,
 }
 
 impl Default for SceneConcatenatorConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            method:           ConcatMethod::default(),
+            method: ConcatMethod::default(),
             scenes_directory: PathBuf::new(),
-            output:           None,
+            output: None,
         }
     }
 }
@@ -77,8 +63,7 @@ impl SceneConcatenatorConfig {
     }
 }
 
-impl SequenceConfigHandler for SceneConcatenatorConfig {
-}
+impl SequenceConfigHandler for SceneConcatenatorConfig {}
 
 /// The concatenation method and its output settings.
 ///

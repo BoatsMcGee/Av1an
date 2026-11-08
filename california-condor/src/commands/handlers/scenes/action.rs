@@ -37,19 +37,19 @@ pub enum ScenesAction {
     Add {
         /// First frame of the new scene.
         #[arg(value_name = "START")]
-        start:   usize,
+        start: usize,
         /// Frame the new scene ends at (exclusive).
         #[arg(value_name = "END")]
-        end:     usize,
+        end: usize,
         /// Put the new scene at the end of the list.
         #[arg(long, conflicts_with_all = ["prepend", "after"])]
-        append:  bool,
+        append: bool,
         /// Put the new scene at the start of the list.
         #[arg(long, conflicts_with_all = ["append", "after"])]
         prepend: bool,
         /// Put the new scene directly after scene N.
         #[arg(long, value_name = "N", conflicts_with_all = ["append", "prepend"])]
-        after:   Option<usize>,
+        after: Option<usize>,
     },
 }
 
@@ -100,26 +100,26 @@ pub enum ScenesSet {
     Encoder {
         /// The encoder to switch to.
         #[arg(value_name = "Encoder")]
-        encoder:           EncoderMethod,
+        encoder: EncoderMethod,
         /// Custom encoder binary path.
         #[arg(long, value_name = "Path")]
-        executable:        Option<PathBuf>,
+        executable: Option<PathBuf>,
         /// Number of encoder passes.
         #[arg(long, value_parser = value_parser!(u8).range(1..), value_name = "Passes")]
-        passes:            Option<u8>,
+        passes: Option<u8>,
         /// Encoder parameters (`--crf 16 --tune 0`), merged into the encoder.
         #[arg(long, value_name = "Parameters", allow_hyphen_values = true)]
-        params:            Option<String>,
+        params: Option<String>,
         /// Photon Noise luma ISO.
         #[arg(long, value_name = "ISO")]
-        iso:               Option<u32>,
+        iso: Option<u32>,
         /// Photon Noise chroma ISO (`--iso` is required as well).
         #[arg(long, value_name = "ISO")]
-        chroma_iso:        Option<u32>,
+        chroma_iso: Option<u32>,
         /// FFmpeg filtergraph applied to the frames before they reach the
         /// encoder.
         #[arg(long, value_name = "Filter", allow_hyphen_values = true)]
-        ffmpeg_filter:     Option<String>,
+        ffmpeg_filter: Option<String>,
         /// Append the source's colour and HDR metadata to the encoder
         /// parameters (`on`/`off`); the default when omitted is `on`.
         #[arg(long, value_name = "on|off")]
@@ -148,7 +148,7 @@ pub enum ScenesSet {
     PhotonNoise {
         /// Luma ISO strength.
         #[arg(value_name = "ISO")]
-        iso:          u32,
+        iso: u32,
         /// Optional chroma ISO strength.
         #[arg(long, value_name = "ISO")]
         chroma_noise: Option<u32>,

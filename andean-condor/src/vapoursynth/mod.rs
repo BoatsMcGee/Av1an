@@ -26,15 +26,15 @@ pub enum VapourSynthError {
     PluginFunctionNotFound { plugin: String, function: String },
     #[error("VapourSynth Plugin {plugin} failed to set arguments: {message}")]
     PluginArgumentsError {
-        plugin:   String,
+        plugin: String,
         argument: String,
-        message:  String,
+        message: String,
     },
     #[error("VapourSynth Plugin {plugin} failed to execute function {function}: {message}")]
     PluginFunctionError {
-        plugin:   String,
+        plugin: String,
         function: String,
-        message:  String,
+        message: String,
     },
     #[error("VapourSynth Plugin {plugin} failed to import video: {message}")]
     VideoImportError { plugin: String, message: String },
@@ -78,25 +78,24 @@ pub fn get_clip_info(node: &Node) -> Result<ClipInfo> {
     let info = node.info();
 
     Ok(ClipInfo {
-        num_frames:                    get_num_frames(&info)?,
-        format_info:                   PixelFormat::VapourSynth {
+        num_frames: get_num_frames(&info)?,
+        format_info: PixelFormat::VapourSynth {
             bit_depth: get_bit_depth(&info)?,
         },
-        frame_rate:                    get_frame_rate(&info)?,
-        resolution:                    get_resolution(&info)?,
-        color_range:                   get_color_range(node)?,
-        color_primaries:               get_color_prop(node, "_Primaries")
+        frame_rate: get_frame_rate(&info)?,
+        resolution: get_resolution(&info)?,
+        color_range: get_color_range(node)?,
+        color_primaries: get_color_prop(node, "_Primaries")
             .and_then(av_decoders::ColorPrimaries::from_raw),
         color_transfer_characteristic: get_color_prop(node, "_Transfer")
             .and_then(av_decoders::TransferCharacteristic::from_raw),
-        color_space:                   get_color_prop(node, "_Matrix")
-            .and_then(av_decoders::ColorSpace::from_raw),
-        chroma_location:               get_color_prop(node, "_ChromaLocation")
+        color_space: get_color_prop(node, "_Matrix").and_then(av_decoders::ColorSpace::from_raw),
+        chroma_location: get_color_prop(node, "_ChromaLocation")
             .and_then(map_vapoursynth_chroma_location),
         // VapourSynth frame properties carry no mastering display or content
         // light level metadata.
-        mastering_display:             None,
-        content_light_level:           None,
+        mastering_display: None,
+        content_light_level: None,
     })
 }
 

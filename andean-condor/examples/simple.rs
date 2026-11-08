@@ -7,19 +7,12 @@ use std::{
 
 use andean_condor::{
     core::{
-        AndeanCondor,
-        Condor,
-        DefaultAndeanCondor,
-        SequenceProgressEvent,
-        SequenceType,
+        AndeanCondor, Condor, DefaultAndeanCondor, SequenceProgressEvent, SequenceType,
         input::Input,
         output::Output,
         sequence::{
-            SequenceStatus,
-            Status,
-            parallel_encoder::ParallelEncoder,
-            scene_concatenator::SceneConcatenator,
-            scene_detector::SceneDetector,
+            SequenceStatus, Status, parallel_encoder::ParallelEncoder,
+            scene_concatenator::SceneConcatenator, scene_detector::SceneDetector,
         },
     },
     ffmpeg::FFPixelFormat,
@@ -28,15 +21,11 @@ use andean_condor::{
         input::{Input as InputModel, VapourSynthImportMethod},
         output::Output as OutputModel,
         sequence::{
-            DefaultSequenceConfig,
-            DefaultSequenceData,
+            DefaultSequenceConfig, DefaultSequenceData,
             scene_concatenator::SceneConcatenatorConfig,
             scene_detector::{
-                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
-                DEFAULT_MIN_SCENE_LENGTH_FRAMES,
-                SceneDetectionMethod,
-                SceneDetectorConfig,
-                ScenecutMethod,
+                DEFAULT_MAX_SCENE_LENGTH_SECONDS, DEFAULT_MIN_SCENE_LENGTH_FRAMES,
+                SceneDetectionMethod, SceneDetectorConfig, ScenecutMethod,
             },
         },
     },
@@ -65,22 +54,20 @@ use anyhow::Result;
 fn main() -> Result<()> {
     // Input: VapourSynth FFMS2 + resize to YUV420P10LE
     let input_model = InputModel::VapourSynth {
-        path:          PathBuf::from("input.mp4"),
-        import_method: VapourSynthImportMethod::FFMS2 {
-            index: None
-        },
-        cache_path:    None,
-        filters:       vec![VapourSynthFilter::Resize {
+        path: PathBuf::from("input.mp4"),
+        import_method: VapourSynthImportMethod::FFMS2 { index: None },
+        cache_path: None,
+        filters: vec![VapourSynthFilter::Resize {
             scaler: Some(Scaler::Bicubic),
-            width:  None,
+            width: None,
             height: None,
             format: Some(FFPixelFormat::YUV420P10LE),
         }],
     };
     let node_modifier: andean_condor::core::input::ModifyNode = Box::new(move |core, node| {
         let select_every = SelectEvery {
-            cycle:           2,
-            offsets:         vec![1],
+            cycle: 2,
+            offsets: vec![1],
             modify_duration: None,
         };
         let node = node.expect("node exists");
@@ -96,8 +83,8 @@ fn main() -> Result<()> {
 
     // Output: output.mkv
     let output_model = OutputModel {
-        path:       PathBuf::from("output.mkv"),
-        tags:       HashMap::new(),
+        path: PathBuf::from("output.mkv"),
+        tags: HashMap::new(),
         video_tags: HashMap::new(),
     };
     // Instantiate Output
@@ -129,10 +116,10 @@ fn main() -> Result<()> {
                 minimum_length: DEFAULT_MIN_SCENE_LENGTH_FRAMES as usize,
                 maximum_length: DEFAULT_MIN_SCENE_LENGTH_FRAMES as usize
                     * DEFAULT_MAX_SCENE_LENGTH_SECONDS as usize,
-                method:         ScenecutMethod::Standard,
-                save_scores:    false,
+                method: ScenecutMethod::Standard,
+                save_scores: false,
             },
-            input:  None,
+            input: None,
         },
         parallel_encoder:
             andean_condor::models::sequence::parallel_encoder::ParallelEncoderConfig {
@@ -165,13 +152,13 @@ fn main() -> Result<()> {
         condor,
         sequences: vec![
             Box::new(SceneDetector {
-                input:  None, // use Condor's own input
+                input: None, // use Condor's own input
                 method: SceneDetectionMethod::AVSceneChange {
                     minimum_length: DEFAULT_MIN_SCENE_LENGTH_FRAMES as usize,
                     maximum_length: DEFAULT_MIN_SCENE_LENGTH_FRAMES as usize
                         * DEFAULT_MAX_SCENE_LENGTH_SECONDS as usize,
-                    method:         ScenecutMethod::Standard,
-                    save_scores:    false,
+                    method: ScenecutMethod::Standard,
+                    save_scores: false,
                 },
             }),
             Box::new(ParallelEncoder::new(None)), // use Condor's own input
@@ -214,10 +201,7 @@ fn print_progress(event: &SequenceProgressEvent) {
 
     match &event.progress {
         SequenceStatus::Whole(status) => print_status(phase, event.details.name, status),
-        SequenceStatus::Subprocess {
-            parent,
-            child,
-        } => {
+        SequenceStatus::Subprocess { parent, child } => {
             print_status(phase, event.details.name, parent);
             print_status(phase, event.details.name, child);
         },
@@ -226,21 +210,13 @@ fn print_progress(event: &SequenceProgressEvent) {
 
 fn print_status(phase: &str, name: &str, status: &Status) {
     match status {
-        Status::Processing {
-            id,
-            completion,
-        } => {
+        Status::Processing { id, completion } => {
             println!("[{phase}] {name} ({id}): {completion:?}");
         },
-        Status::Completed {
-            id,
-        } => {
+        Status::Completed { id } => {
             println!("[{phase}] {name} ({id}): completed");
         },
-        Status::Failed {
-            id,
-            error,
-        } => {
+        Status::Failed { id, error } => {
             eprintln!("[{phase}] {name} ({id}): failed: {error}");
         },
     }

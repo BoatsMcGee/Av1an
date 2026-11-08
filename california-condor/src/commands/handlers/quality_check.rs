@@ -4,16 +4,10 @@ use andean_condor::{
     models::sequence::{
         quality_check::QualityCheckConfig,
         target_quality::types::{
-            DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-            DEFAULT_CVVDP_TARGET_RANGE,
-            DEFAULT_SSIMULACRA2_TARGET_RANGE,
-            DEFAULT_VMAF_TARGET_RANGE,
-            DEFAULT_XPSNR_TARGET_RANGE,
-            ProbeStatistic,
-            ProbeStrategy,
-            QualityMetric,
-            SubsetProbeLength,
-            SubsetProbePosition,
+            DEFAULT_BUTTERAUGLI_TARGET_RANGE, DEFAULT_CVVDP_TARGET_RANGE,
+            DEFAULT_SSIMULACRA2_TARGET_RANGE, DEFAULT_VMAF_TARGET_RANGE,
+            DEFAULT_XPSNR_TARGET_RANGE, ProbeStatistic, ProbeStrategy, QualityMetric,
+            SubsetProbeLength, SubsetProbePosition,
         },
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
@@ -25,23 +19,14 @@ use tracing::warn;
 
 use crate::{
     commands::{
-        DecoderMethod,
-        QualityMetric as QualityMetricBase,
-        QualityProfile,
+        DecoderMethod, QualityMetric as QualityMetricBase, QualityProfile,
         config::{
-            ConfigAction,
-            ConfigCommand,
-            InputOverride,
-            PropertyChange,
-            StatisticArgs,
-            StrategyArgs,
+            ConfigAction, ConfigCommand, InputOverride, PropertyChange, StatisticArgs, StrategyArgs,
         },
         handlers::{
             apply_input_override,
             config::{edit, ensure_override_requested},
-            configure_override_input,
-            configure_temp,
-            load_configuration,
+            configure_override_input, configure_temp, load_configuration,
         },
     },
     configuration::Configuration,
@@ -120,46 +105,46 @@ pub fn configure_quality_check(
         quality_check.metric = match metric {
             QualityMetricBase::VMAF => QualityMetric::VMAF {
                 target_range: DEFAULT_VMAF_TARGET_RANGE,
-                resolution:   None,
-                scaler:       String::new(),
+                resolution: None,
+                scaler: String::new(),
                 // 0 means one libvmaf worker per available core.
-                threads:      0,
-                model:        None,
-                features:     vec![],
+                threads: 0,
+                model: None,
+                features: vec![],
             },
             QualityMetricBase::SSIMULACRA2 => QualityMetric::SSIMULACRA2 {
                 target_range: DEFAULT_SSIMULACRA2_TARGET_RANGE,
-                resolution:   None,
-                threads:      None,
-                gpu_id:       None,
+                resolution: None,
+                threads: None,
+                gpu_id: None,
             },
             QualityMetricBase::BUTTERAUGLI => QualityMetric::BUTTERAUGLI {
-                target_range:         DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-                resolution:           None,
-                threads:              None,
+                target_range: DEFAULT_BUTTERAUGLI_TARGET_RANGE,
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 None,
-                gpu_id:               None,
+                norm: None,
+                gpu_id: None,
             },
             QualityMetricBase::BUTTERAUGLI3Norm => QualityMetric::BUTTERAUGLI {
-                target_range:         DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-                resolution:           None,
-                threads:              None,
+                target_range: DEFAULT_BUTTERAUGLI_TARGET_RANGE,
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 Some(3),
-                gpu_id:               None,
+                norm: Some(3),
+                gpu_id: None,
             },
             QualityMetricBase::XPSNR => QualityMetric::XPSNR {
                 target_range: DEFAULT_XPSNR_TARGET_RANGE,
-                resolution:   None,
+                resolution: None,
             },
             QualityMetricBase::CVVDP => QualityMetric::CVVDP {
-                target_range:      DEFAULT_CVVDP_TARGET_RANGE,
-                resolution:        None,
-                display_model:     None,
+                target_range: DEFAULT_CVVDP_TARGET_RANGE,
+                resolution: None,
+                display_model: None,
                 resize_to_display: None,
-                disable_temporal:  None,
-                gpu_id:            None,
+                disable_temporal: None,
+                gpu_id: None,
             },
         };
     }
@@ -171,14 +156,14 @@ pub fn configure_quality_check(
             QualityProfile::Fast => {
                 quality_check.strategy = ProbeStrategy::Subset {
                     position: SubsetProbePosition::Middle,
-                    length:   SubsetProbeLength::Frames(11),
+                    length: SubsetProbeLength::Frames(11),
                 };
                 quality_check.statistic = ProbeStatistic::Mean;
             },
             QualityProfile::Standard => {
                 quality_check.strategy = ProbeStrategy::Subset {
                     position: SubsetProbePosition::Middle,
-                    length:   SubsetProbeLength::Percentage(25.0),
+                    length: SubsetProbeLength::Percentage(25.0),
                 };
                 quality_check.statistic = ProbeStatistic::RootMeanSquare;
             },
@@ -273,29 +258,21 @@ impl ConfigCommand for QualityCheckCrud {
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         Self::section_mut(configuration);
         match set {
-            QualityCheckSet::Metric {
-                metric,
-            } => {
+            QualityCheckSet::Metric { metric } => {
                 configure_quality_check(configuration, None, None, None, None, Some(metric), None)?;
                 PropertyChange::new("metric", &Self::section_mut(configuration).metric)
             },
-            QualityCheckSet::Strategy {
-                args,
-            } => {
+            QualityCheckSet::Strategy { args } => {
                 let strategy = args.build()?;
                 Self::section_mut(configuration).strategy = strategy;
                 PropertyChange::new("strategy", &Self::section_mut(configuration).strategy)
             },
-            QualityCheckSet::Statistic {
-                args,
-            } => {
+            QualityCheckSet::Statistic { args } => {
                 let statistic = args.build()?;
                 Self::section_mut(configuration).statistic = statistic;
                 PropertyChange::new("statistic", Self::section_mut(configuration).statistic)
             },
-            QualityCheckSet::Input {
-                args,
-            } => {
+            QualityCheckSet::Input { args } => {
                 ensure_override_requested(args)?;
                 let existing = configuration
                     .condor
@@ -323,7 +300,7 @@ impl ConfigCommand for QualityCheckCrud {
             configuration.condor.sequence_config.quality_check = None;
             return Ok(Some(PropertyChange {
                 property: "section".to_owned(),
-                value:    Value::Null,
+                value: Value::Null,
             }));
         }
         let check = Self::section_mut(configuration);
@@ -447,35 +424,33 @@ mod tests {
             .as_path()
             .to_path_buf();
         let custom_filters = vec![VapourSynthFilter::Crop {
-            top:    Some(140),
+            top: Some(140),
             bottom: Some(140),
-            left:   None,
-            right:  None,
+            left: None,
+            right: None,
         }];
         let custom_vs_args = vec!["method=quality check".to_string()];
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.sequence_config.quality_check = Some(QualityCheckConfig {
-            input:     Some(Input::VapourSynth {
-                path:          input_abs.clone(),
-                import_method: VapourSynthImportMethod::LSMASHWorks {
-                    index: None
-                },
-                cache_path:    None,
-                filters:       custom_filters.clone(),
+            input: Some(Input::VapourSynth {
+                path: input_abs.clone(),
+                import_method: VapourSynthImportMethod::LSMASHWorks { index: None },
+                cache_path: None,
+                filters: custom_filters.clone(),
             }),
-            metric:    QualityMetric::BUTTERAUGLI {
-                target_range:         DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-                resolution:           None,
-                threads:              None,
+            metric: QualityMetric::BUTTERAUGLI {
+                target_range: DEFAULT_BUTTERAUGLI_TARGET_RANGE,
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 None,
-                gpu_id:               None,
+                norm: None,
+                gpu_id: None,
             },
             statistic: ProbeStatistic::Mean,
-            strategy:  ProbeStrategy::Subset {
+            strategy: ProbeStrategy::Subset {
                 position: SubsetProbePosition::Middle,
-                length:   SubsetProbeLength::Frames(11),
+                length: SubsetProbeLength::Frames(11),
             },
         });
         // immutable shadow

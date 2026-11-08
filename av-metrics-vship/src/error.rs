@@ -25,9 +25,9 @@ pub enum VshipError {
         /// Name of the libvship function that failed.
         function: &'static str,
         /// The `Vship_Exception` value, as its integer.
-        status:   std::ffi::c_int,
+        status: std::ffi::c_int,
         /// The message libvship associates with that status.
-        message:  String,
+        message: String,
     },
 
     /// `Vship_GetDeviceCount` reported a negative count.

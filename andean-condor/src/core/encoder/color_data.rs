@@ -10,11 +10,7 @@
 use std::collections::HashMap;
 
 use av_decoders::{
-    ChromaLocation,
-    ColorPrimaries,
-    ColorSpace,
-    ContentLightLevel,
-    MasteringDisplayMetadata,
+    ChromaLocation, ColorPrimaries, ColorSpace, ContentLightLevel, MasteringDisplayMetadata,
     TransferCharacteristic,
 };
 
@@ -1028,19 +1024,17 @@ mod tests {
     /// A 1080p SDR clip, so each test only sets the metadata it exercises.
     fn clip_info() -> ClipInfo {
         ClipInfo {
-            num_frames:                    24,
-            format_info:                   PixelFormat::VapourSynth {
-                bit_depth: 10
-            },
-            frame_rate:                    Rational64::new(24, 1),
-            resolution:                    (1920, 1080),
-            color_range:                   None,
-            color_primaries:               None,
+            num_frames: 24,
+            format_info: PixelFormat::VapourSynth { bit_depth: 10 },
+            frame_rate: Rational64::new(24, 1),
+            resolution: (1920, 1080),
+            color_range: None,
+            color_primaries: None,
             color_transfer_characteristic: None,
-            color_space:                   None,
-            chroma_location:               None,
-            mastering_display:             None,
-            content_light_level:           None,
+            color_space: None,
+            chroma_location: None,
+            mastering_display: None,
+            content_light_level: None,
         }
     }
 
@@ -1059,7 +1053,7 @@ mod tests {
                 luminance: Some((0.005, 1000.0)),
             }),
             content_light_level: Some(ContentLightLevel {
-                max_cll:  1000,
+                max_cll: 1000,
                 max_fall: 400,
             }),
             ..clip_info()
@@ -1097,12 +1091,15 @@ mod tests {
 
     #[test]
     fn hdr10_reaches_aom() {
-        assert_eq!(rendered(EncoderBase::AOM, &hdr10()), [
-            "--chroma-sample-position=vertical",
-            "--color-primaries=bt2020",
-            "--matrix-coefficients=bt2020ncl",
-            "--transfer-characteristics=smpte2084",
-        ]);
+        assert_eq!(
+            rendered(EncoderBase::AOM, &hdr10()),
+            [
+                "--chroma-sample-position=vertical",
+                "--color-primaries=bt2020",
+                "--matrix-coefficients=bt2020ncl",
+                "--transfer-characteristics=smpte2084",
+            ]
+        );
     }
 
     #[test]
@@ -1130,66 +1127,79 @@ mod tests {
 
     #[test]
     fn hdr10_reaches_rav1e() {
-        assert_eq!(rendered(EncoderBase::RAV1E, &hdr10()), [
-            "--content-light 1000,400",
-            "--mastering-display \
+        assert_eq!(
+            rendered(EncoderBase::RAV1E, &hdr10()),
+            [
+                "--content-light 1000,400",
+                "--mastering-display \
              G(0.17,0.797)B(0.131,0.046)R(0.708,0.292)WP(0.3127,0.329)L(1000,0.005)",
-            "--matrix BT2020NCL",
-            "--primaries BT2020",
-            "--range Limited",
-            "--transfer SMPTE2084",
-        ]);
+                "--matrix BT2020NCL",
+                "--primaries BT2020",
+                "--range Limited",
+                "--transfer SMPTE2084",
+            ]
+        );
     }
 
     #[test]
     fn hdr10_reaches_svt_av1() {
-        assert_eq!(rendered(EncoderBase::SVTAV1, &hdr10()), [
-            "--chroma-sample-position vertical",
-            "--color-primaries bt2020",
-            "--color-range studio",
-            "--content-light 1000,400",
-            "--mastering-display \
+        assert_eq!(
+            rendered(EncoderBase::SVTAV1, &hdr10()),
+            [
+                "--chroma-sample-position vertical",
+                "--color-primaries bt2020",
+                "--color-range studio",
+                "--content-light 1000,400",
+                "--mastering-display \
              G(0.17,0.797)B(0.131,0.046)R(0.708,0.292)WP(0.3127,0.329)L(1000,0.005)",
-            "--matrix-coefficients bt2020-ncl",
-            "--transfer-characteristics smpte2084",
-        ]);
+                "--matrix-coefficients bt2020-ncl",
+                "--transfer-characteristics smpte2084",
+            ]
+        );
     }
 
     #[test]
     fn hdr10_reaches_x264_in_fixed_point() {
-        assert_eq!(rendered(EncoderBase::X264, &hdr10()), [
-            "--chromaloc 0",
-            "--cll 1000,400",
-            "--colormatrix bt2020nc",
-            "--colorprim bt2020",
-            "--mastering-display \
+        assert_eq!(
+            rendered(EncoderBase::X264, &hdr10()),
+            [
+                "--chromaloc 0",
+                "--cll 1000,400",
+                "--colormatrix bt2020nc",
+                "--colorprim bt2020",
+                "--mastering-display \
              G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
-            "--range tv",
-            "--transfer smpte2084",
-        ]);
+                "--range tv",
+                "--transfer smpte2084",
+            ]
+        );
     }
 
     #[test]
     fn hdr10_reaches_x265_in_fixed_point() {
-        assert_eq!(rendered(EncoderBase::X265, &hdr10()), [
-            "--chromaloc 0",
-            "--colormatrix bt2020nc",
-            "--colorprim bt2020",
-            "--master-display G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
-            "--max-cll 1000,400",
-            "--range limited",
-            "--transfer smpte2084",
-        ]);
+        assert_eq!(
+            rendered(EncoderBase::X265, &hdr10()),
+            [
+                "--chromaloc 0",
+                "--colormatrix bt2020nc",
+                "--colorprim bt2020",
+                "--master-display G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,50)",
+                "--max-cll 1000,400",
+                "--range limited",
+                "--transfer smpte2084",
+            ]
+        );
     }
 
     #[test]
     fn hdr10_reaches_vvenc_through_additional() {
-        assert_eq!(rendered(EncoderBase::VVenC, &hdr10()), [
-            "--additional=ColourDescriptionPresent=1:Range=limited:ColourPrimaries=bt2020:\
+        assert_eq!(
+            rendered(EncoderBase::VVenC, &hdr10()),
+            ["--additional=ColourDescriptionPresent=1:Range=limited:ColourPrimaries=bt2020:\
              TransferCharacteristics=smpte2084:MatrixCoefficients=bt2020nc:ChromaLocInfoPresent=1:\
              ChromaSampleLocType=0:MasteringDisplayColourVolume=8500,39850,6550,2300,35400,14600,\
-             15635,16450,10000000,50:MaxContentLightLevel=1000,400",
-        ]);
+             15635,16450,10000000,50:MaxContentLightLevel=1000,400",]
+        );
     }
 
     #[test]
@@ -1203,20 +1213,24 @@ mod tests {
         listed.sort();
 
         assert_eq!(emitted, listed);
-        assert_eq!(rendered(EncoderBase::FFmpeg, &hdr10()), [
-            "-chroma_sample_location left",
-            "-color_primaries bt2020",
-            "-color_range tv",
-            "-color_trc smpte2084",
-            "-colorspace bt2020nc",
-        ]);
+        assert_eq!(
+            rendered(EncoderBase::FFmpeg, &hdr10()),
+            [
+                "-chroma_sample_location left",
+                "-color_primaries bt2020",
+                "-color_range tv",
+                "-color_trc smpte2084",
+                "-colorspace bt2020nc",
+            ]
+        );
     }
 
     #[test]
     fn vpx_only_signals_the_matrix() {
-        assert_eq!(rendered(EncoderBase::VPX, &hdr10()), [
-            "--color-space=bt2020".to_owned(),
-        ]);
+        assert_eq!(
+            rendered(EncoderBase::VPX, &hdr10()),
+            ["--color-space=bt2020".to_owned(),]
+        );
     }
 
     #[test]
@@ -1276,15 +1290,16 @@ mod tests {
     fn vvenc_only_flags_the_colour_description_when_it_signals_one() {
         let clip_info = ClipInfo {
             content_light_level: Some(ContentLightLevel {
-                max_cll:  1000,
+                max_cll: 1000,
                 max_fall: 400,
             }),
             ..clip_info()
         };
 
-        assert_eq!(rendered(EncoderBase::VVenC, &clip_info), [
-            "--additional=MaxContentLightLevel=1000,400",
-        ]);
+        assert_eq!(
+            rendered(EncoderBase::VVenC, &clip_info),
+            ["--additional=MaxContentLightLevel=1000,400",]
+        );
     }
 
     #[test]
@@ -1294,8 +1309,9 @@ mod tests {
             ..clip_info()
         };
 
-        assert_eq!(rendered(EncoderBase::VVenC, &clip_info), [
-            "--additional=Range=full",
-        ]);
+        assert_eq!(
+            rendered(EncoderBase::VVenC, &clip_info),
+            ["--additional=Range=full",]
+        );
     }
 }

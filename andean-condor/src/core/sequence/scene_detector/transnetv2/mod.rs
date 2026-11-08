@@ -12,8 +12,7 @@ use std::{
     collections::VecDeque,
     path::Path,
     sync::{
-        self,
-        Arc,
+        self, Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -79,11 +78,11 @@ pub(crate) fn detect_cuts(
     let mut previous = 0;
     for &cut in &cuts {
         progress_tx.send(SequenceStatus::Whole(Status::Processing {
-            id:         DETAILS.name.to_owned(),
+            id: DETAILS.name.to_owned(),
             completion: SequenceCompletion::Custom {
-                name:      "new-scene".to_owned(),
+                name: "new-scene".to_owned(),
                 completed: (last_frame + previous) as f64,
-                total:     (last_frame + cut) as f64,
+                total: (last_frame + cut) as f64,
             },
         }))?;
         previous = cut;
@@ -170,10 +169,10 @@ fn predict(
         analyzed = start + produced;
 
         progress_tx.send(SequenceStatus::Whole(Status::Processing {
-            id:         DETAILS.name.to_owned(),
+            id: DETAILS.name.to_owned(),
             completion: SequenceCompletion::Frames {
                 completed: (last_frame + start + produced) as u64,
-                total:     frames as u64,
+                total: frames as u64,
             },
         }))?;
     }

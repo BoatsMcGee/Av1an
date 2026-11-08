@@ -10,7 +10,7 @@ where
     Self: SequenceConfigHandler,
 {
     /// Percent of speed increase required to add an additional worker
-    pub threshold:  u8,
+    pub threshold: u8,
     /// The maximum amount of RAM (in megabytes) allowed across all workers
     pub max_memory: Option<u32>,
     // pub scenes_directory: PathBuf,
@@ -22,14 +22,13 @@ impl Default for BenchmarkerConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            threshold:  5,
+            threshold: 5,
             max_memory: None,
         }
     }
 }
 
-impl SequenceConfigHandler for BenchmarkerConfig {
-}
+impl SequenceConfigHandler for BenchmarkerConfig {}
 
 pub trait BenchmarkerConfigHandler
 where

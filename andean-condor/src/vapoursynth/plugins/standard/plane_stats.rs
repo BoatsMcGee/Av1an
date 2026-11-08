@@ -6,14 +6,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        MetricPluginFunction,
-        Plugin,
-        PluginFunction,
+        MetricPluginFunction, Plugin, PluginFunction,
         standard::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -21,9 +18,9 @@ use crate::vapoursynth::{
 pub struct PlaneStats {
     /// Only used for script generation
     pub clip_b_name: Option<NodeVariableName>,
-    pub plane:       Option<u8>,
+    pub plane: Option<u8>,
     /// Defaults to `PlaneStats`
-    pub prop:        Option<String>,
+    pub prop: Option<String>,
 }
 
 impl Plugin for PlaneStats {
@@ -69,24 +66,24 @@ impl PlaneStats {
         arguments
             .set_node("clipa", node)
             .map_err(|e| VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clipa".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             })?;
         if let Some(clip_b) = clip_b {
             arguments.set_node("clipb", clip_b).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: "clipb".to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
         Self::argument_set_ints(&mut arguments, vec![("plane", self.plane)])?;
-        Self::arguments_set(&mut arguments, vec![(
-            "prop",
-            self.prop.map(|s| s.into_bytes()).as_deref(),
-        )])?;
+        Self::arguments_set(
+            &mut arguments,
+            vec![("prop", self.prop.map(|s| s.into_bytes()).as_deref())],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         Ok(node)

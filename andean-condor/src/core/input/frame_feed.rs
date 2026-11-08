@@ -32,11 +32,11 @@ pub(super) fn request_window() -> usize {
 /// distance between rows, and the visible geometry. Nothing is copied, so a
 /// padded backend layout costs nothing to address.
 pub struct RawPlane<'a> {
-    data:   &'a [u8],
+    data: &'a [u8],
     stride: usize,
-    width:  usize,
+    width: usize,
     height: usize,
-    bytes:  usize,
+    bytes: usize,
 }
 
 impl<'a> RawPlane<'a> {
@@ -116,9 +116,9 @@ impl<'a> RawPlane<'a> {
 /// buffers, so a frame stays valid only until its feed produces the next one.
 pub struct RawFrame<'a> {
     /// The luma plane.
-    pub luma:      RawPlane<'a>,
+    pub luma: RawPlane<'a>,
     /// Cb then Cr; `None` for monochrome.
-    pub chroma:    Option<(RawPlane<'a>, RawPlane<'a>)>,
+    pub chroma: Option<(RawPlane<'a>, RawPlane<'a>)>,
     /// Bits per sample stored in the planes.
     pub bit_depth: usize,
 }
@@ -141,9 +141,7 @@ impl FrameFeed<'_> {
     pub(crate) fn new(input: &mut Input, first: usize, end: usize) -> Result<FrameFeed<'_>> {
         Ok(FrameFeed {
             kind: match input {
-                Input::Video {
-                    decoder, ..
-                } => {
+                Input::Video { decoder, .. } => {
                     let ffms2 = decoder.get_ffms2_impl().ok_or_else(|| {
                         anyhow::anyhow!("native input does not decode with FFMS2")
                     })?;
@@ -154,12 +152,9 @@ impl FrameFeed<'_> {
                         end,
                     })
                 },
-                Input::VapourSynth {
-                    decoder, ..
-                }
-                | Input::VapourSynthScript {
-                    decoder, ..
-                } => Kind::VapourSynth(VsFeed::new(output_node(decoder)?, first, end)),
+                Input::VapourSynth { decoder, .. } | Input::VapourSynthScript { decoder, .. } => {
+                    Kind::VapourSynth(VsFeed::new(output_node(decoder)?, first, end))
+                },
             },
         })
     }
@@ -179,9 +174,9 @@ impl FrameFeed<'_> {
 /// Native FFMS2: each frame's planes are addressed where the decoder left them.
 struct Ffms2Feed {
     video_source: *mut FFMS_VideoSource,
-    details:      VideoDetails,
-    next:         usize,
-    end:          usize,
+    details: VideoDetails,
+    next: usize,
+    end: usize,
 }
 
 impl Ffms2Feed {
@@ -214,10 +209,10 @@ pub(super) unsafe fn ffms2_frame_at<'a>(
 ) -> Result<RawFrame<'a>> {
     let mut error_buffer = [0 as c_char; 1024];
     let mut error = FFMS_ErrorInfo {
-        ErrorType:  0,
-        SubType:    0,
+        ErrorType: 0,
+        SubType: 0,
         BufferSize: i32::try_from(error_buffer.len()).expect("error buffer fits in i32"),
-        Buffer:     error_buffer.as_mut_ptr(),
+        Buffer: error_buffer.as_mut_ptr(),
     };
     let n = i32::try_from(index)
         .map_err(|_| anyhow::anyhow!("frame index {index} exceeds FFMS2's range"))?;
@@ -326,19 +321,19 @@ fn outstanding(arrived: usize, first: usize, requested: usize) -> bool {
 /// VapourSynth: frames are requested ahead of demand and handed out as they
 /// arrive.
 struct VsFeed<'core> {
-    node:      Node<'core>,
+    node: Node<'core>,
     /// Absolute index of the first frame this feed reads.
-    first:     usize,
-    end:       usize,
-    next:      usize,
+    first: usize,
+    end: usize,
+    next: usize,
     requested: usize,
-    window:    usize,
+    window: usize,
     /// Frames received per index, plus how many callbacks have run, so `drop`
     /// can wait out requests still in flight.
-    state:     Received<'core>,
+    state: Received<'core>,
     /// The frame the current [`RawFrame`] views; the next call replaces it,
     /// which is what retires the previous frame's planes.
-    current:   Option<FrameRef<'core>>,
+    current: Option<FrameRef<'core>>,
 }
 
 /// The window state shared with VapourSynth's frame callbacks.
@@ -472,10 +467,10 @@ mod tests {
         let mut buffer: Vec<c_char> =
             b"failed to decode\0".iter().map(|&byte| byte as c_char).collect();
         let error = FFMS_ErrorInfo {
-            ErrorType:  1,
-            SubType:    0,
+            ErrorType: 1,
+            SubType: 0,
             BufferSize: i32::try_from(buffer.len()).expect("buffer fits in i32"),
-            Buffer:     buffer.as_mut_ptr(),
+            Buffer: buffer.as_mut_ptr(),
         };
         assert_eq!(error_message(&error), "failed to decode");
     }
@@ -484,10 +479,10 @@ mod tests {
     #[test]
     fn missing_error_detail_is_reported_as_such() {
         let error = FFMS_ErrorInfo {
-            ErrorType:  1,
-            SubType:    0,
+            ErrorType: 1,
+            SubType: 0,
             BufferSize: 0,
-            Buffer:     std::ptr::null_mut(),
+            Buffer: std::ptr::null_mut(),
         };
         assert_eq!(error_message(&error), "no error detail");
     }

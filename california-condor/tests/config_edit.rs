@@ -4,8 +4,7 @@ mod common;
 mod config_helpers;
 
 use andean_condor::models::sequence::{
-    benchmarker::BenchmarkerConfig,
-    target_quality::types::ProbeStatistic,
+    benchmarker::BenchmarkerConfig, target_quality::types::ProbeStatistic,
 };
 use california_condor::test_helpers::*;
 use common::condor_cmd;
@@ -230,9 +229,7 @@ mod tests {
             .expect("quality check exists");
         assert_eq!(
             check.statistic,
-            ProbeStatistic::StandardDeviationDistance {
-                sigma: -1.5
-            },
+            ProbeStatistic::StandardDeviationDistance { sigma: -1.5 },
             "positional sigma is set"
         );
 
@@ -275,10 +272,13 @@ mod tests {
             .success();
         let input = load(&config_path).condor.input;
         assert!(
-            matches!(input, Input::VapourSynthScript {
-                stream_concurrently: false,
-                ..
-            }),
+            matches!(
+                input,
+                Input::VapourSynthScript {
+                    stream_concurrently: false,
+                    ..
+                }
+            ),
             "stream_concurrently is false: {input:?}"
         );
 

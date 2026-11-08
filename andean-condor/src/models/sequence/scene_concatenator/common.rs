@@ -21,13 +21,13 @@ pub fn default_true() -> bool {
 pub struct Metadata {
     /// Whether to copy global tags from the source. Defaults to `true`.
     #[serde(default = "default_true")]
-    pub copy:  bool,
+    pub copy: bool,
     /// Global title for the output.
     #[serde(default)]
     pub title: Option<String>,
     /// Global tags as key/value pairs.
     #[serde(default)]
-    pub tags:  HashMap<String, String>,
+    pub tags: HashMap<String, String>,
 }
 
 impl Default for Metadata {
@@ -35,9 +35,9 @@ impl Default for Metadata {
     #[inline]
     fn default() -> Self {
         Self {
-            copy:  true,
+            copy: true,
             title: None,
-            tags:  HashMap::new(),
+            tags: HashMap::new(),
         }
     }
 }
@@ -51,13 +51,13 @@ impl Default for Metadata {
 pub struct Chapters {
     /// Whether to copy chapters from the source. Defaults to `true`.
     #[serde(default = "default_true")]
-    pub copy:     bool,
+    pub copy: bool,
     /// ISO 639-2 language code written for every chapter entry.
     #[serde(default)]
     pub language: Option<String>,
     /// Character set used to decode simple chapter files.
     #[serde(default)]
-    pub charset:  Option<String>,
+    pub charset: Option<String>,
 }
 
 impl Default for Chapters {
@@ -66,9 +66,9 @@ impl Default for Chapters {
     #[inline]
     fn default() -> Self {
         Self {
-            copy:     true,
+            copy: true,
             language: None,
-            charset:  None,
+            charset: None,
         }
     }
 }

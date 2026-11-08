@@ -182,27 +182,19 @@ impl ConfigCommand for ScaleNoiseCrud {
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         let (property, value) = match set {
-            ScaleNoiseSet::Threshold {
-                value,
-            } => {
+            ScaleNoiseSet::Threshold { value } => {
                 Self::section_mut(configuration).threshold = *value;
                 ("threshold", serde_json::to_value(value)?)
             },
-            ScaleNoiseSet::MinimumScaler {
-                value,
-            } => {
+            ScaleNoiseSet::MinimumScaler { value } => {
                 Self::section_mut(configuration).minimum_scaler = *value;
                 ("minimum-scaler", serde_json::to_value(value)?)
             },
-            ScaleNoiseSet::MaximumScaler {
-                value,
-            } => {
+            ScaleNoiseSet::MaximumScaler { value } => {
                 Self::section_mut(configuration).maximum_scaler = *value;
                 ("maximum-scaler", serde_json::to_value(value)?)
             },
-            ScaleNoiseSet::ScaleChroma {
-                value,
-            } => {
+            ScaleNoiseSet::ScaleChroma { value } => {
                 let enabled = value.unwrap_or(Toggle::On).enabled();
                 Self::section_mut(configuration).scale_chroma = enabled;
                 ("scale-chroma", serde_json::to_value(enabled)?)
@@ -229,7 +221,7 @@ impl ConfigCommand for ScaleNoiseCrud {
             configuration.condor.sequence_config.noise_scaler = None;
             return Ok(Some(PropertyChange {
                 property: "section".to_owned(),
-                value:    Value::Null,
+                value: Value::Null,
             }));
         }
         let scaler = configuration
@@ -307,10 +299,10 @@ mod tests {
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.scenes = test_video.mock_scenes(&expected_config.condor.encoder);
         expected_config.condor.sequence_config.noise_scaler = Some(NoiseScalerConfig {
-            threshold:      0.002,
+            threshold: 0.002,
             minimum_scaler: 4.0,
             maximum_scaler: 12.0,
-            scale_chroma:   false,
+            scale_chroma: false,
         });
         // immutable shadow
         let expected_config = expected_config;

@@ -17,7 +17,7 @@ pub enum VmafError {
     #[error("Failed to load symbol `{symbol}` from libvmaf: {message}")]
     SymbolNotFound {
         /// Name of the symbol that could not be resolved.
-        symbol:  String,
+        symbol: String,
         /// Underlying loader error.
         message: String,
     },
@@ -28,7 +28,7 @@ pub enum VmafError {
         /// Name of the libvmaf function that failed.
         function: &'static str,
         /// Status code returned by libvmaf. Negative values are errno codes.
-        status:   i32,
+        status: i32,
     },
 
     /// A configuration value could not be passed to libvmaf.
@@ -42,7 +42,7 @@ pub enum VmafError {
     #[error("Failed to resolve VMAF model `{model}`: {reason}")]
     ModelNotFound {
         /// The model that could not be resolved.
-        model:  String,
+        model: String,
         /// Underlying reason.
         reason: String,
     },

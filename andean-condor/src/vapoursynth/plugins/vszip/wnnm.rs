@@ -13,14 +13,12 @@ use vapoursynth::{
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        Plugin,
-        PluginFunction,
+        Plugin, PluginFunction,
         resize::bicubic::Bicubic,
         vszip::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -31,18 +29,18 @@ pub struct WNNM {
     /// through. Missing entries inherit the previous one.
     ///
     /// Defaults to `[3.0, 3.0, 3.0]`
-    pub sigma:                Option<Vec<f64>>,
-    pub block_size:           Option<u32>,
-    pub block_step:           Option<u32>,
-    pub group_size:           Option<u32>,
-    pub bm_range:             Option<u32>,
-    pub radius:               Option<u32>,
-    pub ps_num:               Option<u32>,
-    pub ps_range:             Option<u32>,
-    pub residual:             Option<bool>,
+    pub sigma: Option<Vec<f64>>,
+    pub block_size: Option<u32>,
+    pub block_step: Option<u32>,
+    pub group_size: Option<u32>,
+    pub bm_range: Option<u32>,
+    pub radius: Option<u32>,
+    pub ps_num: Option<u32>,
+    pub ps_range: Option<u32>,
+    pub residual: Option<bool>,
     pub adaptive_aggregation: Option<bool>,
     /// Only used for script generation
-    pub rclip_name:           Option<NodeVariableName>,
+    pub rclip_name: Option<NodeVariableName>,
 }
 
 impl Plugin for WNNM {
@@ -77,11 +75,11 @@ impl PluginFunction for WNNM {
 /// to reconstruct the original format for the round-trip back to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WnnmSourceFormat {
-    color_family:    ColorFamily,
-    sample_type:     SampleType,
+    color_family: ColorFamily,
+    sample_type: SampleType,
     bits_per_sample: u8,
-    sub_sampling_w:  u8,
-    sub_sampling_h:  u8,
+    sub_sampling_w: u8,
+    sub_sampling_h: u8,
 }
 
 impl WnnmSourceFormat {
@@ -89,11 +87,11 @@ impl WnnmSourceFormat {
     #[inline]
     fn from_format(format: Format<'_>) -> Self {
         Self {
-            color_family:    format.color_family(),
-            sample_type:     format.sample_type(),
+            color_family: format.color_family(),
+            sample_type: format.sample_type(),
             bits_per_sample: format.bits_per_sample(),
-            sub_sampling_w:  format.sub_sampling_w(),
-            sub_sampling_h:  format.sub_sampling_h(),
+            sub_sampling_w: format.sub_sampling_w(),
+            sub_sampling_h: format.sub_sampling_h(),
         }
     }
 
@@ -286,35 +284,38 @@ impl WNNM {
         let mut arguments = Self::arguments()?;
         arguments.set_node("clip", wnnm_input).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "clip".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         if let Some(rclip) = rclip {
             arguments.set_node("rclip", rclip).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: "ref".to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
         Self::arguments_set_float_arrays(&mut arguments, vec![("sigma", self.sigma)])?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("block_size", self.block_size),
-            ("block_step", self.block_step),
-            ("group_size", self.group_size),
-            ("bm_range", self.bm_range),
-            ("radius", self.radius),
-            ("ps_num", self.ps_num),
-            ("ps_range", self.ps_range),
-            ("residual", self.residual.map(|b| if b { 1 } else { 0 })),
-            (
-                "adaptive_aggregation",
-                self.adaptive_aggregation.map(|b| if b { 1 } else { 0 }),
-            ),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("block_size", self.block_size),
+                ("block_step", self.block_step),
+                ("group_size", self.group_size),
+                ("bm_range", self.bm_range),
+                ("radius", self.radius),
+                ("ps_num", self.ps_num),
+                ("ps_range", self.ps_range),
+                ("residual", self.residual.map(|b| if b { 1 } else { 0 })),
+                (
+                    "adaptive_aggregation",
+                    self.adaptive_aggregation.map(|b| if b { 1 } else { 0 }),
+                ),
+            ],
+        )?;
         let wnnm_node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         // Convert the WNNM output back to the original format when a forward

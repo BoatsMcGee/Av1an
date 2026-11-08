@@ -38,8 +38,7 @@ use std::{
 use andean_condor::models::encoder::{Encoder, EncoderBase, cli_parameter::CLIParameter};
 use anyhow::{Context, Result, bail};
 use nom::{
-    IResult,
-    Parser,
+    IResult, Parser,
     branch::alt,
     bytes::complete::take_while1,
     character::complete::{char, multispace0},
@@ -54,12 +53,7 @@ use crate::{
     zoner::{
         ZonerConfig,
         zone::{
-            Zone,
-            ZoneEncoder,
-            ZoneEncoderMerge,
-            ZoneOptions,
-            ZoneOptionsBody,
-            ZonePhotonNoise,
+            Zone, ZoneEncoder, ZoneEncoderMerge, ZoneOptions, ZoneOptionsBody, ZonePhotonNoise,
             ZonePhotonNoiseBody,
         },
     },
@@ -269,17 +263,17 @@ fn build_encoder(
 /// The zone fields a string sets beyond the encoder change.
 #[derive(Default)]
 struct Overrides {
-    maximum_frames:    Option<usize>,
-    ffmpeg_filter:     Option<String>,
+    maximum_frames: Option<usize>,
+    ffmpeg_filter: Option<String>,
     append_color_data: Option<bool>,
-    photon_noise:      ZonePhotonNoiseBody,
+    photon_noise: ZonePhotonNoiseBody,
 }
 
 /// A zone string split into words, with quoted strings kept whole.
 struct Scanner<'a> {
     definition: &'a str,
-    tokens:     Vec<Token<'a>>,
-    index:      usize,
+    tokens: Vec<Token<'a>>,
+    index: usize,
 }
 
 #[derive(Clone, Copy)]

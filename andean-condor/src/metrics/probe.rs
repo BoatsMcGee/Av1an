@@ -34,8 +34,7 @@ impl std::fmt::Display for Cancelled {
     }
 }
 
-impl std::error::Error for Cancelled {
-}
+impl std::error::Error for Cancelled {}
 
 /// One decoded plane, described without copying it.
 ///
@@ -48,15 +47,15 @@ impl std::error::Error for Cancelled {
 /// consumes it before the frame is dropped.
 pub struct PlaneSource {
     /// Width in pixels (samples per row, not bytes).
-    pub width:            usize,
+    pub width: usize,
     /// Height in pixels.
-    pub height:           usize,
+    pub height: usize,
     /// Samples from one row to the next. May be negative for bottom-up images.
-    pub stride:           isize,
+    pub stride: isize,
     /// Offset of the first visible sample from `data`.
-    pub data_origin:      usize,
+    pub data_origin: usize,
     /// Pointer to the start of the underlying allocation.
-    pub data:             *const u8,
+    pub data: *const u8,
     /// Bytes per sample.
     pub bytes_per_sample: usize,
 }
@@ -136,10 +135,10 @@ pub enum Side<'decoder> {
     /// frame it just read. Backends that cannot seek rely on it to move forward
     /// by decoding and discarding the frames in between.
     Native {
-        decoder:   &'decoder mut av_decoders::Decoder,
+        decoder: &'decoder mut av_decoders::Decoder,
         bit_depth: usize,
-        next:      usize,
-        seekable:  bool,
+        next: usize,
+        seekable: bool,
     },
 }
 
@@ -189,10 +188,13 @@ impl<'decoder> Side<'decoder> {
     #[inline]
     #[must_use]
     pub fn is_seekable(&self) -> bool {
-        !matches!(self, Self::Native {
-            seekable: false,
-            ..
-        })
+        !matches!(
+            self,
+            Self::Native {
+                seekable: false,
+                ..
+            }
+        )
     }
 
     /// Point at the planes of frame `index` and hand them to `submit`.
@@ -740,12 +742,7 @@ mod tests {
                 side.advance(target).expect("advance sequentially");
                 side.with_planes(target, |_| Ok(())).expect("read the frame");
 
-                let Side::Native {
-                    next,
-                    seekable,
-                    ..
-                } = &side
-                else {
+                let Side::Native { next, seekable, .. } = &side else {
                     panic!("the fixture must open as a native side");
                 };
                 assert!(!*seekable, "y4m has no seek support");

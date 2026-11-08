@@ -4,9 +4,7 @@ mod common;
 mod config_helpers;
 
 use california_condor::{
-    commands::handlers::load_configuration,
-    test_helpers::*,
-    utils::hash_path::hash_path,
+    commands::handlers::load_configuration, test_helpers::*, utils::hash_path::hash_path,
 };
 use common::condor_cmd;
 use config_helpers::{init_config, load};
@@ -17,9 +15,7 @@ mod tests {
         models::{
             input::{ImportMethod, Input, VapourSynthImportMethod},
             sequence::scene_detector::{
-                SceneDetectionMethod,
-                SceneDetectionMethod as CoreMethod,
-                ScenecutMethod,
+                SceneDetectionMethod, SceneDetectionMethod as CoreMethod, ScenecutMethod,
             },
         },
         vapoursynth::vapoursynth_filters::VapourSynthFilter,
@@ -129,14 +125,12 @@ mod tests {
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         expected_config.condor.sequence_config.scene_detector.input = Some(Input::VapourSynth {
-            path:          input_abs,
-            import_method: VapourSynthImportMethod::FFMS2 {
-                index: None
-            },
-            cache_path:    None,
-            filters:       vec![VapourSynthFilter::Resize {
+            path: input_abs,
+            import_method: VapourSynthImportMethod::FFMS2 { index: None },
+            cache_path: None,
+            filters: vec![VapourSynthFilter::Resize {
                 scaler: None,
-                width:  Some(960),
+                width: Some(960),
                 height: Some(540),
                 format: None,
             }],
@@ -208,8 +202,8 @@ mod tests {
             SceneDetectionMethod::AVSceneChange {
                 minimum_length: test_video.fps().round() as usize,
                 maximum_length: (test_video.fps() * 2.0).round() as usize,
-                method:         ScenecutMethod::Fast,
-                save_scores:    false,
+                method: ScenecutMethod::Fast,
+                save_scores: false,
             };
         // immutable shadow
         let expected_config = expected_config;
@@ -359,8 +353,8 @@ mod tests {
             SceneDetectionMethod::TransNetV2 {
                 minimum_length: test_video.fps().round() as usize,
                 maximum_length: (test_video.fps() * 10.0).round() as usize,
-                model_path:     None,
-                save_scores:    false,
+                model_path: None,
+                save_scores: false,
             };
         // immutable shadow
         let expected_config = expected_config;
@@ -431,12 +425,15 @@ mod tests {
             .success();
         let method = load(&config_path).condor.sequence_config.scene_detector.method;
         assert!(
-            matches!(method, CoreMethod::AVSceneChange {
-                minimum_length: 20,
-                maximum_length: 280,
-                method:         ScenecutMethod::Fast,
-                save_scores:    true,
-            }),
+            matches!(
+                method,
+                CoreMethod::AVSceneChange {
+                    minimum_length: 20,
+                    maximum_length: 280,
+                    method: ScenecutMethod::Fast,
+                    save_scores: true,
+                }
+            ),
             "method is {method:?}"
         );
 
@@ -447,12 +444,15 @@ mod tests {
             .success();
         let method = load(&config_path).condor.sequence_config.scene_detector.method;
         assert!(
-            matches!(method, CoreMethod::TransNetV2 {
-                minimum_length: 20,
-                maximum_length: 280,
-                model_path:     None,
-                save_scores:    true,
-            }),
+            matches!(
+                method,
+                CoreMethod::TransNetV2 {
+                    minimum_length: 20,
+                    maximum_length: 280,
+                    model_path: None,
+                    save_scores: true,
+                }
+            ),
             "method is {method:?}"
         );
 
@@ -463,10 +463,13 @@ mod tests {
             .success();
         let method = load(&config_path).condor.sequence_config.scene_detector.method;
         assert!(
-            matches!(method, CoreMethod::TransNetV2 {
-                save_scores: false,
-                ..
-            }),
+            matches!(
+                method,
+                CoreMethod::TransNetV2 {
+                    save_scores: false,
+                    ..
+                }
+            ),
             "method is {method:?}"
         );
 
@@ -476,10 +479,13 @@ mod tests {
             .success();
         let method = load(&config_path).condor.sequence_config.scene_detector.method;
         assert!(
-            matches!(method, CoreMethod::None {
-                minimum_length: 20,
-                maximum_length: 280,
-            }),
+            matches!(
+                method,
+                CoreMethod::None {
+                    minimum_length: 20,
+                    maximum_length: 280,
+                }
+            ),
             "method is {method:?}"
         );
     }
@@ -510,11 +516,14 @@ mod tests {
 
         let method = load(&config_path).condor.sequence_config.scene_detector.method;
         assert!(
-            matches!(method, CoreMethod::AVSceneChange {
-                minimum_length: 24,
-                maximum_length: 240,
-                ..
-            }),
+            matches!(
+                method,
+                CoreMethod::AVSceneChange {
+                    minimum_length: 24,
+                    maximum_length: 240,
+                    ..
+                }
+            ),
             "the rejected edit left the method at {method:?}"
         );
     }
@@ -565,12 +574,15 @@ mod tests {
         condor_cmd(&temp).args(["detect-scenes", "reset", "method"]).assert().success();
         let restored = load(&config_path).condor.sequence_config.scene_detector.method;
         assert!(
-            matches!(restored, CoreMethod::AVSceneChange {
-                minimum_length: 24,
-                maximum_length: 240,
-                method:         ScenecutMethod::Standard,
-                save_scores:    false,
-            }),
+            matches!(
+                restored,
+                CoreMethod::AVSceneChange {
+                    minimum_length: 24,
+                    maximum_length: 240,
+                    method: ScenecutMethod::Standard,
+                    save_scores: false,
+                }
+            ),
             "reset restores the default, found {restored:?}"
         );
     }
@@ -604,10 +616,13 @@ mod tests {
         let detector = load(&config_path).condor.sequence_config.scene_detector;
         let input = detector.input.expect("scene detector input is set");
         assert!(
-            matches!(input, Input::Video {
-                import_method: ImportMethod::FFMS2 { .. },
-                ..
-            }),
+            matches!(
+                input,
+                Input::Video {
+                    import_method: ImportMethod::FFMS2 { .. },
+                    ..
+                }
+            ),
             "scene detector input is {input:?}"
         );
 
@@ -638,10 +653,7 @@ mod tests {
             .success();
 
         let mut configuration = load(&config_path);
-        let Input::Video {
-            import_method, ..
-        } = &mut configuration.condor.input
-        else {
+        let Input::Video { import_method, .. } = &mut configuration.condor.input else {
             panic!("expected a native input");
         };
         let ImportMethod::FFMS2 {

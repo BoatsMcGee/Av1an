@@ -19,15 +19,14 @@ pub struct NoiseScalerConfig
 where
     Self: SequenceConfigHandler,
 {
-    pub threshold:      f64,
+    pub threshold: f64,
     pub minimum_scaler: f64,
     pub maximum_scaler: f64,
     /// Whether to also scale chroma noise
-    pub scale_chroma:   bool,
+    pub scale_chroma: bool,
 }
 
-impl SequenceConfigHandler for NoiseScalerConfig {
-}
+impl SequenceConfigHandler for NoiseScalerConfig {}
 
 pub trait NoiseScalerConfigHandler
 where

@@ -11,8 +11,8 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NoiseDetectorData {
-    pub noise:      f64,
-    pub luminance:  f64,
+    pub noise: f64,
+    pub luminance: f64,
     pub created_on: SystemTime,
 }
 
@@ -26,41 +26,40 @@ pub struct NoiseDetectorConfig
 where
     Self: SequenceConfigHandler,
 {
-    pub input:             Option<InputModel>,
+    pub input: Option<InputModel>,
     pub reference_filters: Vec<VapourSynthFilter>,
-    pub denoised_filters:  Vec<VapourSynthFilter>,
+    pub denoised_filters: Vec<VapourSynthFilter>,
 }
 
-impl SequenceConfigHandler for NoiseDetectorConfig {
-}
+impl SequenceConfigHandler for NoiseDetectorConfig {}
 
 impl Default for NoiseDetectorConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            input:             None,
+            input: None,
             reference_filters: vec![VapourSynthFilter::WNNM {
-                sigma:                Some(vec![3.0, 0.0, 0.0]),
-                block_size:           None,
-                block_step:           None,
-                group_size:           None,
-                bm_range:             None,
-                radius:               None,
-                ps_num:               None,
-                ps_range:             None,
-                residual:             None,
+                sigma: Some(vec![3.0, 0.0, 0.0]),
+                block_size: None,
+                block_step: None,
+                group_size: None,
+                bm_range: None,
+                radius: None,
+                ps_num: None,
+                ps_range: None,
+                residual: None,
                 adaptive_aggregation: None,
             }],
-            denoised_filters:  vec![VapourSynthFilter::WNNM {
-                sigma:                Some(vec![6.0, 0.0, 0.0]),
-                block_size:           None,
-                block_step:           None,
-                group_size:           None,
-                bm_range:             None,
-                radius:               None,
-                ps_num:               None,
-                ps_range:             None,
-                residual:             None,
+            denoised_filters: vec![VapourSynthFilter::WNNM {
+                sigma: Some(vec![6.0, 0.0, 0.0]),
+                block_size: None,
+                block_step: None,
+                group_size: None,
+                bm_range: None,
+                radius: None,
+                ps_num: None,
+                ps_range: None,
+                residual: None,
                 adaptive_aggregation: None,
             }],
         }

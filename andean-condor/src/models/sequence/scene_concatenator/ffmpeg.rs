@@ -21,13 +21,13 @@ pub struct FfmpegConfig {
     /// Per-stream overrides for the main input. `None` copies all audio and
     /// subtitle streams.
     #[serde(default)]
-    pub tracks:       Option<FfmpegTrackMap>,
+    pub tracks: Option<FfmpegTrackMap>,
     /// Chapter handling. `None` copies the source's chapters.
     #[serde(default)]
-    pub chapters:     Option<Chapters>,
+    pub chapters: Option<Chapters>,
     /// Global metadata.
     #[serde(default)]
-    pub metadata:     Option<Metadata>,
+    pub metadata: Option<Metadata>,
     /// Additional files muxed alongside the encoded scenes.
     #[serde(default)]
     pub extra_inputs: Vec<FfmpegExtraInput>,
@@ -36,11 +36,11 @@ pub struct FfmpegConfig {
 /// An additional source file muxed into the output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct FfmpegExtraInput {
-    pub path:     PathBuf,
+    pub path: PathBuf,
     /// Per-stream overrides for this file. `None` copies all its audio and
     /// subtitle streams.
     #[serde(default)]
-    pub tracks:   Option<FfmpegTrackMap>,
+    pub tracks: Option<FfmpegTrackMap>,
     /// Metadata handling for this file.
     #[serde(default)]
     pub metadata: Option<Metadata>,
@@ -160,20 +160,20 @@ impl FfmpegTrack {
 pub struct FfmpegAttachmentTrack {
     /// Whether to copy this attachment. Defaults to `true`.
     #[serde(default = "super::common::default_true")]
-    pub copy:                   bool,
+    pub copy: bool,
     /// A file to attach to the output.
     #[serde(default)]
-    pub path:                   Option<PathBuf>,
+    pub path: Option<PathBuf>,
     /// The attachment's file name in the output (`filename`).
     #[serde(default)]
-    pub attachment_name:        Option<String>,
+    pub attachment_name: Option<String>,
     /// The attachment's description. FFmpeg attachments have no dedicated
     /// description element, so this is written as `comment` metadata.
     #[serde(default)]
     pub attachment_description: Option<String>,
     /// The attachment's MIME type (`mimetype`). Required when `path` is set.
     #[serde(default)]
-    pub attachment_mime_type:   Option<String>,
+    pub attachment_mime_type: Option<String>,
 }
 
 /// A single output stream's FFmpeg options.
@@ -181,17 +181,17 @@ pub struct FfmpegAttachmentTrack {
 pub struct FfmpegTrackOptions {
     /// Whether to copy this track. Defaults to `true`.
     #[serde(default = "super::common::default_true")]
-    pub copy:       bool,
+    pub copy: bool,
     /// Output codec for this stream (`-c:a:N` and friends). `copy` keeps the
     /// source codec.
     #[serde(default)]
-    pub codec:      Option<String>,
+    pub codec: Option<String>,
     /// Filtergraph applied to this stream (`-filter:a:N` / `-filter:s:N`).
     ///
     /// Rejected for video tracks. Requires a non-`copy` codec, because a
     /// filtered stream has to be re-encoded.
     #[serde(default)]
-    pub filter:     Option<String>,
+    pub filter: Option<String>,
     /// Extra FFmpeg arguments, appended verbatim. Each key must start with
     /// `-` and must not override Condor's own arguments.
     #[serde(default)]
@@ -267,26 +267,14 @@ pub enum FfmpegConfigError {
     #[error("{input} {id}: an attachment with a path requires attachment_mime_type")]
     AttachmentMimeTypeMissing { input: String, id: u32 },
     #[error("{input} {id}: parameter key {key:?} must start with '-'")]
-    ParameterKeyWithoutDash {
-        input: String,
-        id:    u32,
-        key:   String,
-    },
+    ParameterKeyWithoutDash { input: String, id: u32, key: String },
     #[error(
         "{input} {id}: parameter \"{key}\" conflicts with an argument Condor sets; use the \
          codec/filter fields instead"
     )]
-    ParameterKeyForbidden {
-        input: String,
-        id:    u32,
-        key:   String,
-    },
+    ParameterKeyForbidden { input: String, id: u32, key: String },
     #[error("{input} {id}: parameter key {key:?} must not contain whitespace")]
-    ParameterKeyWhitespace {
-        input: String,
-        id:    u32,
-        key:   String,
-    },
+    ParameterKeyWhitespace { input: String, id: u32, key: String },
     #[error("{input} {id}: filter must not be empty")]
     FilterEmpty { input: String, id: u32 },
     #[error(
@@ -344,11 +332,9 @@ fn validate_tracks(tracks: &FfmpegTrackMap, source: &str) -> anyhow::Result<()> 
         // only needs a MIME type for FFmpeg to write it out.
         if let Some(attachment) = track.attachment() {
             if attachment.path.is_some() && attachment.attachment_mime_type.is_none() {
-                return Err(FfmpegConfigError::AttachmentMimeTypeMissing {
-                    input: input(),
-                    id,
-                }
-                .into());
+                return Err(
+                    FfmpegConfigError::AttachmentMimeTypeMissing { input: input(), id }.into(),
+                );
             }
             continue;
         }
@@ -384,29 +370,21 @@ fn validate_tracks(tracks: &FfmpegTrackMap, source: &str) -> anyhow::Result<()> 
         }
         if let Some(filter) = &options.filter {
             if filter.trim().is_empty() {
-                return Err(FfmpegConfigError::FilterEmpty {
-                    input: input(),
-                    id,
-                }
-                .into());
+                return Err(FfmpegConfigError::FilterEmpty { input: input(), id }.into());
             }
             if matches!(track, FfmpegTrack::Video(_)) {
-                return Err(FfmpegConfigError::VideoFilterUnsupported {
-                    input: input(),
-                    id,
-                }
-                .into());
+                return Err(
+                    FfmpegConfigError::VideoFilterUnsupported { input: input(), id }.into(),
+                );
             }
             let re_encodes = options
                 .codec
                 .as_deref()
                 .is_some_and(|codec| !codec.eq_ignore_ascii_case("copy"));
             if !re_encodes {
-                return Err(FfmpegConfigError::FilterRequiresReEncode {
-                    input: input(),
-                    id,
-                }
-                .into());
+                return Err(
+                    FfmpegConfigError::FilterRequiresReEncode { input: input(), id }.into(),
+                );
             }
         }
     }

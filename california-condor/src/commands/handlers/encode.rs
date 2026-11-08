@@ -14,17 +14,12 @@ use thiserror::Error;
 
 use crate::{
     commands::{
-        DecoderMethod,
-        EncoderMethod,
+        DecoderMethod, EncoderMethod,
         config::{ConfigAction, ConfigCommand, InputOverride, PropertyChange, Toggle},
         handlers::{
-            apply_input_filters,
-            apply_stream_concurrently,
+            apply_input_filters, apply_stream_concurrently,
             config::{edit, ensure_override_requested},
-            configure_input,
-            configure_temp,
-            load_configuration,
-            warn_missing_path,
+            configure_input, configure_temp, load_configuration, warn_missing_path,
         },
     },
     configuration::Configuration,
@@ -245,7 +240,7 @@ pub enum EncodeSet {
     PhotonNoise {
         /// Luma ISO strength.
         #[arg(value_name = "ISO")]
-        iso:          u32,
+        iso: u32,
         /// Optional chroma ISO strength.
         #[arg(long, value_name = "ISO")]
         chroma_noise: Option<u32>,
@@ -347,27 +342,21 @@ impl ConfigCommand for EncodeCrud {
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         match set {
-            EncodeSet::Workers {
-                value,
-            } => {
+            EncodeSet::Workers { value } => {
                 configuration.condor.sequence_config.parallel_encoder.workers = Some(*value);
                 PropertyChange::new(
                     "workers",
                     configuration.condor.sequence_config.parallel_encoder.workers,
                 )
             },
-            EncodeSet::Input {
-                args,
-            } => {
+            EncodeSet::Input { args } => {
                 Self::apply_input(configuration, args)?;
                 PropertyChange::new(
                     "input",
                     &configuration.condor.sequence_config.parallel_encoder.input,
                 )
             },
-            EncodeSet::ScenesDirectory {
-                path,
-            } => {
+            EncodeSet::ScenesDirectory { path } => {
                 configuration.condor.sequence_config.parallel_encoder.scenes_directory =
                     path.clone();
                 PropertyChange::new(
@@ -375,9 +364,7 @@ impl ConfigCommand for EncodeCrud {
                     &configuration.condor.sequence_config.parallel_encoder.scenes_directory,
                 )
             },
-            EncodeSet::Encoder {
-                encoder,
-            } => {
+            EncodeSet::Encoder { encoder } => {
                 configure_encoder(
                     &mut configuration.condor.encoder,
                     Some(encoder),
@@ -390,9 +377,7 @@ impl ConfigCommand for EncodeCrud {
                 )?;
                 PropertyChange::new("encoder", &configuration.condor.encoder)
             },
-            EncodeSet::Executable {
-                path,
-            } => {
+            EncodeSet::Executable { path } => {
                 warn_missing_path("encoder executable", path);
                 configuration.condor.encoder.set_executable(Some(path.clone()));
                 PropertyChange::new(
@@ -400,9 +385,7 @@ impl ConfigCommand for EncodeCrud {
                     configuration.condor.encoder.custom_executable(),
                 )
             },
-            EncodeSet::Passes {
-                value,
-            } => {
+            EncodeSet::Passes { value } => {
                 let base = configuration.condor.encoder.base();
                 let Some(passes) = configuration.condor.encoder.passes_mut() else {
                     bail!(EncodeConfigError::PassesNotSupported(base));
@@ -410,9 +393,7 @@ impl ConfigCommand for EncodeCrud {
                 *passes = EncoderPasses::All(*value);
                 PropertyChange::new("passes", configuration.condor.encoder.passes())
             },
-            EncodeSet::Params {
-                params,
-            } => {
+            EncodeSet::Params { params } => {
                 configure_encoder(
                     &mut configuration.condor.encoder,
                     None,
@@ -425,10 +406,7 @@ impl ConfigCommand for EncodeCrud {
                 )?;
                 PropertyChange::new("params", configuration.condor.encoder.parameters())
             },
-            EncodeSet::PhotonNoise {
-                iso,
-                chroma_noise,
-            } => {
+            EncodeSet::PhotonNoise { iso, chroma_noise } => {
                 let base = configuration.condor.encoder.base();
                 if !base.supports_photon_noise() {
                     bail!(EncodeConfigError::PhotonNoiseNotSupported(base));
@@ -445,9 +423,7 @@ impl ConfigCommand for EncodeCrud {
                 )?;
                 PropertyChange::new("photon-noise", configuration.condor.encoder.photon_noise())
             },
-            EncodeSet::FfmpegFilter {
-                filter,
-            } => {
+            EncodeSet::FfmpegFilter { filter } => {
                 let base = configuration.condor.encoder.base();
                 if base == EncoderBase::FFmpeg {
                     bail!(EncodeConfigError::FfmpegFilterNotSupported(base));
@@ -467,9 +443,7 @@ impl ConfigCommand for EncodeCrud {
                     configuration.condor.encoder.ffmpeg_filter(),
                 )
             },
-            EncodeSet::AppendColorData {
-                value,
-            } => {
+            EncodeSet::AppendColorData { value } => {
                 let enabled = value.unwrap_or(Toggle::On).enabled();
                 configuration.condor.encoder.set_append_color_data(enabled);
                 PropertyChange::new(
@@ -700,10 +674,10 @@ mod tests {
             .as_path()
             .to_path_buf();
         let custom_filters = vec![VapourSynthFilter::Crop {
-            top:    Some(140),
+            top: Some(140),
             bottom: Some(140),
-            left:   None,
-            right:  None,
+            left: None,
+            right: None,
         }];
         let custom_vs_args = vec!["method=target quality".to_string()];
 
@@ -712,35 +686,35 @@ mod tests {
         expected_config.condor.encoder.parameters_mut().insert(
             "speed".to_owned(),
             CLIParameter::Number {
-                prefix:    "--".to_owned(),
+                prefix: "--".to_owned(),
                 delimiter: " ".to_owned(),
-                value:     10.0,
+                value: 10.0,
             },
         );
         if let Some(encoder_passes) = expected_config.condor.encoder.passes_mut() {
             *encoder_passes = EncoderPasses::All(2);
         }
         expected_config.condor.encoder.set_photon_noise(Some(PhotonNoise {
-            iso:        1600,
+            iso: 1600,
             chroma_iso: Some(400),
-            width:      None,
-            height:     None,
-            c_y:        None,
-            ccb:        None,
-            ccr:        None,
+            width: None,
+            height: None,
+            c_y: None,
+            ccb: None,
+            ccr: None,
         }));
         expected_config.condor.sequence_config.parallel_encoder = ParallelEncoderConfig {
             // `--filters` describes the input being encoded, so it applies to
             // `condor.input` and the override inherits it.
-            input:            Some(Input::VapourSynth {
-                path:          input_abs.clone(),
+            input: Some(Input::VapourSynth {
+                path: input_abs.clone(),
                 import_method: VapourSynthImportMethod::DGDecNV {
                     dgindexnv_executable: None,
                 },
-                cache_path:    None,
-                filters:       custom_filters.clone(),
+                cache_path: None,
+                filters: custom_filters.clone(),
             }),
-            workers:          Some(2),
+            workers: Some(2),
             scenes_directory: temp_abs.join("scenes"),
         };
         if let Input::VapourSynth {
@@ -816,7 +790,7 @@ mod tests {
         let config_path = temp.path().join("condor.json");
         let custom_filters = vec![VapourSynthFilter::Resize {
             scaler: Some(Scaler::Point),
-            width:  Some(960),
+            width: Some(960),
             height: Some(540),
             format: None,
         }];
@@ -846,12 +820,12 @@ mod tests {
         let (mut config, _) =
             load_configuration(Some(&config_path)).expect("load_configuration should succeed");
         config.condor.sequence_config.parallel_encoder.input = Some(Input::VapourSynth {
-            path:          input_abs,
+            path: input_abs,
             import_method: VapourSynthImportMethod::DGDecNV {
                 dgindexnv_executable: None,
             },
-            cache_path:    None,
-            filters:       vec![],
+            cache_path: None,
+            filters: vec![],
         });
         let override_before = config.condor.sequence_config.parallel_encoder.input.clone();
         config.save(&config_path).expect("save should succeed");

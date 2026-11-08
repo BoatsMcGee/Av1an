@@ -8,15 +8,8 @@ use v_frame::chroma::ChromaSubsampling;
 use crate::{
     error::VshipError,
     ffi::{
-        VshipChromaLocation,
-        VshipChromaSubsample,
-        VshipColorFamily,
-        VshipColorspace,
-        VshipCropRectangle,
-        VshipPrimaries,
-        VshipRange,
-        VshipSample,
-        VshipTransferFunction,
+        VshipChromaLocation, VshipChromaSubsample, VshipColorFamily, VshipColorspace,
+        VshipCropRectangle, VshipPrimaries, VshipRange, VshipSample, VshipTransferFunction,
         VshipYuvMatrix,
     },
     scorer::GPU_UNSET,
@@ -158,7 +151,7 @@ impl PoolMethod {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ButteraugliParams {
     /// Exponent of the norm the metric minimises. 2 is the convention.
-    pub q_norm:               i32,
+    pub q_norm: i32,
     /// Peak display brightness in nits, which scales intensity weighting.
     pub intensity_multiplier: f32,
 }
@@ -167,7 +160,7 @@ impl Default for ButteraugliParams {
     #[inline]
     fn default() -> Self {
         Self {
-            q_norm:               2,
+            q_norm: 2,
             intensity_multiplier: DEFAULT_INTENSITY_MULTIPLIER,
         }
     }
@@ -179,18 +172,18 @@ impl Default for ButteraugliParams {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CvvdpParams {
     /// Display model key, e.g. `standard_fhd`. Resolved by libvship.
-    pub display_model:          String,
+    pub display_model: String,
     /// Path to a JSON display-configuration file, or empty for none.
-    pub display_model_json:     String,
+    pub display_model_json: String,
     /// Whether to scale both inputs to the model's display resolution.
-    pub resize_to_display:      bool,
+    pub resize_to_display: bool,
     /// Frame rate handed to libvship's temporal model.
     ///
     /// A rate of zero is not a neutral "unknown": CVVDP's temporal filter is
     /// parameterised by it, so an unset rate biases the score, and the error
     /// grows with clip length. Callers that know the source rate should set it
     /// with [`VshipConfig::with_fps`].
-    pub fps:                    f32,
+    pub fps: f32,
     /// Whether to clear the temporal history at a discontinuity in frame index.
     ///
     /// True by default. A scene cut is a discontinuity in the motion the
@@ -206,10 +199,10 @@ impl Default for CvvdpParams {
     #[inline]
     fn default() -> Self {
         Self {
-            display_model:          DEFAULT_DISPLAY_MODEL.to_owned(),
-            display_model_json:     String::new(),
-            resize_to_display:      false,
-            fps:                    0.0,
+            display_model: DEFAULT_DISPLAY_MODEL.to_owned(),
+            display_model_json: String::new(),
+            resize_to_display: false,
+            fps: 0.0,
             reset_on_discontinuity: true,
         }
     }
@@ -222,23 +215,23 @@ impl Default for CvvdpParams {
 /// reference white point and display model the library defaults to.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VshipConfig {
-    metric:          VshipMetric,
+    metric: VshipMetric,
     /// The configured device, or [`GPU_UNSET`] when none was chosen.
-    gpu_id:          u32,
+    gpu_id: u32,
     handler_threads: u32,
-    butteraugli:     ButteraugliParams,
-    cvvdp:           CvvdpParams,
+    butteraugli: ButteraugliParams,
+    cvvdp: CvvdpParams,
 }
 
 impl Default for VshipConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            metric:          VshipMetric::default(),
-            gpu_id:          GPU_UNSET,
+            metric: VshipMetric::default(),
+            gpu_id: GPU_UNSET,
             handler_threads: DEFAULT_HANDLER_THREADS,
-            butteraugli:     ButteraugliParams::default(),
-            cvvdp:           CvvdpParams::default(),
+            butteraugli: ButteraugliParams::default(),
+            cvvdp: CvvdpParams::default(),
         }
     }
 }
@@ -708,21 +701,15 @@ mod tests {
     fn chroma_sampling_maps_to_the_vship_subsampling() {
         assert_eq!(
             subsample_for_chroma(ChromaSubsampling::Yuv420),
-            Some(VshipChromaSubsample {
-                subw: 1, subh: 1
-            })
+            Some(VshipChromaSubsample { subw: 1, subh: 1 })
         );
         assert_eq!(
             subsample_for_chroma(ChromaSubsampling::Yuv422),
-            Some(VshipChromaSubsample {
-                subw: 1, subh: 0
-            })
+            Some(VshipChromaSubsample { subw: 1, subh: 0 })
         );
         assert_eq!(
             subsample_for_chroma(ChromaSubsampling::Yuv444),
-            Some(VshipChromaSubsample {
-                subw: 0, subh: 0
-            })
+            Some(VshipChromaSubsample { subw: 0, subh: 0 })
         );
         assert_eq!(subsample_for_chroma(ChromaSubsampling::Monochrome), None);
     }

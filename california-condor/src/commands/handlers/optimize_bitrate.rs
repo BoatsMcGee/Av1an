@@ -82,9 +82,7 @@ impl ConfigCommand for OptimizeBitrateCrud {
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         match set {
-            OptimizeBitrateSet::SigmaThreshold {
-                value,
-            } => {
+            OptimizeBitrateSet::SigmaThreshold { value } => {
                 configuration.condor.sequence_config.bitrate_optimizer.bitrate_sigma_threshold =
                     Some(*value);
                 PropertyChange::new("sigma-threshold", value)
@@ -102,14 +100,14 @@ impl ConfigCommand for OptimizeBitrateCrud {
                 *optimizer = Default::default();
                 Ok(Some(PropertyChange {
                     property: "section".to_owned(),
-                    value:    serde_json::to_value(&*optimizer)?,
+                    value: serde_json::to_value(&*optimizer)?,
                 }))
             },
             Some(OptimizeBitrateKey::SigmaThreshold) => {
                 optimizer.bitrate_sigma_threshold = None;
                 Ok(Some(PropertyChange {
                     property: "sigma-threshold".to_owned(),
-                    value:    serde_json::to_value(optimizer.bitrate_sigma_threshold)?,
+                    value: serde_json::to_value(optimizer.bitrate_sigma_threshold)?,
                 }))
             },
         }

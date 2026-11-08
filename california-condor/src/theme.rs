@@ -38,35 +38,35 @@ impl ThemeMode {
 /// is a complete, self-contained palette.
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
-    pub mode:         ThemeMode,
+    pub mode: ThemeMode,
     /// Canvas fill behind every screen.
-    pub background:   Color,
+    pub background: Color,
     /// Default text where no explicit style is set.
-    pub foreground:   Color,
+    pub foreground: Color,
     /// Primary accent: progress bars and highlighted borders.
-    pub main:         Color,
+    pub main: Color,
     /// Secondary accent (quantizer scatter, informational).
-    pub accent_blue:  Color,
+    pub accent_blue: Color,
     /// Tertiary accent (score scatter, success).
     pub accent_green: Color,
     /// Block borders.
-    pub border:       Color,
+    pub border: Color,
     /// De-emphasized / secondary text.
-    pub dim:          Color,
+    pub dim: Color,
 }
 
 impl Theme {
     /// The historical palette — the default when no theme is installed.
     pub const fn dark() -> Theme {
         Theme {
-            mode:         ThemeMode::Dark,
-            background:   Color::Rgb(18, 18, 22),
-            foreground:   Color::Rgb(214, 214, 218),
-            main:         Color::Rgb(128, 128, 128),
-            accent_blue:  Color::Rgb(90, 140, 240),
+            mode: ThemeMode::Dark,
+            background: Color::Rgb(18, 18, 22),
+            foreground: Color::Rgb(214, 214, 218),
+            main: Color::Rgb(128, 128, 128),
+            accent_blue: Color::Rgb(90, 140, 240),
             accent_green: Color::Rgb(110, 200, 120),
-            border:       Color::Rgb(90, 90, 96),
-            dim:          Color::Rgb(128, 128, 128),
+            border: Color::Rgb(90, 90, 96),
+            dim: Color::Rgb(128, 128, 128),
         }
     }
 
@@ -74,14 +74,14 @@ impl Theme {
     /// bright canvas.
     pub const fn light() -> Theme {
         Theme {
-            mode:         ThemeMode::Light,
-            background:   Color::Rgb(246, 246, 247),
-            foreground:   Color::Rgb(28, 28, 32),
-            main:         Color::Rgb(110, 110, 118),
-            accent_blue:  Color::Rgb(30, 90, 200),
+            mode: ThemeMode::Light,
+            background: Color::Rgb(246, 246, 247),
+            foreground: Color::Rgb(28, 28, 32),
+            main: Color::Rgb(110, 110, 118),
+            accent_blue: Color::Rgb(30, 90, 200),
             accent_green: Color::Rgb(20, 140, 70),
-            border:       Color::Rgb(160, 160, 168),
-            dim:          Color::Rgb(130, 130, 138),
+            border: Color::Rgb(160, 160, 168),
+            dim: Color::Rgb(130, 130, 138),
         }
     }
 

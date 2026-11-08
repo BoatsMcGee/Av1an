@@ -5,9 +5,7 @@ mod config_helpers;
 
 use andean_condor::models::sequence::speed_scaler::SpeedScalerConfig;
 use california_condor::{
-    commands::handlers::load_configuration,
-    test_helpers::*,
-    utils::hash_path::hash_path,
+    commands::handlers::load_configuration, test_helpers::*, utils::hash_path::hash_path,
 };
 use common::condor_cmd;
 use config_helpers::{init_config, load};

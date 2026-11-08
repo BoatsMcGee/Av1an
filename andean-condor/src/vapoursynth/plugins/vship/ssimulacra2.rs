@@ -7,14 +7,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        MetricPluginFunction,
-        Plugin,
-        PluginFunction,
+        MetricPluginFunction, Plugin, PluginFunction,
         vship::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -25,8 +22,8 @@ pub struct SSIMULACRA2 {
     pub reference_node_name: String,
     /// Only used for script generation
     pub distorted_node_name: String,
-    pub num_stream:          Option<u32>,
-    pub gpu_id:              Option<u32>,
+    pub num_stream: Option<u32>,
+    pub gpu_id: Option<u32>,
 }
 
 impl Plugin for SSIMULACRA2 {
@@ -56,22 +53,22 @@ impl SSIMULACRA2 {
         let mut arguments = Self::arguments()?;
         arguments.set_node("reference", reference).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "reference".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         arguments.set_node("distorted", distorted).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "distorted".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("numStream", self.num_stream),
-            ("gpu_id", self.gpu_id),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![("numStream", self.num_stream), ("gpu_id", self.gpu_id)],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         Ok(node)

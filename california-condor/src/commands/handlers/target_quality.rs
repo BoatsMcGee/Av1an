@@ -5,17 +5,10 @@ use andean_condor::{
     models::sequence::target_quality::{
         TargetQualityConfig,
         types::{
-            DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-            DEFAULT_CVVDP_TARGET_RANGE,
-            DEFAULT_SSIMULACRA2_TARGET_RANGE,
-            DEFAULT_VMAF_TARGET_RANGE,
-            DEFAULT_XPSNR_TARGET_RANGE,
-            InterpolationMethod,
-            ProbeStatistic,
-            ProbeStrategy,
-            QualityMetric,
-            SubsetProbeLength,
-            SubsetProbePosition,
+            DEFAULT_BUTTERAUGLI_TARGET_RANGE, DEFAULT_CVVDP_TARGET_RANGE,
+            DEFAULT_SSIMULACRA2_TARGET_RANGE, DEFAULT_VMAF_TARGET_RANGE,
+            DEFAULT_XPSNR_TARGET_RANGE, InterpolationMethod, ProbeStatistic, ProbeStrategy,
+            QualityMetric, SubsetProbeLength, SubsetProbePosition,
         },
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
@@ -28,23 +21,14 @@ use tracing::warn;
 
 use crate::{
     commands::{
-        DecoderMethod,
-        QualityMetric as QualityMetricBase,
-        QualityProfile,
+        DecoderMethod, QualityMetric as QualityMetricBase, QualityProfile,
         config::{
-            ConfigAction,
-            ConfigCommand,
-            InputOverride,
-            PropertyChange,
-            StatisticArgs,
-            StrategyArgs,
+            ConfigAction, ConfigCommand, InputOverride, PropertyChange, StatisticArgs, StrategyArgs,
         },
         handlers::{
             apply_input_override,
             config::{edit, ensure_override_requested},
-            configure_override_input,
-            configure_temp,
-            load_configuration,
+            configure_override_input, configure_temp, load_configuration,
         },
     },
     configuration::Configuration,
@@ -146,46 +130,46 @@ pub fn configure_target_quality(
         target_quality.metric = match metric {
             QualityMetricBase::VMAF => QualityMetric::VMAF {
                 target_range: DEFAULT_VMAF_TARGET_RANGE,
-                resolution:   None,
-                scaler:       String::new(),
+                resolution: None,
+                scaler: String::new(),
                 // 0 means one libvmaf worker per available core.
-                threads:      0,
-                model:        None,
-                features:     vec![],
+                threads: 0,
+                model: None,
+                features: vec![],
             },
             QualityMetricBase::SSIMULACRA2 => QualityMetric::SSIMULACRA2 {
                 target_range: DEFAULT_SSIMULACRA2_TARGET_RANGE,
-                resolution:   None,
-                threads:      None,
-                gpu_id:       None,
+                resolution: None,
+                threads: None,
+                gpu_id: None,
             },
             QualityMetricBase::BUTTERAUGLI => QualityMetric::BUTTERAUGLI {
-                target_range:         DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-                resolution:           None,
-                threads:              None,
+                target_range: DEFAULT_BUTTERAUGLI_TARGET_RANGE,
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 None,
-                gpu_id:               None,
+                norm: None,
+                gpu_id: None,
             },
             QualityMetricBase::BUTTERAUGLI3Norm => QualityMetric::BUTTERAUGLI {
-                target_range:         DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-                resolution:           None,
-                threads:              None,
+                target_range: DEFAULT_BUTTERAUGLI_TARGET_RANGE,
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 Some(3),
-                gpu_id:               None,
+                norm: Some(3),
+                gpu_id: None,
             },
             QualityMetricBase::XPSNR => QualityMetric::XPSNR {
                 target_range: DEFAULT_XPSNR_TARGET_RANGE,
-                resolution:   None,
+                resolution: None,
             },
             QualityMetricBase::CVVDP => QualityMetric::CVVDP {
-                target_range:      DEFAULT_CVVDP_TARGET_RANGE,
-                resolution:        None,
-                display_model:     None,
+                target_range: DEFAULT_CVVDP_TARGET_RANGE,
+                resolution: None,
+                display_model: None,
                 resize_to_display: None,
-                disable_temporal:  None,
-                gpu_id:            None,
+                disable_temporal: None,
+                gpu_id: None,
             },
         };
     }
@@ -194,12 +178,9 @@ pub fn configure_target_quality(
         &mut configuration.condor.sequence_config.target_quality,
     ) {
         let target_range = match target_quality.metric {
-            QualityMetric::BUTTERAUGLI {
-                ..
-            }
-            | QualityMetric::CVVDP {
-                ..
-            } => (target - 0.1, target + 0.1),
+            QualityMetric::BUTTERAUGLI { .. } | QualityMetric::CVVDP { .. } => {
+                (target - 0.1, target + 0.1)
+            },
             _ => (target - 1.0, target + 1.0),
         };
         target_quality.metric.target_range_mut().0 = target_range.0;
@@ -233,14 +214,14 @@ pub fn configure_target_quality(
             QualityProfile::Fast => {
                 target_quality.probing.strategy = ProbeStrategy::Subset {
                     position: SubsetProbePosition::Middle,
-                    length:   SubsetProbeLength::Frames(11),
+                    length: SubsetProbeLength::Frames(11),
                 };
                 target_quality.probing.statistic = ProbeStatistic::Mean;
             },
             QualityProfile::Standard => {
                 target_quality.probing.strategy = ProbeStrategy::Subset {
                     position: SubsetProbePosition::Middle,
-                    length:   SubsetProbeLength::Percentage(25.0),
+                    length: SubsetProbeLength::Percentage(25.0),
                 };
                 target_quality.probing.statistic = ProbeStatistic::RootMeanSquare;
             },
@@ -363,7 +344,7 @@ pub enum TargetQualitySet {
     Interpolators {
         /// Interpolator used below a probe's value.
         #[arg(value_name = "Interpolator")]
-        first:  Interpolator,
+        first: Interpolator,
         /// Interpolator used above a probe's value.
         #[arg(value_name = "Interpolator")]
         second: Interpolator,
@@ -465,21 +446,11 @@ impl TargetQualityCrud {
 /// The default acceptable score range of `metric`.
 fn default_target_range(metric: &QualityMetric) -> (f64, f64) {
     match metric {
-        QualityMetric::VMAF {
-            ..
-        } => DEFAULT_VMAF_TARGET_RANGE,
-        QualityMetric::SSIMULACRA2 {
-            ..
-        } => DEFAULT_SSIMULACRA2_TARGET_RANGE,
-        QualityMetric::BUTTERAUGLI {
-            ..
-        } => DEFAULT_BUTTERAUGLI_TARGET_RANGE,
-        QualityMetric::XPSNR {
-            ..
-        } => DEFAULT_XPSNR_TARGET_RANGE,
-        QualityMetric::CVVDP {
-            ..
-        } => DEFAULT_CVVDP_TARGET_RANGE,
+        QualityMetric::VMAF { .. } => DEFAULT_VMAF_TARGET_RANGE,
+        QualityMetric::SSIMULACRA2 { .. } => DEFAULT_SSIMULACRA2_TARGET_RANGE,
+        QualityMetric::BUTTERAUGLI { .. } => DEFAULT_BUTTERAUGLI_TARGET_RANGE,
+        QualityMetric::XPSNR { .. } => DEFAULT_XPSNR_TARGET_RANGE,
+        QualityMetric::CVVDP { .. } => DEFAULT_CVVDP_TARGET_RANGE,
     }
 }
 
@@ -531,9 +502,7 @@ impl ConfigCommand for TargetQualityCrud {
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         Self::section_mut(configuration);
         match set {
-            TargetQualitySet::Metric {
-                metric,
-            } => {
+            TargetQualitySet::Metric { metric } => {
                 configure_target_quality(
                     configuration,
                     None,
@@ -550,9 +519,7 @@ impl ConfigCommand for TargetQualityCrud {
                 Self::validate(Self::section_mut(configuration))?;
                 PropertyChange::new("metric", &Self::section_mut(configuration).metric)
             },
-            TargetQualitySet::Target {
-                value,
-            } => {
+            TargetQualitySet::Target { value } => {
                 if !value.is_finite() {
                     return Err(TargetQualityConfigError::TargetNotFinite.into());
                 }
@@ -575,9 +542,7 @@ impl ConfigCommand for TargetQualityCrud {
                     Self::section_mut(configuration).metric.target_range(),
                 )
             },
-            TargetQualitySet::MaximumProbes {
-                value,
-            } => {
+            TargetQualitySet::MaximumProbes { value } => {
                 Self::section_mut(configuration).maximum_probes = *value;
                 Self::validate(Self::section_mut(configuration))?;
                 PropertyChange::new(
@@ -585,9 +550,7 @@ impl ConfigCommand for TargetQualityCrud {
                     Self::section_mut(configuration).maximum_probes,
                 )
             },
-            TargetQualitySet::QuantizerRange {
-                range,
-            } => {
+            TargetQualitySet::QuantizerRange { range } => {
                 Self::section_mut(configuration).quantizer_range = *range;
                 Self::validate(Self::section_mut(configuration))?;
                 PropertyChange::new(
@@ -595,17 +558,12 @@ impl ConfigCommand for TargetQualityCrud {
                     Self::section_mut(configuration).quantizer_range,
                 )
             },
-            TargetQualitySet::Interpolators {
-                first,
-                second,
-            } => {
+            TargetQualitySet::Interpolators { first, second } => {
                 let quality = Self::section_mut(configuration);
                 quality.interpolators = ((*first).into(), (*second).into());
                 PropertyChange::new("interpolators", quality.interpolators)
             },
-            TargetQualitySet::Input {
-                args,
-            } => {
+            TargetQualitySet::Input { args } => {
                 ensure_override_requested(args)?;
                 let existing = configuration
                     .condor
@@ -619,9 +577,7 @@ impl ConfigCommand for TargetQualityCrud {
                 Self::validate(Self::section_mut(configuration))?;
                 PropertyChange::new("input", &Self::section_mut(configuration).input)
             },
-            TargetQualitySet::MetricInput {
-                args,
-            } => {
+            TargetQualitySet::MetricInput { args } => {
                 ensure_override_requested(args)?;
                 let existing = configuration
                     .condor
@@ -637,9 +593,7 @@ impl ConfigCommand for TargetQualityCrud {
                     &Self::section_mut(configuration).metric_input,
                 )
             },
-            TargetQualitySet::Strategy {
-                args,
-            } => {
+            TargetQualitySet::Strategy { args } => {
                 let strategy = args.build()?;
                 Self::section_mut(configuration).probing.strategy = strategy;
                 PropertyChange::new(
@@ -647,9 +601,7 @@ impl ConfigCommand for TargetQualityCrud {
                     &Self::section_mut(configuration).probing.strategy,
                 )
             },
-            TargetQualitySet::Statistic {
-                args,
-            } => {
+            TargetQualitySet::Statistic { args } => {
                 let statistic = args.build()?;
                 Self::section_mut(configuration).probing.statistic = statistic;
                 PropertyChange::new(
@@ -657,9 +609,7 @@ impl ConfigCommand for TargetQualityCrud {
                     Self::section_mut(configuration).probing.statistic,
                 )
             },
-            TargetQualitySet::Params {
-                params,
-            } => {
+            TargetQualitySet::Params { params } => {
                 // Keep the options the user does not restate: the current map
                 // (or the encoder defaults) first, then the pairs from the
                 // command line.
@@ -695,7 +645,7 @@ impl ConfigCommand for TargetQualityCrud {
             configuration.condor.sequence_config.target_quality = None;
             return Ok(Some(PropertyChange {
                 property: "section".to_owned(),
-                value:    Value::Null,
+                value: Value::Null,
             }));
         }
         let quantizer_range =
@@ -876,49 +826,48 @@ mod tests {
             .as_path()
             .to_path_buf();
         let custom_filters = vec![VapourSynthFilter::Crop {
-            top:    Some(140),
+            top: Some(140),
             bottom: Some(140),
-            left:   None,
-            right:  None,
+            left: None,
+            right: None,
         }];
         let custom_vs_args = vec!["method=target quality".to_string()];
 
         let mut expected_config = default_config(&test_video, &output, &temp_abs);
         let mut tq_encoder_parameters = EncoderBase::SVTAV1.default_parameters();
-        tq_encoder_parameters.extend(CLIParameter::new_numbers("--", " ", &[
-            ("preset", 6.0),
-            ("tune", 3.0),
-        ]));
+        tq_encoder_parameters.extend(CLIParameter::new_numbers(
+            "--",
+            " ",
+            &[("preset", 6.0), ("tune", 3.0)],
+        ));
         expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
-            metric:          QualityMetric::BUTTERAUGLI {
-                target_range:         (1.4, 1.6),
-                resolution:           None,
-                threads:              None,
+            metric: QualityMetric::BUTTERAUGLI {
+                target_range: (1.4, 1.6),
+                resolution: None,
+                threads: None,
                 intensity_multiplier: None,
-                norm:                 None,
-                gpu_id:               None,
+                norm: None,
+                gpu_id: None,
             },
-            maximum_probes:  4,
+            maximum_probes: 4,
             quantizer_range: (8, 40),
-            interpolators:   (
+            interpolators: (
                 InterpolationMethod::FritschCarlson,
                 InterpolationMethod::Pchip,
             ),
-            input:           Some(Input::VapourSynth {
-                path:          input_abs.clone(),
-                import_method: VapourSynthImportMethod::LSMASHWorks {
-                    index: None
-                },
-                cache_path:    None,
-                filters:       custom_filters.clone(),
+            input: Some(Input::VapourSynth {
+                path: input_abs.clone(),
+                import_method: VapourSynthImportMethod::LSMASHWorks { index: None },
+                cache_path: None,
+                filters: custom_filters.clone(),
             }),
-            metric_input:    None,
-            probing:         TargetQualityProbing {
+            metric_input: None,
+            probing: TargetQualityProbing {
                 encoder_options: Some(tq_encoder_parameters),
-                statistic:       ProbeStatistic::Mean,
-                strategy:        ProbeStrategy::Subset {
+                statistic: ProbeStatistic::Mean,
+                strategy: ProbeStrategy::Subset {
                     position: SubsetProbePosition::Middle,
-                    length:   SubsetProbeLength::Frames(11),
+                    length: SubsetProbeLength::Frames(11),
                 },
             },
         });

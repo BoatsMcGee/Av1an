@@ -22,13 +22,13 @@ mod tests {
     /// (480, 528), (528, 720).
     fn test_video() -> TestVideo {
         TestVideo {
-            path:         PathBuf::from("video.mkv"),
-            width:        1920,
-            height:       1080,
-            frames:       720,
+            path: PathBuf::from("video.mkv"),
+            width: 1920,
+            height: 1080,
+            frames: 720,
             fps_rational: (24, 1),
-            format:       FFPixelFormat::YUV420P,
-            scenes:       vec![(0, 121), (121, 240), (240, 480), (480, 528), (528, 720)],
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 121), (121, 240), (240, 480), (480, 528), (528, 720)],
         }
     }
 
@@ -80,11 +80,11 @@ mod tests {
         configuration.condor.scenes[1].sub_scenes = Some(vec![
             andean_condor::models::scene::SubScene {
                 start_frame: 121,
-                end_frame:   180,
+                end_frame: 180,
             },
             andean_condor::models::scene::SubScene {
                 start_frame: 180,
-                end_frame:   240,
+                end_frame: 240,
             },
         ]);
         configuration.save(&config_path).expect("the config saves");

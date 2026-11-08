@@ -6,8 +6,8 @@ use thiserror::Error;
 use crate::models::output::Output as OutputModel;
 
 pub struct Output {
-    pub path:       PathBuf,
-    pub tags:       HashMap<String, String>,
+    pub path: PathBuf,
+    pub tags: HashMap<String, String>,
     pub video_tags: HashMap<String, String>,
 }
 
@@ -15,8 +15,8 @@ impl Output {
     #[inline]
     pub fn as_data(&self) -> OutputModel {
         OutputModel {
-            path:       self.path.clone(),
-            tags:       self.tags.clone(),
+            path: self.path.clone(),
+            tags: self.tags.clone(),
             video_tags: self.video_tags.clone(),
         }
     }
@@ -34,8 +34,8 @@ impl Output {
     #[inline]
     pub fn new(data: &OutputModel) -> Result<Self> {
         Ok(Output {
-            path:       data.path.clone(),
-            tags:       data.tags.clone(),
+            path: data.path.clone(),
+            tags: data.tags.clone(),
             video_tags: data.video_tags.clone(),
         })
     }

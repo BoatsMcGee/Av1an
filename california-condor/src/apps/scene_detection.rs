@@ -20,20 +20,20 @@ use crate::{
 #[derive(Clone)]
 pub struct SceneDetectionState {
     pub frames_processed: u64,
-    pub total_frames:     u64,
-    pub scenes:           Vec<(u64, u64)>,
-    pub scenes_len:       usize,
+    pub total_frames: u64,
+    pub scenes: Vec<(u64, u64)>,
+    pub scenes_len: usize,
 }
 
 pub struct SceneDetectionApp {
     pub(crate) original_panic_hook: Option<super::PanicHook>,
-    pub started:                    std::time::Instant,
-    pub clip_info:                  ClipInfo,
-    initial_frames:                 u64,
-    pub total_frames:               u64,
-    attempted_cancel:               bool,
-    shared_progress:                SharedProgress<SceneDetectionState>,
-    cached_state:                   SceneDetectionState,
+    pub started: std::time::Instant,
+    pub clip_info: ClipInfo,
+    initial_frames: u64,
+    pub total_frames: u64,
+    attempted_cancel: bool,
+    shared_progress: SharedProgress<SceneDetectionState>,
+    cached_state: SceneDetectionState,
 }
 
 impl TuiApp for SceneDetectionApp {
@@ -68,14 +68,9 @@ impl TuiApp for SceneDetectionApp {
     }
 
     fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool {
-        if let SequenceStatus::Whole(Status::Processing {
-            completion, ..
-        }) = status
-        {
+        if let SequenceStatus::Whole(Status::Processing { completion, .. }) = status {
             match completion {
-                SequenceCompletion::Frames {
-                    completed, ..
-                } => {
+                SequenceCompletion::Frames { completed, .. } => {
                     state.frames_processed = completed;
                     return true;
                 },
@@ -89,7 +84,7 @@ impl TuiApp for SceneDetectionApp {
                     if !std::io::stdout().is_terminal() {
                         let event = SceneDetectionConsoleEvent::NewScene {
                             start: completed as u64,
-                            end:   total as u64,
+                            end: total as u64,
                         };
                         let event = serde_json::to_string(&event).unwrap();
                         println!("[Scene Detector][New Scene]: {}", event);
@@ -122,21 +117,21 @@ impl TuiApp for SceneDetectionApp {
         frame.render_widget(input_info, layout[0]);
 
         let progress_bar = ProgressBar {
-            color:               main,
-            processing_title:    if self.attempted_cancel {
+            color: main,
+            processing_title: if self.attempted_cancel {
                 "Shutting down Scene Detector...".to_owned()
             } else {
                 "Detecting Scenes...".to_owned()
             },
-            completed_title:     "Scene Detection Completed".to_owned(),
-            top_right_title:     format!("{} found", self.cached_state.scenes_len),
+            completed_title: "Scene Detection Completed".to_owned(),
+            top_right_title: format!("{} found", self.cached_state.scenes_len),
             bottom_center_title: String::new(),
-            unit_per_second:     "FPS".to_owned(),
-            unit:                "Frame".to_owned(),
-            initial_completed:   self.initial_frames,
-            completed:           self.cached_state.frames_processed,
-            total:               self.total_frames,
-            show_label:          true,
+            unit_per_second: "FPS".to_owned(),
+            unit: "Frame".to_owned(),
+            initial_completed: self.initial_frames,
+            completed: self.cached_state.frames_processed,
+            total: self.total_frames,
+            show_label: true,
         };
         let progress_bar = progress_bar.generate(Some(self.started));
         frame.render_widget(progress_bar, layout[2]);

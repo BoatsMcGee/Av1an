@@ -18,28 +18,22 @@ use crate::{
     models::{
         input::{ImportMethod, Input as InputModel},
         sequence::{
-            SequenceConfigHandler,
-            SequenceDataHandler,
+            SequenceConfigHandler, SequenceDataHandler,
             quality_check::{
-                QualityCheckConfig,
-                QualityCheckConfigHandler,
-                QualityCheckDataHandler,
+                QualityCheckConfig, QualityCheckConfigHandler, QualityCheckDataHandler,
             },
             target_quality::types::{QualityMetric, QualityPass},
         },
     },
     vapoursynth::{
-        VapourSynthError,
-        get_core,
+        VapourSynthError, get_core,
         plugins::{
-            MetricPluginFunction,
-            PluginFunction,
+            MetricPluginFunction, PluginFunction,
             ffms2::Source,
             resize::bicubic::Bicubic,
             standard::{splice::Splice, trim::Trim},
             vship::{
-                butteraugli::BUTTERAUGLI,
-                cvvdp::CVVDP,
+                butteraugli::BUTTERAUGLI, cvvdp::CVVDP,
                 ssimulacra2::SSIMULACRA2 as VSHIPSSIMULACRA2,
             },
             vszip::{ssimulacra2::SSIMULACRA2, xpsnr::XPSNR},
@@ -48,9 +42,9 @@ use crate::{
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Quality Check",
+    name: "Quality Check",
     description: "Measure the quality of the video per scene",
-    version:     "0.0.1",
+    version: "0.0.1",
 };
 
 pub struct QualityCheck {
@@ -115,11 +109,11 @@ where
         // may begin a lengthy caching process, hence the separation
         // between validate and initialize.
         progress_tx.send(SequenceStatus::Whole(Status::Processing {
-            id:         DETAILS.name.to_owned(),
+            id: DETAILS.name.to_owned(),
             completion: SequenceCompletion::Custom {
-                name:      DETAILS.name.to_owned(),
+                name: DETAILS.name.to_owned(),
                 completed: 0.0,
-                total:     1.0,
+                total: 1.0,
             },
         }))?;
         input.clip_info()?;
@@ -222,10 +216,10 @@ where
 
         for ((index, _), measurement) in scene_frame_indices.iter().zip(measurements) {
             let quality_pass = QualityPass {
-                quantizer:    0.0,
-                scores:       measurement.scores,
-                bitrate:      0.0,
-                started_on:   measurement.started_on,
+                quantizer: 0.0,
+                scores: measurement.scores,
+                bitrate: 0.0,
+                started_on: measurement.started_on,
                 completed_on: measurement.completed_on,
             };
             condor.scenes[*index].sequence_data.get_quality_check_mut()?.quality = quality_pass;
@@ -244,9 +238,7 @@ impl QualityCheck {
 
     #[inline]
     pub fn new(input: Option<Input>) -> Self {
-        Self {
-            input,
-        }
+        Self { input }
     }
 
     fn measure_vmaf(
@@ -261,14 +253,14 @@ impl QualityCheck {
 
         let reference = input.decoder();
         let mut distorted = Input::from_video(&InputModel::Video {
-            path:          output_path.to_path_buf(),
+            path: output_path.to_path_buf(),
             import_method: ImportMethod::FFMS2 {
-                index:      None,
+                index: None,
                 cache_path: None,
             },
             // The encoded output is already in the input's format, so it must
             // not be converted again.
-            filters:       Vec::new(),
+            filters: Vec::new(),
         })?;
 
         // Each score is reported as the metric produces it, mapped back to its
@@ -305,15 +297,15 @@ impl QualityCheck {
         // is not a scoring failure.
         let _ = progress_tx.send(SequenceStatus::Subprocess {
             parent: Status::Processing {
-                id:         DETAILS.name.to_owned(),
+                id: DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Custom {
-                    name:      DETAILS.name.to_owned(),
+                    name: DETAILS.name.to_owned(),
                     completed: (position + 1) as f64,
-                    total:     total_frames as f64,
+                    total: total_frames as f64,
                 },
             },
-            child:  Status::Processing {
-                id:         "Quality".to_owned(),
+            child: Status::Processing {
+                id: "Quality".to_owned(),
                 completion: SequenceCompletion::FrameScore {
                     frame: selected[position] as u64,
                     score,
@@ -389,14 +381,14 @@ impl QualityCheck {
 
         let reference = input.decoder();
         let mut distorted = Input::from_video(&InputModel::Video {
-            path:          output_path.to_path_buf(),
+            path: output_path.to_path_buf(),
             import_method: ImportMethod::FFMS2 {
-                index:      None,
+                index: None,
                 cache_path: None,
             },
             // The encoded output is already in the input's format, so it must
             // not be converted again.
-            filters:       Vec::new(),
+            filters: Vec::new(),
         })?;
 
         // Each score is reported as the engine produces it.
@@ -486,15 +478,10 @@ impl QualityCheck {
         let mut v_input_owned = input.as_vapoursynth_script()?;
         let v_input = v_input_owned.as_mut();
         let decoder = match input {
-            Input::VapourSynth {
-                decoder, ..
-            }
-            | Input::VapourSynthScript {
-                decoder, ..
-            } => decoder,
-            Input::Video {
-                ..
-            } => v_input.expect("Video Input exists").decoder(),
+            Input::VapourSynth { decoder, .. } | Input::VapourSynthScript { decoder, .. } => {
+                decoder
+            },
+            Input::Video { .. } => v_input.expect("Video Input exists").decoder(),
         };
         let vapoursynth_decoder = decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
         let env = &vapoursynth_decoder.env;
@@ -579,25 +566,17 @@ impl QualityCheck {
                     SequenceStatus::Whole(Status::Processing {
                         id: _name,
                         completion,
-                    }) => {
+                    }) =>
+                    {
                         #[allow(clippy::collapsible_match)]
-                        if let SequenceCompletion::Frames {
-                            completed,
-                            total,
-                        } = completion
-                        {
+                        if let SequenceCompletion::Frames { completed, total } = completion {
                             progress_tx_clone.send(SequenceStatus::Whole(Status::Processing {
-                                id:         "Compare".to_owned(),
-                                completion: SequenceCompletion::Frames {
-                                    completed,
-                                    total,
-                                },
+                                id: "Compare".to_owned(),
+                                completion: SequenceCompletion::Frames { completed, total },
                             }))?;
                         }
                     },
-                    SequenceStatus::Whole(Status::Completed {
-                        id: _,
-                    }) => {
+                    SequenceStatus::Whole(Status::Completed { id: _ }) => {
                         progress_tx_clone.send(SequenceStatus::Whole(Status::Completed {
                             id: "Compare".to_owned(),
                         }))?;
@@ -628,15 +607,15 @@ impl QualityCheck {
                 let frame = global_frames[local_index];
                 let _ = progress_tx.send(SequenceStatus::Subprocess {
                     parent: Status::Processing {
-                        id:         DETAILS.name.to_owned(),
+                        id: DETAILS.name.to_owned(),
                         completion: SequenceCompletion::Custom {
-                            name:      DETAILS.name.to_owned(),
+                            name: DETAILS.name.to_owned(),
                             completed: (local_index + 1) as f64,
-                            total:     total_frames as f64,
+                            total: total_frames as f64,
                         },
                     },
-                    child:  Status::Processing {
-                        id:         "Quality".to_owned(),
+                    child: Status::Processing {
+                        id: "Quality".to_owned(),
                         completion: SequenceCompletion::FrameScore {
                             frame: frame as u64,
                             score: *score,
@@ -670,20 +649,20 @@ impl QualityCheck {
                     let scene_score = statistic.calculate(&scene_scores[scene_index]);
                     let _ = progress_tx.send(SequenceStatus::Subprocess {
                         parent: Status::Processing {
-                            id:         DETAILS.name.to_owned(),
+                            id: DETAILS.name.to_owned(),
                             completion: SequenceCompletion::Custom {
-                                name:      DETAILS.name.to_owned(),
+                                name: DETAILS.name.to_owned(),
                                 completed: (local_index + 1) as f64,
-                                total:     total_frames as f64,
+                                total: total_frames as f64,
                             },
                         },
-                        child:  Status::Processing {
-                            id:         "Quality".to_owned(),
+                        child: Status::Processing {
+                            id: "Quality".to_owned(),
                             completion: SequenceCompletion::SceneQuality {
-                                index:     scene_indices[scene_index] as u64,
+                                index: scene_indices[scene_index] as u64,
                                 quantizer: 0.0,
-                                score:     scene_score,
-                                bitrate:   0.0,
+                                score: scene_score,
+                                bitrate: 0.0,
                             },
                         },
                     });
@@ -699,9 +678,7 @@ impl QualityCheck {
         match &config.metric {
             // Handled by `measure_vmaf` before this graph is built: VMAF reads
             // decoded frames through libvmaf instead of a VapourSynth filter.
-            QualityMetric::VMAF {
-                ..
-            } => {
+            QualityMetric::VMAF { .. } => {
                 unreachable!("VMAF is measured by `measure_vmaf`, not here");
             },
             QualityMetric::SSIMULACRA2 {
@@ -821,9 +798,7 @@ impl QualityCheck {
                     },
                 )?
             },
-            QualityMetric::XPSNR {
-                resolution, ..
-            } => {
+            QualityMetric::XPSNR { resolution, .. } => {
                 let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
                     let resize = Bicubic {
                         width: Some(width),
@@ -921,8 +896,8 @@ impl QualityCheck {
         let (scene_scores, _scene_completed, scene_started_on, scene_completed_on) = &*scene_state;
         let measurements = (0..scene_frame_indices.len())
             .map(|index| SceneMeasurement {
-                scores:       scene_scores[index].clone(),
-                started_on:   scene_started_on[index],
+                scores: scene_scores[index].clone(),
+                started_on: scene_started_on[index],
                 completed_on: scene_completed_on[index],
             })
             .collect::<Vec<_>>();
@@ -934,15 +909,13 @@ impl QualityCheck {
 impl Default for QualityCheck {
     #[inline]
     fn default() -> Self {
-        Self {
-            input: None
-        }
+        Self { input: None }
     }
 }
 
 struct SceneMeasurement {
-    scores:       Vec<f64>,
-    started_on:   u128,
+    scores: Vec<f64>,
+    started_on: u128,
     completed_on: u128,
 }
 

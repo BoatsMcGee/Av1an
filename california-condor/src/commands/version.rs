@@ -4,19 +4,11 @@ use andean_condor::{
     metrics::{MetricLibraryInfo, libraries},
     models::encoder::{Encoder, EncoderBase},
     vapoursynth::{
-        get_api,
-        get_core,
-        get_environment,
+        get_api, get_core, get_environment,
         plugins::{
-            PluginFunction,
-            bestsource::VideoSource,
-            dgdecodenv::DGSource,
-            ffms2::Source,
-            lsmash::LWLibavSource,
-            mvutensils::degrain::Degrain as MVUDegrain,
-            vship::cvvdp::CVVDP,
-            vszip::xpsnr::XPSNR,
-            zoomvtools::degrain::Degrain as ZooMVDegrain,
+            PluginFunction, bestsource::VideoSource, dgdecodenv::DGSource, ffms2::Source,
+            lsmash::LWLibavSource, mvutensils::degrain::Degrain as MVUDegrain, vship::cvvdp::CVVDP,
+            vszip::xpsnr::XPSNR, zoomvtools::degrain::Degrain as ZooMVDegrain,
         },
     },
 };

@@ -408,18 +408,21 @@ mod tests {
             &[],
             None,
         );
-        assert_eq!(args, vec![
-            "-o",
-            "out.mkv",
-            "--no-video",
-            "in.mkv",
-            "--default-duration",
-            "0:24/1fps",
-            "[",
-            "a.mkv",
-            "b.mkv",
-            "]",
-        ]);
+        assert_eq!(
+            args,
+            vec![
+                "-o",
+                "out.mkv",
+                "--no-video",
+                "in.mkv",
+                "--default-duration",
+                "0:24/1fps",
+                "[",
+                "a.mkv",
+                "b.mkv",
+                "]",
+            ]
+        );
     }
     /// Track selection, per-track options, and video options land in the right
     /// places relative to the source file.

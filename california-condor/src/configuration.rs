@@ -10,55 +10,37 @@ use andean_condor::{
         Condor as CondorModel,
         encoder::{Encoder, EncoderBase},
         input::{
-            Ffms2Filter,
-            Input as InputModel,
-            VapourSynthImportMethod,
-            VapourSynthScriptSource,
+            Ffms2Filter, Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource,
         },
         output::Output as OutputModel,
         sequence::{
-            SequenceConfigHandler,
-            SequenceDataHandler,
+            SequenceConfigHandler, SequenceDataHandler,
             benchmarker::{BenchmarkerConfig, BenchmarkerConfigHandler},
             bitrate_optimizer::{BitrateOptimizerConfig, BitrateOptimizerConfigHandler},
             noise_detector::{
-                NoiseDetectorConfig,
-                NoiseDetectorConfigHandler,
-                NoiseDetectorData,
+                NoiseDetectorConfig, NoiseDetectorConfigHandler, NoiseDetectorData,
                 NoiseDetectorDataHandler,
             },
             noise_scaler::{
-                NoiseScalerConfig,
-                NoiseScalerConfigHandler,
-                NoiseScalerData,
+                NoiseScalerConfig, NoiseScalerConfigHandler, NoiseScalerData,
                 NoiseScalerDataHandler,
             },
             parallel_encoder::{
-                ParallelEncoderConfig,
-                ParallelEncoderConfigHandler,
-                ParallelEncoderData,
+                ParallelEncoderConfig, ParallelEncoderConfigHandler, ParallelEncoderData,
                 ParallelEncoderDataHandler,
             },
             quality_check::{
-                QualityCheckConfig,
-                QualityCheckConfigHandler,
-                QualityCheckData,
+                QualityCheckConfig, QualityCheckConfigHandler, QualityCheckData,
                 QualityCheckDataHandler,
             },
             scene_concatenator::{SceneConcatenatorConfig, SceneConcatenatorConfigHandler},
             scene_detector::{
-                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
-                SceneDetectionMethod,
-                SceneDetectorConfig,
-                SceneDetectorData,
-                SceneDetectorDataHandler,
-                ScenecutMethod,
+                DEFAULT_MAX_SCENE_LENGTH_SECONDS, SceneDetectionMethod, SceneDetectorConfig,
+                SceneDetectorData, SceneDetectorDataHandler, ScenecutMethod,
             },
             speed_scaler::{SpeedScalerConfig, SpeedScalerConfigHandler},
             target_quality::{
-                TargetQualityConfig,
-                TargetQualityConfigHandler,
-                TargetQualityData,
+                TargetQualityConfig, TargetQualityConfigHandler, TargetQualityData,
                 TargetQualityDataHandler,
             },
         },
@@ -95,8 +77,8 @@ pub struct Configuration {
     pub schema: String,
     pub condor: CondorModel<CliSequenceData, CliSequenceConfig>,
     // Duplicated in case Condor instantiates a VapourSynthScript Input
-    pub input:  PathBuf,
-    pub temp:   PathBuf,
+    pub input: PathBuf,
+    pub temp: PathBuf,
 }
 
 impl Configuration {
@@ -129,35 +111,35 @@ impl Configuration {
         let mut configuration = Self {
             schema: default_schema_url(),
             condor: CondorModel {
-                input:           input_data,
-                output:          OutputModel {
-                    path:       output.to_path_buf(),
-                    tags:       HashMap::new(),
+                input: input_data,
+                output: OutputModel {
+                    path: output.to_path_buf(),
+                    tags: HashMap::new(),
                     video_tags: HashMap::new(),
                 },
-                encoder:         Encoder::default(),
-                scenes:          Vec::new(),
+                encoder: Encoder::default(),
+                scenes: Vec::new(),
                 sequence_config: CliSequenceConfig {
-                    scene_detector:     SceneDetectorConfig {
-                        input:  None,
+                    scene_detector: SceneDetectorConfig {
+                        input: None,
                         method: SceneDetectionMethod::AVSceneChange {
                             minimum_length: fps.round() as usize,
                             maximum_length: DEFAULT_MAX_SCENE_LENGTH_SECONDS as usize
                                 * fps.round() as usize,
-                            method:         ScenecutMethod::Standard,
-                            save_scores:    false,
+                            method: ScenecutMethod::Standard,
+                            save_scores: false,
                         },
                     },
-                    zoner:              None,
-                    noise_detector:     None,
-                    noise_scaler:       None,
-                    benchmarker:        BenchmarkerConfig::default(),
-                    parallel_encoder:   ParallelEncoderConfig::new(&scenes_directory),
+                    zoner: None,
+                    noise_detector: None,
+                    noise_scaler: None,
+                    benchmarker: BenchmarkerConfig::default(),
+                    parallel_encoder: ParallelEncoderConfig::new(&scenes_directory),
                     scene_concatenator: SceneConcatenatorConfig::new(&scenes_directory),
-                    target_quality:     None,
-                    quality_check:      None,
-                    bitrate_optimizer:  BitrateOptimizerConfig::default(),
-                    speed_scaler:       SpeedScalerConfig::default(),
+                    target_quality: None,
+                    quality_check: None,
+                    bitrate_optimizer: BitrateOptimizerConfig::default(),
+                    speed_scaler: SpeedScalerConfig::default(),
                 },
             },
             input: input.to_path_buf(),
@@ -167,25 +149,19 @@ impl Configuration {
         // `init` defaults to encoding 10-bit, so the input carries the
         // conversion rather than the config holding a filter list.
         match &mut configuration.condor.input {
-            InputModel::Video {
-                filters, ..
-            } => {
+            InputModel::Video { filters, .. } => {
                 *filters = vec![Ffms2Filter::OutputFormat {
                     bit_depth: Some(10),
-                    chroma:    None,
-                    width:     None,
-                    height:    None,
+                    chroma: None,
+                    width: None,
+                    height: None,
                 }];
             },
-            InputModel::VapourSynth {
-                filters, ..
-            }
-            | InputModel::VapourSynthScript {
-                filters, ..
-            } => {
+            InputModel::VapourSynth { filters, .. }
+            | InputModel::VapourSynthScript { filters, .. } => {
                 *filters = vec![VapourSynthFilter::Resize {
                     scaler: Some(Scaler::Bicubic),
-                    width:  None,
+                    width: None,
                     height: None,
                     format: Some(FFPixelFormat::YUV420P10LE),
                 }];
@@ -271,28 +247,26 @@ impl Configuration {
 
         let input_model = match decoder {
             Some(DecoderMethod::FFMS2) => InputModel::Video {
-                path:          input.to_path_buf(),
+                path: input.to_path_buf(),
                 import_method: andean_condor::models::input::ImportMethod::FFMS2 {
                     index,
                     cache_path: cache_path.map(Path::to_path_buf),
                 },
-                filters:       Vec::new(),
+                filters: Vec::new(),
             },
             Some(decoder) => Self::new_vs_input_model(
                 input,
                 match decoder {
-                    DecoderMethod::VSFFMS2 => Some(VapourSynthImportMethod::FFMS2 {
-                        index,
-                    }),
-                    DecoderMethod::BestSource => Some(VapourSynthImportMethod::BestSource {
-                        index,
-                    }),
+                    DecoderMethod::VSFFMS2 => Some(VapourSynthImportMethod::FFMS2 { index }),
+                    DecoderMethod::BestSource => {
+                        Some(VapourSynthImportMethod::BestSource { index })
+                    },
                     DecoderMethod::DGDecodeNV => Some(VapourSynthImportMethod::DGDecNV {
                         dgindexnv_executable: None,
                     }),
-                    DecoderMethod::LSMASHWorks => Some(VapourSynthImportMethod::LSMASHWorks {
-                        index,
-                    }),
+                    DecoderMethod::LSMASHWorks => {
+                        Some(VapourSynthImportMethod::LSMASHWorks { index })
+                    },
                     _ => unreachable!(),
                 },
                 vs_args,
@@ -330,12 +304,10 @@ impl Configuration {
             }
         } else {
             InputModel::VapourSynth {
-                path:          input.to_path_buf(),
-                import_method: decoder.unwrap_or(VapourSynthImportMethod::BestSource {
-                    index,
-                }),
-                cache_path:    None,
-                filters:       Vec::new(),
+                path: input.to_path_buf(),
+                import_method: decoder.unwrap_or(VapourSynthImportMethod::BestSource { index }),
+                cache_path: None,
+                filters: Vec::new(),
             }
         };
 
@@ -367,40 +339,39 @@ where
         + ParallelEncoderConfigHandler
         + SceneConcatenatorConfigHandler,
 {
-    pub scene_detector:     SceneDetectorConfig,
-    pub zoner:              Option<ZonerConfig>,
-    pub noise_detector:     Option<NoiseDetectorConfig>,
-    pub noise_scaler:       Option<NoiseScalerConfig>,
-    pub benchmarker:        BenchmarkerConfig,
-    pub parallel_encoder:   ParallelEncoderConfig,
+    pub scene_detector: SceneDetectorConfig,
+    pub zoner: Option<ZonerConfig>,
+    pub noise_detector: Option<NoiseDetectorConfig>,
+    pub noise_scaler: Option<NoiseScalerConfig>,
+    pub benchmarker: BenchmarkerConfig,
+    pub parallel_encoder: ParallelEncoderConfig,
     pub scene_concatenator: SceneConcatenatorConfig,
-    pub target_quality:     Option<TargetQualityConfig>,
-    pub quality_check:      Option<QualityCheckConfig>,
-    pub bitrate_optimizer:  BitrateOptimizerConfig,
-    pub speed_scaler:       SpeedScalerConfig,
+    pub target_quality: Option<TargetQualityConfig>,
+    pub quality_check: Option<QualityCheckConfig>,
+    pub bitrate_optimizer: BitrateOptimizerConfig,
+    pub speed_scaler: SpeedScalerConfig,
 }
 
 impl Default for CliSequenceConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            scene_detector:     SceneDetectorConfig::default(),
-            zoner:              None,
-            noise_detector:     None,
-            noise_scaler:       None,
-            benchmarker:        BenchmarkerConfig::default(),
-            parallel_encoder:   ParallelEncoderConfig::default(),
+            scene_detector: SceneDetectorConfig::default(),
+            zoner: None,
+            noise_detector: None,
+            noise_scaler: None,
+            benchmarker: BenchmarkerConfig::default(),
+            parallel_encoder: ParallelEncoderConfig::default(),
             scene_concatenator: SceneConcatenatorConfig::default(),
-            target_quality:     None,
-            quality_check:      None,
-            bitrate_optimizer:  BitrateOptimizerConfig::default(),
-            speed_scaler:       SpeedScalerConfig::default(),
+            target_quality: None,
+            quality_check: None,
+            bitrate_optimizer: BitrateOptimizerConfig::default(),
+            speed_scaler: SpeedScalerConfig::default(),
         }
     }
 }
 
-impl SequenceConfigHandler for CliSequenceConfig {
-}
+impl SequenceConfigHandler for CliSequenceConfig {}
 
 impl BenchmarkerConfigHandler for CliSequenceConfig {
     fn benchmarker(&self) -> Result<&BenchmarkerConfig> {
@@ -503,32 +474,31 @@ where
         + TargetQualityDataHandler
         + QualityCheckDataHandler,
 {
-    pub scene_detection:  SceneDetectorData,
-    pub noise_detection:  Option<NoiseDetectorData>,
-    pub noise_scaling:    Option<NoiseScalerData>,
+    pub scene_detection: SceneDetectorData,
+    pub noise_detection: Option<NoiseDetectorData>,
+    pub noise_scaling: Option<NoiseScalerData>,
     pub parallel_encoder: ParallelEncoderData,
-    pub target_quality:   TargetQualityData,
-    pub quality_check:    QualityCheckData,
+    pub target_quality: TargetQualityData,
+    pub quality_check: QualityCheckData,
     /// The Zoner's record of having processed the list; absent in
     /// configurations written before zoning became idempotent.
     #[serde(default)]
-    pub zoner:            ZonerData,
+    pub zoner: ZonerData,
 }
 
-impl SequenceDataHandler for CliSequenceData {
-}
+impl SequenceDataHandler for CliSequenceData {}
 
 impl Default for CliSequenceData {
     #[inline]
     fn default() -> Self {
         Self {
-            scene_detection:  SceneDetectorData::default(),
-            noise_detection:  None,
-            noise_scaling:    None,
+            scene_detection: SceneDetectorData::default(),
+            noise_detection: None,
+            noise_scaling: None,
             parallel_encoder: ParallelEncoderData::default(),
-            target_quality:   TargetQualityData::default(),
-            quality_check:    QualityCheckData::default(),
-            zoner:            ZonerData::default(),
+            target_quality: TargetQualityData::default(),
+            quality_check: QualityCheckData::default(),
+            zoner: ZonerData::default(),
         }
     }
 }

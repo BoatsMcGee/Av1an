@@ -180,12 +180,15 @@ mod tests {
             Some(executable_directory.clone()),
             Some(cache.clone()),
         );
-        assert_eq!(candidates, vec![
-            environment,
-            executable_directory.join("model").join(MODEL_NAME),
-            executable_directory.join(MODEL_NAME),
-            cache.join(MODEL_NAME),
-        ]);
+        assert_eq!(
+            candidates,
+            vec![
+                environment,
+                executable_directory.join("model").join(MODEL_NAME),
+                executable_directory.join(MODEL_NAME),
+                cache.join(MODEL_NAME),
+            ]
+        );
     }
 
     #[test]

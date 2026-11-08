@@ -7,10 +7,8 @@ use andean_condor::{
     models::{
         encoder::EncoderBase,
         sequence::scene_detector::{
-            DEFAULT_MAX_SCENE_LENGTH_SECONDS,
-            DEFAULT_MIN_SCENE_LENGTH_FRAMES,
-            SceneDetectionMethod as CoreSCDMethod,
-            ScenecutMethod,
+            DEFAULT_MAX_SCENE_LENGTH_SECONDS, DEFAULT_MIN_SCENE_LENGTH_FRAMES,
+            SceneDetectionMethod as CoreSCDMethod, ScenecutMethod,
         },
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
@@ -36,85 +34,85 @@ pub mod version;
 )]
 pub struct CondorCli {
     #[command(subcommand)]
-    pub command:            Option<Commands>,
+    pub command: Option<Commands>,
     #[arg(long, global = true, value_name = "Config File", help = HELP_CONFIG_SHORT, long_help = HELP_CONFIG)]
-    pub config_file:        Option<PathBuf>,
+    pub config_file: Option<PathBuf>,
     #[arg(long, global = true, value_name = "Temporary Directory", help = HELP_TEMP_SHORT, long_help = HELP_TEMP)]
-    pub temp:               Option<PathBuf>,
+    pub temp: Option<PathBuf>,
     #[arg(long, global = true, value_name = "Log File", help = HELP_LOGS_SHORT, long_help = HELP_LOGS)]
-    pub logs:               Option<PathBuf>,
+    pub logs: Option<PathBuf>,
     /// Enable verbose output and logging.
     #[arg(long, global = true, default_value_t = false)]
-    pub verbose:            bool,
+    pub verbose: bool,
     /// Display Encoder, VapourSynth and quality metric library installation
     /// information.
     #[arg(short('v'), long, global = true, default_value_t = false)]
-    pub version:            bool,
+    pub version: bool,
     // Main command arguments
     #[arg(long, short('i'), value_name = "Input", help = HELP_INPUT_SHORT, long_help = HELP_INPUT)]
-    pub input:              Option<PathBuf>,
+    pub input: Option<PathBuf>,
     #[arg(long, short('o'), value_name = "Output", help = HELP_OUTPUT_SHORT, long_help = HELP_OUTPUT)]
-    pub output:             Option<PathBuf>,
+    pub output: Option<PathBuf>,
     #[arg(long, value_name = "Scene Detector Input", help = HELP_SCD_INPUT_SHORT, long_help = HELP_SCD_INPUT)]
-    pub scd_input:          Option<PathBuf>,
+    pub scd_input: Option<PathBuf>,
     #[arg(long, value_name = "Target Quality Input", help = HELP_TQ_INPUT_SHORT, long_help = HELP_TQ_INPUT)]
-    pub tq_input:           Option<PathBuf>,
+    pub tq_input: Option<PathBuf>,
     #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
-    pub decoder:            Option<DecoderMethod>,
+    pub decoder: Option<DecoderMethod>,
     #[arg(long, value_name = "Decoder", help = HELP_SCD_DECODER_SHORT, long_help = HELP_SCD_DECODER)]
-    pub scd_decoder:        Option<DecoderMethod>,
+    pub scd_decoder: Option<DecoderMethod>,
     #[arg(long, value_name = "Decoder", help = HELP_TQ_DECODER_SHORT, long_help = HELP_TQ_DECODER)]
-    pub tq_decoder:         Option<DecoderMethod>,
+    pub tq_decoder: Option<DecoderMethod>,
     #[arg(long, value_name = "VapourSynth Filters", help = HELP_FILTERS_SHORT, long_help = HELP_FILTERS)]
-    pub filters:            Option<Vec<VapourSynthFilter>>,
+    pub filters: Option<Vec<VapourSynthFilter>>,
     #[arg(long, value_name = "VapourSynth Filters", help = HELP_SCD_FILTERS_SHORT, long_help = HELP_SCD_FILTERS)]
-    pub scd_filters:        Option<Vec<VapourSynthFilter>>,
+    pub scd_filters: Option<Vec<VapourSynthFilter>>,
     #[arg(long, value_name = "VapourSynth Filters", help = HELP_TQ_FILTERS_SHORT, long_help = HELP_TQ_FILTERS)]
-    pub tq_filters:         Option<Vec<VapourSynthFilter>>,
+    pub tq_filters: Option<Vec<VapourSynthFilter>>,
     #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
-    pub vs_args:            Option<Vec<String>>,
+    pub vs_args: Option<Vec<String>>,
     #[arg(long, value_name = "VapourSynth Arguments", help = HELP_SCD_VS_ARGS_SHORT, long_help = HELP_SCD_VS_ARGS)]
-    pub scd_vs_args:        Option<Vec<String>>,
+    pub scd_vs_args: Option<Vec<String>>,
     #[arg(long, value_name = "VapourSynth Arguments", help = HELP_TQ_VS_ARGS_SHORT, long_help = HELP_TQ_VS_ARGS)]
-    pub tq_vs_args:         Option<Vec<String>>,
+    pub tq_vs_args: Option<Vec<String>>,
     #[arg(long, value_name = "Concatenation Method", help = HELP_CONCAT_SHORT, long_help = HELP_CONCAT)]
-    pub concat:             Option<ConcatenationMethod>,
+    pub concat: Option<ConcatenationMethod>,
     #[arg(long, value_name = "Category", value_enum, value_delimiter = ',', help = HELP_DISCARD_SHORT, long_help = HELP_DISCARD)]
-    pub discard:            Option<Vec<DiscardCategory>>,
+    pub discard: Option<Vec<DiscardCategory>>,
     /// The amount of encoder processes to use at once
     #[arg(long, short('w'), value_name = "Workers", help = HELP_WORKERS_SHORT, long_help = HELP_WORKERS)]
-    pub workers:            Option<u8>,
+    pub workers: Option<u8>,
     #[arg(long, short('e'), value_name = "Encoder", help = HELP_ENCODER_SHORT, long_help = HELP_ENCODER)]
-    pub encoder:            Option<EncoderMethod>,
+    pub encoder: Option<EncoderMethod>,
     #[arg(long, value_name = "Passes", help = HELP_PASSES_SHORT, long_help = HELP_PASSES)]
-    pub passes:             Option<u8>,
+    pub passes: Option<u8>,
     #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_PARAMS_SHORT, long_help = HELP_PARAMS)]
-    pub params:             Option<String>,
+    pub params: Option<String>,
     #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_TQ_PARAMS_SHORT, long_help = HELP_TQ_PARAMS)]
-    pub tq_params:          Option<String>,
+    pub tq_params: Option<String>,
     #[arg(long, value_name = "ISO", help = HELP_PHOTON_NOISE_SHORT, long_help = HELP_PHOTON_NOISE)]
-    pub photon_noise:       Option<u32>,
+    pub photon_noise: Option<u32>,
     #[arg(long, value_name = "ISO", help = HELP_CHROMA_NOISE_SHORT, long_help = HELP_CHROMA_NOISE)]
-    pub chroma_noise:       Option<u32>,
+    pub chroma_noise: Option<u32>,
     #[arg(long, value_name = "FFmpeg Filter", allow_hyphen_values = true, help = HELP_FFMPEG_FILTER_SHORT, long_help = HELP_FFMPEG_FILTER)]
-    pub ffmpeg_filter:      Option<String>,
+    pub ffmpeg_filter: Option<String>,
     #[arg(long, default_value_t = false, help = HELP_DISABLE_COLOR_DATA_SHORT, long_help = HELP_DISABLE_COLOR_DATA)]
     pub disable_color_data: bool,
     #[arg(long, value_name = "Zone", allow_hyphen_values = true, help = HELP_ZONES_SHORT, long_help = HELP_ZONES)]
-    pub zones:              Option<Vec<String>>,
+    pub zones: Option<Vec<String>>,
     #[arg(long, value_name = "Metric", help = HELP_TARGET_METRIC_SHORT, long_help = HELP_TARGET_METRIC)]
-    pub target_metric:      Option<QualityMetric>,
+    pub target_metric: Option<QualityMetric>,
     #[arg(long, value_name = "Score", help = HELP_TARGET_SHORT, long_help = HELP_TARGET)]
-    pub target:             Option<f64>,
+    pub target: Option<f64>,
     #[arg(long, value_name = "Quantizer", help = HELP_MINIMUM_QUANTIZER_SHORT, long_help = HELP_MINIMUM_QUANTIZER)]
-    pub minimum_quantizer:  Option<u8>,
+    pub minimum_quantizer: Option<u8>,
     #[arg(long, value_name = "Quantizer", help = HELP_MAXIMUM_QUANTIZER_SHORT, long_help = HELP_MAXIMUM_QUANTIZER)]
-    pub maximum_quantizer:  Option<u8>,
+    pub maximum_quantizer: Option<u8>,
     #[arg(long, value_name = "Profile", help = HELP_TARGET_QUALITY_PROFILE_SHORT, long_help = HELP_TARGET_QUALITY_PROFILE)]
-    pub target_profile:     Option<QualityProfile>,
+    pub target_profile: Option<QualityProfile>,
     /// Skip Scene Detection. Useful when encoding a subset of scenes.
     #[arg(long, default_value_t = false)]
-    pub skip_scd:           bool,
+    pub skip_scd: bool,
 }
 
 impl CondorCli {
@@ -128,7 +126,7 @@ impl CondorCli {
         if matches!(
             &self.command,
             Some(Commands::Scenes {
-                index:  Some(_),
+                index: Some(_),
                 action: Some(handlers::scenes::ScenesAction::Add { .. }),
             })
         ) {
@@ -146,11 +144,7 @@ impl CondorCli {
     /// Hyphen-accepting positionals make Clap capture flags after the first
     /// zone value. Recover only the reserved standalone dry-run flag.
     pub(crate) fn normalize_zone_flags(&mut self) {
-        if let Some(Commands::Zone {
-            zones,
-            dry_run,
-        }) = &mut self.command
-        {
+        if let Some(Commands::Zone { zones, dry_run }) = &mut self.command {
             zones.retain(|zone| {
                 if zone == "--dry-run" {
                     *dry_run = true;
@@ -193,38 +187,38 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     Init {
         #[command(subcommand)]
-        edit:               Option<handlers::init::InitAction>,
+        edit: Option<handlers::init::InitAction>,
         #[arg(value_name = "Input", help = HELP_INPUT_SHORT, long_help = HELP_INPUT)]
-        input:              Option<PathBuf>,
+        input: Option<PathBuf>,
         #[arg(value_name = "Output", help = HELP_OUTPUT_SHORT, long_help = HELP_OUTPUT)]
-        output:             Option<PathBuf>,
+        output: Option<PathBuf>,
         #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
-        decoder:            Option<DecoderMethod>,
+        decoder: Option<DecoderMethod>,
         #[arg(long, value_name = "VapourSynth Filters", help = HELP_FILTERS_SHORT, long_help = HELP_FILTERS)]
-        filters:            Option<Vec<VapourSynthFilter>>,
+        filters: Option<Vec<VapourSynthFilter>>,
         #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
-        vs_args:            Option<Vec<String>>,
+        vs_args: Option<Vec<String>>,
         #[arg(long, value_name = "Concatenation Method", help = HELP_CONCAT_SHORT, long_help = HELP_CONCAT)]
-        concat:             Option<ConcatenationMethod>,
+        concat: Option<ConcatenationMethod>,
         #[arg(long, value_name = "Category", value_enum, value_delimiter = ',', help = HELP_DISCARD_SHORT, long_help = HELP_DISCARD)]
-        discard:            Option<Vec<DiscardCategory>>,
+        discard: Option<Vec<DiscardCategory>>,
         /// The amount of encoder processes to use at once
         #[arg(long, short('w'), value_name = "Workers", help = HELP_WORKERS_SHORT, long_help = HELP_WORKERS)]
-        workers:            Option<u8>,
+        workers: Option<u8>,
         #[arg(long, short('e'), value_name = "Encoder", help = HELP_ENCODER_SHORT, long_help = HELP_ENCODER)]
-        encoder:            Option<EncoderMethod>,
+        encoder: Option<EncoderMethod>,
         #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_PARAMS_SHORT, long_help = HELP_PARAMS)]
-        params:             Option<String>,
+        params: Option<String>,
         #[arg(long, value_name = "ISO", help = HELP_PHOTON_NOISE_SHORT, long_help = HELP_PHOTON_NOISE)]
-        photon_noise:       Option<u32>,
+        photon_noise: Option<u32>,
         /// Do not append the input's colour and HDR metadata to the encoder
         /// parameters.
         #[arg(long, default_value_t = false, help = HELP_DISABLE_COLOR_DATA_SHORT, long_help = HELP_DISABLE_COLOR_DATA)]
         disable_color_data: bool,
         #[arg(long, value_name = "Metric", help = HELP_TARGET_METRIC_SHORT, long_help = HELP_TARGET_METRIC)]
-        target_metric:      Option<QualityMetric>,
+        target_metric: Option<QualityMetric>,
         #[arg(long, value_name = "Score", help = HELP_TARGET_SHORT, long_help = HELP_TARGET)]
-        target:             Option<f64>,
+        target: Option<f64>,
     },
     /// Detect scenes (Triggers TUI).
     ///
@@ -233,17 +227,17 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     DetectScenes {
         #[command(subcommand)]
-        edit:              Option<handlers::detect_scenes::DetectScenesAction>,
+        edit: Option<handlers::detect_scenes::DetectScenesAction>,
         #[arg(long, short('i'), value_name = "Input", help = HELP_SCD_INPUT_SHORT, long_help = HELP_SCD_INPUT)]
-        input:             Option<PathBuf>,
+        input: Option<PathBuf>,
         #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
-        decoder:           Option<DecoderMethod>,
+        decoder: Option<DecoderMethod>,
         #[arg(long, value_name = "VapourSynth Filters", help = HELP_SCD_FILTERS_SHORT, long_help = HELP_SCD_FILTERS)]
-        filters:           Option<Vec<VapourSynthFilter>>,
+        filters: Option<Vec<VapourSynthFilter>>,
         #[arg(long, value_name = "VapourSynth Arguments", help = HELP_SCD_VS_ARGS_SHORT, long_help = HELP_SCD_VS_ARGS)]
-        vs_args:           Option<Vec<String>>,
+        vs_args: Option<Vec<String>>,
         #[arg(long, value_name = "Scene Detection Method", help = HELP_SCD_METHOD_SHORT, long_help = HELP_SCD_METHOD)]
-        method:            Option<SceneDetectionMethod>,
+        method: Option<SceneDetectionMethod>,
         #[arg(long, value_name = "Scene Duration", help = HELP_MIN_SCENE_SECONDS_SHORT, long_help = HELP_MIN_SCENE_SECONDS)]
         min_scene_seconds: Option<usize>,
         #[arg(long, value_name = "Scene Duration", help = HELP_MAX_SCENE_SECONDS_SHORT, long_help = HELP_MAX_SCENE_SECONDS)]
@@ -257,7 +251,7 @@ pub enum Commands {
     Zone {
         /// Zone definitions, or paths to JSON, JSON lines, or text zone files.
         #[arg(value_name = "Zone", allow_hyphen_values = true)]
-        zones:   Vec<String>,
+        zones: Vec<String>,
         /// Report planned scene changes without saving configuration or
         /// changing outputs.
         #[arg(long)]
@@ -279,7 +273,7 @@ pub enum Commands {
         /// Which scenes to address: `1`, `0-4`, `1,3`, `1-2,8-10,16`, or
         /// `-1`/`all`/`every` for every scene.
         #[arg(value_name = "Index", allow_hyphen_values = true)]
-        index:  Option<crate::scenes::SceneSelection>,
+        index: Option<crate::scenes::SceneSelection>,
         #[command(subcommand)]
         action: Option<handlers::scenes::ScenesAction>,
     },
@@ -290,17 +284,17 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     DetectNoise {
         #[command(subcommand)]
-        edit:              Option<handlers::detect_noise::DetectNoiseAction>,
+        edit: Option<handlers::detect_noise::DetectNoiseAction>,
         #[arg(long, value_name = "Noise Detector Input", help = HELP_ND_INPUT_SHORT, long_help = HELP_ND_INPUT)]
-        input:             Option<PathBuf>,
+        input: Option<PathBuf>,
         #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
-        decoder:           Option<DecoderMethod>,
+        decoder: Option<DecoderMethod>,
         #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
-        vs_args:           Option<Vec<String>>,
+        vs_args: Option<Vec<String>>,
         #[arg(long, value_name = "Reference VapourSynth Filters", help = HELP_REFERENCE_FILTERS_SHORT, long_help = HELP_REFERENCE_FILTERS)]
         reference_filters: Option<Vec<VapourSynthFilter>>,
         #[arg(long, value_name = "Denoised VapourSynth Filters", help = HELP_DENOISED_FILTERS_SHORT, long_help = HELP_DENOISED_FILTERS)]
-        denoised_filters:  Option<Vec<VapourSynthFilter>>,
+        denoised_filters: Option<Vec<VapourSynthFilter>>,
     },
     /// Scale Photon Noise ISO per scene based on Noise Detector results.
     ///
@@ -312,12 +306,12 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     ScaleNoise {
         #[command(subcommand)]
-        edit:           Option<handlers::scale_noise::ScaleNoiseAction>,
+        edit: Option<handlers::scale_noise::ScaleNoiseAction>,
         /// Minimum noise value for a scene to scale Photon Noise ISO.
         ///
         /// Recommended: 0.002
         #[arg(long, value_name = "Threshold")]
-        threshold:      Option<f64>,
+        threshold: Option<f64>,
         /// Minimum scale factor for Photon Noise ISO scaling.
         #[arg(long, value_name = "Scaler")]
         minimum_scaler: Option<f64>,
@@ -326,7 +320,7 @@ pub enum Commands {
         maximum_scaler: Option<f64>,
         /// Scale Chroma ISO.
         #[arg(long)]
-        scale_chroma:   bool,
+        scale_chroma: bool,
     },
     /// Benchmark the optimum amount of workers (Triggers TUI).
     ///
@@ -335,13 +329,13 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     Benchmark {
         #[command(subcommand)]
-        edit:       Option<handlers::benchmarker::BenchmarkAction>,
+        edit: Option<handlers::benchmarker::BenchmarkAction>,
         /// The minimum speed increase (in percent) required to add an
         /// additional worker.
         ///
         /// Defaults to `5`.
         #[arg(long, value_name = "Percent", value_parser = value_parser!(u8).range(0..=100))]
-        threshold:  Option<u8>,
+        threshold: Option<u8>,
         /// The maximum amount of RAM (in megabytes) allowed across all workers
         /// (unimplemented)
         #[arg(long, value_name = "Megabytes", hide = true)]
@@ -355,27 +349,27 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     TargetQuality {
         #[command(subcommand)]
-        edit:              Option<handlers::target_quality::TargetQualityAction>,
+        edit: Option<handlers::target_quality::TargetQualityAction>,
         #[arg(long, short('i'), value_name = "Input", help = HELP_INPUT_SHORT, long_help = HELP_INPUT)]
-        input:             Option<PathBuf>,
+        input: Option<PathBuf>,
         #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
-        decoder:           Option<DecoderMethod>,
+        decoder: Option<DecoderMethod>,
         #[arg(long, value_name = "VapourSynth Filters")]
-        filters:           Option<Vec<VapourSynthFilter>>,
+        filters: Option<Vec<VapourSynthFilter>>,
         #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
-        vs_args:           Option<Vec<String>>,
+        vs_args: Option<Vec<String>>,
         #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_PARAMS_SHORT, long_help = HELP_PARAMS)]
-        params:            Option<String>,
+        params: Option<String>,
         #[arg(long, value_name = "Metric", help = HELP_TARGET_METRIC_SHORT, long_help = HELP_TARGET_METRIC)]
-        metric:            Option<QualityMetric>,
+        metric: Option<QualityMetric>,
         #[arg(long, value_name = "Score", help = HELP_TARGET_SHORT, long_help = HELP_TARGET)]
-        target:            Option<f64>,
+        target: Option<f64>,
         #[arg(long("min-q"), value_name = "Quantizer", help = HELP_MINIMUM_QUANTIZER_SHORT, long_help = HELP_MINIMUM_QUANTIZER)]
         minimum_quantizer: Option<u8>,
         #[arg(long("max-q"), value_name = "Quantizer", help = HELP_MAXIMUM_QUANTIZER_SHORT, long_help = HELP_MAXIMUM_QUANTIZER)]
         maximum_quantizer: Option<u8>,
         #[arg(long, value_name = "Profile", help = HELP_TARGET_QUALITY_PROFILE_SHORT, long_help = HELP_TARGET_QUALITY_PROFILE)]
-        profile:           Option<QualityProfile>,
+        profile: Option<QualityProfile>,
     },
     /// Optimize bitrate for scenes that exceed normal bitrate after Target
     /// Quality.
@@ -388,7 +382,7 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     OptimizeBitrate {
         #[command(subcommand)]
-        edit:            Option<handlers::optimize_bitrate::OptimizeBitrateAction>,
+        edit: Option<handlers::optimize_bitrate::OptimizeBitrateAction>,
         /// Minimum bitrate sigma (σ) threshold for a scene to be optimized.
         #[arg(long, value_name = "Sigma", value_parser = value_parser!(u8).range(1..=10))]
         sigma_threshold: Option<u8>,
@@ -404,7 +398,7 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     ScaleSpeed {
         #[command(subcommand)]
-        edit:       Option<handlers::scale_speed::ScaleSpeedAction>,
+        edit: Option<handlers::scale_speed::ScaleSpeedAction>,
         /// Quantizer values for speed-quantizer pairs. (must match number of
         /// speeds)
         ///
@@ -428,7 +422,7 @@ pub enum Commands {
         /// - `--encoder aom --quantizers 10 --speeds 6 --quantizers 25 --speeds
         ///   4 --quantizers 40 --speeds 3`
         #[arg(long, value_name = "Speed", num_args = 1.., requires = "quantizers")]
-        speeds:     Option<Vec<i8>>,
+        speeds: Option<Vec<i8>>,
     },
     /// Encode scenes in parallel (Triggers TUI).
     ///
@@ -437,28 +431,28 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     Encode {
         #[command(subcommand)]
-        edit:          Option<handlers::encode::EncodeAction>,
+        edit: Option<handlers::encode::EncodeAction>,
         #[arg(long, short('i'), value_name = "Input", help = HELP_INPUT_SHORT, long_help = HELP_INPUT)]
-        input:         Option<PathBuf>,
+        input: Option<PathBuf>,
         #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
-        decoder:       Option<DecoderMethod>,
+        decoder: Option<DecoderMethod>,
         #[arg(long, value_name = "VapourSynth Filters", help = HELP_FILTERS_SHORT, long_help = HELP_FILTERS)]
-        filters:       Option<Vec<VapourSynthFilter>>,
+        filters: Option<Vec<VapourSynthFilter>>,
         #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
-        vs_args:       Option<Vec<String>>,
+        vs_args: Option<Vec<String>>,
         /// The amount of encoder processes to use at once
         #[arg(long, short('w'), value_name = "Workers", help = HELP_WORKERS_SHORT, long_help = HELP_WORKERS)]
-        workers:       Option<u8>,
+        workers: Option<u8>,
         #[arg(long, short('e'), value_name = "Encoder", help = HELP_ENCODER_SHORT, long_help = HELP_ENCODER)]
-        encoder:       Option<EncoderMethod>,
+        encoder: Option<EncoderMethod>,
         #[arg(long, value_name = "Passes", help = HELP_PASSES_SHORT, long_help = HELP_PASSES)]
-        passes:        Option<u8>,
+        passes: Option<u8>,
         #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_PARAMS_SHORT, long_help = HELP_PARAMS)]
-        params:        Option<String>,
+        params: Option<String>,
         #[arg(long, value_name = "ISO", help = HELP_PHOTON_NOISE_SHORT, long_help = HELP_PHOTON_NOISE)]
-        photon_noise:  Option<u32>,
+        photon_noise: Option<u32>,
         #[arg(long, value_name = "ISO", help = HELP_CHROMA_NOISE_SHORT, long_help = HELP_CHROMA_NOISE)]
-        chroma_noise:  Option<u32>,
+        chroma_noise: Option<u32>,
         #[arg(long, value_name = "FFmpeg Filter", allow_hyphen_values = true, help = HELP_FFMPEG_FILTER_SHORT, long_help = HELP_FFMPEG_FILTER)]
         ffmpeg_filter: Option<String>,
     },
@@ -469,9 +463,9 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     Concatenate {
         #[command(subcommand)]
-        edit:    Option<handlers::concatenate::ConcatenateAction>,
+        edit: Option<handlers::concatenate::ConcatenateAction>,
         #[arg(long, value_name = "Concatenation Method", help = HELP_CONCAT_SHORT, long_help = HELP_CONCAT)]
-        method:  Option<ConcatenationMethod>,
+        method: Option<ConcatenationMethod>,
         #[arg(long, value_name = "Category", value_enum, value_delimiter = ',', help = HELP_DISCARD_SHORT, long_help = HELP_DISCARD)]
         discard: Option<Vec<DiscardCategory>>,
     },
@@ -483,9 +477,9 @@ pub enum Commands {
     #[command(args_conflicts_with_subcommands = true)]
     QualityCheck {
         #[command(subcommand)]
-        edit:    Option<handlers::quality_check::QualityCheckAction>,
+        edit: Option<handlers::quality_check::QualityCheckAction>,
         #[arg(long, short('i'), value_name = "Input", help = HELP_INPUT_SHORT, long_help = HELP_INPUT)]
-        input:   Option<PathBuf>,
+        input: Option<PathBuf>,
         #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
         decoder: Option<DecoderMethod>,
         #[arg(long, value_name = "VapourSynth Filters", help = HELP_FILTERS_SHORT, long_help = HELP_FILTERS)]
@@ -493,7 +487,7 @@ pub enum Commands {
         #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
         vs_args: Option<Vec<String>>,
         #[arg(long, value_name = "Metric", help = HELP_QUALITY_CHECK_METRIC_SHORT, long_help = HELP_QUALITY_CHECK_METRIC)]
-        metric:  Option<QualityMetric>,
+        metric: Option<QualityMetric>,
         #[arg(long, value_name = "Profile", help = HELP_QUALITY_CHECK_PROFILE_SHORT, long_help = HELP_QUALITY_CHECK_PROFILE)]
         profile: Option<QualityProfile>,
     },
@@ -552,22 +546,22 @@ impl SceneDetectionMethod {
                 maximum_length: max_length,
             },
             SceneDetectionMethod::Fast => CoreSCDMethod::AVSceneChange {
-                method:         ScenecutMethod::Fast,
+                method: ScenecutMethod::Fast,
                 minimum_length: min_length,
                 maximum_length: max_length,
-                save_scores:    false,
+                save_scores: false,
             },
             SceneDetectionMethod::Standard => CoreSCDMethod::AVSceneChange {
-                method:         ScenecutMethod::Standard,
+                method: ScenecutMethod::Standard,
                 minimum_length: min_length,
                 maximum_length: max_length,
-                save_scores:    false,
+                save_scores: false,
             },
             SceneDetectionMethod::TransNetV2 => CoreSCDMethod::TransNetV2 {
                 minimum_length: min_length,
                 maximum_length: max_length,
-                model_path:     None,
-                save_scores:    false,
+                model_path: None,
+                save_scores: false,
             },
         }
     }
@@ -892,15 +886,8 @@ mod tests {
     use clap::Parser;
 
     use super::{
-        Commands,
-        ConcatenationMethod,
-        CondorCli,
-        DecoderMethod,
-        DiscardCategory,
-        EncoderMethod,
-        QualityMetric,
-        QualityProfile,
-        SceneDetectionMethod,
+        Commands, ConcatenationMethod, CondorCli, DecoderMethod, DiscardCategory, EncoderMethod,
+        QualityMetric, QualityProfile, SceneDetectionMethod,
     };
     use crate::test_helpers::get_test_video;
 
@@ -1123,10 +1110,10 @@ mod tests {
                     "--discard",
                     "audio,subtitle",
                 ]) {
-                    assert_eq!(categories, vec![
-                        DiscardCategory::Audio,
-                        DiscardCategory::Subtitle
-                    ]);
+                    assert_eq!(
+                        categories,
+                        vec![DiscardCategory::Audio, DiscardCategory::Subtitle]
+                    );
                 }
             }
 
@@ -1164,10 +1151,7 @@ mod tests {
                 ]);
                 assert_matches!(
                     result,
-                    Ok(CondorCli {
-                        command: None,
-                        ..
-                    }),
+                    Ok(CondorCli { command: None, .. }),
                     "\"condor --input INPUT --output OUTPUT\" parses"
                 );
             }
@@ -1184,10 +1168,7 @@ mod tests {
                 ]);
                 assert_matches!(
                     result,
-                    Ok(CondorCli {
-                        command: None,
-                        ..
-                    }),
+                    Ok(CondorCli { command: None, .. }),
                     "\"condor --output OUTPUT\" without --input parses"
                 );
             }
@@ -1203,10 +1184,7 @@ mod tests {
                 ]);
                 assert_matches!(
                     result,
-                    Ok(CondorCli {
-                        command: None,
-                        ..
-                    }),
+                    Ok(CondorCli { command: None, .. }),
                     "\"condor init --input INPUT\" without --output parses"
                 );
             }
@@ -1216,10 +1194,7 @@ mod tests {
                 let result = CondorCli::try_parse_from(["condor"]);
                 assert_matches!(
                     result,
-                    Ok(CondorCli {
-                        command: None,
-                        ..
-                    }),
+                    Ok(CondorCli { command: None, .. }),
                     "\"condor\" parses"
                 );
             }
@@ -1428,9 +1403,7 @@ mod tests {
                     cli.command,
                     Some(Commands::Scenes {
                         index: Some(SceneSelection::All),
-                        action: Some(ScenesAction::Reset {
-                            key: None
-                        }),
+                        action: Some(ScenesAction::Reset { key: None }),
                         ..
                     })
                 );
@@ -1459,10 +1432,7 @@ mod tests {
                     cli.command,
                     Some(Commands::Scenes {
                         index: None,
-                        action: Some(ScenesAction::Add {
-                            after: Some(3),
-                            ..
-                        }),
+                        action: Some(ScenesAction::Add { after: Some(3), .. }),
                         ..
                     })
                 );
@@ -1533,9 +1503,7 @@ mod tests {
                 assert_matches!(
                     cli.command,
                     Some(Commands::DetectNoise {
-                        edit: Some(ConfigAction::Reset {
-                            key: None
-                        }),
+                        edit: Some(ConfigAction::Reset { key: None }),
                         ..
                     })
                 );
@@ -1681,9 +1649,7 @@ mod tests {
                     cli.command,
                     Some(Commands::ScaleNoise {
                         edit: Some(ConfigAction::Set {
-                            setting: ScaleNoiseSet::ScaleChroma {
-                                value: None
-                            },
+                            setting: ScaleNoiseSet::ScaleChroma { value: None },
                         }),
                         ..
                     })
@@ -1769,10 +1735,7 @@ mod tests {
                 assert_matches!(
                     result,
                     Ok(CondorCli {
-                        command: Some(Commands::DetectScenes {
-                            input: Some(_),
-                            ..
-                        }),
+                        command: Some(Commands::DetectScenes { input: Some(_), .. }),
                         ..
                     }),
                     "\"condor detect-scenes --input INPUT\" parses"
@@ -1879,10 +1842,7 @@ mod tests {
                 assert_matches!(
                     result,
                     Ok(CondorCli {
-                        command: Some(Commands::DetectNoise {
-                            input: Some(_),
-                            ..
-                        }),
+                        command: Some(Commands::DetectNoise { input: Some(_), .. }),
                         ..
                     }),
                     "\"condor detect-noise --input INPUT\" parses"
@@ -2120,10 +2080,7 @@ mod tests {
                 assert_matches!(
                     result,
                     Ok(CondorCli {
-                        command: Some(Commands::TargetQuality {
-                            input: Some(_),
-                            ..
-                        }),
+                        command: Some(Commands::TargetQuality { input: Some(_), .. }),
                         ..
                     }),
                     "\"condor target-quality --input INPUT\" parses"
@@ -2636,10 +2593,7 @@ mod tests {
                 assert_matches!(
                     result,
                     Ok(CondorCli {
-                        command: Some(Commands::Encode {
-                            input: Some(_),
-                            ..
-                        }),
+                        command: Some(Commands::Encode { input: Some(_), .. }),
                         ..
                     }),
                     "\"condor encode --input INPUT\" parses"
@@ -2956,10 +2910,10 @@ mod tests {
                     "--discard",
                     "subtitle",
                 ]) {
-                    assert_eq!(categories, vec![
-                        DiscardCategory::Audio,
-                        DiscardCategory::Subtitle
-                    ]);
+                    assert_eq!(
+                        categories,
+                        vec![DiscardCategory::Audio, DiscardCategory::Subtitle]
+                    );
                 }
             }
 
@@ -2995,11 +2949,14 @@ mod tests {
                     "--discard",
                     "audio,subtitle,chapters",
                 ]) {
-                    assert_eq!(categories, vec![
-                        DiscardCategory::Audio,
-                        DiscardCategory::Subtitle,
-                        DiscardCategory::Chapters
-                    ]);
+                    assert_eq!(
+                        categories,
+                        vec![
+                            DiscardCategory::Audio,
+                            DiscardCategory::Subtitle,
+                            DiscardCategory::Chapters
+                        ]
+                    );
                 }
             }
 
@@ -3018,10 +2975,7 @@ mod tests {
             fn discard_defaults_to_none() {
                 let result = CondorCli::try_parse_from(["condor", "concatenate"]);
                 if let Ok(CondorCli {
-                    command:
-                        Some(Commands::Concatenate {
-                            discard, ..
-                        }),
+                    command: Some(Commands::Concatenate { discard, .. }),
                     ..
                 }) = result
                 {
@@ -3052,10 +3006,7 @@ mod tests {
                 assert_matches!(
                     result,
                     Ok(CondorCli {
-                        command: Some(Commands::Clean {
-                            all: true,
-                            ..
-                        }),
+                        command: Some(Commands::Clean { all: true, .. }),
                         ..
                     }),
                     "\"condor clean --all\" parses"
@@ -3066,10 +3017,7 @@ mod tests {
             fn all_defaults_to_false() {
                 let result = CondorCli::try_parse_from(["condor", "clean"]);
                 if let Ok(CondorCli {
-                    command:
-                        Some(Commands::Clean {
-                            all, ..
-                        }),
+                    command: Some(Commands::Clean { all, .. }),
                     ..
                 }) = result
                 {
@@ -3184,10 +3132,13 @@ mod tests {
 
             // Fast -> CoreSCDMethod::AVSceneChange with Fast
             let result = SceneDetectionMethod::Fast.as_core_method(Some(60), Some(300));
-            assert_matches!(result, CoreSCDMethod::AVSceneChange {
-                method: ScenecutMethod::Fast,
-                ..
-            });
+            assert_matches!(
+                result,
+                CoreSCDMethod::AVSceneChange {
+                    method: ScenecutMethod::Fast,
+                    ..
+                }
+            );
             if let CoreSCDMethod::AVSceneChange {
                 minimum_length,
                 maximum_length,
@@ -3200,10 +3151,13 @@ mod tests {
 
             // Standard -> CoreSCDMethod::AVSceneChange with Standard
             let result = SceneDetectionMethod::Standard.as_core_method(Some(120), Some(600));
-            assert_matches!(result, CoreSCDMethod::AVSceneChange {
-                method: ScenecutMethod::Standard,
-                ..
-            });
+            assert_matches!(
+                result,
+                CoreSCDMethod::AVSceneChange {
+                    method: ScenecutMethod::Standard,
+                    ..
+                }
+            );
             if let CoreSCDMethod::AVSceneChange {
                 minimum_length,
                 maximum_length,

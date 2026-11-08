@@ -1,8 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc,
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
 };
@@ -72,23 +71,23 @@ pub(super) fn relay_progress(
         if progress.pass.0 == total_passes && progress.frame > 0 {
             let total_final_encoded = count_frame(total_final_pass_frames_encoded);
             task_progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                id:         DETAILS.name.to_owned(),
+                id: DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Frames {
                     completed: total_final_encoded as u64,
-                    total:     total_process_frames as u64,
+                    total: total_process_frames as u64,
                 },
             }))?;
         }
         task_progress_tx.send(SequenceStatus::Subprocess {
             parent: Status::Processing {
-                id:         DETAILS.name.to_owned(),
+                id: DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Frames {
                     completed: total_final_pass_frames_encoded.load(Ordering::Relaxed) as u64,
-                    total:     total_process_frames as u64,
+                    total: total_process_frames as u64,
                 },
             },
-            child:  Status::Processing {
-                id:         scene.to_string(),
+            child: Status::Processing {
+                id: scene.to_string(),
                 completion: SequenceCompletion::PassFrames {
                     passes: progress.pass,
                     frames: (progress.frame as u64, total_scene_frames as u64),
@@ -103,13 +102,13 @@ pub(super) fn relay_progress(
         if progress.frame == total_scene_frames {
             task_progress_tx.send(SequenceStatus::Subprocess {
                 parent: Status::Processing {
-                    id:         DETAILS.name.to_owned(),
+                    id: DETAILS.name.to_owned(),
                     completion: SequenceCompletion::Frames {
                         completed: total_final_pass_frames_encoded.load(Ordering::Relaxed) as u64,
-                        total:     total_process_frames as u64,
+                        total: total_process_frames as u64,
                     },
                 },
-                child:  Status::Completed {
+                child: Status::Completed {
                     id: scene.to_string(),
                 },
             })?;

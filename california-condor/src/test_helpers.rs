@@ -22,9 +22,7 @@ use andean_condor::{
             quality_check::QualityCheckConfig,
             scene_concatenator::{ConcatMethod, SceneConcatenatorConfig},
             scene_detector::{
-                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
-                SceneDetectionMethod,
-                SceneDetectorConfig,
+                DEFAULT_MAX_SCENE_LENGTH_SECONDS, SceneDetectionMethod, SceneDetectorConfig,
                 ScenecutMethod,
             },
             speed_scaler::SpeedScalerConfig,
@@ -55,13 +53,13 @@ pub fn path_str(p: &Path) -> &str {
 pub static TEST_CLIP: OnceLock<PathBuf> = OnceLock::new();
 
 pub struct TestVideo {
-    pub path:         PathBuf,
-    pub width:        usize,
-    pub height:       usize,
-    pub frames:       usize,
+    pub path: PathBuf,
+    pub width: usize,
+    pub height: usize,
+    pub frames: usize,
     pub fps_rational: (usize, usize),
-    pub format:       FFPixelFormat,
-    pub scenes:       Vec<(usize, usize)>,
+    pub format: FFPixelFormat,
+    pub scenes: Vec<(usize, usize)>,
 }
 
 impl TestVideo {
@@ -73,11 +71,11 @@ impl TestVideo {
         self.scenes
             .iter()
             .map(|(start, end)| Scene {
-                start_frame:   *start,
-                end_frame:     *end,
-                encoder:       encoder.clone(),
+                start_frame: *start,
+                end_frame: *end,
+                encoder: encoder.clone(),
                 sequence_data: CliSequenceData::default(),
-                sub_scenes:    None,
+                sub_scenes: None,
             })
             .collect()
     }
@@ -163,7 +161,7 @@ fn generate_multitrack_clip(path: &Path) {
 /// 4. Color Chart for 8 seconds (192 frames)
 pub fn get_test_video() -> TestVideo {
     TestVideo {
-        path:         TEST_CLIP
+        path: TEST_CLIP
             .get_or_init(|| {
                 let dir = std::env::temp_dir().join("condor-test-clip.mkv");
                 if !dir.exists() {
@@ -172,14 +170,14 @@ pub fn get_test_video() -> TestVideo {
                 dir
             })
             .clone(),
-        width:        1920,
-        height:       1080,
-        frames:       720,
+        width: 1920,
+        height: 1080,
+        frames: 720,
         fps_rational: (24001, 1001),
-        format:       FFPixelFormat::YUV420P,
+        format: FFPixelFormat::YUV420P,
         // exact_scenes:       vec![(0, 120), (120, 240), (240, 528), (528, 720)],
         // max-scene-length of 10 seconds splits scene 3 (240, 528) into 2 (240, 480), (480, 528)
-        scenes:       vec![(0, 121), (121, 240), (240, 480), (480, 528), (528, 720)],
+        scenes: vec![(0, 121), (121, 240), (240, 480), (480, 528), (528, 720)],
     }
 }
 
@@ -260,58 +258,56 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
     Configuration {
         schema: CONFIGURATION_SCHEMA_URL.to_owned(),
         condor: Condor {
-            input:           Input::VapourSynth {
-                path:          input_abs.clone(),
-                import_method: VapourSynthImportMethod::BestSource {
-                    index: None
-                },
-                cache_path:    None,
-                filters:       vec![VapourSynthFilter::Resize {
+            input: Input::VapourSynth {
+                path: input_abs.clone(),
+                import_method: VapourSynthImportMethod::BestSource { index: None },
+                cache_path: None,
+                filters: vec![VapourSynthFilter::Resize {
                     scaler: Some(Scaler::Bicubic),
-                    width:  None,
+                    width: None,
                     height: None,
                     format: Some(FFPixelFormat::YUV420P10LE),
                 }],
             },
-            output:          Output {
-                path:       output_abs,
-                tags:       HashMap::new(),
+            output: Output {
+                path: output_abs,
+                tags: HashMap::new(),
                 video_tags: HashMap::new(),
             },
-            encoder:         Encoder::SVTAV1 {
-                executable:        None,
-                pass:              EncoderPasses::All(1),
-                options:           EncoderBase::SVTAV1.default_parameters(),
-                photon_noise:      None,
-                ffmpeg_filter:     None,
+            encoder: Encoder::SVTAV1 {
+                executable: None,
+                pass: EncoderPasses::All(1),
+                options: EncoderBase::SVTAV1.default_parameters(),
+                photon_noise: None,
+                ffmpeg_filter: None,
                 append_color_data: true,
             },
-            scenes:          vec![],
+            scenes: vec![],
             sequence_config: CliSequenceConfig {
-                scene_detector:     SceneDetectorConfig {
+                scene_detector: SceneDetectorConfig {
                     method: SceneDetectionMethod::AVSceneChange {
                         minimum_length: test_video.fps().round() as usize,
                         maximum_length: (DEFAULT_MAX_SCENE_LENGTH_SECONDS as f64 * test_video.fps())
                             .round() as usize,
-                        method:         ScenecutMethod::Standard,
-                        save_scores:    false,
+                        method: ScenecutMethod::Standard,
+                        save_scores: false,
                     },
-                    input:  None,
+                    input: None,
                 },
-                zoner:              None,
-                noise_detector:     None,
-                noise_scaler:       None,
-                benchmarker:        BenchmarkerConfig::default(),
-                target_quality:     None,
-                quality_check:      None,
-                bitrate_optimizer:  BitrateOptimizerConfig {
+                zoner: None,
+                noise_detector: None,
+                noise_scaler: None,
+                benchmarker: BenchmarkerConfig::default(),
+                target_quality: None,
+                quality_check: None,
+                bitrate_optimizer: BitrateOptimizerConfig {
                     bitrate_sigma_threshold: None,
                 },
-                speed_scaler:       SpeedScalerConfig::default(),
-                parallel_encoder:   ParallelEncoderConfig {
-                    workers:          None,
+                speed_scaler: SpeedScalerConfig::default(),
+                parallel_encoder: ParallelEncoderConfig {
+                    workers: None,
                     scenes_directory: scenes_directory.clone(),
-                    input:            None,
+                    input: None,
                 },
                 scene_concatenator: SceneConcatenatorConfig {
                     method: ConcatMethod::MKVMerge(Default::default()),
@@ -320,8 +316,8 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
                 },
             },
         },
-        input:  input_abs,
-        temp:   temp_abs,
+        input: input_abs,
+        temp: temp_abs,
     }
 }
 
@@ -468,10 +464,7 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                         assert_eq!(ci_path, path, "{input_name} path is {}", path.display());
                         assert_eq!(ci_filters, filters, "{input_name} filters are {filters:?}");
                         match import_method {
-                            ImportMethod::FFMS2 {
-                                index,
-                                cache_path,
-                            } => {
+                            ImportMethod::FFMS2 { index, cache_path } => {
                                 assert_matches!(
                                     ci_import_method,
                                     ImportMethod::FFMS2 { .. },
@@ -523,18 +516,14 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                             "{input_name} cache path is {cache_path:?}"
                         );
                         match import_method {
-                            VapourSynthImportMethod::FFMS2 {
-                                index,
-                            } => {
+                            VapourSynthImportMethod::FFMS2 { index } => {
                                 assert_matches!(
                                     ci_import_method,
                                     VapourSynthImportMethod::FFMS2 { .. },
                                     "{input_name} import method is FFMS2"
                                 );
                                 match ci_import_method {
-                                    VapourSynthImportMethod::FFMS2 {
-                                        index: pe_index,
-                                    } => {
+                                    VapourSynthImportMethod::FFMS2 { index: pe_index } => {
                                         assert_eq!(
                                             pe_index, index,
                                             "{input_name} index is {index:?}"
@@ -543,18 +532,14 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                                     _ => panic!("expected {input_name} import method to be FFMS2"),
                                 }
                             },
-                            VapourSynthImportMethod::BestSource {
-                                index,
-                            } => {
+                            VapourSynthImportMethod::BestSource { index } => {
                                 assert_matches!(
                                     ci_import_method,
                                     VapourSynthImportMethod::BestSource { .. },
                                     "{input_name} import method is BestSource"
                                 );
                                 match ci_import_method {
-                                    VapourSynthImportMethod::BestSource {
-                                        index: pe_index,
-                                    } => {
+                                    VapourSynthImportMethod::BestSource { index: pe_index } => {
                                         assert_eq!(
                                             pe_index, index,
                                             "{input_name} index is {index:?}"
@@ -588,18 +573,14 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
                                     },
                                 }
                             },
-                            VapourSynthImportMethod::LSMASHWorks {
-                                index,
-                            } => {
+                            VapourSynthImportMethod::LSMASHWorks { index } => {
                                 assert_matches!(
                                     ci_import_method,
                                     VapourSynthImportMethod::LSMASHWorks { .. },
                                     "{input_name} import method is LSMASHWorks"
                                 );
                                 match ci_import_method {
-                                    VapourSynthImportMethod::LSMASHWorks {
-                                        index: pe_index,
-                                    } => {
+                                    VapourSynthImportMethod::LSMASHWorks { index: pe_index } => {
                                         assert_eq!(
                                             pe_index, index,
                                             "{input_name} index is {index:?}"

@@ -5,11 +5,11 @@ use vapoursynth::format::{ColorFamily, Format, PresetFormat, SampleType};
 /// reconstruct the original format for the round-trip back to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FgsFormat {
-    pub(crate) color_family:    ColorFamily,
-    pub(crate) sample_type:     SampleType,
+    pub(crate) color_family: ColorFamily,
+    pub(crate) sample_type: SampleType,
     pub(crate) bits_per_sample: u8,
-    pub(crate) sub_sampling_w:  u8,
-    pub(crate) sub_sampling_h:  u8,
+    pub(crate) sub_sampling_w: u8,
+    pub(crate) sub_sampling_h: u8,
 }
 
 impl FgsFormat {
@@ -17,11 +17,11 @@ impl FgsFormat {
     #[inline]
     pub(crate) fn from_format(format: Format<'_>) -> Self {
         Self {
-            color_family:    format.color_family(),
-            sample_type:     format.sample_type(),
+            color_family: format.color_family(),
+            sample_type: format.sample_type(),
             bits_per_sample: format.bits_per_sample(),
-            sub_sampling_w:  format.sub_sampling_w(),
-            sub_sampling_h:  format.sub_sampling_h(),
+            sub_sampling_w: format.sub_sampling_w(),
+            sub_sampling_h: format.sub_sampling_h(),
         }
     }
 

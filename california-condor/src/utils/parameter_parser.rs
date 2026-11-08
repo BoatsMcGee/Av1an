@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use andean_condor::models::encoder::cli_parameter::CLIParameter;
 use anyhow::{Result, bail};
 use nom::{
-    IResult,
-    Parser,
+    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take_till1},
     character::complete::{char, multispace0, multispace1},
@@ -83,10 +82,13 @@ impl EncoderParamsParser {
 
         Ok((
             input,
-            (name.to_string(), CLIParameter::Bool {
-                prefix: prefix.to_string(),
-                value:  true,
-            }),
+            (
+                name.to_string(),
+                CLIParameter::Bool {
+                    prefix: prefix.to_string(),
+                    value: true,
+                },
+            ),
         ))
     }
 
@@ -100,14 +102,14 @@ impl EncoderParamsParser {
     fn to_cli_parameter(prefix: &str, delim: &str, val: &str) -> CLIParameter {
         val.parse::<f64>().map_or_else(
             |_| CLIParameter::String {
-                prefix:    prefix.to_string(),
+                prefix: prefix.to_string(),
                 delimiter: delim.to_string(),
-                value:     val.to_string(),
+                value: val.to_string(),
             },
             |num| CLIParameter::Number {
-                prefix:    prefix.to_string(),
+                prefix: prefix.to_string(),
                 delimiter: delim.to_string(),
-                value:     num,
+                value: num,
             },
         )
     }

@@ -27,12 +27,8 @@ mod tests {
         models::{
             input::{Input, VapourSynthImportMethod},
             sequence::target_quality::types::{
-                DEFAULT_SSIMULACRA2_TARGET_RANGE,
-                DEFAULT_XPSNR_TARGET_RANGE,
-                ProbeStatistic,
-                ProbeStrategy,
-                QualityMetric as MetricModel,
-                SubsetProbeLength,
+                DEFAULT_SSIMULACRA2_TARGET_RANGE, DEFAULT_XPSNR_TARGET_RANGE, ProbeStatistic,
+                ProbeStrategy, QualityMetric as MetricModel, SubsetProbeLength,
                 SubsetProbePosition,
             },
         },
@@ -61,21 +57,19 @@ mod tests {
             .to_path_buf();
         let config_path = temp.path().join("condor.json");
         let mut tq_encoder_params = EncoderBase::SVTAV1.default_parameters();
-        tq_encoder_params.extend(CLIParameter::new_numbers("--", " ", &[
-            ("preset", 8.0),
-            ("tune", 1.0),
-        ]));
+        tq_encoder_params.extend(CLIParameter::new_numbers(
+            "--",
+            " ",
+            &[("preset", 8.0), ("tune", 1.0)],
+        ));
 
         // Mock an existing config file with scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
         // Allow testing with SVT Essential (does not support 8-bit)
-        if let Input::VapourSynth {
-            filters, ..
-        } = &mut config.condor.input
-        {
+        if let Input::VapourSynth { filters, .. } = &mut config.condor.input {
             *filters = vec![VapourSynthFilter::Resize {
                 scaler: None,
-                width:  None,
+                width: None,
                 height: None,
                 format: Some(FFPixelFormat::YUV420P10LE),
             }];
@@ -117,24 +111,22 @@ mod tests {
         expected_config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
             metric: QualityMetric::XPSNR {
                 target_range: (44.0, 46.0),
-                resolution:   None,
+                resolution: None,
             },
             quantizer_range: (20, 40),
             input: Some(Input::VapourSynth {
-                path:          input_abs,
-                import_method: VapourSynthImportMethod::FFMS2 {
-                    index: None
-                },
-                cache_path:    None,
-                filters:       config.condor.input.vapoursynth_filters().to_vec(),
+                path: input_abs,
+                import_method: VapourSynthImportMethod::FFMS2 { index: None },
+                cache_path: None,
+                filters: config.condor.input.vapoursynth_filters().to_vec(),
             }),
             probing: TargetQualityProbing {
                 encoder_options: Some(tq_encoder_params),
-                strategy:        ProbeStrategy::Subset {
+                strategy: ProbeStrategy::Subset {
                     position: SubsetProbePosition::Middle,
-                    length:   SubsetProbeLength::Frames(11),
+                    length: SubsetProbeLength::Frames(11),
                 },
-                statistic:       ProbeStatistic::Mean,
+                statistic: ProbeStatistic::Mean,
             },
             ..Default::default()
         });
@@ -185,9 +177,7 @@ mod tests {
                 index
             );
             let crf_value = match crf {
-                CLIParameter::Number {
-                    value, ..
-                } => *value,
+                CLIParameter::Number { value, .. } => *value,
                 _ => panic!("scene {} crf should be a number", index),
             };
             assert!(

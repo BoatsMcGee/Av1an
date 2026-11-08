@@ -15,26 +15,25 @@ pub struct QualityCheckConfig
 where
     Self: SequenceConfigHandler,
 {
-    pub metric:    QualityMetric,
-    pub strategy:  ProbeStrategy,
+    pub metric: QualityMetric,
+    pub strategy: ProbeStrategy,
     pub statistic: ProbeStatistic,
-    pub input:     Option<InputModel>,
+    pub input: Option<InputModel>,
 }
 
 impl Default for QualityCheckConfig {
     #[inline]
     fn default() -> Self {
         Self {
-            metric:    QualityMetric::default(),
-            strategy:  ProbeStrategy::Whole,
+            metric: QualityMetric::default(),
+            strategy: ProbeStrategy::Whole,
             statistic: ProbeStatistic::Mean,
-            input:     None,
+            input: None,
         }
     }
 }
 
-impl SequenceConfigHandler for QualityCheckConfig {
-}
+impl SequenceConfigHandler for QualityCheckConfig {}
 
 pub trait QualityCheckConfigHandler {
     fn quality_check(&self) -> Result<&Option<QualityCheckConfig>>;

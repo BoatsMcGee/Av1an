@@ -1,13 +1,12 @@
 use std::sync::{
-    Condvar,
-    Mutex,
+    Condvar, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
 pub struct Semaphore {
     permit_count: AtomicUsize,
-    signal:       Mutex<()>,
-    condvar:      Condvar,
+    signal: Mutex<()>,
+    condvar: Condvar,
 }
 
 impl Semaphore {
@@ -15,8 +14,8 @@ impl Semaphore {
     pub fn new(initial_permits: usize) -> Self {
         Semaphore {
             permit_count: AtomicUsize::new(initial_permits),
-            signal:       Mutex::new(()),
-            condvar:      Condvar::new(),
+            signal: Mutex::new(()),
+            condvar: Condvar::new(),
         }
     }
 

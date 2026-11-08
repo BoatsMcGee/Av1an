@@ -1,9 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        self,
-        Arc,
-        Mutex,
+        self, Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -22,31 +20,26 @@ use crate::{
     models::{
         scene::Scene,
         sequence::{
-            SequenceConfigHandler,
-            SequenceDataHandler,
+            SequenceConfigHandler, SequenceDataHandler,
             scene_detector::{
-                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
-                SceneDetectionMethod,
-                SceneDetectorData,
-                SceneDetectorDataHandler,
-                ScenecutMethod,
-                ScenecutScore,
+                DEFAULT_MAX_SCENE_LENGTH_SECONDS, SceneDetectionMethod, SceneDetectorData,
+                SceneDetectorDataHandler, ScenecutMethod, ScenecutScore,
             },
         },
     },
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
-    name:        "Scene Detector",
+    name: "Scene Detector",
     description: "Detect scene changes",
-    version:     "0.0.1-A",
+    version: "0.0.1-A",
 };
 
 mod transnetv2;
 
 pub struct SceneDetector {
     pub method: SceneDetectionMethod,
-    pub input:  Option<Input>,
+    pub input: Option<Input>,
 }
 
 impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for SceneDetector
@@ -83,11 +76,11 @@ where
         // data/config validation but before execution
         if let Some(input) = &mut self.input {
             progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                id:         Self::DETAILS.name.to_owned(),
+                id: Self::DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Custom {
-                    name:      "Indexing Input".to_owned(),
+                    name: "Indexing Input".to_owned(),
                     completed: 0.0,
-                    total:     1.0,
+                    total: 1.0,
                 },
             }))?;
             let input_frames = input.clip_info()?.num_frames;
@@ -138,10 +131,10 @@ where
                     SceneDetectorError::SceneDetectionFailed("Failed to seek to frame".to_owned())
                 })?;
                 progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                    id:         DETAILS.name.to_owned(),
+                    id: DETAILS.name.to_owned(),
                     completion: SequenceCompletion::Frames {
                         completed: last_scene.end_frame as u64,
-                        total:     frames as u64,
+                        total: frames as u64,
                     },
                 }))?;
                 trace!("Skipping {} frames took {} ms", last_scene.end_frame, 0);
@@ -181,10 +174,10 @@ where
                 let cb = |frames_analyzed, keyframes| {
                     progress_tx
                         .send(SequenceStatus::Whole(Status::Processing {
-                            id:         DETAILS.name.to_owned(),
+                            id: DETAILS.name.to_owned(),
                             completion: SequenceCompletion::Frames {
                                 completed: (last_frame + frames_analyzed) as u64,
-                                total:     frames as u64,
+                                total: frames as u64,
                             },
                         }))
                         .expect("failed to send progres");
@@ -199,19 +192,19 @@ where
                     previous_end.store(end, Ordering::Relaxed);
                     trace!("New Scene detected: {} - {}", start, end);
                     scenes_lock.push(Scene {
-                        start_frame:   start,
-                        end_frame:     end,
-                        sub_scenes:    None,
-                        encoder:       condor.encoder.clone(),
+                        start_frame: start,
+                        end_frame: end,
+                        sub_scenes: None,
+                        encoder: condor.encoder.clone(),
                         sequence_data: DataHandler::default(),
                     });
                     progress_tx
                         .send(SequenceStatus::Whole(Status::Processing {
-                            id:         DETAILS.name.to_owned(),
+                            id: DETAILS.name.to_owned(),
                             completion: SequenceCompletion::Custom {
-                                name:      "new-scene".to_owned(),
+                                name: "new-scene".to_owned(),
                                 completed: start as f64,
-                                total:     end as f64,
+                                total: end as f64,
                             },
                         }))
                         .expect("failed to send progress");
@@ -301,9 +294,7 @@ where
                     return Ok(((), warnings));
                 }
             },
-            SceneDetectionMethod::None {
-                maximum_length, ..
-            } => {
+            SceneDetectionMethod::None { maximum_length, .. } => {
                 debug!(
                     "Scene Detection Disabled. Splitting into {} frame chunks",
                     maximum_length
@@ -313,10 +304,10 @@ where
                 while prev_end < frames {
                     let end = (prev_end + maximum_length).min(frames);
                     let scene = Scene {
-                        start_frame:   prev_end,
-                        end_frame:     end,
-                        sub_scenes:    None,
-                        encoder:       condor.encoder.clone(),
+                        start_frame: prev_end,
+                        end_frame: end,
+                        sub_scenes: None,
+                        encoder: condor.encoder.clone(),
                         sequence_data: DataHandler::default(),
                     };
                     scenes_vec.push(scene);
@@ -351,7 +342,7 @@ impl SceneDetector {
         let method_was_given = method.is_some();
         let mut sd = Self {
             method: method.unwrap_or_default(),
-            input:  Some(input),
+            input: Some(input),
         };
 
         // Set maximum scene length in frames based on input framerate
@@ -503,19 +494,19 @@ where
         };
         condor.scenes.push(scene.clone());
         progress_tx.send(SequenceStatus::Whole(Status::Processing {
-            id:         DETAILS.name.to_owned(),
+            id: DETAILS.name.to_owned(),
             completion: SequenceCompletion::Custom {
-                name:      "new-scene".to_owned(),
+                name: "new-scene".to_owned(),
                 completed: scene.start_frame as f64,
-                total:     scene.end_frame as f64,
+                total: scene.end_frame as f64,
             },
         }))?;
     }
     progress_tx.send(SequenceStatus::Whole(Status::Processing {
-        id:         DETAILS.name.to_owned(),
+        id: DETAILS.name.to_owned(),
         completion: SequenceCompletion::Frames {
             completed: frames as u64,
-            total:     frames as u64,
+            total: frames as u64,
         },
     }))?;
 
@@ -561,9 +552,10 @@ mod tests {
 
         let stored = transnetv2_scores(&predictions, 100, 100, 104);
 
-        assert_eq!(stored.keys().copied().collect::<Vec<_>>(), vec![
-            100, 101, 102, 103
-        ]);
+        assert_eq!(
+            stored.keys().copied().collect::<Vec<_>>(),
+            vec![100, 101, 102, 103]
+        );
         assert_eq!(stored[&102], 0.3);
 
         // A scene starting later keeps the same absolute keys.

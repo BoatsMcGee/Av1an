@@ -46,7 +46,7 @@ pub fn configure_scale_speed(
     if quantizers.len() != speeds.len() {
         let err = SpeedScalerError::MismatchedPairs {
             quantizers: quantizers.len(),
-            speeds:     speeds.len(),
+            speeds: speeds.len(),
         };
         error!("{}", err);
         bail!(err);
@@ -73,10 +73,7 @@ pub enum SpeedScalerError {
         "Mismatched speed-quantizer pairs: got {quantizers} quantizer(s) and {speeds} speed(s). \
          Each --quantizer must have a matching --speed value."
     )]
-    MismatchedPairs {
-        quantizers: usize,
-        speeds:     usize,
-    },
+    MismatchedPairs { quantizers: usize, speeds: usize },
     #[error("At least 2 speed-quantizer pairs are required.")]
     MinimumPairsRequired,
 }
@@ -150,9 +147,7 @@ impl ConfigCommand for ScaleSpeedCrud {
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         match set {
-            ScaleSpeedSet::SpeedQuantizers {
-                points,
-            } => {
+            ScaleSpeedSet::SpeedQuantizers { points } => {
                 let mut points = points.clone();
                 points.sort_by_key(|(quantizer, _)| *quantizer);
                 if !points.windows(2).all(|pair| pair[0].0 < pair[1].0) {
@@ -377,10 +372,13 @@ mod tests {
             .expect_err("scale_speed_handler should fail")
             .downcast::<SpeedScalerError>()
             .expect("scale_speed_handler error should be SpeedScalerError");
-        assert_matches!(error, SpeedScalerError::MismatchedPairs {
-            quantizers: 3,
-            speeds:     2,
-        });
+        assert_matches!(
+            error,
+            SpeedScalerError::MismatchedPairs {
+                quantizers: 3,
+                speeds: 2,
+            }
+        );
         // Ensure config was not modified
         let (config, found_config_path) =
             load_configuration(Some(&config_path)).expect("load_configuration should succeed");

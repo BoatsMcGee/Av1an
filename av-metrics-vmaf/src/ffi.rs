@@ -87,19 +87,19 @@ pub struct VmafPicture {
     /// Pixel format.
     pub pix_fmt: VmafPixelFormat,
     /// Bits per channel: 8, 10, 12 or 16.
-    pub bpc:     c_uint,
+    pub bpc: c_uint,
     /// Width of each plane in pixels.
-    pub w:       [c_uint; 3],
+    pub w: [c_uint; 3],
     /// Height of each plane in pixels.
-    pub h:       [c_uint; 3],
+    pub h: [c_uint; 3],
     /// Byte stride of each plane.
-    pub stride:  [isize; 3],
+    pub stride: [isize; 3],
     /// Pointers to the Y, U and V plane data.
-    pub data:    [*mut c_void; 3],
+    pub data: [*mut c_void; 3],
     /// Reference picture to compare against, if any.
-    pub ref_:    *mut VmafRef,
+    pub ref_: *mut VmafRef,
     /// libvmaf-owned private data. Must be zero-initialised.
-    pub priv_:   *mut c_void,
+    pub priv_: *mut c_void,
 }
 
 impl VmafPicture {
@@ -109,13 +109,13 @@ impl VmafPicture {
     pub const fn zeroed() -> Self {
         Self {
             pix_fmt: VmafPixelFormat::Unknown,
-            bpc:     0,
-            w:       [0; 3],
-            h:       [0; 3],
-            stride:  [0; 3],
-            data:    [std::ptr::null_mut(); 3],
-            ref_:    std::ptr::null_mut(),
-            priv_:   std::ptr::null_mut(),
+            bpc: 0,
+            w: [0; 3],
+            h: [0; 3],
+            stride: [0; 3],
+            data: [std::ptr::null_mut(); 3],
+            ref_: std::ptr::null_mut(),
+            priv_: std::ptr::null_mut(),
         }
     }
 }
@@ -128,26 +128,26 @@ impl VmafPicture {
 #[derive(Debug, Clone, Copy)]
 pub struct VmafConfiguration {
     /// Log verbosity.
-    pub log_level:   c_int,
+    pub log_level: c_int,
     /// Worker thread count. 0 lets libvmaf choose.
-    pub n_threads:   c_uint,
+    pub n_threads: c_uint,
     /// Score every n-th frame. 1 scores every frame.
     pub n_subsample: c_uint,
     /// CPU feature mask to disable.
-    pub cpumask:     u64,
+    pub cpumask: u64,
     /// GPU feature mask to disable.
-    pub gpumask:     u64,
+    pub gpumask: u64,
 }
 
 impl Default for VmafConfiguration {
     #[inline]
     fn default() -> Self {
         Self {
-            log_level:   LOG_LEVEL_ERROR,
-            n_threads:   0,
+            log_level: LOG_LEVEL_ERROR,
+            n_threads: 0,
             n_subsample: 1,
-            cpumask:     0,
-            gpumask:     0,
+            cpumask: 0,
+            gpumask: 0,
         }
     }
 }
@@ -158,7 +158,7 @@ impl Default for VmafConfiguration {
 pub struct VmafModelConfig {
     /// Model name override, NUL-terminated. Null when loading by version or
     /// path.
-    pub name:  *const c_char,
+    pub name: *const c_char,
     /// Bitfield of `VmafModelFlags`.
     pub flags: u64,
 }
@@ -169,7 +169,7 @@ impl VmafModelConfig {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            name:  std::ptr::null(),
+            name: std::ptr::null(),
             flags: 0,
         }
     }
@@ -219,11 +219,11 @@ pub enum VmafCudaPicturePreallocationMethod {
 #[derive(Clone, Copy)]
 pub struct VmafCudaPictureConfigPictureParams {
     /// Width in pixels.
-    pub w:       c_uint,
+    pub w: c_uint,
     /// Height in pixels.
-    pub h:       c_uint,
+    pub h: c_uint,
     /// Bits per channel.
-    pub bpc:     c_uint,
+    pub bpc: c_uint,
     /// Pixel format.
     pub pix_fmt: VmafPixelFormat,
 }
@@ -233,7 +233,7 @@ pub struct VmafCudaPictureConfigPictureParams {
 #[derive(Clone, Copy)]
 pub struct VmafCudaPictureConfiguration {
     /// Geometry to preallocate for.
-    pub pic_params:          VmafCudaPictureConfigPictureParams,
+    pub pic_params: VmafCudaPictureConfigPictureParams,
     /// Allocation strategy.
     pub pic_prealloc_method: VmafCudaPicturePreallocationMethod,
 }
@@ -260,9 +260,9 @@ type CudaPreallocatePictures =
 /// The set of CUDA entry points, each optional.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct CudaSymbols {
-    pub(crate) state_init:           Option<CudaStateInit>,
-    pub(crate) release:              Option<CudaRelease>,
-    pub(crate) import_state:         Option<CudaImportState>,
+    pub(crate) state_init: Option<CudaStateInit>,
+    pub(crate) release: Option<CudaRelease>,
+    pub(crate) import_state: Option<CudaImportState>,
     pub(crate) preallocate_pictures: Option<CudaPreallocatePictures>,
 }
 
@@ -277,13 +277,13 @@ pub struct VmafApi {
     pub version: &'static str,
 
     /// Allocates and initialises a scoring context.
-    pub init:                    VmafInit,
+    pub init: VmafInit,
     /// Releases a scoring context.
-    pub close:                   VmafClose,
+    pub close: VmafClose,
     /// Submits a reference/distorted pair, or nulls to flush.
-    pub read_pictures:           VmafReadPictures,
+    pub read_pictures: VmafReadPictures,
     /// Reads the model score for a frame index.
-    pub score_at_index:          VmafScoreAtIndex,
+    pub score_at_index: VmafScoreAtIndex,
     /// Reads a named feature score pooled over a frame range.
     ///
     /// Feature extractors do not reliably expose a per-index score for every
@@ -301,18 +301,18 @@ pub struct VmafApi {
     ///
     /// libvmaf rejects a filesystem path here with `EINVAL`; use
     /// [`Self::model_load_from_path`] for custom models.
-    pub model_load:              VmafModelLoad,
+    pub model_load: VmafModelLoad,
     /// Loads a model from a JSON file on disk.
-    pub model_load_from_path:    VmafModelLoad,
+    pub model_load_from_path: VmafModelLoad,
     /// Releases a model.
-    pub model_destroy:           VmafModelDestroy,
+    pub model_destroy: VmafModelDestroy,
     /// Registers the feature extractors a model requires.
     pub use_features_from_model: VmafUseFeaturesFromModel,
     /// Registers an additional feature extractor by name.
-    pub use_feature:             VmafUseFeature,
+    pub use_feature: VmafUseFeature,
 
     /// Releases a picture's buffers.
-    pub picture_unref:              unsafe extern "C" fn(*mut VmafPicture),
+    pub picture_unref: unsafe extern "C" fn(*mut VmafPicture),
     /// Fetches a picture whose buffers libvmaf has sized for the context.
     pub fetch_preallocated_picture:
         unsafe extern "C" fn(*mut VmafContext, *mut VmafPicture) -> c_int,
@@ -329,11 +329,11 @@ pub struct VmafApi {
 #[derive(Clone, Copy)]
 pub struct VmafPictureConfigPictureParams {
     /// Width in pixels.
-    pub w:       c_uint,
+    pub w: c_uint,
     /// Height in pixels.
-    pub h:       c_uint,
+    pub h: c_uint,
     /// Bits per channel.
-    pub bpc:     c_uint,
+    pub bpc: c_uint,
     /// Pixel format.
     pub pix_fmt: VmafPixelFormat,
 }
@@ -348,7 +348,7 @@ pub struct VmafPictureConfiguration {
     /// Geometry to allocate for.
     pub pic_params: VmafPictureConfigPictureParams,
     /// Number of pictures to keep in the pool.
-    pub pic_cnt:    c_uint,
+    pub pic_cnt: c_uint,
 }
 
 impl VmafApi {
@@ -394,45 +394,28 @@ impl VmafApi {
 fn clone_error(error: &VmafError) -> VmafError {
     match error {
         VmafError::LibraryNotFound => VmafError::LibraryNotFound,
-        VmafError::SymbolNotFound {
-            symbol,
-            message,
-        } => VmafError::SymbolNotFound {
-            symbol:  symbol.clone(),
+        VmafError::SymbolNotFound { symbol, message } => VmafError::SymbolNotFound {
+            symbol: symbol.clone(),
             message: message.clone(),
         },
-        VmafError::CallFailed {
-            function,
-            status,
-        } => VmafError::CallFailed {
+        VmafError::CallFailed { function, status } => VmafError::CallFailed {
             function,
             status: *status,
         },
-        VmafError::InvalidConfiguration {
-            reason,
-        } => VmafError::InvalidConfiguration {
+        VmafError::InvalidConfiguration { reason } => VmafError::InvalidConfiguration {
             reason: reason.clone(),
         },
-        VmafError::ModelNotFound {
-            model,
-            reason,
-        } => VmafError::ModelNotFound {
-            model:  model.clone(),
+        VmafError::ModelNotFound { model, reason } => VmafError::ModelNotFound {
+            model: model.clone(),
             reason: reason.clone(),
         },
-        VmafError::InputMismatch {
-            reason,
-        } => VmafError::InputMismatch {
+        VmafError::InputMismatch { reason } => VmafError::InputMismatch {
             reason: reason.clone(),
         },
-        VmafError::UnsupportedFormat {
-            reason,
-        } => VmafError::UnsupportedFormat {
+        VmafError::UnsupportedFormat { reason } => VmafError::UnsupportedFormat {
             reason: reason.clone(),
         },
-        VmafError::MalformedFrame {
-            reason,
-        } => VmafError::MalformedFrame {
+        VmafError::MalformedFrame { reason } => VmafError::MalformedFrame {
             reason: reason.clone(),
         },
         VmafError::FrameCountMismatch {
@@ -443,19 +426,9 @@ fn clone_error(error: &VmafError) -> VmafError {
             distorted: *distorted,
         },
         VmafError::UnsupportedFeature(feature) => VmafError::UnsupportedFeature(feature.clone()),
-        VmafError::MissingScore {
-            index,
-        } => VmafError::MissingScore {
-            index: *index
-        },
-        VmafError::ModelFileMissing {
-            path,
-        } => VmafError::ModelFileMissing {
-            path: path.clone()
-        },
-        VmafError::Decode {
-            message,
-        } => VmafError::Decode {
+        VmafError::MissingScore { index } => VmafError::MissingScore { index: *index },
+        VmafError::ModelFileMissing { path } => VmafError::ModelFileMissing { path: path.clone() },
+        VmafError::Decode { message } => VmafError::Decode {
             message: message.clone(),
         },
     }
@@ -467,10 +440,7 @@ pub fn check(status: c_int, function: &'static str) -> Result<(), VmafError> {
     if status == 0 {
         Ok(())
     } else {
-        Err(VmafError::CallFailed {
-            function,
-            status,
-        })
+        Err(VmafError::CallFailed { function, status })
     }
 }
 
@@ -497,7 +467,7 @@ fn resolve() -> Result<VmafApi, VmafError> {
             let raw = vmaf_version();
             if raw.is_null() {
                 return Err(VmafError::SymbolNotFound {
-                    symbol:  "vmaf_version".to_owned(),
+                    symbol: "vmaf_version".to_owned(),
                     message: "returned a null pointer".to_owned(),
                 });
             }
@@ -520,9 +490,9 @@ fn resolve() -> Result<VmafApi, VmafError> {
             fetch_preallocated_picture: required(library, b"vmaf_fetch_preallocated_picture\0")?,
             preallocate_pictures: required(library, b"vmaf_preallocate_pictures\0")?,
             cuda: CudaSymbols {
-                state_init:           optional(library, b"vmaf_cuda_state_init\0"),
-                release:              optional(library, b"vmaf_cuda_release\0"),
-                import_state:         optional(library, b"vmaf_cuda_import_state\0"),
+                state_init: optional(library, b"vmaf_cuda_state_init\0"),
+                release: optional(library, b"vmaf_cuda_release\0"),
+                import_state: optional(library, b"vmaf_cuda_import_state\0"),
                 preallocate_pictures: optional(library, b"vmaf_cuda_preallocate_pictures\0"),
             },
         })
@@ -535,7 +505,7 @@ fn required<T: Copy>(library: &Library, name: &[u8]) -> Result<T, VmafError> {
     unsafe { library.get(name) }
         .map(|symbol| *symbol)
         .map_err(|error| VmafError::SymbolNotFound {
-            symbol:  symbol_name(name),
+            symbol: symbol_name(name),
             message: error.to_string(),
         })
 }
@@ -729,7 +699,7 @@ mod tests {
             check(-22, "vmaf_init"),
             Err(VmafError::CallFailed {
                 function: "vmaf_init",
-                status:   -22,
+                status: -22,
             })
         ));
     }
@@ -753,13 +723,13 @@ mod tests {
         #[repr(C)]
         struct Expected {
             pix_fmt: VmafPixelFormat,
-            bpc:     c_uint,
-            w:       [c_uint; 3],
-            h:       [c_uint; 3],
-            stride:  [isize; 3],
-            data:    [*mut c_void; 3],
-            ref_:    *mut VmafRef,
-            priv_:   *mut c_void,
+            bpc: c_uint,
+            w: [c_uint; 3],
+            h: [c_uint; 3],
+            stride: [isize; 3],
+            data: [*mut c_void; 3],
+            ref_: *mut VmafRef,
+            priv_: *mut c_void,
         }
 
         assert_eq!(size_of::<VmafPicture>(), size_of::<Expected>());
@@ -771,11 +741,11 @@ mod tests {
         // Mirrors `typedef struct VmafConfiguration` in libvmaf.h.
         #[repr(C)]
         struct Expected {
-            log_level:   c_int,
-            n_threads:   c_uint,
+            log_level: c_int,
+            n_threads: c_uint,
             n_subsample: c_uint,
-            cpumask:     u64,
-            gpumask:     u64,
+            cpumask: u64,
+            gpumask: u64,
         }
 
         assert_eq!(size_of::<VmafConfiguration>(), size_of::<Expected>());

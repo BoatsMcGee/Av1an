@@ -4,15 +4,10 @@ mod common;
 mod config_helpers;
 
 use andean_condor::models::encoder::{
-    Encoder,
-    EncoderBase,
-    EncoderPasses,
-    cli_parameter::CLIParameter,
+    Encoder, EncoderBase, EncoderPasses, cli_parameter::CLIParameter,
 };
 use california_condor::{
-    commands::handlers::load_configuration,
-    test_helpers::*,
-    utils::hash_path::hash_path,
+    commands::handlers::load_configuration, test_helpers::*, utils::hash_path::hash_path,
 };
 use common::condor_cmd;
 use config_helpers::{init_config, load};
@@ -56,13 +51,10 @@ mod tests {
         // Mock an existing config file without scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
         // Allow testing with SVT Essential (does not support 8-bit)
-        if let Input::VapourSynth {
-            filters, ..
-        } = &mut config.condor.input
-        {
+        if let Input::VapourSynth { filters, .. } = &mut config.condor.input {
             *filters = vec![VapourSynthFilter::Resize {
                 scaler: None,
-                width:  None,
+                width: None,
                 height: None,
                 format: Some(FFPixelFormat::YUV420P10LE),
             }];
@@ -123,13 +115,10 @@ mod tests {
         // Mock an existing config file without scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
         // Allow testing with SVT Essential (does not support 8-bit)
-        if let Input::VapourSynth {
-            filters, ..
-        } = &mut config.condor.input
-        {
+        if let Input::VapourSynth { filters, .. } = &mut config.condor.input {
             *filters = vec![VapourSynthFilter::Resize {
                 scaler: None,
-                width:  None,
+                width: None,
                 height: None,
                 format: Some(FFPixelFormat::YUV420P10LE),
             }];
@@ -161,10 +150,10 @@ mod tests {
         );
         encoder_params.insert("crf".to_owned(), CLIParameter::new_number("--", " ", 18.0));
         expected_config.condor.encoder = Encoder::X264 {
-            executable:        None,
-            pass:              EncoderPasses::All(2),
-            options:           encoder_params,
-            ffmpeg_filter:     None,
+            executable: None,
+            pass: EncoderPasses::All(2),
+            options: encoder_params,
+            ffmpeg_filter: None,
             append_color_data: true,
         };
         // immutable shadow
@@ -210,13 +199,10 @@ mod tests {
         // Mock an existing config file with scenes
         let mut config = default_config(&test_video, &output, &temp_abs);
         // Allow testing with SVT Essential (does not support 8-bit)
-        if let Input::VapourSynth {
-            filters, ..
-        } = &mut config.condor.input
-        {
+        if let Input::VapourSynth { filters, .. } = &mut config.condor.input {
             *filters = vec![VapourSynthFilter::Resize {
                 scaler: None,
-                width:  Some(WIDTH),
+                width: Some(WIDTH),
                 height: Some(HEIGHT),
                 format: Some(FFPixelFormat::YUV420P10LE),
             }];
@@ -242,13 +228,10 @@ mod tests {
 
         let mut expected_config = config;
         expected_config.condor.sequence_config.parallel_encoder.workers = Some(2);
-        if let Input::VapourSynth {
-            filters, ..
-        } = &mut expected_config.condor.input
-        {
+        if let Input::VapourSynth { filters, .. } = &mut expected_config.condor.input {
             *filters = vec![VapourSynthFilter::Resize {
                 scaler: Some(Scaler::Bicubic),
-                width:  Some(WIDTH),
+                width: Some(WIDTH),
                 height: Some(HEIGHT),
                 format: Some(FFPixelFormat::YUV420P10LE),
             }];
@@ -350,13 +333,10 @@ mod tests {
         // One short scene keeps this encode cheap; nothing here depends on
         // scene count.
         let mut config = default_config(&test_video, &output, &temp_abs);
-        if let Input::VapourSynth {
-            filters, ..
-        } = &mut config.condor.input
-        {
+        if let Input::VapourSynth { filters, .. } = &mut config.condor.input {
             *filters = vec![VapourSynthFilter::Resize {
                 scaler: None,
-                width:  Some(WIDTH),
+                width: Some(WIDTH),
                 height: Some(HEIGHT),
                 format: Some(FFPixelFormat::YUV420P10LE),
             }];

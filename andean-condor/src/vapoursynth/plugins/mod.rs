@@ -2,9 +2,7 @@ use std::{
     iter::repeat_with,
     mem,
     sync::{
-        Arc,
-        Condvar,
-        Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },
@@ -41,9 +39,9 @@ pub mod vszip;
 pub mod zoomvtools;
 
 pub struct VapourSynthPluginInfo {
-    pub name:      &'static str,
-    pub id:        &'static str,
-    pub docs:      Option<&'static str>,
+    pub name: &'static str,
+    pub id: &'static str,
+    pub docs: Option<&'static str>,
     // pub version:   String, // vapoursynth-rs does not expose `getPluginVersion()`
     pub installed: bool,
 }
@@ -54,11 +52,11 @@ pub struct VapourSynthPluginInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginArgument {
     /// Argument name, e.g. `clip`.
-    pub name:       String,
+    pub name: String,
     /// Argument value type, e.g. `vnode` or `int`.
     pub value_type: String,
     /// `true` when the argument is marked optional (`:opt`).
-    pub optional:   bool,
+    pub optional: bool,
 }
 
 impl PluginArgument {
@@ -107,9 +105,9 @@ where
     #[inline]
     fn info<'core>(core: Option<CoreRef<'core>>) -> Result<VapourSynthPluginInfo> {
         Ok(VapourSynthPluginInfo {
-            name:      Self::PLUGIN_NAME,
-            id:        Self::PLUGIN_ID,
-            docs:      Self::PLUGIN_DOCS,
+            name: Self::PLUGIN_NAME,
+            id: Self::PLUGIN_ID,
+            docs: Self::PLUGIN_DOCS,
             installed: core.is_some_and(Self::plugin_is_installed),
         })
     }
@@ -130,7 +128,7 @@ where
             })?
         else {
             return Err(VapourSynthError::PluginFunctionNotFound {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
             });
         };
@@ -152,7 +150,7 @@ where
                 plugin: Self::PLUGIN_ID.to_owned(),
             })?
             .ok_or_else(|| VapourSynthError::PluginLoadError {
-                plugin:  Self::PLUGIN_ID.to_owned(),
+                plugin: Self::PLUGIN_ID.to_owned(),
                 message: "Failed to load plugin".to_string(),
             })?;
         Ok(plugin)
@@ -181,18 +179,18 @@ where
             }
             let number = value.expect("Value is Some").try_into().map_err(|_| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: key.to_owned(),
-                    message:  "Value is out of range".to_owned(),
+                    message: "Value is out of range".to_owned(),
                 }
             })?;
 
             arguments
                 .set_int(key, number)
                 .map_err(|e| VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: key.to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 })?;
         }
         Ok(())
@@ -209,9 +207,9 @@ where
             arguments
                 .set_int(key, number)
                 .map_err(|e| VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: key.to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 })?;
         }
         Ok(())
@@ -231,18 +229,18 @@ where
                 .into_iter()
                 .map(|v| {
                     v.try_into().map_err(|_| VapourSynthError::PluginArgumentsError {
-                        plugin:   Self::PLUGIN_NAME.to_owned(),
+                        plugin: Self::PLUGIN_NAME.to_owned(),
                         argument: key.to_owned(),
-                        message:  "Value is out of range".to_owned(),
+                        message: "Value is out of range".to_owned(),
                     })
                 })
                 .collect::<Result<Vec<i64>, VapourSynthError>>()?;
 
             arguments.set_int_array(key, &numbers).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: key.to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
@@ -260,17 +258,17 @@ where
             }
             let number = value.expect("Value is Some").try_into().map_err(|_| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: key.to_owned(),
-                    message:  "Value is out of range".to_owned(),
+                    message: "Value is out of range".to_owned(),
                 }
             })?;
 
             arguments.set_float(key, number).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: key.to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
@@ -291,18 +289,18 @@ where
                 .into_iter()
                 .map(|v| {
                     v.try_into().map_err(|_| VapourSynthError::PluginArgumentsError {
-                        plugin:   Self::PLUGIN_NAME.to_owned(),
+                        plugin: Self::PLUGIN_NAME.to_owned(),
                         argument: key.to_owned(),
-                        message:  "Value is out of range".to_owned(),
+                        message: "Value is out of range".to_owned(),
                     })
                 })
                 .collect::<Result<Vec<f64>, VapourSynthError>>()?;
 
             arguments.set_float_array(key, &numbers).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: key.to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
@@ -320,17 +318,17 @@ where
             }
             let string_or_bytes = value.expect("Value is Some").try_into().map_err(|_| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: key.to_owned(),
-                    message:  "Value is out of range".to_owned(),
+                    message: "Value is out of range".to_owned(),
                 }
             })?;
 
             arguments.set(key, &string_or_bytes.as_slice()).map_err(|e| {
                 VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: key.to_owned(),
-                    message:  e.to_string(),
+                    message: e.to_string(),
                 }
             })?;
         }
@@ -343,17 +341,17 @@ where
         for (name, value_type) in Self::REQUIRED_ARGUMENTS {
             if !keys.contains(name) {
                 return Err(VapourSynthError::PluginArgumentsError {
-                    plugin:   Self::PLUGIN_NAME.to_owned(),
+                    plugin: Self::PLUGIN_NAME.to_owned(),
                     argument: (*name).to_string(),
-                    message:  "Required argument is missing".to_owned(),
+                    message: "Required argument is missing".to_owned(),
                 });
             }
             match arguments.value_type(name) {
                 Ok(argument_type) if argument_type != **value_type => {
                     return Err(VapourSynthError::PluginArgumentsError {
-                        plugin:   Self::PLUGIN_NAME.to_owned(),
+                        plugin: Self::PLUGIN_NAME.to_owned(),
                         argument: (*name).to_string(),
-                        message:  "Invalid argument type".to_owned(),
+                        message: "Invalid argument type".to_owned(),
                     });
                 },
                 _ => (),
@@ -364,9 +362,9 @@ where
             match arguments.value_type(name) {
                 Ok(opt_vt) if opt_vt != **value_type => {
                     return Err(VapourSynthError::PluginArgumentsError {
-                        plugin:   Self::PLUGIN_NAME.to_owned(),
+                        plugin: Self::PLUGIN_NAME.to_owned(),
                         argument: (*name).to_string(),
-                        message:  "Invalid argument type".to_owned(),
+                        message: "Invalid argument type".to_owned(),
                     });
                 },
                 _ => (),
@@ -385,17 +383,17 @@ where
         let plugin = Self::plugin(core)?;
         let result = plugin.invoke(Self::FUNCTION_NAME, &arguments).map_err(|e| {
             VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
 
         if let Some(err) = result.error() {
             return Err(VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  err.to_string(),
+                message: err.to_string(),
             });
         }
 
@@ -414,24 +412,24 @@ where
         let plugin = Self::plugin(core)?;
         let result = plugin.invoke(Self::FUNCTION_NAME, &arguments).map_err(|e| {
             VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         if let Some(err) = result.error() {
             return Err(VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  err.to_string(),
+                message: err.to_string(),
             });
         }
         let mut result_keys = result.keys();
         if !result_keys.contains(key) {
             return Err(VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  format!(
+                message: format!(
                     "Failed to get video node. \"{}\" key not found. Keys found: {}",
                     key,
                     result_keys.join(", ")
@@ -441,9 +439,9 @@ where
 
         let node: Node =
             result.get_video_node(key).map_err(|_| VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  "Failed to get video node".to_owned(),
+                message: "Failed to get video node".to_owned(),
             })?;
 
         Ok(node)
@@ -462,25 +460,25 @@ where
         let plugin = Self::plugin(core)?;
         let result = plugin.invoke(Self::FUNCTION_NAME, &arguments).map_err(|e| {
             VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         if let Some(err) = result.error() {
             return Err(VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  err.to_string(),
+                message: err.to_string(),
             });
         }
 
         let nodes = result
             .get_video_node_iter(key)
             .map_err(|_| VapourSynthError::PluginFunctionError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
-                message:  format!("Failed to get video nodes for key \"{}\"", key),
+                message: format!("Failed to get video nodes for key \"{}\"", key),
             })?
             .collect::<Vec<_>>();
         Ok(nodes)
@@ -508,10 +506,10 @@ pub trait MetricPluginFunction: PluginFunction {
         let total_frames = node.info().num_frames;
 
         let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
-            id:         Self::FUNCTION_NAME.to_owned(),
+            id: Self::FUNCTION_NAME.to_owned(),
             completion: SequenceCompletion::Frames {
                 completed: 0,
-                total:     total_frames as u64,
+                total: total_frames as u64,
             },
         }));
 
@@ -553,10 +551,10 @@ pub trait MetricPluginFunction: PluginFunction {
                     }
 
                     let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                        id:         Self::FUNCTION_NAME.to_owned(),
+                        id: Self::FUNCTION_NAME.to_owned(),
                         completion: SequenceCompletion::Frames {
                             completed: (index + 1) as u64,
-                            total:     total_frames as u64,
+                            total: total_frames as u64,
                         },
                     }));
                 }

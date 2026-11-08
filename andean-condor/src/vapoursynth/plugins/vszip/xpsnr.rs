@@ -7,14 +7,11 @@ use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 use crate::vapoursynth::{
     VapourSynthError,
     plugins::{
-        MetricPluginFunction,
-        Plugin,
-        PluginFunction,
+        MetricPluginFunction, Plugin, PluginFunction,
         vszip::{DOCS, ID, NAME},
     },
     script_builder::{
-        NodeVariableName,
-        VapourSynthPluginScript,
+        NodeVariableName, VapourSynthPluginScript,
         script::{Imports, Line},
     },
 };
@@ -25,8 +22,8 @@ pub struct XPSNR {
     pub reference_node_name: String,
     /// Only used for script generation
     pub distorted_node_name: String,
-    pub temporal:            Option<bool>,
-    pub verbose:             Option<bool>,
+    pub temporal: Option<bool>,
+    pub verbose: Option<bool>,
 }
 
 impl Plugin for XPSNR {
@@ -56,22 +53,25 @@ impl XPSNR {
         let mut arguments = Self::arguments()?;
         arguments.set_node("reference", reference).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "reference".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
         arguments.set_node("distorted", distorted).map_err(|e| {
             VapourSynthError::PluginArgumentsError {
-                plugin:   Self::PLUGIN_NAME.to_owned(),
+                plugin: Self::PLUGIN_NAME.to_owned(),
                 argument: "distorted".to_owned(),
-                message:  e.to_string(),
+                message: e.to_string(),
             }
         })?;
-        Self::argument_set_ints(&mut arguments, vec![
-            ("temporal", self.temporal.map(|b| if b { 1 } else { 0 })),
-            ("verbose", self.verbose.map(|b| if b { 1 } else { 0 })),
-        ])?;
+        Self::argument_set_ints(
+            &mut arguments,
+            vec![
+                ("temporal", self.temporal.map(|b| if b { 1 } else { 0 })),
+                ("verbose", self.verbose.map(|b| if b { 1 } else { 0 })),
+            ],
+        )?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
 
         Ok(node)
