@@ -259,10 +259,19 @@ pub fn parse_svt_av1_frames(input: &str) -> Option<u64> {
 
 #[inline]
 pub fn parse_x26x_frames(s: &str) -> Option<u64> {
-    s.split_ascii_whitespace()
-        .find(|part| !part.starts_with('['))
-        .map(|val| val.split_once('/').map_or(val, |(val, _)| val))
-        .and_then(|s| s.parse().ok())
+    // x264/x265 print progress as `[42.5%] 121/285 frames, 2.47 fps, ...` or,
+    // when stderr is not a TTY, as `121 frames: 2.47 fps, ...`. Several log
+    // lines can arrive in a single read, so the count is the number that
+    // precedes the `frames` keyword rather than the first token on the line.
+    let tokens: Vec<&str> = s.split_ascii_whitespace().collect();
+    tokens
+        .windows(2)
+        .find(|pair| pair[1].starts_with("frames"))
+        .and_then(|pair| {
+            let value = pair[0].split_once('/').map_or(pair[0], |(value, _)| value);
+            value.parse().ok()
+        })
+        .filter(|frames| *frames > 0)
 }
 
 #[inline]

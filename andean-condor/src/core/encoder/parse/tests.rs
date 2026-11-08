@@ -82,6 +82,20 @@ fn x26x_parsing() {
             "[42.5%] 121/285 frames, 2.47 fps, 1445.28 kb/s, eta 0:01:06",
             Some(121),
         ),
+        // stderr is not a TTY when an encoder is spawned, so x264 buffers its
+        // log lines and several arrive in one read. The count must still be
+        // found rather than the first token of the blob.
+        (
+            "y4m [info]: 64x64p 0:0 @ 30/1 fps (cfr)\nx264 [info]: using cpu capabilities: MMX2 \
+             SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2\nx264 [info]: profile High, level 1.0, \
+             4:2:0, 8-bit\n1 frames: 1000.00 fps, 194.40 kb/s  \r",
+            Some(1),
+        ),
+        (
+            "x264 [info]: frame I:1     Avg QP:25.31  size:   810\nx264 [info]: frame P:3     Avg \
+             QP:31.33  size:    26\n\nencoded 10 frames, 5000.00 fps, 23.04 kb/s\n",
+            Some(10),
+        ),
         ("invalid data", None),
         ("", None),
     ];
