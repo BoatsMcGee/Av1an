@@ -71,10 +71,13 @@ decoded range and BT.601, BT.709 or BT.2020 non-constant-luminance matrix.
 both inputs are known to have the same color properties.
 
 Only absent/`Unspecified` values use defaults: limited range, BT.709 above 650
-lines (BT.601 otherwise), and sRGB transfer/BT.709 primaries. Explicit transfer
-metadata must be sRGB or linear, with BT.709 primaries; other curves (including
-BT.709, PQ and HLG) and other gamuts return `UnsupportedFormat`. Neither an HDR
-flag nor a CVVDP display model converts transfer functions or gamuts.
+lines (BT.601 otherwise), and sRGB transfer/BT.709 primaries. BT.709, SMPTE 170M,
+and BT.2020 10/12-bit SDR transfers are interpreted using BT.1886 gamma 2.4,
+linearized and encoded as sRGB. Existing sRGB and linear RGB retain their encoded
+values and matching native tags. `ColorInfo::transfer` describes the source;
+`ColorInfo::colorspace` describes the output. Only BT.709 primaries are supported;
+other gamuts and unsupported transfers (including PQ/HLG) return
+`UnsupportedFormat`. An HDR flag or display model is not an input decoder.
 `colorspace_from_details` now returns a `Result`; `ColorInfo::colorspace` carries
 the supported encoding through to the native image descriptor.
 
@@ -85,6 +88,22 @@ ordinary decoder details omit them. Y4M has no color metadata
 in this decoder and therefore uses the defaults. These are clip-level properties;
 per-frame changes and mastering-display/content-light-level rendering are not
 implemented here. Chroma reconstruction remains nearest-cell sampling.
+The metric converter uses published `yuvxyb` 0.6.0 (MIT, Rust 1.95 minimum), with
+root default features disabled. Its transitive `yuvxyb-math` 0.1.1 still enables
+its default `fastmath` polynomial powers; approximate math is **not** all disabled.
+Independent numeric regressions cover the matrix, meaningful source depth and
+SDR transfer conversion. No dependency fork or alternate handwritten path exists.
+
+yuvxyb clamps normalized luma to [0, 1] and chroma to [-0.5, 0.5] **before** the
+matrix, including samples outside nominal limited range. Invalid stored codes
+outside the meaningful source depth are rejected. Valid odd 4:2:0/4:2:2 input is
+edge-padded for the library, then cropped to the original dimensions without
+resizing. Source plane geometry and byte-offset arithmetic are checked before
+copying into owned frames, but the public raw-pointer API remains `unsafe`:
+callers must still guarantee allocation spans and lifetimes.
+
+TransNetV2 keeps its model-specific fractional box-average preprocessing; routing
+it through an integer-only YUV interface would change quantization/filter order.
 Unrecognized raw numeric metadata may already be collapsed to `None` by the
 decoder; this API cannot distinguish that from an absent property.
 

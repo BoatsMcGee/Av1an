@@ -10,9 +10,15 @@
 //! 8-bit input becomes `RGB_UINT8`; 10- and 12-bit are up-converted to
 //! `RGB_UINT16` rather than truncated. Range and matrix come from [`ColorInfo`]
 //! rather than a default.
+//! yuvxyb supplies matrix/range/transfer conversion; this module validates and
+//! copies descriptors, pads/crops valid odd edges, and packs integer output.
+//! Its published math dependency retains default fastmath powers even with
+//! yuvxyb's root default features disabled; numeric regressions are independent.
+
+use std::mem::size_of;
 
 use crate::{
-    config::{ColorInfo, SampleRange, YuvMatrix},
+    config::{ColorInfo, SampleRange, YuvMatrix, source_transfer},
     error::FmetricsError,
     ffi::{FmetricsColorspace, FmetricsImg},
 };
@@ -419,210 +425,14 @@ impl RgbImage {
     }
 }
 
-/// Everything the conversion needs, resolved once per frame rather than per
-/// pixel.
-///
-/// The matrix coefficients and range gains are fixed for a clip, and the output
-/// scale by the destination format, so hoisting them out of the inner loop
-/// replaces a chain of divisions and branches per pixel with one multiply-add.
-#[derive(Debug, Clone, Copy)]
-struct Coefficients {
-    /// Offset subtracted from luma before scaling, for a limited range.
-    y_min: f32,
-    /// Upper luma bound. Divided per pixel rather than used as a
-    /// precomputed reciprocal, for reproducibility.
-    y_max: f32,
-    /// Lower chroma bound, used with `c_max` to resolve the range gain.
-    c_min: f32,
-    /// Upper chroma bound, for the same reason as `y_max`.
-    c_max: f32,
-    /// Red's gain on the V difference.
-    r_v: f32,
-    /// Green's loss from the U difference.
-    g_u: f32,
-    /// Green's loss from the V difference.
-    g_v: f32,
-    /// Blue's gain on the U difference.
-    b_u: f32,
-}
-
-impl Coefficients {
-    /// Resolve the coefficients for a matrix and range.
-    #[inline]
-    fn for_range(matrix: YuvMatrix, range: SampleRange) -> Self {
-        let (kr, kb) = match matrix {
-            YuvMatrix::Bt601 => (0.299, 0.114),
-            YuvMatrix::Bt709 => (0.2126, 0.0722),
-            YuvMatrix::Bt2020 => (0.2627, 0.0593),
-        };
-        let kg = 1.0 - kr - kb;
-
-        // (y_min, y_max, chroma_min, chroma_max)
-        let (y_min, y_max, c_min, c_max) = match range {
-            SampleRange::Limited => (16.0, 235.0, 16.0, 240.0),
-            SampleRange::Full => (0.0, 255.0, 0.0, 255.0),
-        };
-
-        Self {
-            y_min,
-            y_max,
-            c_min,
-            c_max,
-            r_v: 2.0 * (1.0 - kr),
-            g_u: 2.0 * kb * (1.0 - kb) / kg,
-            g_v: 2.0 * kr * (1.0 - kr) / kg,
-            b_u: 2.0 * (1.0 - kb),
-        }
-    }
-
-    /// Convert one pixel to RGB on the 0-255 scale.
-    #[inline]
-    #[expect(
-        clippy::suboptimal_flops,
-        reason = "fusing these changes rounding; scores must stay bit-reproducible"
-    )]
-    fn apply(self, y: f32, u: f32, v: f32) -> (f32, f32, f32) {
-        let y_lin = (y - self.y_min) * (255.0 / (self.y_max - self.y_min));
-
-        // Centre before range expansion so code 128 stays neutral in limited range.
-        let u_off = (u - 128.0) * (255.0 / (self.c_max - self.c_min));
-        let v_off = (v - 128.0) * (255.0 / (self.c_max - self.c_min));
-
-        let red = self.r_v * v_off + y_lin;
-        let blue = self.b_u * u_off + y_lin;
-        let green = y_lin - (self.g_u * u_off) - (self.g_v * v_off);
-
-        (red, green, blue)
-    }
-}
-
-/// Clamp a converted channel to `0..=255`, rounded.
-#[inline]
-fn clamp_u8(value: f32) -> u8 {
-    value.round().clamp(0.0, 255.0) as u8
-}
-
-/// Clamp a converted channel to `0..=65535`, rounded.
-#[inline]
-fn clamp_u16(value: f32) -> u16 {
-    value.round().clamp(0.0, 65535.0) as u16
-}
-
-/// Source-code scaling into the matrix's 8-bit-equivalent domain.
-#[derive(Debug, Clone, Copy)]
-struct SampleScale {
-    gain: f32,
-    chroma_center: f32,
-}
-
-/// Where one plane's samples live, resolved once per row rather than per pixel.
-#[derive(Debug, Clone, Copy)]
-struct RowPlanes {
-    /// Pointer to luma sample `(0, 0)`.
-    luma: *const u8,
-    /// Pointer to chroma sample `(0, 0)` of each chroma plane.
-    chroma: [*const u8; 2],
-    /// Bytes per sample.
-    bytes: usize,
-    /// Luma columns covered by each chroma sample.
-    subsample_x: usize,
-}
-
-impl RowPlanes {
-    /// Resolve the row pointers for a row index.
-    ///
-    /// # Safety
-    ///
-    /// The planes must be live allocations, as the caller of [`yuv_to_rgb`]
-    /// guarantees. Geometry and subsampling must already be validated.
-    #[inline]
-    #[allow(clippy::cast_possible_wrap)]
-    unsafe fn at(planes: &PlaneSet, row: usize, subsampling: [usize; 2]) -> Self {
-        let luma = &planes[0];
-        let bytes = luma.bytes_per_sample;
-
-        // SAFETY: delegated to the caller, who guarantees each plane is a live
-        // allocation spanning its rows.
-        unsafe {
-            let luma_row = luma.data.add(luma.data_origin + (row as isize * luma.stride) as usize);
-
-            let mut chroma = [luma.data; 2];
-            for (index, plane) in planes.iter().enumerate().skip(1) {
-                let chroma_row = row / subsampling[1];
-                // Stride and origin are already bytes, including for u16 planes.
-                let offset = plane.data_origin + (chroma_row as isize * plane.stride) as usize;
-                chroma[index - 1] = plane.data.add(offset);
-            }
-
-            Self {
-                luma: luma_row,
-                chroma,
-                bytes,
-                subsample_x: subsampling[0],
-            }
-        }
-    }
-
-    /// Read one pixel's Y, U and V on the 0-255 scale.
-    ///
-    /// Chroma is sampled from its covering cell, nearest-neighbour.
-    /// This is a measurement, not a display conversion:
-    /// both sides of a pair go through exactly this path, so the sampling
-    /// choice is consistent rather than optimal.
-    ///
-    /// # Safety
-    ///
-    /// The pointers must be readable for the samples read.
-    #[inline]
-    unsafe fn sample(self, x: usize, scale: SampleScale) -> (f32, f32, f32) {
-        // SAFETY: delegated to the caller of `yuv_to_rgb`.
-        unsafe {
-            let y = read_normalized(self.luma.add(x * self.bytes), self.bytes, 0.0, scale.gain);
-
-            let cx = x / self.subsample_x;
-
-            let mut offsets = [0f32; 2];
-            for (index, pointer) in self.chroma.iter().enumerate() {
-                // Center in source codes first: full-range midpoint is not half
-                // the peak, and the matrix expects neutral chroma at 128.
-                offsets[index] = read_normalized(
-                    pointer.add(cx * self.bytes),
-                    self.bytes,
-                    scale.chroma_center,
-                    scale.gain,
-                ) + 128.0;
-            }
-
-            (y, offsets[0], offsets[1])
-        }
-    }
-}
-
-/// Read and center one sample before scaling to 8-bit-equivalent units.
-///
-/// # Safety
-///
-/// `pointer` must be readable for `bytes`, which must be 1 or 2.
-#[inline]
-unsafe fn read_normalized(pointer: *const u8, bytes: usize, center: f32, gain: f32) -> f32 {
-    let raw = match bytes {
-        1 => {
-            // SAFETY: delegated to the caller; one byte is read.
-            unsafe { *pointer as f32 }
-        },
-        2 => {
-            // SAFETY: delegated to the caller; a `u16` is read unaligned.
-            unsafe { pointer.cast::<u16>().read_unaligned() as f32 }
-        },
-        _ => unreachable!("sample widths are validated before conversion"),
-    };
-    (raw - center) * gain
-}
-
 /// Convert a planar YUV frame to interleaved RGB.
 ///
 /// `max_sample` is the source's peak: 255 for 8-bit, 1023 for 10-bit, 4095 for
 /// 12-bit.
+/// yuvxyb clips normalized Y to [0,1] and C to [-0.5,0.5] before the matrix.
+/// Video-family SDR is converted through gamma-2.4 linear light to sRGB; existing
+/// sRGB/linear data is not transfer-converted. Odd subsampled edges are replicated
+/// for conversion and cropped back, never resized.
 ///
 /// # Errors
 ///
@@ -692,113 +502,178 @@ pub unsafe fn yuv_to_rgb(
             ),
         })?;
 
-    let coefficients = Coefficients::for_range(info.matrix, info.range);
-    let scale = SampleScale {
-        gain: match info.range {
-            SampleRange::Full => 255.0 / max_sample as f32,
-            // Nominal endpoints are exact shifts of 8-bit codes, not peak ratios.
-            SampleRange::Limited => 1.0 / (1u32 << (info.bit_depth - 8)) as f32,
-        },
-        chroma_center: (1u32 << (info.bit_depth - 1)) as f32,
-    };
-
-    // Truncating a wider source to 8-bit would discard precision it has.
-    let wide = info.needs_wide_samples();
-
-    // `read_normalized` already brings every depth onto the 0-255 scale, so
-    // only the output scale differs between the two formats.
-    let out_gain = if wide { 65535.0 / 255.0 } else { 1.0 };
-
-    let channels = if wide { 6 } else { 3 };
-    let stride = width * channels;
-    let mut data = vec![0u8; stride * height];
-
-    // The two output formats are handled separately rather than branching per
-    // pixel: 8-bit is the common case and would otherwise pay for a test and a
-    // wider write path it never takes.
-    if wide {
-        convert_rows::<true>(
-            planes,
-            coefficients,
-            scale,
-            subsampling,
-            &mut data,
-            stride,
-            out_gain,
-        );
+    let transfer = source_transfer(info.transfer)?;
+    let expected_colorspace = if transfer == yuvxyb::TransferCharacteristic::Linear {
+        FmetricsColorspace::LinearSrgb
     } else {
-        convert_rows::<false>(
-            planes,
-            coefficients,
-            scale,
-            subsampling,
-            &mut data,
-            stride,
-            1.0,
-        );
+        FmetricsColorspace::Srgb
+    };
+    if info.colorspace != expected_colorspace {
+        return Err(FmetricsError::UnsupportedFormat {
+            reason: format!(
+                "source transfer {:?} requires output {expected_colorspace:?}, got {:?}",
+                info.transfer, info.colorspace
+            ),
+        });
     }
 
-    Ok(RgbImage {
-        data,
-        width,
-        height,
-        wide,
-    })
-}
-
-/// Convert every row, writing either 3- or 6-byte pixels.
-///
-/// The format is a const parameter so each instantiation compiles down to one
-/// write path with no per-pixel branch.
-#[inline]
-fn convert_rows<const WIDE: bool>(
-    planes: &PlaneSet,
-    coefficients: Coefficients,
-    scale: SampleScale,
-    subsampling: [usize; 2],
-    data: &mut [u8],
-    stride: usize,
-    out_gain: f32,
-) {
-    let width = planes[0].width;
-    let height = planes[0].height;
-
-    for row in 0..height {
-        // SAFETY: delegated to the caller of `yuv_to_rgb`, who guarantees each
-        // plane is a live allocation spanning its rows. Validated ceil chroma
-        // dimensions keep covering-cell coordinates within both chroma planes.
-        let row_planes = unsafe { RowPlanes::at(planes, row, subsampling) };
-
-        // SAFETY: `row * stride` is within `data`, which is `stride * height`
-        // long.
-        let out = unsafe { data.as_mut_ptr().add(row * stride) };
-
-        for column in 0..width {
-            // SAFETY: as above; the row is inside the allocation.
-            let (y, u, v) = unsafe { row_planes.sample(column, scale) };
-
-            let (r, g, b) = coefficients.apply(y, u, v);
-
-            if WIDE {
-                // SAFETY: `column < width`, so `column * 6 + 6 <= stride`,
-                // within this row.
-                unsafe {
-                    let pixel = out.add(column * 6).cast::<u16>();
-                    pixel.write_unaligned(clamp_u16(r * out_gain).to_le());
-                    pixel.add(1).write_unaligned(clamp_u16(g * out_gain).to_le());
-                    pixel.add(2).write_unaligned(clamp_u16(b * out_gain).to_le());
-                }
-            } else {
-                // SAFETY: as above, with three bytes per pixel.
-                unsafe {
-                    let pixel = out.add(column * 3);
-                    pixel.write(clamp_u8(r * out_gain));
-                    pixel.add(1).write(clamp_u8(g * out_gain));
-                    pixel.add(2).write(clamp_u8(b * out_gain));
+    let padded_width = width
+        .checked_add(width % subsampling[0])
+        .ok_or_else(|| malformed("padded width overflow"))?;
+    let padded_height = height
+        .checked_add(height % subsampling[1])
+        .ok_or_else(|| malformed("padded height overflow"))?;
+    // Bound the largest intermediate (float RGB), before frame allocation or reads.
+    padded_width
+        .checked_mul(padded_height)
+        .and_then(|n| n.checked_mul(12))
+        .filter(|&n| isize::try_from(n).is_ok())
+        .ok_or_else(|| malformed("RGB allocation dimensions overflow"))?;
+    let stride = width
+        .checked_mul(if info.needs_wide_samples() { 6 } else { 3 })
+        .filter(|&n| u32::try_from(n).is_ok())
+        .ok_or_else(|| malformed("RGB stride exceeds native representation"))?;
+    if u32::try_from(height).is_err() {
+        return Err(malformed("RGB height exceeds native representation"));
+    }
+    for plane in &planes.planes {
+        validate_plane_layout(plane)?;
+    }
+    let config = yuvxyb::YuvConfig {
+        bit_depth: info.bit_depth as u8,
+        subsampling_x: (subsampling[0] - 1) as u8,
+        subsampling_y: (subsampling[1] - 1) as u8,
+        full_range: info.range == SampleRange::Full,
+        matrix_coefficients: match info.matrix {
+            YuvMatrix::Bt601 => yuvxyb::MatrixCoefficients::ST170M,
+            YuvMatrix::Bt709 => yuvxyb::MatrixCoefficients::BT709,
+            YuvMatrix::Bt2020 => yuvxyb::MatrixCoefficients::BT2020NonConstantLuminance,
+        },
+        transfer_characteristics: transfer,
+        // Resolve explicitly; do not let the library guess a gamut from the matrix.
+        color_primaries: yuvxyb::ColorPrimaries::BT709,
+    };
+    // SAFETY: descriptor arithmetic/layout is checked above; allocation spans and
+    // lifetimes remain the caller's responsibility under the unchanged unsafe API.
+    let rgb = unsafe {
+        if info.needs_wide_samples() {
+            convert_owned::<u16>(planes, config, padded_width, padded_height)?
+        } else {
+            convert_owned::<u8>(planes, config, padded_width, padded_height)?
+        }
+    };
+    let rgb = if matches!(
+        transfer,
+        yuvxyb::TransferCharacteristic::SRGB | yuvxyb::TransferCharacteristic::Linear
+    ) {
+        rgb
+    } else {
+        let linear = yuvxyb::LinearRgb::try_from(rgb).map_err(conversion_error)?;
+        yuvxyb::Rgb::try_from((
+            linear,
+            yuvxyb::TransferCharacteristic::SRGB,
+            yuvxyb::ColorPrimaries::BT709,
+        ))
+        .map_err(conversion_error)?
+    };
+    let mut data = Vec::with_capacity(stride * height);
+    for row in rgb.into_data().chunks_exact(padded_width).take(height) {
+        for pixel in &row[..width] {
+            for &value in pixel {
+                if info.needs_wide_samples() {
+                    data.extend_from_slice(
+                        &((value * 65535.0).round().clamp(0.0, 65535.0) as u16).to_le_bytes(),
+                    );
+                } else {
+                    data.push((value * 255.0).round().clamp(0.0, 255.0) as u8);
                 }
             }
         }
     }
+    Ok(RgbImage {
+        data,
+        width,
+        height,
+        wide: info.needs_wide_samples(),
+    })
+}
+
+fn malformed(reason: impl Into<String>) -> FmetricsError {
+    FmetricsError::MalformedFrame {
+        reason: reason.into(),
+    }
+}
+
+fn conversion_error(error: yuvxyb::ConversionError) -> FmetricsError {
+    FmetricsError::UnsupportedFormat {
+        reason: format!("yuvxyb conversion: {error}"),
+    }
+}
+
+/// Check byte-offset arithmetic, not the caller's unknowable allocation length.
+fn validate_plane_layout(plane: &PlaneSource) -> Result<(), FmetricsError> {
+    let row_bytes = plane
+        .width
+        .checked_mul(plane.bytes_per_sample)
+        .and_then(|n| isize::try_from(n).ok())
+        .ok_or_else(|| malformed("plane row size overflow"))?;
+    let origin =
+        isize::try_from(plane.data_origin).map_err(|_| malformed("plane origin overflow"))?;
+    let last = isize::try_from(plane.height - 1)
+        .ok()
+        .and_then(|n| n.checked_mul(plane.stride))
+        .and_then(|n| origin.checked_add(n))
+        .filter(|&n| n >= 0)
+        .ok_or_else(|| malformed("plane row offset overflow"))?;
+    if plane.data.is_null()
+        || plane.stride.checked_abs().is_none_or(|stride| stride < row_bytes)
+        || origin.max(last).checked_add(row_bytes).is_none()
+    {
+        return Err(malformed("invalid plane pointer, stride or byte extent"));
+    }
+    Ok(())
+}
+
+/// Copy visible source codes into owned storage; only valid odd luma edges pad.
+///
+/// # Safety
+/// Source layouts must be validated and all described samples must remain readable.
+unsafe fn convert_owned<T: v_frame::pixel::Pixel>(
+    planes: &PlaneSet,
+    config: yuvxyb::YuvConfig,
+    width: usize,
+    height: usize,
+) -> Result<yuvxyb::Rgb, FmetricsError> {
+    let sampling = match (config.subsampling_x, config.subsampling_y) {
+        (0, 0) => v_frame::chroma::ChromaSubsampling::Yuv444,
+        (1, 0) => v_frame::chroma::ChromaSubsampling::Yuv422,
+        (1, 1) => v_frame::chroma::ChromaSubsampling::Yuv420,
+        _ => unreachable!("subsampling was validated"),
+    };
+    let mut frame = v_frame::frame::FrameBuilder::new(width, height, sampling, config.bit_depth)
+        .build::<T>()
+        .map_err(|error| malformed(format!("owned YUV frame: {error}")))?;
+    for (index, source) in planes.iter().enumerate() {
+        let target = frame.plane_mut(index).expect("validated three-plane frame");
+        for (y, row) in target.rows_mut().enumerate() {
+            let source_y = y.min(source.height - 1);
+            let offset = (source.data_origin as isize + source_y as isize * source.stride) as usize;
+            for (x, sample) in row.iter_mut().enumerate() {
+                // SAFETY: checked row/column offsets address visible samples;
+                // read_unaligned supports byte origins and preserves meaningful depth.
+                *sample = unsafe {
+                    source
+                        .data
+                        .add(offset + x.min(source.width - 1) * size_of::<T>())
+                        .cast::<T>()
+                        .read_unaligned()
+                };
+            }
+        }
+    }
+    let yuv = yuvxyb::Yuv::new(frame, config)
+        .map_err(|error| malformed(format!("yuvxyb input: {error}")))?;
+    yuvxyb::Rgb::try_from(&yuv).map_err(conversion_error)
 }
 
 #[cfg(test)]
@@ -808,6 +683,215 @@ fn convert_rows<const WIDE: bool>(
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m04_sdr_video_transfers_convert_gray_to_srgb() {
+        use av_decoders::TransferCharacteristic as Transfer;
+        // Independent: L=(Y/255)^2.4, piecewise sRGB encoding, round once.
+        for transfer in
+            [Transfer::BT709, Transfer::SMPTE170M, Transfer::BT2020_10, Transfer::BT2020_12]
+        {
+            let details = av_decoders::VideoDetails {
+                width: 5,
+                height: 1,
+                bit_depth: 8,
+                chroma_sampling: v_frame::chroma::ChromaSubsampling::Yuv444,
+                frame_rate: av_decoders::Rational32::new(24, 1),
+                total_frames: None,
+                color_range: Some(av_decoders::ColorRange::Full),
+                color_space: Some(av_decoders::ColorSpace::BT709),
+                color_primaries: Some(av_decoders::ColorPrimaries::BT709),
+                color_transfer_characteristic: Some(transfer),
+                chroma_location: None,
+                mastering_display: None,
+                content_light_level: None,
+            };
+            let info = ColorInfo::from_details(&details).expect("ordinary tagged SDR is supported");
+            let planes = frame444(5, 1, vec![0, 16, 64, 128, 255], vec![128; 5], vec![128; 5]);
+            // SAFETY: the fixture owns readable planes for every sample.
+            let image = unsafe { yuv_to_rgb(&planes, &info, 255).unwrap() };
+            let actual: Vec<_> = (0..5).map(|x| image.pixel(x, 0)).collect();
+            assert_eq!(
+                actual,
+                [0, 4, 53, 121, 255].map(|v| (v, v, v)),
+                "{transfer:?}"
+            );
+            assert_eq!(info.colorspace, FmetricsColorspace::Srgb);
+        }
+    }
+
+    #[test]
+    fn m04_sdr_srgb_and_linear_preserve_encoded_values() {
+        for (transfer, colorspace) in [
+            (
+                av_decoders::TransferCharacteristic::IEC61966_2_1,
+                FmetricsColorspace::Srgb,
+            ),
+            (
+                av_decoders::TransferCharacteristic::Linear,
+                FmetricsColorspace::LinearSrgb,
+            ),
+        ] {
+            let info = ColorInfo {
+                transfer,
+                colorspace,
+                ..full_range(YuvMatrix::Bt709)
+            };
+            let planes = frame444(5, 1, vec![0, 16, 64, 128, 255], vec![128; 5], vec![128; 5]);
+            // SAFETY: the fixture owns all visible samples.
+            let image = unsafe { yuv_to_rgb(&planes, &info, 255).unwrap() };
+            for (x, gray) in [0, 16, 64, 128, 255].into_iter().enumerate() {
+                assert_eq!(image.pixel(x, 0), (gray, gray, gray));
+            }
+        }
+    }
+
+    #[test]
+    fn m04_sdr_clips_nominal_excursions_before_matrix() {
+        // Clamp Y to [0,1], C to [-.5,.5], then independent BT.709 inverse luma.
+        assert_eq!(
+            m01_convert_pixel([0, 0, 128], YuvMatrix::Bt709, SampleRange::Limited),
+            (0, 24, 0)
+        );
+        assert_eq!(
+            m01_convert_pixel([255, 128, 255], YuvMatrix::Bt709, SampleRange::Limited),
+            (255, 195, 255)
+        );
+    }
+
+    #[test]
+    fn m04_sdr_invalid_stored_codes_are_rejected() {
+        for depth in [10, 12] {
+            for invalid_plane in 0..3 {
+                let mut samples = [1u16 << (depth - 1); 3];
+                samples[invalid_plane] = 1 << depth;
+                let info = ColorInfo {
+                    bit_depth: depth,
+                    ..full_range(YuvMatrix::Bt709)
+                };
+                let planes = PlaneSet {
+                    planes: samples.each_ref().map(|sample| PlaneSource {
+                        width: 1,
+                        height: 1,
+                        stride: 2,
+                        data_origin: 0,
+                        data: std::ptr::from_ref(sample).cast(),
+                        bytes_per_sample: 2,
+                    }),
+                };
+                // SAFETY: each plane borrows a live u16, including the invalid stored code.
+                let result = unsafe { yuv_to_rgb(&planes, &info, info.max_sample().unwrap()) };
+                assert!(matches!(result, Err(FmetricsError::MalformedFrame { .. })));
+            }
+        }
+    }
+
+    #[test]
+    fn m04_sdr_even_and_odd_frames_preserve_strides_origins_and_crop() {
+        for depth in [8, 10, 12] {
+            let bytes = if depth == 8 { 1 } else { 2 };
+            let peak = (1u16 << depth) - 1;
+            let midpoint = 1u16 << (depth - 1);
+            let codes = [0, 1 << (depth - 2), midpoint, peak];
+            for (width, height) in [(5usize, 3usize), (6, 4)] {
+                for (sx, sy) in [(1usize, 1usize), (2, 1), (2, 2)] {
+                    let geometry = [
+                        (width, height),
+                        (width.div_ceil(sx), height.div_ceil(sy)),
+                        (width.div_ceil(sx), height.div_ceil(sy)),
+                    ];
+                    let storage: [Vec<u8>; 3] = std::array::from_fn(|index| {
+                        let (w, h) = geometry[index];
+                        let stride = w * bytes + 3;
+                        let mut data = vec![0; 1 + stride * h];
+                        for y in 0..h {
+                            for x in 0..w {
+                                let code = if index == 0 {
+                                    codes[(y * w + x) % 4]
+                                } else {
+                                    midpoint
+                                };
+                                let offset = 1 + (h - 1 - y) * stride + x * bytes;
+                                if bytes == 1 {
+                                    data[offset] = code as u8;
+                                } else {
+                                    data[offset..offset + 2].copy_from_slice(&code.to_ne_bytes());
+                                }
+                            }
+                        }
+                        data
+                    });
+                    let planes = PlaneSet {
+                        planes: std::array::from_fn(|index| {
+                            let (w, h) = geometry[index];
+                            let stride = w * bytes + 3;
+                            PlaneSource {
+                                width: w,
+                                height: h,
+                                stride: -(stride as isize),
+                                data_origin: 1 + (h - 1) * stride,
+                                data: storage[index].as_ptr(),
+                                bytes_per_sample: bytes,
+                            }
+                        }),
+                    };
+                    let info = ColorInfo {
+                        bit_depth: depth,
+                        ..full_range(YuvMatrix::Bt709)
+                    };
+                    // SAFETY: buffers include origins, bottom-up rows and odd-byte u16 addresses.
+                    let image = unsafe { yuv_to_rgb(&planes, &info, u32::from(peak)).unwrap() };
+                    assert_eq!((image.width(), image.height()), (width, height));
+                    let expected = if depth == 8 {
+                        [0, 64, 128, 255]
+                    } else if depth == 10 {
+                        [0, 16400, 32800, 65535]
+                    } else {
+                        [0, 16388, 32776, 65535]
+                    };
+                    for index in 0..width * height {
+                        let gray = expected[index % 4];
+                        assert_eq!(
+                            image.pixel(index % width, index / width),
+                            (gray, gray, gray)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m04_sdr_invalid_descriptor_arithmetic_fails_before_reads() {
+        let sample = 128u8;
+        let base = PlaneSource {
+            width: 1,
+            height: 1,
+            stride: 1,
+            data_origin: 0,
+            data: &sample,
+            bytes_per_sample: 1,
+        };
+        for plane in [
+            PlaneSource {
+                data_origin: usize::MAX,
+                ..base
+            },
+            PlaneSource {
+                stride: isize::MIN,
+                ..base
+            },
+            PlaneSource {
+                width: usize::MAX,
+                ..base
+            },
+        ] {
+            let planes = PlaneSet { planes: [plane; 3] };
+            // SAFETY: live sample; invalid descriptors must be rejected before raw access.
+            let result = unsafe { yuv_to_rgb(&planes, &full_range(YuvMatrix::Bt709), 255) };
+            assert!(matches!(result, Err(FmetricsError::MalformedFrame { .. })));
+        }
+    }
 
     /// An owned single plane, leaked so its pointer outlives the test.
     fn plane(width: usize, height: usize, samples: Vec<u8>) -> PlaneSource {
@@ -836,6 +920,7 @@ mod tests {
             bit_depth: 8,
             hdr: false,
             colorspace: FmetricsColorspace::Srgb,
+            transfer: av_decoders::TransferCharacteristic::IEC61966_2_1,
         }
     }
 
@@ -880,6 +965,7 @@ mod tests {
             bit_depth: 8,
             hdr: false,
             colorspace: FmetricsColorspace::Srgb,
+            transfer: av_decoders::TransferCharacteristic::IEC61966_2_1,
         };
         // SAFETY: each plane borrows one byte of `samples`, live through conversion.
         let image = unsafe { yuv_to_rgb(&planes, &info, 255).unwrap() };
@@ -975,6 +1061,7 @@ mod tests {
             bit_depth,
             hdr: false,
             colorspace: FmetricsColorspace::Srgb,
+            transfer: av_decoders::TransferCharacteristic::IEC61966_2_1,
         };
         // SAFETY: each plane borrows one typed sample, live through conversion.
         unsafe { yuv_to_rgb(&planes, &info, info.max_sample().unwrap()).unwrap() }
@@ -1038,11 +1125,16 @@ mod tests {
                         SampleRange::Limited,
                     );
                     // Nominal Y=16/235 and neutral C=128 are shifted, not peak-scaled.
-                    assert_eq!(
-                        image.pixel(0, 0),
-                        (gray, gray, gray),
-                        "{depth}-bit {matrix:?} Y={y}"
-                    );
+                    let actual = image.pixel(0, 0);
+                    for value in [actual.0, actual.1, actual.2] {
+                        // Exactly half light is 32767.5 in u16; yuvxyb's f32
+                        // matrix can land one ULP below that tie (BT.601 R/B).
+                        let tolerance = u32::from(gray == 32768);
+                        assert!(
+                            value.abs_diff(gray) <= tolerance,
+                            "{depth}-bit {matrix:?} Y={y}: {actual:?} != {gray}"
+                        );
+                    }
                 }
             }
         }
@@ -1071,8 +1163,12 @@ mod tests {
                     // Reference works in unit RGB, reconstructing G from the luma identity
                     // rather than reusing the production matrix or normalization helpers.
                     let y = f64::from(midpoint - black) / f64::from(white - black);
-                    let cb = (f64::from(u) - f64::from(midpoint)) / f64::from(high - low);
-                    let cr = (f64::from(v) - f64::from(midpoint)) / f64::from(high - low);
+                    // Approved clipping precedes the matrix, including full-range
+                    // code zero, which lies just below -0.5 about the integer center.
+                    let cb = ((f64::from(u) - f64::from(midpoint)) / f64::from(high - low))
+                        .clamp(-0.5, 0.5);
+                    let cr = ((f64::from(v) - f64::from(midpoint)) / f64::from(high - low))
+                        .clamp(-0.5, 0.5);
                     let r = y + 2.0 * (1.0 - kr) * cr;
                     let b = y + 2.0 * (1.0 - kb) * cb;
                     let g = (y - kr * r - kb * b) / (1.0 - kr - kb);
@@ -1295,6 +1391,7 @@ mod tests {
             bit_depth: 8,
             hdr: false,
             colorspace: FmetricsColorspace::Srgb,
+            transfer: av_decoders::TransferCharacteristic::IEC61966_2_1,
         };
         let neutral = vec![128u8; 4];
         // SAFETY: leaked buffers of the stated size.
@@ -1420,7 +1517,7 @@ mod tests {
             let actual = image.pixel(index % width, index / width);
             for (actual, expected) in [actual.0, actual.1, actual.2].into_iter().zip(expected) {
                 assert!(
-                    actual.abs_diff(expected) <= 1,
+                    actual.abs_diff(expected) <= u32::from(bytes == 2),
                     "{geometry:?} {bit_depth}-bit {range:?} pixel {index}, cell {cell}: {actual} != {expected}"
                 );
             }
@@ -1573,6 +1670,7 @@ mod tests {
             bit_depth: 10,
             hdr: true,
             colorspace: FmetricsColorspace::Srgb,
+            transfer: av_decoders::TransferCharacteristic::IEC61966_2_1,
         };
         let samples = [512u16; 3];
         let planes = PlaneSet {

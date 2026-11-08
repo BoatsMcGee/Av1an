@@ -97,6 +97,27 @@ mod tests {
             .expect("independent RGB metadata reaches fmetrics ABI");
             assert_eq!(scores, [42.0]);
         }
+        for transfer in [1, 6, 14, 15] {
+            let properties = format!("_Range=1, _Matrix=1, _Primaries=1, _Transfer={transfer}");
+            let script = format!(
+                "import vapoursynth as vs\nvs.core.std.BlankClip(width=32, height=32, length=1, format=vs.YUV420P8, color=[16,128,128]).std.SetFrameProps({properties}).set_output()"
+            );
+            let mut reference = av_decoders::Decoder::from_script(&script, Default::default())
+                .expect("tagged SDR reference");
+            let mut distorted = av_decoders::Decoder::from_script(&script, Default::default())
+                .expect("tagged SDR distorted");
+            let scores = fmetrics::score_probed_frames(
+                &mut reference,
+                &mut distorted,
+                &ssimulacra2,
+                &[0],
+                OutputIndexing::Aligned,
+                None,
+                |_, _| {},
+            )
+            .expect("tagged SDR reaches native scoring");
+            assert_eq!(scores, [42.0]);
+        }
         let mut reference =
             decoder("_Range=1, _Matrix=6, _Primaries=1, _Transfer=13, _ChromaLocation=1");
         let mut distorted =

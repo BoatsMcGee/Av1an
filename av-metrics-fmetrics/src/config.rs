@@ -118,7 +118,9 @@ pub struct ColorInfo {
     pub range: SampleRange,
     /// Source bit depth.
     pub bit_depth: usize,
-    /// RGB transfer encoding after the YUV matrix conversion (no gamut conversion).
+    /// Source transfer, resolved to sRGB when decoder metadata is unknown.
+    pub transfer: TransferCharacteristic,
+    /// Output RGB encoding: video-family transfers are converted to sRGB.
     pub colorspace: crate::ffi::FmetricsColorspace,
     /// Whether the source carries HDR values.
     ///
@@ -132,8 +134,9 @@ impl ColorInfo {
     ///
     /// Explicit metadata wins. Only absent/`Unspecified` values fall back to
     /// limited range, BT.709 above 650 lines (BT.601 otherwise), and sRGB.
-    /// No transfer or gamut conversion is performed: only sRGB/linear sRGB
-    /// with BT.709 primaries can be represented by fmetrics' input API.
+    /// Video-family SDR transfers are decoded using BT.1886 gamma 2.4 and encoded
+    /// as sRGB. Existing sRGB/linear samples retain their encoding. Only BT.709
+    /// primaries are supported; no gamut or HDR conversion is performed.
     ///
     /// # Errors
     ///
@@ -169,6 +172,12 @@ impl ColorInfo {
                 None | Some(ColorRange::Unspecified | ColorRange::Limited) => SampleRange::Limited,
             },
             bit_depth: details.bit_depth,
+            transfer: match details.color_transfer_characteristic {
+                None | Some(TransferCharacteristic::Unspecified) => {
+                    TransferCharacteristic::IEC61966_2_1
+                },
+                Some(transfer) => transfer,
+            },
             colorspace: colorspace_from_details(details)?,
             hdr: false,
         })
@@ -245,12 +254,12 @@ pub const fn matrix_for_resolution(height: usize) -> YuvMatrix {
 /// The fmetrics colorspace a clip should be submitted as.
 ///
 /// Absent/`Unspecified` transfer and primaries retain the legacy sRGB assumption.
-/// Explicit metadata must be representable without a new transfer/gamut transform.
+/// Video-family SDR transfers are converted to sRGB by the metric converter.
 ///
 /// # Errors
 ///
 /// Returns [`FmetricsError::UnsupportedFormat`] for other primaries or transfers,
-/// including BT.709's transfer curve, PQ and HLG. An HDR display model is not a decoder.
+/// including PQ and HLG. An HDR display model is not a decoder.
 #[inline]
 pub fn colorspace_from_details(
     details: &VideoDetails,
@@ -267,14 +276,34 @@ pub fn colorspace_from_details(
             ),
         });
     }
-    match details.color_transfer_characteristic {
-        None | Some(TransferCharacteristic::Unspecified | TransferCharacteristic::IEC61966_2_1) => {
-            Ok(crate::ffi::FmetricsColorspace::Srgb)
+    let transfer = source_transfer(
+        details
+            .color_transfer_characteristic
+            .unwrap_or(TransferCharacteristic::Unspecified),
+    )?;
+    Ok(if transfer == yuvxyb::TransferCharacteristic::Linear {
+        crate::ffi::FmetricsColorspace::LinearSrgb
+    } else {
+        crate::ffi::FmetricsColorspace::Srgb
+    })
+}
+
+pub(crate) fn source_transfer(
+    transfer: TransferCharacteristic,
+) -> Result<yuvxyb::TransferCharacteristic, FmetricsError> {
+    use yuvxyb::TransferCharacteristic as Target;
+    match transfer {
+        TransferCharacteristic::Unspecified | TransferCharacteristic::IEC61966_2_1 => {
+            Ok(Target::SRGB)
         },
-        Some(TransferCharacteristic::Linear) => Ok(crate::ffi::FmetricsColorspace::LinearSrgb),
-        Some(transfer) => Err(FmetricsError::UnsupportedFormat {
+        TransferCharacteristic::Linear => Ok(Target::Linear),
+        TransferCharacteristic::BT709 => Ok(Target::BT1886),
+        TransferCharacteristic::SMPTE170M => Ok(Target::ST170M),
+        TransferCharacteristic::BT2020_10 => Ok(Target::BT2020Ten),
+        TransferCharacteristic::BT2020_12 => Ok(Target::BT2020Twelve),
+        transfer => Err(FmetricsError::UnsupportedFormat {
             reason: format!(
-                "transfer {transfer:?} cannot be represented by fmetrics sRGB/linear sRGB inputs; an HDR flag or display model does not convert it"
+                "transfer {transfer:?} has no supported SDR conversion to fmetrics sRGB/linear sRGB inputs; an HDR flag or display model does not convert it"
             ),
         }),
     }
@@ -486,6 +515,58 @@ mod tests {
     }
 
     #[test]
+    fn m04_sdr_source_transfer_and_output_encoding_are_distinct() {
+        use TransferCharacteristic as Source;
+        use yuvxyb::TransferCharacteristic as Target;
+        for (source, target, output) in [
+            (
+                Source::IEC61966_2_1,
+                Target::SRGB,
+                crate::FmetricsColorspace::Srgb,
+            ),
+            (
+                Source::Linear,
+                Target::Linear,
+                crate::FmetricsColorspace::LinearSrgb,
+            ),
+            (
+                Source::BT709,
+                Target::BT1886,
+                crate::FmetricsColorspace::Srgb,
+            ),
+            (
+                Source::SMPTE170M,
+                Target::ST170M,
+                crate::FmetricsColorspace::Srgb,
+            ),
+            (
+                Source::BT2020_10,
+                Target::BT2020Ten,
+                crate::FmetricsColorspace::Srgb,
+            ),
+            (
+                Source::BT2020_12,
+                Target::BT2020Twelve,
+                crate::FmetricsColorspace::Srgb,
+            ),
+        ] {
+            let mut details = details(1920, 1080, 8);
+            details.color_transfer_characteristic = Some(source);
+            let info = ColorInfo::from_details(&details).unwrap();
+            assert_eq!(info.transfer, source);
+            assert_eq!(source_transfer(info.transfer).unwrap(), target);
+            assert_eq!(info.colorspace, output);
+        }
+        for source in [None, Some(Source::Unspecified)] {
+            let mut details = details(1920, 1080, 8);
+            details.color_transfer_characteristic = source;
+            let info = ColorInfo::from_details(&details).unwrap();
+            assert_eq!(info.transfer, Source::IEC61966_2_1);
+            assert_eq!(info.colorspace, crate::FmetricsColorspace::Srgb);
+        }
+    }
+
+    #[test]
     fn m04_explicit_range_and_matrix_override_resolution() {
         let mut source = details(1920, 1080, 10);
         source.color_range = Some(av_decoders::ColorRange::Full);
@@ -522,13 +603,9 @@ mod tests {
     #[test]
     fn m04_unsupported_transfer_and_gamut_do_not_become_srgb() {
         use av_decoders::{ColorPrimaries, TransferCharacteristic as Transfer};
-        for transfer in [
-            Transfer::SMPTE2084,
-            Transfer::ARIB_STD_B67,
-            Transfer::BT709,
-            Transfer::Reserved,
-            Transfer::VLog,
-        ] {
+        for transfer in
+            [Transfer::SMPTE2084, Transfer::ARIB_STD_B67, Transfer::Reserved, Transfer::VLog]
+        {
             let mut source = details(1920, 1080, 10);
             source.color_transfer_characteristic = Some(transfer);
             let error = ColorInfo::from_details(&source).unwrap_err();

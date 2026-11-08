@@ -275,6 +275,7 @@ dependencies = [
  "tracing",
  "v_frame",
  "y4m",
+ "yuvxyb",
 ]
 
 [[package]]
@@ -4043,6 +4044,24 @@ dependencies = [
  "syn 2.0.119",
  "synstructure",
 ]
+
+[[package]]
+name = "yuvxyb"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e540323d597041fe2bb8610a54df24011d3ef64341ef52257dafad96d22d5ba"
+dependencies = [
+ "av-data",
+ "log",
+ "v_frame",
+ "yuvxyb-math",
+]
+
+[[package]]
+name = "yuvxyb-math"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00f1f60154ad4ef9871d606765c3ea037cde93bbd77536327b594de8f82df1cb"
 
 [[package]]
 name = "zerocopy"
