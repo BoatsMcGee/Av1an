@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 typedef struct {
     int pix_fmt;
@@ -23,7 +24,11 @@ typedef struct { Geometry pic_params; int method; } CudaPictures;
 typedef struct { void *cu_ctx; } CudaConfiguration;
 typedef struct { unsigned resource; } CudaState;
 typedef struct Context Context;
-typedef struct Model { Context *owner; unsigned destroyed; } Model;
+typedef struct Model {
+    Context *owner;
+    unsigned destroyed;
+    struct Model *next;
+} Model;
 typedef struct Record {
     Picture picture;
     Context *owner;
@@ -36,7 +41,7 @@ struct Context {
     Configuration cfg;
     Geometry geometry;
     CudaState state;
-    Model model;
+    Model *model;
     unsigned char device_canary[64];
 };
 enum {
@@ -48,16 +53,36 @@ enum { STATE_INIT, WRAPPER_ALLOC, WRAPPER_FREE, ORIGINAL_RELEASE,
        CONTEXT_RELEASE, RESOURCE_RELEASE, BAD, GLOBAL_COUNTERS };
 static unsigned counts[2][COUNTERS], globals[GLOBAL_COUNTERS];
 static Context contexts[2], failed_context, *current;
-static Model failed_model;
+static Model *models;
 static Record *records;
 static CudaState *wrapper;
 static unsigned wrapper_freed, state_started, resource_live;
+/* Only M12's pressure cases reserve slots. The second fetch really waits;
+ * the helper cannot acquire this lock until pthread_cond_wait releases it. */
+static pthread_mutex_t pressure_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t pressure_changed = PTHREAD_COND_INITIALIZER;
+static unsigned available, reserved, waiting, pressure[3];
 static unsigned setting(const char *name) {
     const char *value = getenv(name);
     return value ? (unsigned)atoi(value) : 0;
 }
 static unsigned stage(void) { return setting("M11_STAGE"); }
+static int fail_here(void) {
+    return current->cuda || (setting("M12_CHILD") && !state_started);
+}
+static int pool_pressure(void) { return stage() == 17 || stage() == 18; }
 static void bad_if(int condition) { if (condition) globals[BAD]++; }
+unsigned m12_pressure_count(unsigned index) { return pressure[index]; }
+void m12_release_reserved(void) {
+    pthread_mutex_lock(&pressure_lock);
+    while (!waiting) pthread_cond_wait(&pressure_changed, &pressure_lock);
+    available += reserved;
+    pressure[1]++;
+    pressure[2] = reserved;
+    reserved = 0;
+    pthread_cond_broadcast(&pressure_changed);
+    pthread_mutex_unlock(&pressure_lock);
+}
 unsigned m11_count(unsigned backend, unsigned index) {
     return backend < 2 ? counts[backend][index] : globals[index];
 }
@@ -137,20 +162,35 @@ int vmaf_preallocate_pictures(Context *ctx, PoolConfiguration cfg) {
     if (ctx->cuda && stage() == 5) return -105;
     ctx->geometry = cfg.pic_params;
     ctx->host_pool = 1;
+    if (pool_pressure()) {
+        available = cfg.pic_cnt;
+        reserved = cfg.pic_cnt - 1;
+        available -= reserved;
+    }
     return 0;
 }
 static int load_model(void **out, int from_path) {
     unsigned cuda = current->cuda;
     counts[cuda][LOAD]++;
-    if ((cuda && stage() == 6) || (stage() == 14 && !from_path)) {
-        *out = &failed_model; /* Nonnull does not confer ownership on failure. */
-        return -106;
-    }
-    if (cuda && stage() == 12) { *out = NULL; return 0; }
     bad_if(*out != NULL);
-    current->model.owner = current;
-    *out = &current->model;
+    /* A fallback must destroy its previous owned partial before calling again. */
+    for (Model *m = models; m; m = m->next)
+        bad_if(m->owner == current && !m->destroyed);
+    if (fail_here() && (stage() == 12 || stage() == 15)) {
+        *out = NULL;
+        return stage() == 12 ? 0 : -115;
+    }
+    Model *model = calloc(1, sizeof(*model));
+    if (!model) return -12;
+    model->owner = current;
+    model->next = models;
+    models = model;
+    *out = model;
     counts[cuda][MODEL_ALLOC]++;
+    /* JSON parse errors leave this initialized allocation caller-owned. */
+    if ((fail_here() && stage() == 6) || (stage() == 14 && !from_path) ||
+        (stage() == 16 && (!from_path || fail_here()))) return -106;
+    current->model = model;
     return 0;
 }
 int vmaf_model_load(void **out, void *cfg, const char *name) {
@@ -164,6 +204,7 @@ int vmaf_model_load_from_path(void **out, void *cfg, const char *path) {
 void vmaf_model_destroy(Model *model) {
     if (!model || !model->owner) { globals[BAD]++; return; }
     bad_if(model->destroyed || model->owner->closed);
+    if (model->destroyed || model->owner->closed) return;
     for (Record *r = records; r; r = r->next)
         bad_if(r->owner == model->owner && r->owned);
     model->destroyed++;
@@ -171,9 +212,9 @@ void vmaf_model_destroy(Model *model) {
 }
 int vmaf_use_features_from_model(Context *ctx, Model *model) {
     counts[ctx->cuda][REQUIRED]++;
-    bad_if(model != &ctx->model || model->owner != ctx || model->destroyed);
+    bad_if(model != ctx->model || model->owner != ctx || model->destroyed);
     if (stage() == 11) return ctx->cuda ? -107 : -207;
-    return ctx->cuda && stage() == 7 ? -107 : 0;
+    return fail_here() && stage() == 7 ? -107 : 0;
 }
 int vmaf_use_feature(Context *ctx, const char *name, void *opts) {
     (void)name; (void)opts;
@@ -184,8 +225,24 @@ int vmaf_fetch_preallocated_picture(Context *ctx, Picture *out) {
     counts[ctx->cuda][FETCH]++;
     ctx->fetch++;
     if (!ctx->host_pool) return -22;
+    if (pool_pressure()) {
+        pthread_mutex_lock(&pressure_lock);
+        while (!available) {
+            bad_if(ctx->fetch != 2 || counts[ctx->cuda][CHECKOUT] != 1 ||
+                   counts[ctx->cuda][RETURN] != 0);
+            if (!waiting) pressure[0]++;
+            waiting = 1;
+            pthread_cond_broadcast(&pressure_changed);
+            pthread_cond_wait(&pressure_changed, &pressure_lock);
+        }
+        available--;
+        pthread_mutex_unlock(&pressure_lock);
+    }
     Record *r = calloc(1, sizeof(*r));
-    if (!r) return -12;
+    if (!r) {
+        if (pool_pressure()) available++;
+        return -12;
+    }
     r->next = records;
     records = r;
     r->owner = ctx;
@@ -199,8 +256,12 @@ int vmaf_fetch_preallocated_picture(Context *ctx, Picture *out) {
     }
     p->ref = p->priv = r;
     *out = *p;
-    if (ctx->cuda && ((stage() == 8 && ctx->fetch == 1) ||
-                        (stage() == 9 && ctx->fetch == 2)))
+    if (stage() == 18 && ctx->fetch == 2) {
+        available++; /* Native allocation failure rolls the popped slot back. */
+        return -12;
+    }
+    if (fail_here() && ((stage() == 8 && ctx->fetch == 1) ||
+                       (stage() == 9 && ctx->fetch == 2)))
         return stage() == 8 ? -108 : -109;
     r->owned = 1;
     counts[ctx->cuda][CHECKOUT]++;
@@ -210,8 +271,10 @@ void vmaf_picture_unref(Picture *p) {
     Record *r = p ? p->ref : NULL;
     if (!r) { globals[BAD]++; return; }
     bad_if(!r->owned || r->owner->closed);
+    if (!r->owned || r->owner->closed) return;
     r->owned = 0;
     counts[r->owner->cuda][RETURN]++;
+    if (pool_pressure()) available++;
     memset(p, 0, sizeof(*p));
 }
 int vmaf_read_pictures(Context *ctx, Picture *ref, Picture *dist, unsigned index) {
@@ -242,7 +305,7 @@ int vmaf_read_pictures(Context *ctx, Picture *ref, Picture *dist, unsigned index
     return 0;
 }
 int vmaf_score_at_index(Context *ctx, Model *model, double *out, unsigned index) {
-    bad_if(model != &ctx->model);
+    bad_if(model != ctx->model);
     if (!ctx->flushed || index >= ctx->next_index) return -22;
     *out = ctx->cuda ? 91.0 : 81.0; /* Boundary marker, not metric equivalence. */
     return 0;
@@ -258,6 +321,7 @@ void vmaf_close(Context *ctx) {
     bad_if(ctx->closed);
     bad_if(counts[ctx->cuda][MODEL_ALLOC] != counts[ctx->cuda][MODEL_DESTROY]);
     for (Record *r = records; r; r = r->next) bad_if(r->owner == ctx && r->owned);
+    if (pool_pressure()) bad_if(reserved || available != 6);
     for (unsigned i = 0; i < sizeof(ctx->device_canary); i++)
         bad_if(ctx->device_canary[i] != 0xa5);
     if (ctx->state.resource) {
@@ -269,6 +333,9 @@ void vmaf_close(Context *ctx) {
 }
 void m11_cleanup(void) {
     while (records) { Record *next = records->next; free(records); records = next; }
+    while (models) { Model *next = models->next; free(models); models = next; }
     free(wrapper);
     wrapper = NULL;
+    pthread_cond_destroy(&pressure_changed);
+    pthread_mutex_destroy(&pressure_lock);
 }

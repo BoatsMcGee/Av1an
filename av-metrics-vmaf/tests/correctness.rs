@@ -142,6 +142,58 @@ fn m09_native_cpu_threaded_matches_serial() {
 }
 
 #[test]
+fn m12_native_cpu_malformed_model_then_valid_scorer() {
+    if std::env::var_os("AV_METRICS_REQUIRE_CPU").is_some() {
+        assert!(
+            is_available(),
+            "required malformed-model check needs libvmaf"
+        );
+    }
+    require_libvmaf!();
+    let directory = tempfile::tempdir().expect("malformed model fixture");
+    let path = directory.path().join("malformed.json");
+    // Fail after one feature name has been allocated, not before opening the file.
+    std::fs::write(&path, br#"{"model_dict":{"feature_names":["partial",42]}}"#)
+        .expect("write malformed model");
+    let format = VideoFormat {
+        width: 64,
+        height: 48,
+        bit_depth: 8,
+        chroma_sampling: ChromaSubsampling::Yuv420,
+    };
+    for _ in 0..8 {
+        let result = VmafScorer::new(
+            VmafConfig::new()
+                .with_backend(BackendPreference::CpuOnly)
+                .with_model_path(&path),
+            format,
+        );
+        assert!(
+            matches!(result, Err(VmafError::ModelNotFound { ref model, ref reason })
+            if model == &path.display().to_string() && reason.contains("-22")),
+            "preserve native malformed-model failure"
+        );
+        let mut scorer = VmafScorer::new(
+            model_config().with_backend(BackendPreference::CpuOnly),
+            format,
+        )
+        .expect("valid CPU construction after parser failure");
+        let pair = small_pair(Distortion::Mild);
+        let mut reference = pair.reference.decoder();
+        let mut distorted = pair.distorted.decoder();
+        let scores = scorer
+            .score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {})
+            .expect("valid scoring/flush/drop after parser failure");
+        assert_eq!(scores.len(), 12, "all frames after malformed-model failure");
+        assert!(
+            scores.iter().all(|score| score.score.is_finite()),
+            "valid native scores"
+        );
+    }
+    // Native failure alone is not a leak proof; boundary tests count destruction.
+}
+
+#[test]
 fn m06_cpu_rejects_typed_u8_and_either_raw_side_for_ten_bit() {
     require_libvmaf!();
     let format = VideoFormat {

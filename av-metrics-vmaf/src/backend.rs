@@ -125,7 +125,8 @@ impl Context {
     /// The pool is sized during construction, so the returned picture's `data`,
     /// `w`, `h` and `stride` are authoritative and match the scorer's format.
     /// The returned guard releases it unless submission transfers ownership.
-    /// Callers must drop all guards before closing this context.
+    /// Callers must drop all guards before closing this context: pool close can
+    /// block until every outstanding owner returns its picture.
     ///
     /// # Errors
     ///

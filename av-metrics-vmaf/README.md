@@ -487,6 +487,17 @@ must be run on suitable hardware; passing the fixture does not establish them.
 for each setup failure under all three preferences, fresh CPU retry, model/picture
 cleanup, separate host/device allocation and untouched device canaries. Its marker
 scores prove submission/flush routing, **not** CPU/CUDA numerical equivalence.
+
+`m12_owned_partial_and_cpu_constructor_failures` checks owned partial JSON models,
+file fallback, fresh CPU retry and CPU-only feature/fetch failures. The shared
+fixture counts each allocation/destruction and checkout/return before close.
+`m12_blocking_pool_pressure` reserves host slots, waits for a genuinely blocked
+second fetch, then releases the slots through a condition-variable handshake.
+It checks both successful construction and allocation failure after release,
+without real GPU execution. Installed-CPU malformed-model checks additionally
+exercise repeated parser errors followed by valid scoring; they are not sanitizer
+or leak-detector evidence.
+
 The real comparison gate is compiled in ordinary suites but explicitly reports
 itself unexecuted without the environment flag. Run it on a supported CUDA host:
 
@@ -505,7 +516,12 @@ A successful native submission consumes its picture pair. If acquiring the next
 pair fails, discard the scorer and create a new one: retrying or reading partial
 scores is rejected. Validation failures before submission retain the pair and do
 not advance the frame index. Pool exhaustion may block until a picture returns;
-it is not a reliable exhaustion error.
+it is not a reliable exhaustion error. Pool close can likewise block while any
+checked-out pictures remain outstanding. Constructor cleanup returns held pictures
+before destroying the model and closing the context, including on a failed second
+fetch. JSON model errors can leave owned partial models, which are destroyed before
+file fallback or CPU retry; failed context-init and picture-fetch outputs have
+different native ownership contracts and are not adopted.
 
 Not every libvmaf build embeds the stock VMAF models. When yours does not, point
 `VMAF_TEST_MODEL` at a model JSON (for example `model/vmaf_v0.6.1.json` from the

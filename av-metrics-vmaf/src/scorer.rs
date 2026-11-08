@@ -401,7 +401,8 @@ impl Drop for VmafScorer {
 
         if !self.model.is_null() {
             // SAFETY: `model` came from `vmaf_model_load` or
-            // `vmaf_model_load_from_path` and is destroyed exactly once, here.
+            // `vmaf_model_load_from_path`, including initialized partials on
+            // JSON errors, and is destroyed exactly once, here.
             unsafe { (self.context.api().model_destroy)(self.model) };
         }
     }
@@ -531,12 +532,14 @@ impl VmafScorer {
         // installs models separately works without the caller having to
         // say so.
         let mut model_config = VmafModelConfig::new();
-        let mut model: *mut VmafModelHandle = std::ptr::null_mut();
 
         let load_from_path = config.model.is_path();
         let mut load_spec = scorer._model_spec.clone();
 
-        // SAFETY: `model` is a valid out-pointer, `model_config` a valid
+        // Unlike failed context init/fetch outputs, a nonnull JSON model output
+        // remains owned on error (libvmaf read_json_model.c). Write directly into
+        // the staged scorer's guard before checking status or retrying.
+        // SAFETY: `scorer.model` is a fresh null out-pointer, `model_config` a valid
         // mutable config, and `load_spec` a NUL-terminated string that
         // outlives the call.
         let mut status = unsafe {
@@ -546,7 +549,7 @@ impl VmafScorer {
                 api.model_load
             };
             loader(
-                raw_mut_model(&mut model),
+                raw_mut_model(&mut scorer.model),
                 raw_mut_config(&mut model_config),
                 load_spec.as_ptr(),
             )
@@ -562,15 +565,18 @@ impl VmafScorer {
                 "the built-in VMAF model is unavailable; using the model file on disk"
             );
             load_spec = spec;
-            // A failed loader may leave a plausible but non-owned output.
-            // Never adopt or pass that stale output to the file loader.
-            model = std::ptr::null_mut();
+            if !scorer.model.is_null() {
+                let partial = std::mem::replace(&mut scorer.model, std::ptr::null_mut());
+                // SAFETY: the JSON loader leaves a destroyable initialized
+                // partial on error. Release it before the file loader/retry.
+                unsafe { (api.model_destroy)(partial) };
+            }
             // SAFETY: as above, with `load_spec` now holding the file path and
             // the caller having supplied a configuration libvmaf
             // accepted.
             status = unsafe {
                 (api.model_load_from_path)(
-                    raw_mut_model(&mut model),
+                    raw_mut_model(&mut scorer.model),
                     raw_mut_config(&mut model_config),
                     load_spec.as_ptr(),
                 )
@@ -596,7 +602,7 @@ impl VmafScorer {
             });
         }
 
-        if model.is_null() {
+        if scorer.model.is_null() {
             return Err(VmafError::CallFailed {
                 function: if load_from_path || load_spec != scorer._model_spec {
                     "vmaf_model_load_from_path"
@@ -606,10 +612,9 @@ impl VmafScorer {
                 status: 0,
             });
         }
-        scorer.model = model;
 
         // SAFETY: both handles came from libvmaf and the context is live.
-        let status = unsafe { (api.use_features_from_model)(scorer.context.raw, model) };
+        let status = unsafe { (api.use_features_from_model)(scorer.context.raw, scorer.model) };
         if status != 0 {
             return Err(VmafError::CallFailed {
                 function: "vmaf_use_features_from_model",
