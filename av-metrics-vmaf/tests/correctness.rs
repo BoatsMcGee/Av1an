@@ -674,6 +674,28 @@ fn every_model_in_the_search_path_loads() {
     );
 }
 
+fn reference_mean(frame_count: usize) -> f64 {
+    assert!(frame_count > 0, "the reference fixture must contain frames");
+    // The independently measured first-frame deficit is spread over the whole fixture.
+    100.0 - (100.0 - 97.42837) / frame_count as f64
+}
+
+#[test]
+fn reference_mean_depends_on_the_fixture_frame_count() {
+    for (frames, expected) in [(48, 99.946424375), (72, 99.96428291666667)] {
+        assert!(
+            (reference_mean(frames) - expected).abs() < 1e-12,
+            "the {frames}-frame reference mean should be {expected}"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "the reference fixture must contain frames")]
+fn reference_mean_rejects_an_empty_fixture() {
+    reference_mean(0);
+}
+
 /// Scores a real clip against itself and compares with the reference tools.
 ///
 /// Set `VMAF_TEST_Y4M` to a y4m file and `VMAF_TEST_MODEL` to a model JSON.
@@ -698,6 +720,17 @@ fn matches_the_reference_tools_on_a_real_clip() {
 
     let mut reference =
         av_decoders::Decoder::from_file(&clip).expect("the reference clip should decode");
+    // Count the fixture independently so dropped scores cannot redefine the expected mean.
+    let mut expected_frame_count = 0;
+    loop {
+        match reference.read_video_frame::<u8>() {
+            Ok(_) => expected_frame_count += 1,
+            Err(av_decoders::DecoderError::EndOfFile) => break,
+            Err(error) => panic!("the reference fixture should decode completely: {error}"),
+        }
+    }
+    let expected_mean = reference_mean(expected_frame_count);
+    reference = av_decoders::Decoder::from_file(&clip).expect("the reference clip should reopen");
     let mut distorted =
         av_decoders::Decoder::from_file(&clip).expect("the second decoder should open");
 
@@ -716,6 +749,12 @@ fn matches_the_reference_tools_on_a_real_clip() {
         .score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {})
         .expect("scoring a clip against itself should succeed");
 
+    assert_eq!(
+        scores.len(),
+        expected_frame_count,
+        "every fixture frame must yield exactly one score"
+    );
+
     // Measured with libvmaf 3.2.1's CLI and FFmpeg's libvmaf filter, which
     // agree to six decimal places: frame 0 scores 97.42837 and every later
     // frame scores exactly 100. Frame 0 is lower because the motion and
@@ -731,8 +770,8 @@ fn matches_the_reference_tools_on_a_real_clip() {
 
     let mean = VmafScorer::pool(&scores, PoolMethod::Mean).expect("scores should pool");
     assert!(
-        (mean - 99.964283).abs() < 0.001,
-        "pooled score should match the reference tools' 99.964283, got {mean}"
+        (mean - expected_mean).abs() < 0.001,
+        "pooled score should match the reference tools' {expected_mean}, got {mean}"
     );
 }
 
