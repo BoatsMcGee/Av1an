@@ -23,7 +23,7 @@ use crate::vapoursynth::{
     script_builder::{
         NodeVariableName,
         VapourSynthPluginScript,
-        script::{Imports, Line},
+        script::{Imports, Line, python_string_literal},
     },
 };
 
@@ -171,13 +171,17 @@ impl VapourSynthPluginScript for Bicubic {
                 write!(&mut line, ", chromaloc_in = {}", chromaloc_in as i64)?;
             }
             if let Some(dither_type) = self.dither_type {
-                write!(&mut line, ", dither_type = {}", dither_type)?;
+                write!(
+                    &mut line,
+                    ", dither_type = {}",
+                    python_string_literal(&dither_type.to_string())
+                )?;
             }
             if let Some(a) = self.a {
-                write!(&mut line, ", a = {}", a)?;
+                write!(&mut line, ", filter_param_a = {}", a)?;
             }
             if let Some(b) = self.b {
-                write!(&mut line, ", b = {}", b)?;
+                write!(&mut line, ", filter_param_b = {}", b)?;
             }
             write!(&mut line, ")")?;
             line
@@ -186,5 +190,68 @@ impl VapourSynthPluginScript for Bicubic {
         lines.push(Line::Expression(node_name, line));
 
         Ok((None, lines))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Renders `bicubic`'s script and returns the emitted line.
+    fn script_of(bicubic: &Bicubic) -> String {
+        let (_, lines) = bicubic
+            .generate_script("clip0".to_owned())
+            .expect("bicubic should generate a script");
+        lines
+            .into_iter()
+            .filter_map(|line| match line {
+                Line::Expression(name, value) => Some(format!("{name} = {value}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `core.resize.Bicubic` takes `filter_param_a`/`filter_param_b` for the
+    /// b and c coefficients. Emitting `a`/`b` is an unexpected-keyword error.
+    #[test]
+    fn bicubic_coefficients_use_the_filter_param_names() {
+        let bicubic = Bicubic {
+            width: Some(1280),
+            height: Some(720),
+            a: Some(0.1),
+            b: Some(0.2),
+            ..Bicubic::default()
+        };
+        let script = script_of(&bicubic);
+
+        assert!(
+            script.contains("filter_param_a = 0.1"),
+            "the b coefficient must be filter_param_a, got: {script}"
+        );
+        assert!(
+            script.contains("filter_param_b = 0.2"),
+            "the c coefficient must be filter_param_b, got: {script}"
+        );
+        assert!(
+            !script.contains(", a = ") && !script.contains(", b = "),
+            "a and b are not arguments of core.resize.Bicubic: {script}"
+        );
+    }
+
+    /// `dither_type` is a string argument, so it must be quoted. Unquoted,
+    /// `dither_type = ordered` is a Python `NameError`.
+    #[test]
+    fn dither_type_is_a_quoted_string() {
+        let bicubic = Bicubic {
+            dither_type: Some(DitherType::Ordered),
+            ..Bicubic::default()
+        };
+        let script = script_of(&bicubic);
+
+        assert!(
+            script.contains(r#"dither_type = "ordered""#),
+            "dither_type must be a quoted string, got: {script}"
+        );
     }
 }

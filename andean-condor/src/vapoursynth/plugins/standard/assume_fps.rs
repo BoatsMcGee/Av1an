@@ -74,8 +74,8 @@ impl AssumeFPS {
                 denominator,
             } => {
                 Self::argument_set_ints(&mut arguments, vec![
-                    ("numerator", Some(*numerator)),
-                    ("denominator", Some(*denominator)),
+                    ("fpsnum", Some(*numerator)),
+                    ("fpsden", Some(*denominator)),
                 ])?;
             },
         }
@@ -106,7 +106,7 @@ impl VapourSynthPluginScript for AssumeFPS {
             if let Some((numerator, denominator)) = self.fps {
                 write!(
                     &mut line,
-                    ", numerator = {}, denominator = {}",
+                    ", fpsnum = {}, fpsden = {}",
                     numerator, denominator
                 )?;
             }
@@ -117,5 +117,45 @@ impl VapourSynthPluginScript for AssumeFPS {
         lines.push(Line::Expression(node_name, line));
 
         Ok((None, lines))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Renders `assume_fps`'s script and returns the emitted line.
+    fn script_of(assume_fps: &AssumeFPS) -> String {
+        let (_, lines) = assume_fps
+            .generate_script("clip0".to_owned())
+            .expect("AssumeFPS should generate a script");
+        lines
+            .into_iter()
+            .filter_map(|line| match line {
+                Line::Expression(name, value) => Some(format!("{name} = {value}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `std.AssumeFPS` takes `fpsnum`/`fpsden`, not `numerator`/`denominator`.
+    /// The wrong names are an unexpected-keyword error.
+    #[test]
+    fn the_framerate_arguments_are_fpsnum_and_fpsden() {
+        let assume_fps = AssumeFPS {
+            source_node_name: None,
+            fps:              Some((24000, 1001)),
+        };
+        let script = script_of(&assume_fps);
+
+        assert!(
+            script.contains("fpsnum = 24000, fpsden = 1001"),
+            "got: {script}"
+        );
+        assert!(
+            !script.contains("numerator") && !script.contains("denominator"),
+            "numerator and denominator are not arguments of std.AssumeFPS: {script}"
+        );
     }
 }

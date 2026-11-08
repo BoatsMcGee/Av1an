@@ -8,7 +8,7 @@ use strum::{Display, EnumString, IntoStaticStr};
 use crate::vapoursynth::script_builder::{
     NodeVariableName,
     VapourSynthPluginScript,
-    script::{Imports, Line, ModuleAlias, ModuleName},
+    script::{Imports, Line, ModuleAlias, ModuleName, python_string_literal},
 };
 
 /// Only used for script generation
@@ -91,7 +91,9 @@ impl VapourSynthPluginScript for RescaleBuilder {
             self.base_width.map_or_else(String::new, |w| format!(", base_width = {}", w));
         let base_height_str =
             self.base_height.map_or_else(String::new, |h| format!(", base_height = {}", h));
-        let mode_str = self.mode.map_or_else(String::new, |m| format!(", mode = {}", m));
+        let mode_str = self.mode.map_or_else(String::new, |m| {
+            format!(", mode = {}", python_string_literal(&m.to_string()))
+        });
         lines.push(Line::Expression(
             "rescale_builder".to_owned(),
             format!(
@@ -332,9 +334,9 @@ impl RescaleBuilder {
                 let c_str = c.as_ref().map_or_else(String::new, |c| format!("c = {},", c));
                 format!(
                     "{}({}{}linear = {}, border_handling = BorderHandling.{})",
+                    kernel,
                     b_str,
                     c_str,
-                    kernel,
                     if *linear { "True" } else { "False" },
                     border_handling
                 )
@@ -402,8 +404,8 @@ impl RescaleBuilder {
                     taps.as_ref().map_or_else(String::new, |taps| format!("taps = {},", taps));
                 format!(
                     "{}({}linear = {}, border_handling = BorderHandling.{})",
-                    taps_str,
                     kernel,
+                    taps_str,
                     if *linear { "True" } else { "False" },
                     border_handling
                 )
@@ -762,6 +764,74 @@ pub enum Waifu2xModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Renders `builder`'s script and returns the emitted lines as one string.
+    fn script_of(builder: &RescaleBuilder) -> String {
+        let (_, lines) = builder
+            .generate_script("clip0".to_owned())
+            .expect("rescale should generate a script");
+        lines
+            .into_iter()
+            .filter_map(|line| match line {
+                Line::Expression(name, value) => Some(format!("{name} = {value}")),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `mode` is a string argument, so it must be quoted. Unquoted, `mode = hw`
+    /// is a Python `NameError` and every rescale filter fails.
+    #[test]
+    fn descale_mode_is_a_quoted_string() {
+        for mode in [DescaleMode::Width, DescaleMode::Height, DescaleMode::Both] {
+            let builder = RescaleBuilder {
+                mode: Some(mode),
+                ..RescaleBuilder::default()
+            };
+            let script = script_of(&builder);
+
+            assert!(
+                script.contains(&format!("mode = \"{}\"", mode)),
+                "mode must be a quoted string, got: {script}"
+            );
+            assert!(
+                !script.contains(&format!("mode = {}", mode)),
+                "an unquoted mode is a NameError in Python: {script}"
+            );
+        }
+    }
+
+    /// The kernel name must come first in the call; the optional arguments
+    /// follow it. Emitting them in the wrong order produces a call to a name
+    /// that does not exist.
+    #[test]
+    fn optional_kernel_arguments_follow_the_kernel_name() {
+        let builder = RescaleBuilder {
+            descale_kernel: VSJETKernel::BicubicAuto {
+                b:               Some(0.1),
+                c:               Some(0.2),
+                linear:          true,
+                border_handling: BorderHandling::Mirror,
+            },
+            downscale_kernel: VSJETKernel::Lanczos {
+                taps:            Some(4),
+                linear:          false,
+                border_handling: BorderHandling::Mirror,
+            },
+            ..RescaleBuilder::default()
+        };
+        let script = script_of(&builder);
+
+        assert!(
+            script.contains("BicubicAuto(b = 0.1,c = 0.2,linear = True"),
+            "BicubicAuto's arguments must follow its name, got: {script}"
+        );
+        assert!(
+            script.contains("Lanczos(taps = 4,linear = False"),
+            "Lanczos's arguments must follow its name, got: {script}"
+        );
+    }
 
     #[test]
     fn default_rescale() {
