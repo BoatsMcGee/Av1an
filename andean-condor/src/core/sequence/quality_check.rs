@@ -61,6 +61,55 @@ pub(super) fn log_native_fallback(error: &anyhow::Error, engine: Engine, metric:
     );
 }
 
+/// Share the existing count relay; callers own disconnection and finalization.
+pub(super) fn spawn_compare_progress(
+    progress_tx: sync::mpsc::Sender<SequenceStatus>,
+) -> (
+    sync::mpsc::Sender<SequenceStatus>,
+    thread::JoinHandle<Result<()>>,
+) {
+    let (compare_progress_tx, compare_progress_rx) = sync::mpsc::channel();
+    let compare_thread = thread::spawn(move || -> Result<()> {
+        for progress in compare_progress_rx {
+            match progress {
+                SequenceStatus::Whole(Status::Processing {
+                    completion: SequenceCompletion::Frames { completed, total },
+                    ..
+                }) => {
+                    progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                        id: "Compare".to_owned(),
+                        completion: SequenceCompletion::Frames { completed, total },
+                    }))?;
+                },
+                SequenceStatus::Whole(Status::Completed { .. }) => {
+                    progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                        id: "Compare".to_owned(),
+                    }))?;
+                },
+                _ => (),
+            }
+        }
+        Ok(())
+    });
+    (compare_progress_tx, compare_thread)
+}
+
+pub(super) fn finish_temporal_compare<T>(
+    comparison: Result<T>,
+    compare_thread: thread::JoinHandle<Result<()>>,
+) -> Result<T> {
+    let relay = compare_thread.join().expect("compare progress thread should join");
+    // Join even on comparison failure, but a disconnected advisory UI must not
+    // replace a score error, cancellation, or an otherwise successful result.
+    let value = comparison?;
+    if let Err(error) = relay
+        && !error.is::<sync::mpsc::SendError<SequenceStatus>>()
+    {
+        return Err(error);
+    }
+    Ok(value)
+}
+
 impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for QualityCheck
 where
     DataHandler: SequenceDataHandler + QualityCheckDataHandler,
@@ -627,34 +676,7 @@ impl QualityCheck {
             scene_end_local_index.push(local_index);
         }
 
-        let progress_tx_clone = progress_tx.clone();
-        let (compare_progress_tx, compare_progress_rx) = sync::mpsc::channel();
-        let compare_thread = thread::spawn(move || -> Result<()> {
-            for progress in compare_progress_rx {
-                match progress {
-                    SequenceStatus::Whole(Status::Processing {
-                        id: _name,
-                        completion,
-                    }) =>
-                    {
-                        #[allow(clippy::collapsible_match)]
-                        if let SequenceCompletion::Frames { completed, total } = completion {
-                            progress_tx_clone.send(SequenceStatus::Whole(Status::Processing {
-                                id: "Compare".to_owned(),
-                                completion: SequenceCompletion::Frames { completed, total },
-                            }))?;
-                        }
-                    },
-                    SequenceStatus::Whole(Status::Completed { id: _ }) => {
-                        progress_tx_clone.send(SequenceStatus::Whole(Status::Completed {
-                            id: "Compare".to_owned(),
-                        }))?;
-                    },
-                    _ => (),
-                }
-            }
-            Ok(())
-        });
+        let (compare_progress_tx, compare_thread) = spawn_compare_progress(progress_tx.clone());
 
         // Live per-frame score events
         let scene_count = scene_frame_indices.len();
@@ -978,10 +1000,7 @@ impl QualityCheck {
             },
         };
         if temporal {
-            compare_thread.join().expect("compare progress thread should join")?;
-        }
-        if let Some(error) = comparison_error {
-            return Err(error);
+            finish_temporal_compare(comparison_error.map_or(Ok(()), Err), compare_thread)?;
         }
 
         if !temporal {
@@ -1043,6 +1062,17 @@ pub enum QualityCheckError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m27a_qc_native_caller_failure_and_cancel_do_not_fallback() {
+        super::super::m27a_tests::qc_native_caller(
+            "core::sequence::quality_check::tests::m27a_qc_native_caller_failure_and_cancel_do_not_fallback",
+            |input, output, config, scenes, progress, cancelled| {
+                QualityCheck::measure_native(input, output, config, scenes, progress, cancelled)
+                    .map(|scores| scores.is_some())
+            },
+        );
+    }
 
     #[test]
     fn m18_final_scores_do_not_regress_submission_progress() {

@@ -9,6 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
+    time::{Duration, Instant},
 };
 
 use super::{
@@ -45,19 +46,38 @@ fn clear() {
 
 #[test]
 fn m27a_native_scene_consumers() {
+    native_children(
+        "core::sequence::m27a_tests::m27a_native_scene_consumers",
+        &[
+            ("m27a-f-qc", ""),
+            ("m27a-v-qc", ""),
+            ("m27a-f-tq", ""),
+            ("m27a-v-tq", ""),
+            ("m27a-f-qc", "fp"),
+            ("m27a-v-qc", "vp"),
+            ("m27a-f-qc", "fp2"),
+            ("m27a-v-qc", "vp2"),
+        ],
+        || {
+            let engine = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+                Engine::Fmetrics
+            } else {
+                Engine::Vship
+            };
+            let failure = std::env::var("M15_FAIL").unwrap();
+            if failure.is_empty() {
+                native_consumers(engine);
+                sequential_decoders(engine);
+            } else {
+                native_failure(engine, &failure);
+            }
+        },
+    );
+}
+
+fn native_children(test: &str, scopes: &[(&str, &str)], child_test: impl FnOnce()) {
     if std::env::var_os("M27A_CHILD").is_some() {
-        let engine = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
-            Engine::Fmetrics
-        } else {
-            Engine::Vship
-        };
-        let failure = std::env::var("M15_FAIL").unwrap();
-        if failure.is_empty() {
-            native_consumers(engine);
-            sequential_decoders(engine);
-        } else {
-            native_failure(engine, &failure);
-        }
+        child_test();
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -80,50 +100,511 @@ fn m27a_native_scene_consumers() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    std::fs::copy(
-        &library,
-        dir.path().join(if cfg!(target_os = "macos") {
+    for (engine, name) in [
+        (
+            "f",
+            if cfg!(target_os = "macos") {
+                "libfmetrics.dylib"
+            } else {
+                "libfmetrics.so"
+            },
+        ),
+        (
+            "v",
+            if cfg!(target_os = "macos") {
+                "libvship.dylib"
+            } else {
+                "libvship.so"
+            },
+        ),
+    ] {
+        let path = dir.path().join(engine);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::copy(&library, path.join(name)).unwrap();
+    }
+    // A valid, device-less fixture prevents the CPU caller test from finding
+    // and selecting a real system GPU library after a missing override path.
+    let no_devices = dir.path().join("no_devices.c");
+    std::fs::write(&no_devices, "#undef Vship_GetDeviceCount\n#define VSHIP_STATIC\n#include \"VshipAPI.h\"\nVship_Exception Vship_GetDeviceCount(int *n) { *n = 0; return Vship_NoError; }\n").unwrap();
+    let output = Command::new("cc")
+        .args([
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-shared",
+            "-fPIC",
+            "-DVship_GetDeviceCount=M27a_unused_device_count",
+            "-I",
+        ])
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../av-metrics-vship/tests/headers"
+        ))
+        .arg("-o")
+        .arg(dir.path().join("f").join(if cfg!(target_os = "macos") {
             "libvship.dylib"
         } else {
             "libvship.so"
-        }),
-    )
-    .unwrap();
+        }))
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/m15_native.c"
+        ))
+        .arg(&no_devices)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let mut errors = Vec::new();
-    for (scope, failure) in [
-        ("m27a-f-qc", ""),
-        ("m27a-v-qc", ""),
-        ("m27a-f-tq", ""),
-        ("m27a-v-tq", ""),
-        ("m27a-f-qc", "fp"),
-        ("m27a-v-qc", "vp"),
-        ("m27a-f-qc", "fp2"),
-        ("m27a-v-qc", "vp2"),
-    ] {
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "core::sequence::m27a_tests::m27a_native_scene_consumers",
-                "--nocapture",
-            ])
+    for &(scope, failure) in scopes {
+        let library_path = dir.path().join(if scope.contains("-f-") { "f" } else { "v" });
+        // File-backed output cannot fill a pipe while the watchdog waits.
+        let stdout = dir.path().join("stdout");
+        let stderr = dir.path().join("stderr");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
             .env("M27A_CHILD", "1")
             .env("M15_SCOPE", scope)
             .env("M15_FAIL", failure)
             .env("M16_FPS_AUDIT", "")
             .env("M15_LOG", dir.path().join("calls"))
-            .env("FMETRICS_LIB_PATH", dir.path())
-            .env("VSHIP_PLUGIN_PATH", dir.path())
-            .output()
+            .env("FMETRICS_LIB_PATH", &library_path)
+            .env("VSHIP_PLUGIN_PATH", &library_path)
+            .stdout(std::fs::File::create(&stdout).unwrap())
+            .stderr(std::fs::File::create(&stderr).unwrap())
+            .spawn()
             .unwrap();
-        if !output.status.success() {
-            errors.push(format!(
-                "{scope}/{failure}: {}\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            ));
+        let start = Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if start.elapsed() > Duration::from_secs(120) {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("native caller child timed out: {scope}/{failure}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let status = child.wait().unwrap();
+        let stdout = std::fs::read_to_string(stdout).unwrap();
+        let stderr = std::fs::read_to_string(stderr).unwrap();
+        if !status.success() || !stdout.contains("1 passed; 0 failed") {
+            errors.push(format!("{scope}/{failure}: {stdout}\n{stderr}"));
         }
     }
     assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+pub(super) fn qc_native_caller(
+    test: &str,
+    measure: impl Fn(
+        &mut crate::core::input::Input,
+        &std::path::Path,
+        &crate::models::sequence::quality_check::QualityCheckConfig,
+        &[(usize, Vec<usize>)],
+        &mpsc::Sender<SequenceStatus>,
+        &AtomicBool,
+    ) -> anyhow::Result<bool>,
+) {
+    native_children(test, &[("m27a-f-qc", "fp2"), ("m27a-v-qc", "vp2")], || {
+        use crate::models::input::{ImportMethod, Input as InputModel};
+        let source = y4m_fixture(&[32, 48, 64, 80, 96, 112]);
+        let output = y4m_fixture(&[40, 56, 72, 88, 104, 120]);
+        let config = crate::models::sequence::quality_check::QualityCheckConfig {
+            metric: metric(None),
+            ..Default::default()
+        };
+        for (cancel, closed) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut input = crate::core::input::Input::from_video(&InputModel::Video {
+                path: source.path().to_owned(),
+                import_method: ImportMethod::FFMS2 {
+                    index: None,
+                    cache_path: None,
+                },
+                filters: Vec::new(),
+            })
+            .unwrap();
+            let (tx, rx) = mpsc::channel();
+            let receiver = (!closed).then_some(rx);
+            clear();
+            let error = measure(
+                &mut input,
+                output.path(),
+                &config,
+                &[(0, vec![0, 1]), (1, vec![4, 5])],
+                &tx,
+                &AtomicBool::new(cancel),
+            )
+            .expect_err("partial failure/cancel cannot request a plugin fallback");
+            assert_eq!(error.is::<metrics::probe::Cancelled>(), cancel);
+            if !cancel {
+                assert_native_failure(&error);
+            }
+            if let Some(receiver) = receiver {
+                let events = receiver.try_iter().collect::<Vec<_>>();
+                assert_eq!(events.len(), usize::from(!cancel));
+                if !cancel {
+                    assert!(matches!(
+                        &events[0],
+                        SequenceStatus::Subprocess {
+                            child: Status::Processing {
+                                completion: SequenceCompletion::FrameScore { frame: 0, .. },
+                                ..
+                            },
+                            ..
+                        }
+                    ));
+                }
+            }
+            assert_native_calls(cancel);
+        }
+    });
+}
+
+fn y4m_fixture(samples: &[u8]) -> tempfile::NamedTempFile {
+    let log = std::path::PathBuf::from(std::env::var_os("M15_LOG").unwrap());
+    let file = tempfile::Builder::new()
+        .suffix(".y4m")
+        .tempfile_in(log.parent().unwrap())
+        .unwrap();
+    let mut data = b"YUV4MPEG2 W32 H32 F24:1 Ip A1:1 C420jpeg\n".to_vec();
+    for sample in samples {
+        data.extend_from_slice(b"FRAME\n");
+        data.extend_from_slice(&[*sample; 1024]);
+        data.extend_from_slice(&[128; 512]);
+    }
+    std::fs::write(file.path(), data).unwrap();
+    file
+}
+
+fn assert_native_failure(error: &anyhow::Error) {
+    assert!(error.is::<metrics::SceneScoringStarted>(), "{error:#}");
+    if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+        assert!(
+            matches!(
+                error.downcast_ref::<av_metrics_fmetrics::FmetricsError>(),
+                Some(av_metrics_fmetrics::FmetricsError::CallFailed { code: 6, .. })
+            ),
+            "{error:#}"
+        );
+    } else {
+        assert!(
+            matches!(
+                error.downcast_ref::<av_metrics_vship::VshipError>(),
+                Some(av_metrics_vship::VshipError::CallFailed { status: 1, .. })
+            ),
+            "{error:#}"
+        );
+    }
+}
+
+fn assert_native_calls(cancel: bool) {
+    let prefix = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+        "f"
+    } else {
+        "v"
+    };
+    assert_eq!(
+        calls(),
+        if cancel {
+            String::new()
+        } else {
+            format!("{prefix}c+\n{prefix}p\n{prefix}p\n{prefix}c-\n")
+        }
+    );
+}
+
+#[test]
+fn m27a_tq_caller_failure_after_progress_does_not_fallback() {
+    tq_caller(
+        "core::sequence::m27a_tests::m27a_tq_caller_failure_after_progress_does_not_fallback",
+        false,
+    );
+}
+
+#[test]
+fn m27a_tq_caller_cancel_after_progress_is_incomplete() {
+    tq_caller(
+        "core::sequence::m27a_tests::m27a_tq_caller_cancel_after_progress_is_incomplete",
+        true,
+    );
+}
+
+fn tq_caller(test: &str, cancel: bool) {
+    native_children(test, &[("m27a-f-tq", "fp2"), ("m27a-v-tq", "vp2")], || {
+        let engine = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+            Engine::Fmetrics
+        } else {
+            Engine::Vship
+        };
+        for closed in [false, true] {
+            let (progress, receiver) = mpsc::channel();
+            let receiver = (!closed).then_some(receiver);
+            let (compare, relay) = super::quality_check::spawn_compare_progress(progress);
+            let mut a = decoder(&[1, 2, 3, 4, 5, 6]);
+            let mut b = decoder(&[10, 20, 50, 60]);
+            clear();
+            let cancelled = AtomicBool::new(false);
+            let mut positions = Vec::new();
+            let native = if cancel {
+                metrics::score_scene_frames(
+                    engine,
+                    &mut a,
+                    &mut b,
+                    &metric(None),
+                    &[&[0, 1], &[4, 5]],
+                    OutputIndexing::Compacted,
+                    Some(&cancelled),
+                    |position, _| {
+                        positions.push(position);
+                        let _ = compare.send(SequenceStatus::Whole(Status::Processing {
+                            id: "Compare".to_owned(),
+                            completion: SequenceCompletion::Frames {
+                                completed: 1,
+                                total: 4,
+                            },
+                        }));
+                        cancelled.store(true, Ordering::Relaxed);
+                    },
+                )
+            } else {
+                TargetQuality::score_native_scenes(
+                    engine,
+                    &mut a,
+                    &mut b,
+                    &metric(None),
+                    &[&[0, 1], &[4, 5]],
+                    &compare,
+                    &cancelled,
+                )
+            };
+            let result = TargetQuality::route_compare_scores(
+                Some(native),
+                Some(engine),
+                &metric(None),
+                compare,
+                relay,
+                |_| panic!("native partial failure/cancel retried a plugin"),
+            );
+            if cancel {
+                assert!(result.expect("cancel is an incomplete pass").is_none());
+            } else {
+                assert_native_failure(&result.expect_err("partial native failure"));
+            }
+            if cancel {
+                assert_eq!(positions, [0]);
+                let prefix = if engine == Engine::Fmetrics { "f" } else { "v" };
+                assert_eq!(calls(), format!("{prefix}c+\n{prefix}p\n{prefix}c-\n"));
+            } else {
+                assert_native_calls(false);
+            }
+            if let Some(receiver) = receiver {
+                let counts = receiver
+                    .try_iter()
+                    .map(|event| match event {
+                        SequenceStatus::Whole(Status::Processing {
+                            completion: SequenceCompletion::Frames { completed, total },
+                            ..
+                        }) => (completed, total),
+                        other => panic!("unexpected {other:?}"),
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    counts,
+                    if cancel {
+                        vec![(1, 4)]
+                    } else {
+                        vec![(0, 4), (1, 4)]
+                    }
+                );
+                assert!(
+                    matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
+                    "relay must have released its progress sender before return"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn m27a_temporal_relay_primary_error_is_retained() {
+    temporal_relay_result(true);
+}
+
+#[test]
+fn m27a_temporal_relay_disconnect_is_advisory() {
+    temporal_relay_result(false);
+    let (tx, rx) = mpsc::channel();
+    drop(rx);
+    let (compare, relay) = super::quality_check::spawn_compare_progress(tx);
+    assert_eq!(
+        TargetQuality::route_compare_scores(
+            Some(Ok(vec![7.0])),
+            None,
+            &metric(None),
+            compare,
+            relay,
+            |_| panic!("successful native compare retried plugin")
+        )
+        .unwrap(),
+        Some(vec![7.0])
+    );
+    // A pre-progress failure still requests the existing fallback, exactly once.
+    let (tx, rx) = mpsc::channel();
+    let (compare, relay) = super::quality_check::spawn_compare_progress(tx);
+    let mut attempts = 0;
+    assert_eq!(
+        TargetQuality::route_compare_scores(
+            Some(Err(anyhow::anyhow!("pre-score failure"))),
+            None,
+            &metric(None),
+            compare,
+            relay,
+            |_| {
+                attempts += 1;
+                Ok(vec![8.0])
+            }
+        )
+        .unwrap(),
+        Some(vec![8.0])
+    );
+    assert_eq!(attempts, 1);
+    assert!(rx.try_iter().next().is_none());
+    // Independent-frame CVVDP keeps its previous fatal relay-send policy.
+    let (tx, rx) = mpsc::channel();
+    drop(rx);
+    let (compare, relay) = super::quality_check::spawn_compare_progress(tx);
+    let error = TargetQuality::route_compare_scores(
+        Some(Ok(vec![7.0])),
+        None,
+        &metric(Some(true)),
+        compare,
+        relay,
+        |_| panic!("independent native compare retried plugin"),
+    )
+    .unwrap_err();
+    assert!(error.is::<mpsc::SendError<SequenceStatus>>());
+}
+
+fn temporal_relay_result(failure: bool) {
+    use crate::vapoursynth::{
+        VapourSynthError,
+        plugins::{PluginFunction, vship::cvvdp::CVVDP},
+    };
+    let (tx, rx) = mpsc::channel();
+    drop(rx);
+    let (compare, relay) = super::quality_check::spawn_compare_progress(tx);
+    let _ = compare.send(SequenceStatus::Whole(Status::Completed {
+        id: "Compare".to_owned(),
+    }));
+    drop(compare);
+    let primary = if failure {
+        Err(anyhow::Error::new(CVVDP::new_error(
+            "primary comparison failure".to_owned(),
+        )))
+    } else {
+        Ok(vec![7.0])
+    };
+    let result = super::quality_check::finish_temporal_compare(primary, relay);
+    if failure {
+        assert!(result.unwrap_err().is::<VapourSynthError>());
+    } else {
+        assert_eq!(
+            result.expect("advisory receiver disconnection cannot fail scoring"),
+            vec![7.0]
+        );
+    }
+}
+
+#[test]
+fn m27a_tq_plugin_cancel_after_relay_cleanup_is_incomplete() {
+    for closed in [false, true] {
+        let (tx, rx) = mpsc::channel();
+        let receiver = (!closed).then_some(rx);
+        let (compare, relay) = super::quality_check::spawn_compare_progress(tx);
+        let result =
+            TargetQuality::route_compare_scores(None, None, &metric(None), compare, relay, |tx| {
+                let _ = tx.send(SequenceStatus::Whole(Status::Processing {
+                    id: "CVVDP".to_owned(),
+                    completion: SequenceCompletion::Frames {
+                        completed: 1,
+                        total: 4,
+                    },
+                }));
+                Err(metrics::probe::Cancelled.into())
+            });
+        assert!(result.expect("plugin cancel remains incomplete after cleanup").is_none());
+        if let Some(receiver) = receiver {
+            assert!(matches!(
+                receiver.try_recv(),
+                Ok(SequenceStatus::Whole(Status::Processing { .. }))
+            ));
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(mpsc::TryRecvError::Disconnected)
+            ));
+        }
+    }
+}
+
+#[test]
+fn m27a_temporal_finalization_waits_for_relay_and_retains_genuine_errors() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (joined_tx, joined_rx) = mpsc::channel();
+    let relay = std::thread::spawn(move || -> anyhow::Result<()> {
+        release_rx.recv().unwrap();
+        Ok(())
+    });
+    let worker = std::thread::spawn(move || {
+        let result = super::quality_check::finish_temporal_compare(Ok(17), relay);
+        joined_tx.send(result).unwrap();
+    });
+    assert!(matches!(
+        joined_rx.recv_timeout(Duration::from_millis(50)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        joined_rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap(),
+        17
+    );
+    worker.join().unwrap();
+    let relay = std::thread::spawn(|| Err(anyhow::anyhow!("genuine relay failure")));
+    assert!(
+        super::quality_check::finish_temporal_compare(Ok(()), relay)
+            .unwrap_err()
+            .to_string()
+            .contains("genuine relay failure")
+    );
+    // A relay panic is observable even when scoring failed: finalization must
+    // join before returning the primary error, not merely on the success path.
+    let relay = std::thread::spawn(|| -> anyhow::Result<()> { panic!("genuine relay panic") });
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::quality_check::finish_temporal_compare::<()>(
+                Err(anyhow::anyhow!("primary score error")),
+                relay,
+            )
+        }))
+        .is_err()
+    );
+    let (compare, _) = mpsc::channel();
+    let relay = std::thread::spawn(|| -> anyhow::Result<()> { panic!("TQ relay panic") });
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            TargetQuality::route_compare_scores(
+                Some(Err(metrics::probe::Cancelled.into())),
+                None,
+                &metric(None),
+                compare,
+                relay,
+                |_| panic!("cancel retried plugin"),
+            )
+        }))
+        .is_err()
+    );
 }
 
 fn native_failure(engine: Engine, failure: &str) {
@@ -167,21 +648,10 @@ fn native_failure(engine: Engine, failure: &str) {
 }
 
 fn sequential_decoders(engine: Engine) {
-    let fixture = |samples: &[u8]| {
-        let file = tempfile::Builder::new().suffix(".y4m").tempfile().unwrap();
-        let mut data = b"YUV4MPEG2 W32 H32 F24:1 Ip A1:1 C420jpeg\n".to_vec();
-        for sample in samples {
-            data.extend_from_slice(b"FRAME\n");
-            data.extend_from_slice(&[*sample; 1024]);
-            data.extend_from_slice(&[128; 512]);
-        }
-        std::fs::write(file.path(), data).unwrap();
-        file
-    };
-    let reference = fixture(&[32, 48, 64, 80, 96, 112]);
-    let aligned = fixture(&[40, 56, 72, 88, 104, 120]);
-    let compacted = fixture(&[40, 56, 104, 120]);
-    let second = fixture(&[104, 120]);
+    let reference = y4m_fixture(&[32, 48, 64, 80, 96, 112]);
+    let aligned = y4m_fixture(&[40, 56, 72, 88, 104, 120]);
+    let compacted = y4m_fixture(&[40, 56, 104, 120]);
+    let second = y4m_fixture(&[104, 120]);
     for indexing in [OutputIndexing::Aligned, OutputIndexing::Compacted] {
         let output = if indexing == OutputIndexing::Aligned {
             aligned.path()

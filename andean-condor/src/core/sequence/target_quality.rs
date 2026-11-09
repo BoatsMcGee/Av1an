@@ -19,6 +19,7 @@ use crate::{
         sequence::{
             Sequence, SequenceCompletion, SequenceDetails, SequenceStatus, Status,
             parallel_encoder::{ParallelEncoder, Task as ParallelEncoderTask},
+            quality_check::{finish_temporal_compare, spawn_compare_progress},
             scene_concatenator::SceneConcatenator,
             zone_encoder::{ZoneEncoder, ZonePlan},
         },
@@ -908,44 +909,9 @@ impl TargetQuality {
         // Created and relayed here, before scoring, so the native path reports
         // compare progress through the same relay the plugin branches
         // use and the UI shows the same shape whichever path ran.
-        let (compare_progress_tx, compare_progress_rx) = sync::mpsc::channel();
-        let progress_tx_clone = progress_tx.clone();
-        let compare_thread = thread::spawn(move || -> Result<()> {
-            for progress in compare_progress_rx {
-                match progress {
-                    SequenceStatus::Whole(Status::Processing {
-                        id: _fn_name,
-                        completion,
-                    }) =>
-                    {
-                        #[allow(clippy::collapsible_match)]
-                        if let SequenceCompletion::Frames { completed, total } = completion {
-                            progress_tx_clone.send(SequenceStatus::Whole(Status::Processing {
-                                id: "Compare".to_owned(),
-                                completion: SequenceCompletion::Frames { completed, total },
-                            }))?;
-                        }
-                    },
-                    SequenceStatus::Whole(Status::Completed { id: _ }) => {
-                        progress_tx_clone.send(SequenceStatus::Whole(Status::Completed {
-                            id: "Compare".to_owned(),
-                        }))?;
-                    },
-                    _ => (),
-                }
-            }
-            Ok(())
-        });
+        let (compare_progress_tx, compare_thread) = spawn_compare_progress(progress_tx.clone());
 
-        // Set when a cancellation reached scoring. The probe is scored across
-        // all scenes as one unit, so a cancelled compare leaves the
-        // pass incomplete and is not a failure. Checked before joining
-        // the relay thread, which would otherwise wait on the sender
-        // this scope owns.
-        let mut scoring_cancelled = false;
-        let mut scoring_error = None;
-
-        let mut native_scores = if native {
+        let native_scores = if native {
             let probed: Vec<usize> =
                 tasks.iter().flat_map(|task| task.frame_indices.iter().copied()).collect();
 
@@ -1004,52 +970,10 @@ impl TargetQuality {
                 }
             };
 
-            match scored {
-                Ok(scores) if !scores.is_empty() => Some(scores),
-                Ok(_) => {
-                    if is_vmaf {
-                        bail!(TargetQualityError::QualityMeasurementFailed);
-                    }
-                    error!(
-                        engine = ?engine.map(Engine::as_str),
-                        metric = config.metric.friendly_name(),
-                        "native scoring produced no scores, falling back to the VapourSynth plugin"
-                    );
-                    None
-                },
-                // A cancel that reaches scoring ends the pass cleanly. Propagating
-                // would unwind past `execute`'s save and discard the passes
-                // already recorded.
-                Err(error) if error.is::<metrics::probe::Cancelled>() => {
-                    scoring_cancelled = true;
-                    None
-                },
-                Err(error) if error.is::<metrics::SceneScoringStarted>() => {
-                    scoring_error = Some(error);
-                    None
-                },
-                Err(error) if is_vmaf => return Err(error),
-                Err(error) => {
-                    // The engine is named because the failure is usually
-                    // library-specific and the fallback is otherwise silent.
-                    log_native_fallback(&error, engine, &config.metric);
-                    None
-                },
-            }
+            Some(scored)
         } else {
             None
         };
-
-        if scoring_cancelled || scoring_error.is_some() {
-            // Dropped before joining: the thread ends only once every sender is
-            // gone, and this scope still owns one.
-            drop(compare_progress_tx);
-            compare_thread.join().expect("compare progress thread should join")?;
-            if let Some(error) = scoring_error {
-                return Err(error);
-            }
-            return Ok((Vec::new(), warnings));
-        }
 
         // The relay thread spawned above ends only once every sender is
         // dropped. Each plugin branch moves its sender into
@@ -1063,14 +987,7 @@ impl TargetQuality {
         // plugin branches below run. For the vship metrics the plugin
         // branch is reached only when libvship was unavailable or
         // failed.
-        let mut comparison_error = None;
-        let mut scores = if native_scores.is_some() {
-            let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Completed {
-                id: "Compare".to_owned(),
-            }));
-            drop(compare_progress_tx);
-            native_scores.take().expect("native scores were just taken")
-        } else {
+        let plugin = |compare_progress_tx| -> Result<Vec<f64>> {
             // The branches below score over a VapourSynth graph built from the
             // metric input, so everything here - the graph itself,
             // and for a natively decoded input the VapourSynth
@@ -1131,7 +1048,7 @@ impl TargetQuality {
             }
             .invoke(core)?;
 
-            match &config.metric {
+            Ok(match &config.metric {
                 // Always scored above, since VMAF has no plugin branch here.
                 QualityMetric::VMAF { .. } => {
                     unreachable!("VMAF is scored natively above, not here")
@@ -1269,7 +1186,7 @@ impl TargetQuality {
                         ..Default::default()
                     };
                     if temporal {
-                        match plugin.collect_scene_values(
+                        plugin.collect_scene_values(
                             core,
                             &reference_node,
                             &distorted_node,
@@ -1278,13 +1195,7 @@ impl TargetQuality {
                             compare_progress_tx,
                             cancelled,
                             |_, _| Ok(()),
-                        ) {
-                            Ok(values) => values,
-                            Err(error) => {
-                                comparison_error = Some(error);
-                                Vec::new()
-                            },
-                        }
+                        )?
                     } else {
                         let node = plugin.invoke(
                             core,
@@ -1296,17 +1207,21 @@ impl TargetQuality {
                         CVVDP::get_scores(&node, None, compare_progress_tx)?
                     }
                 },
-            }
+            })
+        };
+        let Some(mut scores) = Self::route_compare_scores(
+            native_scores,
+            engine,
+            &config.metric,
+            compare_progress_tx,
+            compare_thread,
+            plugin,
+        )?
+        else {
+            return Ok((Vec::new(), warnings));
         };
         let ended = SystemTime::now();
 
-        compare_thread.join().expect("compare progress thread should join")?;
-        if let Some(error) = comparison_error {
-            if error.is::<metrics::probe::Cancelled>() {
-                return Ok((Vec::new(), warnings));
-            }
-            return Err(error);
-        }
         drop(progress_tx);
 
         // `results` covers only the tasks encoded this run and is indexed by
@@ -1368,6 +1283,72 @@ impl TargetQuality {
     #[inline]
     fn pass_is_complete(tasks: &[Task], pass: u8) -> bool {
         !tasks.is_empty() && tasks.iter().all(|task| task.passes.len() >= usize::from(pass))
+    }
+
+    /// Own fallback, incomplete-pass routing and relay cleanup after scoring.
+    pub(super) fn route_compare_scores(
+        native: Option<Result<Vec<f64>>>,
+        engine: Option<Engine>,
+        metric: &QualityMetric,
+        compare_progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        compare_thread: thread::JoinHandle<Result<()>>,
+        plugin: impl FnOnce(sync::mpsc::Sender<SequenceStatus>) -> Result<Vec<f64>>,
+    ) -> Result<Option<Vec<f64>>> {
+        let is_vmaf = matches!(metric, QualityMetric::VMAF { .. });
+        let temporal = metrics::scene_temporal(metric);
+        let mut terminal_error = None;
+        let scores = match native {
+            Some(Ok(scores)) if !scores.is_empty() => Some(scores),
+            Some(Ok(_)) if is_vmaf => bail!(TargetQualityError::QualityMeasurementFailed),
+            Some(Ok(_)) => {
+                error!(engine = ?engine.map(Engine::as_str), metric = metric.friendly_name(), "native scoring produced no scores, falling back to the VapourSynth plugin");
+                None
+            },
+            Some(Err(error))
+                if error.is::<metrics::probe::Cancelled>()
+                    || error.is::<metrics::SceneScoringStarted>() =>
+            {
+                terminal_error = Some(error);
+                None
+            },
+            Some(Err(error)) if is_vmaf => return Err(error),
+            Some(Err(error)) => {
+                log_native_fallback(&error, engine, metric);
+                None
+            },
+            None => None,
+        };
+        let terminal = terminal_error.is_some();
+        let comparison = if let Some(error) = terminal_error {
+            // Disconnect before joining; retaining this sender would deadlock.
+            drop(compare_progress_tx);
+            Err(error)
+        } else if let Some(scores) = scores {
+            let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                id: "Compare".to_owned(),
+            }));
+            drop(compare_progress_tx);
+            Ok(scores)
+        } else {
+            plugin(compare_progress_tx)
+        };
+        let comparison = if temporal {
+            finish_temporal_compare(comparison, compare_thread)
+        } else if terminal {
+            compare_thread.join().expect("compare progress thread should join")?;
+            comparison
+        } else {
+            // Preserve legacy non-temporal plugin error routing and relay policy.
+            let scores = comparison?;
+            compare_thread.join().expect("compare progress thread should join")?;
+            Ok(scores)
+        };
+        match comparison {
+            Err(error) if (temporal || terminal) && error.is::<metrics::probe::Cancelled>() => {
+                Ok(None)
+            },
+            result => result.map(Some),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
