@@ -288,8 +288,8 @@ impl Input {
             ChromaSubsampling::Yuv444 => "444",
         };
         match chroma {
-            // Monochrome has no `p` marker even at high bit depth.
-            ChromaSubsampling::Monochrome => chroma_str.to_owned(),
+            // High-depth monochrome needs the depth suffix, but no `p` marker.
+            ChromaSubsampling::Monochrome if bit_depth > 8 => format!("{chroma_str}{bit_depth}"),
             _ if bit_depth > 8 => format!("{chroma_str}p{bit_depth}"),
             _ => chroma_str.to_owned(),
         }
@@ -561,25 +561,136 @@ mod tests {
     }
 
     #[test]
-    fn chroma_tag_matches_y4m_convention() {
-        assert_eq!(Input::y4m_chroma_tag(8, ChromaSubsampling::Yuv420), "420");
+    fn i04_chroma_tag_matches_y4m_convention() {
+        for (chroma, tags) in [
+            (
+                ChromaSubsampling::Monochrome,
+                ["mono", "mono10", "mono12", "mono16"],
+            ),
+            (
+                ChromaSubsampling::Yuv420,
+                ["420", "420p10", "420p12", "420p16"],
+            ),
+            (
+                ChromaSubsampling::Yuv422,
+                ["422", "422p10", "422p12", "422p16"],
+            ),
+            (
+                ChromaSubsampling::Yuv444,
+                ["444", "444p10", "444p12", "444p16"],
+            ),
+        ] {
+            for (bit_depth, tag) in [8, 10, 12, 16].into_iter().zip(tags) {
+                assert_eq!(Input::y4m_chroma_tag(bit_depth, chroma), tag);
+            }
+        }
+    }
+
+    fn i04_gray_roundtrip(bit_depth: usize, colors: [u16; 2], tag: &str, pixel_format: &str) {
+        use std::{
+            fs::{self, File},
+            process::{Command, Stdio},
+            thread,
+            time::{Duration, Instant},
+        };
+
+        let mut input = Input::from_data(&InputModel::VapourSynthScript {
+            source: VapourSynthScriptSource::Text(format!(
+                "import vapoursynth as vs\nc = vs.core\n\
+                 a = c.std.BlankClip(width=18, height=3, length=1, format=vs.GRAY{bit_depth}, color=[{}])\n\
+                 b = c.std.BlankClip(a, color=[{}])\n(a + b).set_output()",
+                colors[0], colors[1]
+            )),
+            variables: HashMap::new(),
+            index: 0,
+            filters: Vec::new(),
+            stream_concurrently: true,
+        })
+        .expect("I04 requires the installed native VapourSynth runtime");
+        let details = input.decoder().get_video_details();
+        assert_eq!(details.bit_depth, bit_depth);
+        assert_eq!(details.chroma_sampling, ChromaSubsampling::Monochrome);
+        // I10 owns XLENGTH syntax; use the actual production header without that extension.
+        let header = input.y4m_header(None).expect("actual decoder header");
+        let mut stream = header.as_bytes().to_vec();
+        for index in 0..2 {
+            stream.extend(input.y4m_frame(index).expect("actual gray frame").into_inner());
+        }
+
+        let temp = tempfile::tempdir().expect("roundtrip directory");
+        let source = temp.path().join("input.y4m");
+        let decoded = temp.path().join("decoded.raw");
+        let log = temp.path().join("ffmpeg.log");
+        fs::write(&source, stream).expect("write actual header and production frames");
+        // File-backed I/O cannot block on full pipes; bound and reap the child as well.
+        let mut child = Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-xerror", "-i"])
+            .arg(&source)
+            .args(["-map", "0:v:0", "-c:v", "rawvideo", "-pix_fmt", pixel_format, "-f", "rawvideo"])
+            .arg(&decoded)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(File::create(&log).expect("ffmpeg log"))
+            .spawn()
+            .expect("I04 requires ffmpeg on PATH");
+        let start = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll ffmpeg") {
+                break status;
+            }
+            if start.elapsed() > Duration::from_secs(30) {
+                child.kill().expect("kill timed-out ffmpeg");
+                child.wait().expect("reap timed-out ffmpeg");
+                panic!("GRAY{bit_depth}: ffmpeg timed out");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.success(),
+            "GRAY{bit_depth}, {header:?}: {}",
+            fs::read_to_string(&log).expect("read ffmpeg log")
+        );
+        assert_eq!(header.split_ascii_whitespace().nth(1), Some(tag));
+        let actual = fs::read(decoded).expect("decoded raw frames");
+        let expected: Vec<u8> = colors
+            .into_iter()
+            .flat_map(|color| {
+                if bit_depth == 8 {
+                    vec![u8::try_from(color).expect("8-bit sample"); 54]
+                } else {
+                    color.to_le_bytes().repeat(54)
+                }
+            })
+            .collect();
         assert_eq!(
-            Input::y4m_chroma_tag(10, ChromaSubsampling::Yuv420),
-            "420p10"
+            actual.len(),
+            2 * 18 * 3 * if bit_depth == 8 { 1 } else { 2 },
+            "exactly two complete frames"
         );
         assert_eq!(
-            Input::y4m_chroma_tag(12, ChromaSubsampling::Yuv422),
-            "422p12"
+            actual, expected,
+            "GRAY{bit_depth}: exact sample values and frame alignment"
         );
-        assert_eq!(
-            Input::y4m_chroma_tag(10, ChromaSubsampling::Yuv444),
-            "444p10"
-        );
-        // Monochrome never takes the `p` marker.
-        assert_eq!(
-            Input::y4m_chroma_tag(10, ChromaSubsampling::Monochrome),
-            "mono"
-        );
+    }
+
+    #[test]
+    fn i04_gray8_ffmpeg_roundtrip() {
+        i04_gray_roundtrip(8, [37, 219], "Cmono", "gray");
+    }
+
+    #[test]
+    fn i04_gray10_ffmpeg_roundtrip() {
+        i04_gray_roundtrip(10, [0x0123, 0x03ab], "Cmono10", "gray10le");
+    }
+
+    #[test]
+    fn i04_gray12_ffmpeg_roundtrip() {
+        i04_gray_roundtrip(12, [0x0234, 0x0bcd], "Cmono12", "gray12le");
+    }
+
+    #[test]
+    fn i04_gray16_ffmpeg_roundtrip() {
+        i04_gray_roundtrip(16, [0x1234, 0xabcd], "Cmono16", "gray16le");
     }
 
     #[test]
