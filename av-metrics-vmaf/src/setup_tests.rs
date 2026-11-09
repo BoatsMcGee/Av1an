@@ -10,6 +10,151 @@ use crate::config::{BackendPreference, VmafFeature};
 const EXACT: &str = "scorer::setup_tests::m11_complete_backend_attempts";
 
 #[test]
+fn m26_auto_feature_policy() {
+    check_feature_policy("scorer::setup_tests::m26_auto_feature_policy", "auto");
+}
+
+#[test]
+fn m26_cpu_only_feature_policy() {
+    check_feature_policy("scorer::setup_tests::m26_cpu_only_feature_policy", "cpu");
+}
+
+#[test]
+fn m26_require_cuda_feature_policy() {
+    check_feature_policy(
+        "scorer::setup_tests::m26_require_cuda_feature_policy",
+        "require",
+    );
+}
+
+fn check_feature_policy(exact: &str, preference: &str) {
+    if std::env::var_os("M11_CHILD").is_some() {
+        check_attempt();
+        return;
+    }
+    let (directory, library) = setup_fixture();
+    for stage in [0, 7, 9] {
+        run_child(exact, stage, preference, &library, directory.path());
+    }
+}
+
+#[test]
+fn m26_cuda_availability_requires_feature() {
+    if std::env::var_os("M11_CHILD").is_none() {
+        let (directory, library) = setup_fixture();
+        run_child(
+            "scorer::setup_tests::m26_cuda_availability_requires_feature",
+            0,
+            "auto",
+            &library,
+            directory.path(),
+        );
+        return;
+    }
+    // SAFETY: this fixture remains mapped through all pointer and counter uses.
+    let library =
+        unsafe { libloading::Library::new(std::env::var_os("M11_LIBRARY").expect("fixture")) }
+            .expect("fixture library");
+    let mut api = *ffi::VmafApi::load().expect("fixture API");
+    // SAFETY: exact allocator-matched fixture callback and counter signatures.
+    let counter = unsafe {
+        api.cuda.free_state = Some(*library.get(b"m11_free\0").expect("free"));
+        library
+            .get::<unsafe extern "C" fn(u32, u32) -> u32>(b"m11_count\0")
+            .expect("count")
+    };
+    let api_available = api.cuda_available();
+    let public_available = crate::cuda_available();
+    // SAFETY: all indices are within the fixture's tables.
+    let globals: Vec<_> = (0..7).map(|i| unsafe { counter(2, i) }).collect();
+    eprintln!(
+        "M26 availability: api={api_available}, public={public_available}, globals={globals:?}"
+    );
+    assert_eq!(globals, [0; 7], "availability must not initialize CUDA");
+    assert_eq!(
+        api_available,
+        cfg!(feature = "cuda"),
+        "feature and native capability are both required"
+    );
+    assert_eq!(
+        public_available,
+        cfg!(all(feature = "cuda", target_os = "linux")),
+        "public availability also requires verified allocator support"
+    );
+    api.cuda.release = None;
+    assert!(
+        !api.cuda_available(),
+        "the feature cannot replace native cleanup capability"
+    );
+}
+
+#[test]
+fn m26_required_cuda_feature_precedes_loader_failure() {
+    if std::env::var_os("M11_CHILD").is_none() {
+        let (directory, library) = setup_fixture();
+        run_child(
+            "scorer::setup_tests::m26_required_cuda_feature_precedes_loader_failure",
+            0,
+            "require",
+            &library,
+            directory.path(),
+        );
+        return;
+    }
+    let loads = std::cell::Cell::new(0);
+    let error = VmafScorer::new_with_loader(
+        VmafConfig::new().with_backend(BackendPreference::RequireCuda),
+        VideoFormat {
+            width: 8,
+            height: 8,
+            bit_depth: 8,
+            chroma_sampling: ChromaSubsampling::Yuv420,
+        },
+        || {
+            loads.set(loads.get() + 1);
+            Err(VmafError::LibraryLoadFailed {
+                attempts: "M26 injected missing library".to_owned(),
+            })
+        },
+    )
+    .err()
+    .expect("constructor must fail");
+    eprintln!("M26 loader calls={}, error={error}", loads.get());
+    if cfg!(feature = "cuda") {
+        assert_eq!(
+            loads.get(),
+            1,
+            "feature-enabled construction reaches the loader"
+        );
+        assert!(
+            matches!(error, VmafError::LibraryLoadFailed { ref attempts } if attempts == "M26 injected missing library"),
+            "{error:?}"
+        );
+    } else {
+        assert_eq!(
+            loads.get(),
+            0,
+            "missing feature must win over missing library"
+        );
+        assert_missing_cuda_feature(&error);
+    }
+}
+
+fn assert_missing_cuda_feature(error: &VmafError) {
+    assert!(
+        matches!(error, VmafError::UnsupportedFeature(_)),
+        "{error:?}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("Cargo")
+            && message.contains("cuda")
+            && message.contains("--features cuda"),
+        "actionable feature opt-in: {message}"
+    );
+}
+
+#[test]
 fn m11_complete_backend_attempts() {
     if std::env::var_os("M11_CHILD").is_some() {
         check_attempt();
@@ -64,7 +209,10 @@ fn run_child(
     command
         .args(["--exact", exact, "--nocapture"])
         .env("M11_CHILD", "1")
-        .env("M12_CHILD", if exact == EXACT { "0" } else { "1" })
+        .env(
+            "M12_CHILD",
+            if exact.contains("::m12_") { "1" } else { "0" },
+        )
         .env("M11_STAGE", stage.to_string())
         .env("M11_PREFERENCE", preference)
         .env("M11_LIBRARY", library)
@@ -148,10 +296,18 @@ fn check_attempt() {
         api
     });
     let result = VmafScorer::new_with_loader(config, format, || Ok(api));
+    let feature_disabled = !cfg!(feature = "cuda");
+    let rejected = feature_disabled && preference == BackendPreference::RequireCuda;
     let cuda_failed = !matches!(stage, 0 | 10 | 14);
-    let cpu = preference == BackendPreference::CpuOnly
-        || (preference == BackendPreference::Auto && cuda_failed);
-    if (preference == BackendPreference::RequireCuda && cuda_failed) || stage == 11 {
+    let cpu = !rejected
+        && (preference == BackendPreference::CpuOnly
+            || (preference == BackendPreference::Auto && (feature_disabled || cuda_failed)));
+    let mut selected_backend = None;
+    let mut scores = None;
+    let mut feature_error = None;
+    if rejected {
+        feature_error = result.err();
+    } else if (preference == BackendPreference::RequireCuda && cuda_failed) || stage == 11 {
         let error = result.err().expect("failed attempt must fail");
         let status = if cpu {
             -207
@@ -187,11 +343,7 @@ fn check_attempt() {
         }
     } else {
         let mut scorer = result.expect("Auto must retry the entire failed CUDA attempt on CPU");
-        assert_eq!(
-            scorer.backend(),
-            if cpu { Backend::Cpu } else { Backend::Cuda },
-            "only a complete backend may be selected"
-        );
+        selected_backend = Some(scorer.backend());
         assert_eq!(
             scorer.config().n_threads,
             2,
@@ -214,11 +366,7 @@ fn check_attempt() {
             1,
             "typed path shares the host pool"
         );
-        assert_eq!(
-            scorer.finish().expect("flush"),
-            if cpu { [81.0; 2] } else { [91.0; 2] },
-            "both boundary markers survive flush (not metric accuracy)"
-        );
+        scores = Some(scorer.finish().expect("flush"));
         drop(scorer);
     }
     let snapshot: Vec<Vec<_>> = (0..2).map(|b| (0..18).map(|i| count(b, i)).collect()).collect();
@@ -226,6 +374,22 @@ fn check_attempt() {
     // SAFETY: all Rust handles have dropped. Reclaim tombstones even during RED.
     unsafe { cleanup() };
     eprintln!("M11 CPU/CUDA {snapshot:?}, global {globals:?}");
+    if rejected {
+        assert_missing_cuda_feature(
+            &feature_error.expect("RequireCuda must reject the missing feature"),
+        );
+    } else if stage != 11 && !(preference == BackendPreference::RequireCuda && cuda_failed) {
+        assert_eq!(
+            selected_backend,
+            Some(if cpu { Backend::Cpu } else { Backend::Cuda }),
+            "only a complete opted-in backend may be selected"
+        );
+        assert_eq!(
+            scores,
+            Some(if cpu { vec![81.0; 2] } else { vec![91.0; 2] }),
+            "both boundary markers survive flush (not metric accuracy)"
+        );
+    }
     assert_eq!(
         globals[6], 0,
         "native boundary/cleanup/order/canary violation"
@@ -238,7 +402,7 @@ fn check_attempt() {
     // Literal native-boundary expectations, not counts calculated by the builder.
     // init, alloc, close, import, device, host, load, model alloc/destroy,
     // required, fetch, checkout, return, transfer, read, flush, optional, threads.
-    let expected_cuda = if preference == BackendPreference::CpuOnly {
+    let expected_cuda = if feature_disabled || preference == BackendPreference::CpuOnly {
         [0; 18]
     } else {
         match stage {
@@ -278,7 +442,7 @@ fn check_attempt() {
         "fresh complete CPU attempt, or exact failure"
     );
     // state init, wrapper alloc/free, original/context/resource release, bad.
-    let expected_global = if preference == BackendPreference::CpuOnly {
+    let expected_global = if feature_disabled || preference == BackendPreference::CpuOnly {
         [0; 7]
     } else {
         match stage {
@@ -417,7 +581,7 @@ fn check_m12_attempt() {
     };
     eprintln!("M12 CPU/CUDA {snapshot:?}, global {globals:?}, pressure {pressure:?}");
     match stage {
-        6 | 15 | 16 if !auto => {
+        6 | 15 | 16 if !auto || !cfg!(feature = "cuda") => {
             let Some(VmafError::ModelNotFound {
                 model: actual,
                 reason,
@@ -471,7 +635,7 @@ fn check_m12_attempt() {
     // init, alloc, close, import, device, host, load, model alloc/destroy,
     // required, fetch, checkout, return, transfer, read, flush, optional, threads.
     let expected_cpu = match stage {
-        6 | 16 if auto => {
+        6 | 16 if auto && cfg!(feature = "cuda") => {
             if stage == 6 {
                 [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 0, 0, 0, 0, 2]
             } else {
@@ -492,7 +656,7 @@ fn check_m12_attempt() {
         snapshot[0], expected_cpu,
         "all CPU resources balanced before close"
     );
-    let expected_cuda = if !auto {
+    let expected_cuda = if !auto || !cfg!(feature = "cuda") {
         [0; 18]
     } else if stage == 6 {
         [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -505,7 +669,11 @@ fn check_m12_attempt() {
     );
     assert_eq!(
         globals,
-        if auto { [1, 1, 1, 0, 1, 1, 0] } else { [0; 7] },
+        if auto && cfg!(feature = "cuda") {
+            [1, 1, 1, 0, 1, 1, 0]
+        } else {
+            [0; 7]
+        },
         "no invalid/double/late cleanup; correct order"
     );
     assert_eq!(

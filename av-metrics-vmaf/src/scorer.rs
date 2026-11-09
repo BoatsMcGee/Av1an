@@ -431,6 +431,8 @@ impl VmafScorer {
     /// override is missing or a model fails to load, and [`VmafError::CallFailed`]
     /// if no requested backend can be initialised. A missing per-run file path
     /// returns [`VmafError::ModelFileMissing`] before native setup.
+    /// Required CUDA without the Cargo `cuda` feature returns
+    /// [`VmafError::UnsupportedFeature`] before loading libvmaf.
     #[expect(
         clippy::missing_inline_in_public_items,
         reason = "inlining the scorer would duplicate the whole body at every call site"
@@ -461,6 +463,9 @@ impl VmafScorer {
         let model_spec = CString::new(model_spec).map_err(|_| VmafError::InvalidConfiguration {
             reason: "model specification contains an interior null byte".to_owned(),
         })?;
+
+        // A missing native library must not hide the required Cargo opt-in.
+        backend::check_cuda_feature(config.backend)?;
 
         // Registration uses extractor names (`psnr`), while reading values back
         // uses feature keys (`psnr_y`). They differ for the per-plane

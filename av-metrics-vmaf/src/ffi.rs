@@ -383,14 +383,15 @@ pub struct VmafPictureConfiguration {
 impl VmafApi {
     /// Whether the loaded libvmaf exposes a usable CUDA interface.
     ///
-    /// True only when every entry point the CUDA path needs resolved. A libvmaf
-    /// built without `-Denable_cuda=true` exports none of them.
+    /// True only with the Cargo `cuda` feature and every required entry point.
+    /// A libvmaf built without `-Denable_cuda=true` exports none of them.
     /// Cleanup also needs the process-default Linux allocator; other platforms
     /// remain unavailable until allocator-matched cleanup is verified.
     #[inline]
     #[must_use]
     pub const fn cuda_available(&self) -> bool {
-        self.cuda.state_init.is_some()
+        cfg!(feature = "cuda")
+            && self.cuda.state_init.is_some()
             && self.cuda.release.is_some()
             && self.cuda.free_state.is_some()
             && self.cuda.import_state.is_some()

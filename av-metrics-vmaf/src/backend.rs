@@ -1,4 +1,4 @@
-//! Backend selection: CUDA when it works, CPU otherwise.
+//! Backend selection: opt-in CUDA when it works, CPU otherwise.
 
 use std::{
     ffi::c_int,
@@ -346,6 +346,17 @@ impl Context {
     }
 }
 
+/// Reject a required, disabled backend before API loading or native allocation.
+pub(crate) fn check_cuda_feature(preference: BackendPreference) -> Result<(), VmafError> {
+    if !cfg!(feature = "cuda") && preference == BackendPreference::RequireCuda {
+        return Err(VmafError::UnsupportedFeature(
+            "RequireCuda needs the Cargo `cuda` feature; rebuild av-metrics-vmaf with --features cuda"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Choose a backend only after its entire scorer attempt succeeds.
 /// `complete` owns the context and must release all attempt resources on error,
 /// before a fresh CPU attempt starts. Required model features decide compatibility.
@@ -354,7 +365,7 @@ impl Context {
 ///
 /// Returns the last error seen when the requested backend cannot be
 /// initialised. With [`BackendPreference::RequireCuda`] no fallback is
-/// attempted.
+/// attempted; a disabled Cargo `cuda` feature returns [`VmafError::UnsupportedFeature`].
 pub(crate) fn initialise<T>(
     api: &'static VmafApi,
     configuration: crate::ffi::VmafConfiguration,
@@ -362,6 +373,7 @@ pub(crate) fn initialise<T>(
     geometry: Geometry,
     mut complete: impl FnMut(Context) -> Result<T, VmafError>,
 ) -> Result<T, VmafError> {
+    check_cuda_feature(preference)?;
     let try_cuda = match preference {
         BackendPreference::CpuOnly => false,
         BackendPreference::Auto => api.cuda_available(),

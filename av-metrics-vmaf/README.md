@@ -1,6 +1,6 @@
 # av-metrics-vmaf
 
-Native VMAF scoring via [libvmaf], with CUDA acceleration when available.
+Native VMAF scoring via [libvmaf], with opt-in CUDA acceleration.
 
 VMAF (Video Multi-Method Assessment Fusion) is Netflix's perceptual quality metric.
 This crate binds libvmaf directly and scores frame pairs as they are decoded, so no
@@ -13,8 +13,9 @@ VapourSynth script without this crate knowing which.
 
 - **Per-frame scores**, collected after native finalization. Frame pairs are
   submitted as they are decoded; no score files or JSON logs are written.
-- **CUDA when it works, CPU otherwise.** The backend is chosen by actually
-  constructing a complete scorer, then reported via [`VmafScorer::backend`], so a
+- **Opt-in CUDA when it works, CPU otherwise.** With the Cargo `cuda` feature,
+  the backend is chosen by constructing a complete scorer, then reported via
+  [`VmafScorer::backend`], so a
   silent fallback can never be mistaken for GPU acceleration.
 - **Optional dependency.** libvmaf is opened with `dlopen` at runtime, so the crate
   compiles on machines that do not have it. Scoring reports
@@ -71,7 +72,14 @@ progress during decoding, without inventing scores or counting final scores twic
 
 | Feature | Default | Effect |
 | --- | --- | --- |
-| `cuda` | off | Reserved for enabling CUDA symbol resolution. CUDA still requires libvmaf itself to be built with `-Denable_cuda=true`; otherwise the CPU backend is used regardless. |
+| `cuda` | off | Opt in to CUDA scoring and availability. Also requires CUDA-enabled libvmaf (`-Denable_cuda=true`) and verified allocator support. Without this feature, `Auto` and `CpuOnly` use CPU only; `RequireCuda` returns an actionable feature error before loading libvmaf. |
+
+For example, build the wrapper with `cargo build -p av-metrics-vmaf --features cuda`,
+or enable `features = ["cuda"]` on your `av-metrics-vmaf` dependency. Installing a
+GPU or CUDA-enabled libvmaf does not enable the Cargo feature. The feature gates
+scoring and `cuda_available()`, not raw FFI types or optional symbol lookup.
+`cuda_available()` is false without the feature; even when true, device/model
+compatibility still requires a complete scorer attempt.
 
 ## Prerequisites
 
@@ -458,15 +466,16 @@ what the Docker image relies on, so Linux needs no download at all.
 | --- | --- | --- |
 | Linux (Arch) | `vmaf` package, ships all nine models | CPU |
 | Linux (Debian/Ubuntu) | `libvmaf-dev` (unstable) or source | CPU |
-| Linux with CUDA-enabled libvmaf | source, `-Denable_cuda=true` | CPU, with CUDA attempted |
+| Linux with CUDA-enabled libvmaf | source, `-Denable_cuda=true` | CPU; CUDA attempted with Cargo `cuda` feature |
 | macOS | `brew` or source | CPU |
 | Windows | prebuilt DLL from MSYS2 packages, extracted manually | CPU |
 
-GPU acceleration is available **only on Linux with a CUDA-enabled libvmaf**. See
-`BackendPreference` to require a specific backend or to skip the CUDA attempt.
+GPU acceleration requires **the Cargo `cuda` feature and Linux with a CUDA-enabled
+libvmaf**. See `BackendPreference` to require a backend or skip the CUDA attempt.
 
-`Auto` selects CUDA only after context creation, both picture pools, model load,
-required model features and both initial host-picture checkouts succeed. A failed
+With that feature enabled, `Auto` selects CUDA only after context creation, both
+picture pools, model load, required model features and both initial host-picture
+checkouts succeed. A failed
 attempt is fully released before fresh CPU setup, including reloading the same
 model and registering its features again. `RequireCuda` returns the setup error
 without retrying CPU; `CpuOnly` never initializes CUDA. Rejected optional additional
@@ -495,8 +504,9 @@ can select a different allocator. CUDA is unsupported for libvmaf loaded with
 for those builds. This loader does not request deep binding and cannot detect
 custom allocator bindings. Other platforms, including custom Windows
 CUDA DLLs, currently fail closed: `Auto` uses CPU and `RequireCuda` reports the
-missing cleanup support. No Windows process CRT, MSVCRT or UCRT is guessed; `CpuOnly`
-does not allocate CUDA state or call CUDA cleanup.
+missing cleanup support (or the missing Cargo feature if disabled). No Windows
+process CRT, MSVCRT or UCRT is guessed; `CpuOnly` does not allocate CUDA state or
+call CUDA cleanup.
 
 The ownership contract was checked against [libvmaf 3.2.1's CUDA implementation]
 and [state import/close implementation]: import copies the descriptor, after which
@@ -518,7 +528,8 @@ always-available Y4M path. Content comes from a fixed-seed generator, so runs ar
 byte-identical across platforms and machines.
 
 ```bash
-cargo test -p av-metrics-vmaf
+cargo test -p av-metrics-vmaf --no-default-features
+cargo test -p av-metrics-vmaf --no-default-features --features cuda
 ```
 
 `m13_` tests check the actual loader with isolated counted C fixtures: unsupported
@@ -581,8 +592,15 @@ construction/teardown while another independent GPU user remains active, with
 no abort or disruption to that user, plus native sanitizer checks. Those gates
 must be run on suitable hardware; passing the fixture does not establish them.
 
+`m26_` checks both availability APIs and all three preferences at the native
+constructor boundary, with complete symbols and late setup failures. Without the
+feature, CUDA entry-point counters stay zero and required CUDA fails before even
+calling a failing API loader. With the feature, CUDA selection and fresh CPU retry
+retain the complete-attempt contract. Run both Cargo configurations above.
+
 `m11_complete_backend_attempts` adds non-skipping full-constructor C-boundary checks
-for each setup failure under all three preferences, fresh CPU retry, model/picture
+for each setup failure under all three preferences: feature-enabled CUDA attempts
+and fresh CPU retry, or feature-disabled CPU/rejection policy, plus model/picture
 cleanup, separate host/device allocation and untouched device canaries. Its marker
 scores prove submission/flush routing, **not** CPU/CUDA numerical equivalence.
 
@@ -601,7 +619,7 @@ itself unexecuted without the environment flag. Run it on a supported CUDA host:
 
 ```bash
 AV_METRICS_REQUIRE_CUDA=1 cargo +stable test --profile ci -p av-metrics-vmaf \
-  m11_required_cuda_matches_cpu_on_same_clip -- --nocapture
+  --no-default-features --features cuda m11_required_cuda_matches_cpu_on_same_clip -- --nocapture
 ```
 
 Set `VMAF_TEST_MODEL` if needed. The gate uses the same freshly generated 12-frame

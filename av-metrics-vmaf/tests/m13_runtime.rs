@@ -143,6 +143,7 @@ fn run_child(test: &str, library: &Path, directory: &Path, version: &str, marker
         .env("M13_MARKER_NAME", marker)
         .env("M13_LIBRARY", library)
         .env("VMAF_LIB_DIR", directory)
+        .env_remove("VMAF_MODEL_PATH")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -229,6 +230,14 @@ fn check_child(accepted: bool) {
                 "reject before init/preallocate/fetch"
             );
             let error = error.expect("incompatible runtime must be rejected");
+            if !cfg!(feature = "cuda") && backend == BackendPreference::RequireCuda {
+                assert!(
+                    matches!(error, VmafError::UnsupportedFeature(ref message)
+                        if message.contains("Cargo") && message.contains("--features cuda")),
+                    "missing feature is rejected before loading the incompatible runtime: {error:?}"
+                );
+                continue;
+            }
             let VmafError::IncompatibleLibrary { version, .. } = &error else {
                 panic!("dedicated compatibility error: {error:?}");
             };

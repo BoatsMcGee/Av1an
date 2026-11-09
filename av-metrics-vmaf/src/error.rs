@@ -106,7 +106,7 @@ pub enum VmafError {
         distorted: usize,
     },
 
-    /// A configured feature is not a real libvmaf concept.
+    /// A requested feature is unsupported by this wrapper configuration.
     #[error("Unsupported VMAF feature: {0}")]
     UnsupportedFeature(String),
 

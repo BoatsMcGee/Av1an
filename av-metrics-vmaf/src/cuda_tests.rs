@@ -42,6 +42,7 @@ fn m10_cuda_ownership() {
             .env("M10_SCENARIO", scenario.to_string())
             .env("M10_LIBRARY", &library)
             .env("VMAF_LIB_DIR", directory.path())
+            .env_remove("VMAF_MODEL_PATH")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -146,6 +147,7 @@ fn check_scenario() {
         6 => [1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0, 0],
         8 => [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
         11 | 12 => [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0],
+        15 if !cfg!(feature = "cuda") => [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0],
         15 => [1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0],
         _ => [0; 13],
     };
@@ -172,6 +174,11 @@ fn check_scenario() {
                 "exact failure: {error:?}"
             );
         },
+        13 | 14 if !cfg!(feature = "cuda") => assert!(
+            matches!(&error, Some(VmafError::UnsupportedFeature(message))
+                if message.contains("Cargo") && message.contains("--features cuda")),
+            "feature rejection precedes missing native cleanup: {error:?}"
+        ),
         9 | 10 | 13 | 14 => {
             let expected_symbol = if scenario == 9 || scenario == 14 {
                 "vmaf_cuda_release"

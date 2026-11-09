@@ -1,4 +1,4 @@
-//! Native VMAF scoring via [libvmaf], with CUDA acceleration when available.
+//! Native VMAF scoring via [libvmaf], with opt-in CUDA acceleration.
 //!
 //! VMAF (Video Multi-Method Assessment Fusion) is Netflix's perceptual quality
 //! metric. This crate binds [libvmaf] directly and scores frame pairs as they
@@ -9,10 +9,10 @@
 //!
 //! # Backends
 //!
-//! When libvmaf is built with `-Denable_cuda=true`, CUDA is attempted first and
-//! falls back to CPU automatically. The choice is made by actually constructing
-//! a scoring context rather than by probing for devices, because libvmaf
-//! rejects models whose feature extractors lack an implementation for the
+//! CPU is the default. With the Cargo `cuda` feature and libvmaf built with
+//! `-Denable_cuda=true`, Auto attempts CUDA first and falls back to CPU on failure.
+//! The choice is made by constructing a complete scorer rather than probing
+//! devices: libvmaf rejects models whose feature extractors lack an implementation for the
 //! requested backend. See [`BackendPreference`] to override.
 //!
 //! # Example
@@ -81,12 +81,12 @@ pub fn is_available() -> bool {
 
 /// Whether the loaded libvmaf exposes a usable CUDA interface.
 ///
-/// True only when every entry point the CUDA path needs resolved, which a
-/// libvmaf built without `-Denable_cuda=true` exports none of. Whether a given
-/// *model* can then initialise is a separate question — see
-/// [`VmafModel::cuda_supported`].
+/// False without the Cargo `cuda` feature, without loading libvmaf. With the
+/// feature enabled, requires all native CUDA entry points and verified allocator
+/// cleanup support. This does not initialize CUDA or prove device/model support;
+/// only a complete scorer attempt can do that.
 #[inline]
 #[must_use]
 pub fn cuda_available() -> bool {
-    ffi::VmafApi::load().is_ok_and(ffi::VmafApi::cuda_available)
+    cfg!(feature = "cuda") && ffi::VmafApi::load().is_ok_and(ffi::VmafApi::cuda_available)
 }

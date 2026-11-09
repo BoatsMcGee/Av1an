@@ -30,8 +30,8 @@ y4m = "0.8"
 
 [features]
 default = []
-# Resolve the libvmaf CUDA entry points. Only useful when libvmaf itself was
-# built with -Denable_cuda=true; otherwise the CPU backend is used regardless.
+# Opt in to CUDA scoring/availability. Also requires CUDA-enabled libvmaf and
+# verified allocator support. Without this feature, Auto uses CPU only.
 cuda = []
 
 [lib]

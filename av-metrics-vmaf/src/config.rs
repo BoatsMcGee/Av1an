@@ -481,12 +481,14 @@ impl PoolMethod {
 /// How the scorer should choose a compute backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackendPreference {
-    /// Try CUDA if available, otherwise CPU.
+    /// With the Cargo `cuda` feature, try a complete CUDA scorer if available,
+    /// then retry on CPU after any setup failure. Without the feature, use CPU.
     #[default]
     Auto,
     /// Require CPU, never attempt CUDA.
     CpuOnly,
-    /// Require CUDA and fail if it is unavailable.
+    /// Require CUDA, without CPU fallback. Without the Cargo `cuda` feature,
+    /// fail before loading libvmaf; rebuild av-metrics-vmaf with `--features cuda`.
     RequireCuda,
 }
 
