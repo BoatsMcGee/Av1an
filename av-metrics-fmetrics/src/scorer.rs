@@ -352,19 +352,18 @@ impl FmetricsScorer {
         })
     }
 
-    /// Reject a CVVDP configuration with no usable frame rate.
-    ///
-    /// A zero rate accumulates error silently rather than failing, so it must
-    /// be refused up front rather than producing a plausible-looking wrong
-    /// number.
+    /// Bound FPS-driven native temporal allocations before loading the library.
     fn validate_frame_rate(config: &FmetricsConfig) -> Result<(), FmetricsError> {
-        if config.frame_rate.is_finite() && config.frame_rate > 0.0 {
+        // SECURITY: Match the pinned Vship plugin's upper bound, not its sanitization.
+        if config.frame_rate.is_finite()
+            && config.frame_rate > 0.0
+            && config.frame_rate <= 100_000.0
+        {
             Ok(())
         } else {
             Err(FmetricsError::InvalidConfiguration {
                 reason: format!(
-                    "CVVDP needs the source frame rate, and {} is not one; a zero rate \
-                     accumulates error silently rather than failing",
+                    "CVVDP frame rate must be finite and satisfy 0 < fps <= 100000, got {}",
                     config.frame_rate
                 ),
             })
@@ -958,27 +957,57 @@ mod tests {
     }
 
     #[test]
-    fn cvvdp_rejects_a_missing_frame_rate() {
-        // A zero rate accumulates error silently, so it must be refused up
-        // front rather than producing a plausible-looking but wrong
-        // number. The check runs before the library is consulted, so it
-        // holds either way.
+    fn m16_cvvdp_default_frame_rate_is_usable() {
         let config = FmetricsConfig::new(FmetricsMetric::Cvvdp);
-        assert!(
-            FmetricsScorer::validate_frame_rate(&config).is_err(),
-            "a zero rate must be refused"
-        );
+        assert_eq!(config.frame_rate(), 60.0);
+        assert!(FmetricsScorer::validate_frame_rate(&config).is_ok());
+    }
 
-        // Through the constructor, the error may instead be unavailability if
-        // the library is absent -- but never a successful construction.
-        if let Err(error) = FmetricsScorer::new(config, color(8)) {
+    #[test]
+    fn m16_explicit_frame_rate_bounds_precede_library_loading() {
+        for rate in [
+            0.0,
+            -0.0,
+            -1.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            100_000.01,
+            f32::MAX,
+        ] {
+            for disabled in [false, true] {
+                let mut direct =
+                    FmetricsConfig::new(FmetricsMetric::Cvvdp).with_disable_temporal(disabled);
+                direct.frame_rate = rate;
+                for config in [
+                    direct,
+                    FmetricsConfig::new(FmetricsMetric::Cvvdp)
+                        .with_frame_rate(rate)
+                        .with_disable_temporal(disabled),
+                ] {
+                    assert!(
+                        matches!(
+                            FmetricsScorer::validate_frame_rate(&config),
+                            Err(FmetricsError::InvalidConfiguration { .. })
+                        ),
+                        "{rate} must be rejected"
+                    );
+                    // Context creation is lazy; even a broken bound cannot allocate a ring here.
+                    assert!(
+                        matches!(
+                            FmetricsScorer::new(config, color(8)),
+                            Err(FmetricsError::InvalidConfiguration { .. })
+                        ),
+                        "{rate} must fail before library discovery"
+                    );
+                }
+            }
+        }
+        for rate in [f32::MIN_POSITIVE, 24.0, 23.976_025, 60.0, 100_000.0] {
+            let config = FmetricsConfig::new(FmetricsMetric::Cvvdp).with_frame_rate(rate);
             assert!(
-                matches!(
-                    error,
-                    FmetricsError::InvalidConfiguration { .. }
-                        | FmetricsError::LibraryNotFound { .. }
-                ),
-                "expected a configuration or availability error, got {error:?}"
+                FmetricsScorer::validate_frame_rate(&config).is_ok(),
+                "{rate}"
             );
         }
     }

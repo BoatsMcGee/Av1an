@@ -12,6 +12,17 @@ static void event(const char *name) {
     fprintf(f, "%s\n", name);
     fclose(f);
 }
+static void audit(const char *name) {
+    const char *s = getenv("M16_FPS_AUDIT");
+    if (s && *s) event(name);
+}
+static void fps_event(const char *name, float fps) {
+    uint32_t bits;
+    char line[40];
+    memcpy(&bits, &fps, sizeof(bits));
+    snprintf(line, sizeof(line), "%s=%08x", name, (unsigned)bits);
+    audit(line);
+}
 static int fail(const char *name) {
     const char *s = getenv("M15_FAIL");
     return s && !strcmp(s, name);
@@ -22,10 +33,10 @@ static double marker(State *s, int sample) {
     s->sum += sample;
     return value;
 }
-const char *fmetrics_version_str(void) { return "0.1.0"; }
+const char *fmetrics_version_str(void) { audit("fv"); return "0.1.0"; }
 const char *fmetrics_cvvdp_version_str(void) { return "M15-boundary-not-CVVDP"; }
 const char *fmetrics_error_str(FmetricsErr e) { (void)e; return "M15 combined reset failure"; }
-FmetricsWorkspace *fmetrics_workspace_create(void) { return (FmetricsWorkspace *)calloc(1, sizeof(State)); }
+FmetricsWorkspace *fmetrics_workspace_create(void) { audit("fw+"); return (FmetricsWorkspace *)calloc(1, sizeof(State)); }
 void fmetrics_workspace_destroy(FmetricsWorkspace *p) { free(p); }
 FmetricsErr fmetrics_ssimu2_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, double *s) {
     (void)w; (void)a; (void)b; *s = 42; return FMETRICS_OK;
@@ -36,7 +47,7 @@ FmetricsErr fmetrics_ssimu2_cmp_map(FmetricsWorkspace *w, const FmetricsImg *a, 
 FmetricsErr fmetrics_butteraugli_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, const FmetricsButteraugliOptions *o, double *s) { (void)o; return fmetrics_ssimu2_cmp(w,a,b,s); }
 FmetricsErr fmetrics_butteraugli_cmp_map(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, const FmetricsButteraugliOptions *o, double *s, uint32_t *m) { (void)m; return fmetrics_butteraugli_cmp(w,a,b,o,s); }
 FmetricsErr fmetrics_cvvdp_create(int w, int h, float fps, FmetricsCvvdpDisplayModel m, unsigned t, const FmetricsCvvdpDisplayParams *p, FmetricsCvvdpCtx **out) {
-    (void)w; (void)h; (void)fps; (void)m; (void)t; (void)p;
+    (void)w; (void)h; (void)m; (void)t; (void)p; fps_event("ffps", fps);
     event("fc+"); *out = (FmetricsCvvdpCtx *)calloc(1, sizeof(State)); return FMETRICS_OK;
 }
 void fmetrics_cvvdp_destroy(FmetricsCvvdpCtx *p) { event("fc-"); free(p); }
@@ -50,15 +61,19 @@ FmetricsErr fmetrics_cvvdp_reset(FmetricsCvvdpCtx *c) {
 FmetricsErr fmetrics_cvvdp_cmp(const FmetricsImg *a, const FmetricsImg *b, FmetricsCvvdpDisplayModel m, unsigned t, const FmetricsCvvdpDisplayParams *p, FmetricsCvvdpResult *r) { (void)a; (void)b; (void)m; (void)t; (void)p; (void)r; return FMETRICS_OK; }
 FmetricsErr fmetrics_cvvdp_get_display_params(FmetricsCvvdpDisplayModel m, FmetricsCvvdpDisplayParams *p) { (void)m; (void)p; return FMETRICS_OK; }
 
-Vship_Version Vship_GetVersion(void) { return (Vship_Version){5,1,2,Vship_CPU}; }
-Vship_Exception Vship_GetDeviceCount(int *n) { *n=1; return Vship_NoError; }
-Vship_Exception Vship_GetDeviceInfo(Vship_DeviceInfo *info, int gpu) { (void)gpu; memset(info,0,sizeof(*info)); return Vship_NoError; }
-Vship_Exception Vship_GPUFullCheck(int gpu) { (void)gpu; return Vship_NoError; }
+Vship_Version Vship_GetVersion(void) { audit("vv"); return (Vship_Version){5,1,2,Vship_CPU}; }
+Vship_Exception Vship_GetDeviceCount(int *n) { audit("vd"); *n=1; return Vship_NoError; }
+Vship_Exception Vship_GetDeviceInfo(Vship_DeviceInfo *info, int gpu) { audit("vi"); (void)gpu; memset(info,0,sizeof(*info)); return Vship_NoError; }
+Vship_Exception Vship_GPUFullCheck(int gpu) { audit("vg"); (void)gpu; return Vship_NoError; }
 int Vship_GetErrorMessage(Vship_Exception e, char *out, int len) { (void)e; return snprintf(out,(size_t)len,"M15 reset failure"); }
 int Vship_GetDetailedLastError(char *out, int len) { (void)out; (void)len; return 0; }
 int Vship_GetDetailedLastErrorHandler(Vship_Handle h, char *out, int len) { (void)h; (void)out; (void)len; return 0; }
 Vship_Exception Vship_InitHandler(Vship_Handle *h, void *arg) {
-    if (*(Vship_StructType *)arg != Vship_StructInitCVVDP_1) abort();
+    Vship_StructType type = *(Vship_StructType *)arg;
+    if (type == Vship_StructInitCVVDP_1)
+        fps_event("vfps", ((Vship_InitCVVDP_1 *)arg)->fps);
+    else if (type != Vship_StructInitSSIMULACRA2_1 && type != Vship_StructInitButteraugli_1)
+        abort();
     event("vc+"); *h=calloc(1,sizeof(State)); return Vship_NoError;
 }
 Vship_Exception Vship_FreeHandler(Vship_Handle h) { event("vc-"); free(h); return Vship_NoError; }
@@ -74,5 +89,5 @@ Vship_Exception Vship_ResetScore(Vship_Handle h) {
     event("vs"); if (fail("vs")) return (Vship_Exception)1;
     ((State *)h)->sum=0; return Vship_NoError;
 }
-Vship_Exception Vship_PinnedMalloc2(void **p, uint64_t size, int gpu) { (void)gpu; *p=malloc((size_t)size); return Vship_NoError; }
+Vship_Exception Vship_PinnedMalloc2(void **p, uint64_t size, int gpu) { audit("vu+"); (void)gpu; *p=malloc((size_t)size); return Vship_NoError; }
 Vship_Exception Vship_PinnedFree2(void *p, int gpu) { (void)gpu; free(p); return Vship_NoError; }

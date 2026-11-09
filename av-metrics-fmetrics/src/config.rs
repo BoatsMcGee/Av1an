@@ -321,8 +321,9 @@ pub struct FmetricsConfig {
     pub display_model: crate::ffi::FmetricsCvvdpDisplayModel,
     /// CVVDP frame rate, in frames per second.
     ///
-    /// Required for CVVDP: its temporal filter is parameterised by the rate,
-    /// and a rate of zero accumulates error silently rather than failing.
+    /// Defaults to 60 when not set. CVVDP requires a finite value in
+    /// `0 < frame_rate <= 100000`, even with temporal processing disabled.
+    /// Explicit zero is invalid; other metrics ignore this field.
     pub frame_rate: f32,
     /// Butteraugli p-norm exponent.
     pub butteraugli_pnorm: Option<i32>,
@@ -348,7 +349,7 @@ impl FmetricsConfig {
             metric,
             threads: DEFAULT_THREADS,
             display_model: crate::ffi::FmetricsCvvdpDisplayModel::StandardFhd,
-            frame_rate: 0.0,
+            frame_rate: 60.0,
             butteraugli_pnorm: None,
             intensity_target: 203.0,
             reset_on_discontinuity: true,
@@ -391,7 +392,8 @@ impl FmetricsConfig {
         self
     }
 
-    /// Set the CVVDP frame rate.
+    /// Set the CVVDP frame rate, replacing the 60 fps default.
+    /// The scorer rejects nonfinite values and values outside `0 < fps <= 100000`.
     #[inline]
     #[must_use]
     pub const fn with_frame_rate(mut self, frame_rate: f32) -> Self {
@@ -433,7 +435,7 @@ impl FmetricsConfig {
         self.metric
     }
 
-    /// The CVVDP frame rate, where zero means none was configured.
+    /// The CVVDP frame rate, defaulting to 60 when not set.
     #[inline]
     #[must_use]
     pub const fn frame_rate(&self) -> f32 {

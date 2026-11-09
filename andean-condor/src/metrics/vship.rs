@@ -83,9 +83,9 @@ pub fn native_supported(metric: &QualityMetric) -> bool {
 /// CVVDP's display model, resize-to-display and temporal options pass through
 /// unchanged, as do Butteraugli's `norm` and `intensity_multiplier`.
 ///
-/// `frame_rate` supplies CVVDP's `fps`. A rate of zero is not neutral to that
-/// metric — its temporal filter is parameterised by the rate — so it is
-/// applied whenever the source reports one.
+/// `frame_rate` is an explicit source rate, passed unchanged for CVVDP.
+/// The scorer rejects nonfinite values and values outside `0 < fps <= 100000`;
+/// invalid metadata must not silently become the low-level 60 fps default.
 ///
 /// # Errors
 ///
@@ -139,12 +139,10 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<VshipCon
             let mut config = with_gpu_id(
                 VshipConfig::new()
                     .with_metric(VshipMetric::Cvvdp)
-                    .with_handler_threads(av_metrics_vship::DEFAULT_HANDLER_THREADS),
+                    .with_handler_threads(av_metrics_vship::DEFAULT_HANDLER_THREADS)
+                    .with_fps(frame_rate),
                 *gpu_id,
             );
-            if frame_rate > 0.0 {
-                config = config.with_fps(frame_rate);
-            }
             if let Some(display_model) = display_model {
                 config = config
                     .with_display_model(display_model.to_string())
@@ -694,11 +692,8 @@ mod tests {
         assert!(config.cvvdp().reset_on_discontinuity);
     }
 
-    /// CVVDP's temporal filter is parameterised by the frame rate, so an unset
-    /// rate is not neutral — the score drifts further from the correct value
-    /// the longer the clip runs.
     #[test]
-    fn cvvdp_receives_the_source_frame_rate() {
+    fn m16_explicit_source_frame_rate_is_never_replaced_by_default() {
         let metric = QualityMetric::CVVDP {
             target_range: (0.0, 1.0),
             resolution: None,
@@ -708,16 +703,26 @@ mod tests {
             gpu_id: None,
         };
 
-        let config = scorer_config(&metric, 23.976).expect("config should build");
-        assert!(
-            (config.cvvdp().fps - 23.976).abs() < f32::EPSILON,
-            "the source rate must reach the temporal model"
-        );
-
-        // A source that reports no rate leaves the default rather than a
-        // negative or infinite value.
-        let unknown = scorer_config(&metric, 0.0).expect("config should build");
-        assert_eq!(unknown.cvvdp().fps, 0.0);
+        for rate in [
+            0.0,
+            -0.0,
+            -1.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            100_000.01,
+            f32::MAX,
+            24_000.0 / 1001.0,
+        ] {
+            assert_eq!(
+                scorer_config(&metric, rate)
+                    .expect("mapping preserves the explicit rate for constructor validation")
+                    .cvvdp()
+                    .fps
+                    .to_bits(),
+                rate.to_bits()
+            );
+        }
     }
 
     /// The native path is only chosen for a libvship metric, and even then only

@@ -4,7 +4,10 @@
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "fixture assertions fail loudly")]
 mod tests {
-    use std::process::Command;
+    use std::{
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
 
     use andean_condor::{
         metrics::{fmetrics, probe::OutputIndexing, vship},
@@ -56,6 +59,33 @@ mod tests {
             }
             return;
         }
+        native_children(
+            "tests::m15_stateful_native_boundary_and_drivers",
+            &[
+                ("f", ""),
+                ("v", ""),
+                ("drivers", ""),
+                ("failures", "fr"),
+                ("failures", "vr"),
+                ("failures", "vs"),
+                ("gap-failure", "vr"),
+            ],
+        );
+    }
+
+    #[test]
+    fn m16_frame_rate_native_boundary() {
+        if std::env::var_os("M15_CHILD").is_some() {
+            m16_fps();
+            return;
+        }
+        native_children(
+            "tests::m16_frame_rate_native_boundary",
+            &[("invalid-fps", ""), ("fps", "")],
+        );
+    }
+
+    fn native_children(test: &str, scopes: &[(&str, &str)]) {
         let directory = tempfile::tempdir().expect("native boundary fixture");
         let library = directory.path().join(if cfg!(target_os = "macos") {
             "libfmetrics.dylib"
@@ -86,25 +116,33 @@ mod tests {
         )
         .unwrap();
         let mut errors = Vec::new();
-        for (scope, failure) in [
-            ("f", ""),
-            ("v", ""),
-            ("drivers", ""),
-            ("failures", "fr"),
-            ("failures", "vr"),
-            ("failures", "vs"),
-            ("gap-failure", "vr"),
-        ] {
-            let output = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "tests::m15_stateful_native_boundary_and_drivers", "--nocapture"])
+        for (scope, failure) in scopes {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test, "--nocapture"])
                 .env("M15_CHILD", "1")
                 .env("M15_FAIL", failure)
                 .env("M15_SCOPE", scope)
+                .env(
+                    "M16_FPS_AUDIT",
+                    if test.contains("m16_") { "1" } else { "" },
+                )
                 .env("M15_LOG", directory.path().join("calls"))
                 .env("FMETRICS_LIB_PATH", directory.path())
                 .env("VSHIP_PLUGIN_PATH", directory.path())
-                .output()
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
                 .expect("isolated boundary child");
+            let start = Instant::now();
+            while child.try_wait().unwrap().is_none() {
+                if start.elapsed() > Duration::from_secs(120) {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("native boundary child timed out: {scope}/{failure}");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
             if !output.status.success()
                 || !String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed")
             {
@@ -113,9 +151,195 @@ mod tests {
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
                 ));
+            } else if test.contains("m16_") {
+                print!("{}", String::from_utf8_lossy(&output.stdout));
             }
         }
         assert!(errors.is_empty(), "{}", errors.join("\n"));
+    }
+
+    fn m16_fps() {
+        let source = decoder();
+        let color = ColorInfo::from_details(source.get_video_details()).unwrap();
+        let format = VideoFormat::from_details(source.get_video_details());
+        if std::env::var("M15_SCOPE").unwrap() == "invalid-fps" {
+            let mut errors = Vec::new();
+            for rate in [
+                0.0,
+                -0.0,
+                -1.0,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                100_000.01,
+                f32::MAX,
+            ] {
+                for disabled in [false, true] {
+                    let mut direct =
+                        FmetricsConfig::new(FmetricsMetric::Cvvdp).with_disable_temporal(disabled);
+                    direct.frame_rate = rate;
+                    for config in [
+                        direct,
+                        FmetricsConfig::new(FmetricsMetric::Cvvdp)
+                            .with_frame_rate(rate)
+                            .with_disable_temporal(disabled),
+                        fmetrics::scorer_config(&metric(disabled), rate).unwrap(),
+                    ] {
+                        clear();
+                        let result = FmetricsScorer::new(config, color);
+                        let invalid = matches!(
+                            result,
+                            Err(av_metrics_fmetrics::FmetricsError::InvalidConfiguration { .. })
+                        );
+                        drop(result);
+                        let log = calls();
+                        if !invalid || !log.is_empty() {
+                            errors.push(format!("f fps={rate:?} disabled={disabled}: InvalidConfiguration={invalid}, calls={log:?}"));
+                        }
+                    }
+                    for config in [
+                        VshipConfig::new()
+                            .with_metric(VshipMetric::Cvvdp)
+                            .with_fps(rate)
+                            .with_disable_temporal(disabled),
+                        vship::scorer_config(&metric(disabled), rate).unwrap(),
+                    ] {
+                        clear();
+                        let result = VshipScorer::new(config, format, format, None);
+                        let invalid = matches!(
+                            result,
+                            Err(av_metrics_vship::VshipError::InvalidConfiguration { .. })
+                        );
+                        drop(result);
+                        let log = calls();
+                        if !invalid || !log.is_empty() {
+                            errors.push(format!("v fps={rate:?} disabled={disabled}: InvalidConfiguration={invalid}, calls={log:?}"));
+                        }
+                    }
+                }
+            }
+            assert!(errors.is_empty(), "{}", errors.join("\n"));
+            println!(
+                "M16: 80 invalid constructors; zero version/device/workspace/context/handler/upload calls"
+            );
+            return;
+        }
+        let frame = FrameBuilder::new(32, 32, ChromaSubsampling::Yuv420, 8).build::<u8>().unwrap();
+        for disabled in [false, true] {
+            // The ABI sink allocates only State, even at the inclusive maximum.
+            for rate in [None, Some(24.0), Some(24_000.0 / 1001.0), Some(100_000.0)] {
+                let expected: f32 = rate.unwrap_or(60.0);
+                clear();
+                let mut config =
+                    FmetricsConfig::new(FmetricsMetric::Cvvdp).with_disable_temporal(disabled);
+                if let Some(rate) = rate {
+                    config = config.with_frame_rate(rate);
+                }
+                let mut scorer = FmetricsScorer::new(config, color).unwrap();
+                let planes = av_metrics_fmetrics::PlaneSet::from_frame(&frame).unwrap();
+                scorer.submit_pair_temporal(&planes, &planes).unwrap();
+                drop(scorer);
+                assert!(
+                    calls().contains(&format!("ffps={:08x}\n", expected.to_bits())),
+                    "{}",
+                    calls()
+                );
+                clear();
+                let mut config = VshipConfig::new()
+                    .with_metric(VshipMetric::Cvvdp)
+                    .with_disable_temporal(disabled);
+                if let Some(rate) = rate {
+                    config = config.with_fps(rate);
+                }
+                let mut scorer = VshipScorer::new(config, format, format, None).unwrap();
+                scorer.submit_pair(&frame, &frame).unwrap();
+                drop(scorer);
+                assert!(
+                    calls().contains(&format!("vfps={:08x}\n", expected.to_bits())),
+                    "{}",
+                    calls()
+                );
+                println!(
+                    "M16: both native FPS={expected} bits={:08x} disabled={disabled}",
+                    expected.to_bits()
+                );
+            }
+        }
+        // Real decoding and drivers must preserve the rational source rate too.
+        for gpu in [false, true] {
+            clear();
+            let script = "import vapoursynth as vs\nvs.core.std.BlankClip(width=32, height=32, length=1, fpsnum=24000, fpsden=1001, format=vs.YUV420P8).std.SetFrameProps(_Matrix=1, _Transfer=13, _Primaries=1, _Range=1).set_output()";
+            let mut a = av_decoders::Decoder::from_script(script, Default::default()).unwrap();
+            let mut b = av_decoders::Decoder::from_script(script, Default::default()).unwrap();
+            let scores = if gpu {
+                vship::score_probed_frames(
+                    &mut a,
+                    &mut b,
+                    &metric(false),
+                    &[0],
+                    OutputIndexing::Aligned,
+                    None,
+                    |_, _| {},
+                )
+            } else {
+                fmetrics::score_probed_frames(
+                    &mut a,
+                    &mut b,
+                    &metric(false),
+                    &[0],
+                    OutputIndexing::Aligned,
+                    None,
+                    |_, _| {},
+                )
+            }
+            .unwrap();
+            assert_eq!(scores.len(), 1);
+            assert!(
+                calls().contains(if gpu {
+                    "vfps=41bfcee6\n"
+                } else {
+                    "ffps=41bfcee6\n"
+                }),
+                "{}",
+                calls()
+            );
+        }
+        for rate in [0.0, f32::NAN, f32::MAX] {
+            for metric in [
+                FmetricsMetric::Ssimulacra2,
+                FmetricsMetric::Butteraugli,
+                FmetricsMetric::Iwssim,
+                FmetricsMetric::Msssim,
+            ] {
+                clear();
+                drop(
+                    FmetricsScorer::new(
+                        FmetricsConfig::new(metric).with_threads(1).with_frame_rate(rate),
+                        color,
+                    )
+                    .unwrap(),
+                );
+                assert!(calls().contains("fw+\n"));
+                assert!(!calls().contains("fc+\n"));
+            }
+            for metric in [VshipMetric::Ssimulacra2, VshipMetric::Butteraugli] {
+                clear();
+                drop(
+                    VshipScorer::new(
+                        VshipConfig::new()
+                            .with_metric(metric)
+                            .with_handler_threads(1)
+                            .with_fps(rate),
+                        format,
+                        format,
+                        None,
+                    )
+                    .unwrap(),
+                );
+                assert!(calls().contains("vc+\n"));
+                assert!(!calls().contains("vfps="));
+            }
+        }
     }
 
     fn clear() {

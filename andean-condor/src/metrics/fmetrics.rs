@@ -53,9 +53,9 @@ pub fn native_supported(metric: &QualityMetric) -> bool {
 /// `threads` becomes the number of workspaces, so it bounds how many
 /// submissions can be inside the library at once.
 ///
-/// `frame_rate` supplies CVVDP's `fps`. Zero is not neutral to a temporal
-/// filter -- it accumulates error silently -- so it is passed only when the
-/// source reports one and the scorer refuses a config that ends up without it.
+/// `frame_rate` is an explicit source rate, passed unchanged for CVVDP.
+/// The scorer rejects nonfinite values and values outside `0 < fps <= 100000`;
+/// invalid metadata must not silently become the low-level 60 fps default.
 ///
 /// `resolution` is **not** applied: fmetrics scores at the source resolution
 /// and cannot scale, so a configured target resolution is honoured here only by
@@ -93,10 +93,8 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<Fmetrics
             ..
         } => {
             let mut config = FmetricsConfig::new(FmetricsMetric::Cvvdp)
-                .with_threads(av_metrics_fmetrics::DEFAULT_THREADS);
-            if frame_rate > 0.0 {
-                config = config.with_frame_rate(frame_rate);
-            }
+                .with_threads(av_metrics_fmetrics::DEFAULT_THREADS)
+                .with_frame_rate(frame_rate);
             if let Some(display_model) = display_model {
                 config = config.with_display_model(display_model_for(*display_model));
             }
@@ -583,13 +581,23 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_rate_reaches_the_config_and_zero_is_not_invented() {
-        let config = scorer_config(&cvvdp(), 23.976).unwrap();
-        assert!((config.frame_rate() - 23.976).abs() < 1e-3);
-
-        // A source reporting no rate leaves zero, which the scorer refuses
-        // rather than scoring with it.
-        assert_eq!(scorer_config(&cvvdp(), 0.0).unwrap().frame_rate(), 0.0);
+    fn m16_explicit_source_frame_rate_is_never_replaced_by_default() {
+        for rate in [
+            0.0,
+            -0.0,
+            -1.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            100_000.01,
+            f32::MAX,
+            24_000.0 / 1001.0,
+        ] {
+            assert_eq!(
+                scorer_config(&cvvdp(), rate).unwrap().frame_rate().to_bits(),
+                rate.to_bits()
+            );
+        }
     }
 
     #[test]

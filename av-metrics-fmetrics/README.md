@@ -64,9 +64,20 @@ not have to be re-derived at each call site.
 
 ### CVVDP temporal modes
 
-CVVDP's temporal filter is parameterised by the frame rate, and a rate of zero
-accumulates error *silently* rather than failing. A rate is therefore required
-and rejected up front:
+CVVDP defaults to **60 fps** when `with_frame_rate` is not called. Supply the
+source rate when known; explicit values must be finite and satisfy
+**0 < fps <= 100000**. Zero (including negative zero), negatives, NaN, infinities
+and larger rates return `InvalidConfiguration` before library loading or native
+allocation, including when temporal processing is disabled. Direct writes to the
+public `frame_rate` field receive the same validation. Non-CVVDP metrics ignore it.
+Andean always forwards its explicit source rate, including invalid values, rather
+than replacing it with the default.
+
+The default and inclusive bound follow the
+[pinned Vship plugin](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/HIP/cvvdp/vapoursynth.hpp#L191-L195).
+Unlike the plugin's metadata sanitization, explicit invalid input is rejected.
+The bound limits FPS-driven temporal ring growth; it does not guarantee enough
+memory for every accepted rate and resolution.
 
 ```rust
 # use av_metrics_fmetrics::{FmetricsConfig, FmetricsMetric};
@@ -94,7 +105,9 @@ intentionally carry history across selected source gaps; the scorer itself has
 no source indices. Do not use the combined reset as a history-only substitute.
 
 Stateful `m15_` C ABI tests prove wrapper/reset/driver behavior, not CVVDP numeric
-accuracy. Real Vship-vs-plugin parity requires a supported GPU and plugin; run
+accuracy. The `m16_` tests also check native FPS arguments and rejection before
+native probes/allocations using harmless ABI sinks, not real temporal rings.
+Real Vship-vs-plugin parity requires a supported GPU and plugin; run
 `AV_METRICS_REQUIRE_CVVDP_PARITY=1 cargo +stable test --profile ci -p andean-condor m15_native_vs_plugin -- --nocapture` on that host. Missing runtime/plugin fails
 that required gate; ordinary suites report it UNEXECUTED.
 

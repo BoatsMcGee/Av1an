@@ -181,10 +181,8 @@ pub struct CvvdpParams {
     pub resize_to_display: bool,
     /// Frame rate handed to libvship's temporal model.
     ///
-    /// A rate of zero is not a neutral "unknown": CVVDP's temporal filter is
-    /// parameterised by it, so an unset rate biases the score, and the error
-    /// grows with clip length. Callers that know the source rate should set it
-    /// with [`VshipConfig::with_fps`].
+    /// Defaults to 60 when not set. Requires a finite value in `0 < fps <= 100000`,
+    /// even with temporal processing disabled. Explicit zero is invalid.
     pub fps: f32,
     /// Whether to clear the temporal history at a discontinuity in frame index.
     ///
@@ -204,7 +202,7 @@ impl Default for CvvdpParams {
             display_model: DEFAULT_DISPLAY_MODEL.to_owned(),
             display_model_json: String::new(),
             resize_to_display: false,
-            fps: 0.0,
+            fps: 60.0,
             reset_on_discontinuity: true,
             disable_temporal: false,
         }
@@ -343,9 +341,8 @@ impl VshipConfig {
 
     /// Set the frame rate handed to CVVDP's temporal model.
     ///
-    /// Required for CVVDP to be meaningful: the temporal filter is
-    /// parameterised by the rate, so a zero rate accumulates error over the
-    /// clip rather than leaving the score unchanged.
+    /// Replaces the 60 fps default. CVVDP requires a finite value in
+    /// `0 < fps <= 100000`; other metrics ignore this setting.
     #[inline]
     #[must_use]
     pub const fn with_fps(mut self, fps: f32) -> Self {
@@ -497,12 +494,11 @@ impl VshipConfig {
             to_c_string(&self.cvvdp.display_model, "display model")?;
             to_c_string(&self.cvvdp.display_model_json, "display model JSON path")?;
 
-            // A zero frame rate is legal and means "unknown"; a negative or
-            // non-finite one is not, and CVVDP's temporal model divides by it.
-            if self.cvvdp.fps < 0.0 || !self.cvvdp.fps.is_finite() {
+            // SECURITY: Bound FPS-driven temporal allocations; reject rather than sanitize.
+            if !self.cvvdp.fps.is_finite() || self.cvvdp.fps <= 0.0 || self.cvvdp.fps > 100_000.0 {
                 return Err(VshipError::InvalidConfiguration {
                     reason: format!(
-                        "fps must be zero or a positive finite value, got {}",
+                        "CVVDP frame rate must be finite and satisfy 0 < fps <= 100000, got {}",
                         self.cvvdp.fps
                     ),
                 });
@@ -704,6 +700,63 @@ mod tests {
     use av_decoders::Rational32;
 
     use super::*;
+
+    #[test]
+    fn m16_cvvdp_default_frame_rate_is_usable() {
+        let config = VshipConfig::new().with_metric(VshipMetric::Cvvdp);
+        assert_eq!(config.cvvdp().fps, 60.0);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn m16_explicit_frame_rate_bounds_only_apply_to_cvvdp() {
+        let format =
+            crate::VideoFormat::from_details(&details(32, 32, 8, ChromaSubsampling::Yuv420));
+        for rate in [
+            0.0,
+            -0.0,
+            -1.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            100_000.01,
+            f32::MAX,
+        ] {
+            for disabled in [false, true] {
+                let config = VshipConfig::new()
+                    .with_metric(VshipMetric::Cvvdp)
+                    .with_fps(rate)
+                    .with_disable_temporal(disabled);
+                assert!(
+                    matches!(
+                        config.validate(),
+                        Err(VshipError::InvalidConfiguration { .. })
+                    ),
+                    "{rate}"
+                );
+                assert!(
+                    matches!(
+                        crate::VshipScorer::new(config.clone(), format, format, None),
+                        Err(VshipError::InvalidConfiguration { .. })
+                    ),
+                    "{rate} must fail before library discovery"
+                );
+                for metric in [VshipMetric::Ssimulacra2, VshipMetric::Butteraugli] {
+                    assert!(config.clone().with_metric(metric).validate().is_ok());
+                }
+            }
+        }
+        for rate in [f32::MIN_POSITIVE, 24.0, 23.976_025, 60.0, 100_000.0] {
+            assert!(
+                VshipConfig::new()
+                    .with_metric(VshipMetric::Cvvdp)
+                    .with_fps(rate)
+                    .validate()
+                    .is_ok(),
+                "{rate}"
+            );
+        }
+    }
 
     /// Video details in the shape `av-decoders` reports them.
     fn details(

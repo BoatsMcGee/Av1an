@@ -139,11 +139,11 @@ computed. Consequences for callers:
 - **Take the last value.** `PoolMethod` has no `Last` variant, so read
   `scores.last()` directly rather than reaching for `Max`, which is wrong for
   every CVVDP clip whose score drifts upward.
-- **`with_fps` is required.** The temporal filter is parameterised by the frame
-  rate, so a zero rate does not merely omit information — it drifts. On the same
-  756-frame 1080p clip the score is 8.1346 at the default `0.0` and 9.0475 at the
-  real 23.976 fps, a gap that widens with clip length because the error
-  accumulates per frame.
+- **Use the source frame rate when known.** Omitting `with_fps` uses **60 fps**;
+  explicit values must be finite and satisfy **0 < fps <= 100000**. Zero
+  (including negative zero), negatives, NaN, infinities and larger rates return
+  `InvalidConfiguration` before library loading, device probes or handler
+  allocation, even with temporal processing disabled. Other metrics ignore FPS.
 - **`reset_temporal` clears the frame history, not the score.** Per the C header,
   `Vship_Reset` *"empties temporal filter history (but not score accumulation)"*, so
   the running mean continues across a scene break. `reset_score` clears the
@@ -177,7 +177,7 @@ libvship reports a score per pair, so reducing a clip to one number is this crat
 | `with_display_model` | `standard_fhd` | CVVDP's display model key. Must be non-empty. Fails on an interior NUL. |
 | `with_display_model_json` | empty | Path to a JSON display-configuration override, or empty for none. Passed to libvship verbatim. |
 | `with_resize_to_display` | `false` | Whether CVVDP scales both inputs to the model's display resolution. |
-| `with_fps` | `0.0` | Frame rate handed to CVVDP's temporal model. **Set this for CVVDP**: it is not a neutral default, and a zero rate accumulates error over the clip (see [CVVDP](#cvvdp-is-accumulated-not-per-frame)). Negative is rejected. |
+| `with_fps` | `60.0` | CVVDP frame rate. Must be finite and satisfy `0 < fps <= 100000`, including with temporal processing disabled. Explicit zero is invalid; non-CVVDP metrics ignore it. |
 | `with_reset_on_discontinuity` | `true` | Separate source-gap policy: the selection owner requests a history-only reset before the post-gap frame, preserving accumulated score. |
 | `with_disable_temporal` | `false` | Independent CVVDP frames: after each successful compute, clear history then accumulated score, matching the VapourSynth plugin. Reset errors propagate before returning the captured score. Does not change the gap policy. |
 
@@ -186,6 +186,16 @@ Andean classifies actual selected-index gaps with checked arithmetic; disabled
 mode needs no extra gap reset. Direct raw callers can request a history-only
 reset using `submit_pair_raw_with_reset`, which preflights both inputs first.
 Native CVVDP values are returned unchanged; perceptual pooling is separate work.
+
+The 60 fps default and inclusive upper bound follow the
+[pinned plugin](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370/src/HIP/cvvdp/vapoursynth.hpp#L191-L195).
+Unlike its metadata sanitization, the wrapper rejects invalid explicit input.
+Andean always forwards the explicit source rate, retaining fractional FPS within
+f32 precision; it never replaces invalid metadata with the low-level default.
+The bound limits FPS-driven temporal ring growth, not total memory at arbitrary
+resolutions. `m16_` checks exercise real constructors/drivers with harmless C ABI
+sinks to verify native FPS arguments and zero probes/allocations on rejection;
+they do not allocate real high-FPS rings or prove GPU accuracy.
 
 Andean's CVVDP plugin fallback also receives the original selected source indices.
 With temporal processing enabled, it rejects gaps before plugin lookup/scoring:
