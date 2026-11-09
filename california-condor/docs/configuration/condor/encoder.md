@@ -46,6 +46,10 @@ Externally-tagged enum keyed by encoder base. Exactly one key per object: `AOM`,
 Encoder edits are checked before saving; rejected edits leave the saved file
 unchanged. Switching encoders starts from the new backend's defaults, then
 applies the flags from the same command. Unknown custom options remain allowed.
+Edits validate only the encoder they change: a legacy job with invalid global
+and scene settings can be repaired in separate commands, in either order.
+Unrelated edits remain available. Starting/encoding still validates every
+encoder before opening/indexing the source or launching workers.
 
 - Pass totals are `1` or `2`, except AVM (`1` only) and FFmpeg (implicit single
   pass; an explicit `--passes` request is rejected). AOM's native third pass is
@@ -57,9 +61,22 @@ applies the flags from the same command. Unknown custom options remain allowed.
   requires low delay (`pred-struct 1`). Explicit CRF/CQP options conflict with
   `rc 1`/`rc 2`; loaded configurations must remove the conflicting option.
   A CLI mode change removes the stock CRF option if no CRF was explicitly given.
+  Prediction structures accept `0`/`all-intra`/`ai`, `1`/`low-delay`/`ld`, and
+  `2`/`random-access`/`ra`, subject to those same rate-control constraints.
+  Explicit QP/CQP, AQ or RC choices replace a conflicting stock CRF option;
+  custom quality settings are retained and conflicting combinations are errors.
+- Native VVenC `--passes -1` (`-p -1`) and `--pass -1` are valid auto/both
+  sentinels, not frontend pass tuples. Auto resolves to two passes with a
+  positive bitrate or a separate native pass, otherwise one. Combined native
+  two-pass calls cannot replay stdin: use frontend `--passes 2` and do not
+  override its separate pass selection with native `--pass -1`.
 - All numeric option values must be finite. Known quality, rate-control and
   pass settings also have backend-specific type/range checks, including their
   string forms. Other options are still checked by the native encoder.
+  x265 CRF uses a `-24..51` envelope; the actual native minimum is
+  `-6 * (internal bit depth - 8)` (0 at 8-bit, -12 at 10-bit, -24 at 12-bit).
+  SVT bitrate limits and exact quarter-step CRF are deliberate checks: values
+  the native encoder would clamp or truncate are rejected rather than changed.
 - Chroma Photon Noise needs a supplied or existing luma table. A chroma-only
   update retains that table's other settings. Coefficient limits are 24 for
   `c_y` and 25 each for `ccb`/`ccr`; ISO zero is allowed.

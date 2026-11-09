@@ -43,7 +43,6 @@ pub(super) fn save_edit(
     path: &Path,
     before: &[Scene<CliSequenceData>],
 ) -> Result<()> {
-    configuration.validate_encoder_settings()?;
     report_stale(configuration, before)?;
     configuration.save(path)?;
     warn_stale(SUBJECT);

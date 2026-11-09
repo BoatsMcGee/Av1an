@@ -61,7 +61,7 @@ mod tests {
                 vec!["-0.25", "70.25", "25.1", "inf"],
             ),
             (EncoderBase::X264, "crf", vec!["-13", "52"]),
-            (EncoderBase::X265, "crf", vec!["-1", "52"]),
+            (EncoderBase::X265, "crf", vec!["-25", "52"]),
             (EncoderBase::AVM, "qp", vec!["-97", "256"]),
             (EncoderBase::VVenC, "qp", vec!["-1", "64"]),
             (EncoderBase::AOM, "passes", vec!["0", "3", "1.5"]),
@@ -82,6 +82,225 @@ mod tests {
                 encoder.validate_settings().is_err(),
                 "accepted boolean {base}/{name}"
             );
+        }
+    }
+
+    #[test]
+    fn c04_f1_prediction_aliases_preserve_rate_control_constraints() {
+        use andean_condor::models::encoder::EncoderSettingsError;
+        for (rc, aliases) in [
+            (
+                0.0,
+                &["0", "all-intra", "ai", "1", "low-delay", "ld", "2", "random-access", "ra"][..],
+            ),
+            (1.0, &["2", "random-access", "ra"][..]),
+            (2.0, &["1", "low-delay", "ld"][..]),
+        ] {
+            for alias in aliases {
+                let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+                encoder.parameters_mut().remove("crf");
+                encoder.parameters_mut().extend(CLIParameter::new_numbers(
+                    "--",
+                    " ",
+                    &[("rc", rc), ("keyint", 48.0)],
+                ));
+                encoder.parameters_mut().insert(
+                    "pred-struct".into(),
+                    CLIParameter::new_string("--", " ", alias),
+                );
+                assert_eq!(encoder.validate_settings(), Ok(()), "rc={rc}, pred={alias}");
+            }
+        }
+        let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, true);
+        for (rc, pred) in [(1.0, "ai"), (1.0, "ld"), (2.0, "ai"), (2.0, "ra")] {
+            encoder.parameters_mut().extend(CLIParameter::new_numbers(
+                "--",
+                " ",
+                &[("rc", rc), ("keyint", 48.0)],
+            ));
+            encoder.parameters_mut().insert(
+                "pred-struct".into(),
+                CLIParameter::new_string("--", " ", pred),
+            );
+            assert!(
+                matches!(encoder.validate_settings(), Err(EncoderSettingsError::SvtMode(reason)) if reason.contains("CBR requires low delay")),
+                "rc={rc}, pred={pred}"
+            );
+        }
+        encoder.parameters_mut().insert(
+            "pred-struct".into(),
+            CLIParameter::new_string("--", " ", "bogus"),
+        );
+        assert!(
+            matches!(encoder.validate_settings(), Err(EncoderSettingsError::InvalidNumber { name, .. }) if name == "pred-struct")
+        );
+    }
+
+    #[test]
+    fn c04_f3_x265_negative_crf_envelope_is_not_an_eight_bit_floor() {
+        use andean_condor::models::encoder::EncoderSettingsError;
+        for (depth, crf) in [(10.0, -5.0), (10.0, -12.0), (12.0, -20.0), (12.0, -24.0)] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::X265, false);
+            encoder
+                .parameters_mut()
+                .extend(CLIParameter::new_numbers("--", " ", &[("crf", crf)]));
+            encoder
+                .parameters_mut()
+                .insert("D".into(), CLIParameter::new_number("-", " ", depth));
+            assert_eq!(
+                encoder.validate_settings(),
+                Ok(()),
+                "depth={depth}, crf={crf}"
+            );
+        }
+        for value in ["-24.25", "51.25", "NaN", "not-numeric"] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::X265, false);
+            encoder
+                .parameters_mut()
+                .insert("crf".into(), CLIParameter::new_string("--", " ", value));
+            assert!(
+                matches!(encoder.validate_settings(), Err(EncoderSettingsError::InvalidNumber { name, .. }) if name == "crf"),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn c04_f4_vvenc_auto_sentinels_distinguish_stdin_replay_from_numbers() {
+        use andean_condor::models::encoder::EncoderSettingsError;
+        for options in [
+            vec![("passes", -1.0)],
+            vec![("pass", -1.0)],
+            vec![("passes", -1.0), ("pass", -1.0)],
+            vec![("passes", 1.0), ("pass", -1.0)],
+        ] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+            encoder.parameters_mut().extend(CLIParameter::new_numbers("--", " ", &options));
+            assert_eq!(encoder.validate_settings(), Ok(()), "{options:?}");
+        }
+        for bitrate in ["0", "0k", "0Mbps"] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+            encoder
+                .parameters_mut()
+                .insert("passes".into(), CLIParameter::new_string("--", " ", "-1"));
+            encoder.parameters_mut().insert(
+                "bitrate".into(),
+                CLIParameter::new_string("--", " ", bitrate),
+            );
+            assert_eq!(
+                encoder.validate_settings(),
+                Ok(()),
+                "zero bitrate {bitrate} resolves auto to single pass"
+            );
+        }
+        for (passes, native_pass, bitrate) in [(-1.0, -1.0, 1000.0), (2.0, -1.0, 1000.0)] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+            encoder.parameters_mut().extend(CLIParameter::new_numbers(
+                "--",
+                " ",
+                &[("passes", passes), ("pass", native_pass), ("bitrate", bitrate)],
+            ));
+            let error = encoder
+                .validate_settings()
+                .expect_err("combined native passes need seekable input");
+            assert!(
+                error.to_string().contains("stdin") && error.to_string().contains("separate"),
+                "{error}"
+            );
+            assert!(
+                matches!(
+                    error,
+                    EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, _)
+                ),
+                "native -1 is not an invalid number"
+            );
+        }
+        let mut combined = Encoder::default_from_base(&EncoderBase::VVenC, false);
+        combined
+            .parameters_mut()
+            .insert("p".into(), CLIParameter::new_number("-", " ", 2.0));
+        assert!(
+            matches!(combined.validate_settings(), Err(EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, reason)) if reason.contains("stdin")),
+            "native -p aliases --passes"
+        );
+        combined.parameters_mut().clear();
+        combined.parameters_mut().extend(CLIParameter::new_numbers(
+            "--",
+            " ",
+            &[("passes", 1.0), ("pass", 2.0)],
+        ));
+        assert!(
+            matches!(combined.validate_settings(), Err(EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, reason)) if reason.contains("pass count")),
+            "native separate pass exceeds total"
+        );
+        let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+        *encoder.passes_mut().expect("passes") = EncoderPasses::All(2);
+        encoder.parameters_mut().extend(CLIParameter::new_numbers(
+            "--",
+            " ",
+            &[("passes", -1.0), ("bitrate", 1000.0)],
+        ));
+        assert_eq!(
+            encoder.validate_settings(),
+            Ok(()),
+            "frontend separate passes resolve native auto to two"
+        );
+        encoder
+            .parameters_mut()
+            .insert("pass".into(), CLIParameter::new_number("--", " ", -1.0));
+        let error = encoder
+            .validate_settings()
+            .expect_err("native both overrides frontend separate pass");
+        assert!(error.to_string().contains("stdin"), "{error}");
+        for value in [0.0, -2.0, 1.5, 3.0] {
+            encoder
+                .parameters_mut()
+                .insert("pass".into(), CLIParameter::new_number("--", " ", value));
+            assert!(
+                matches!(encoder.validate_settings(), Err(EncoderSettingsError::InvalidNumber { name, .. }) if name == "pass"),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn c04_f6_loaded_quality_options_must_agree_on_qp_and_aq() {
+        use andean_condor::models::encoder::EncoderSettingsError;
+        for (quality, value, rc, qp, aq, valid) in [
+            ("crf", 25.0, "0", Some(30.0), None, false),
+            ("crf", 25.0, "cqp", None, None, false),
+            ("crf", 25.0, "0", None, Some(0.0), false),
+            ("cqp", 25.0, "crf", None, None, false),
+            ("cqp", 25.0, "0", None, Some(2.0), false),
+            ("crf", 25.0, "crf", Some(25.0), Some(2.0), true),
+            ("cqp", 25.25, "cqp", Some(25.0), Some(0.0), true),
+        ] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, true);
+            encoder
+                .parameters_mut()
+                .insert(quality.into(), CLIParameter::new_number("--", " ", value));
+            encoder
+                .parameters_mut()
+                .insert("rc".into(), CLIParameter::new_string("--", " ", rc));
+            if let Some(qp) = qp {
+                encoder
+                    .parameters_mut()
+                    .insert("qp".into(), CLIParameter::new_number("--", " ", qp));
+            }
+            if let Some(aq) = aq {
+                encoder
+                    .parameters_mut()
+                    .insert("aq-mode".into(), CLIParameter::new_number("--", " ", aq));
+            }
+            let result = encoder.validate_settings();
+            if valid {
+                assert_eq!(result, Ok(()));
+            } else {
+                assert!(
+                    matches!(result, Err(EncoderSettingsError::SvtMode(_))),
+                    "{quality}/{rc}/{qp:?}/{aq:?}: {result:?}"
+                );
+            }
         }
     }
 
@@ -141,6 +360,9 @@ mod tests {
         ] {
             for value in values {
                 let mut encoder = Encoder::default_from_base(&base, false);
+                if base == EncoderBase::SVTAV1 && name == "qp" {
+                    encoder.parameters_mut().remove("crf");
+                }
                 encoder
                     .parameters_mut()
                     .insert(name.into(), CLIParameter::new_number("--", " ", value));

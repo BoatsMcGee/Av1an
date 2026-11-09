@@ -85,7 +85,10 @@ pub(super) fn apply_set(
         ScenesSet::Executable { path } => {
             warn_missing_path("encoder executable", path);
             let scene = require_scene_mut(scenes, index)?;
-            scene.encoder.set_executable(Some(path.clone()));
+            let mut candidate = scene.encoder.clone();
+            candidate.set_executable(Some(path.clone()));
+            candidate.validate_settings()?;
+            scene.encoder = candidate;
             (
                 "executable",
                 serde_json::to_value(scene.encoder.custom_executable())?,
@@ -156,7 +159,16 @@ pub(super) fn apply_set(
         ScenesSet::AppendColorData { value } => {
             let enabled = value.unwrap_or(Toggle::On).enabled();
             let scene = require_scene_mut(scenes, index)?;
-            scene.encoder.set_append_color_data(enabled);
+            configure_encoder(
+                &mut scene.encoder,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(enabled),
+            )?;
             (
                 "append-color-data",
                 serde_json::to_value(scene.encoder.append_color_data())?,
@@ -181,6 +193,7 @@ pub(super) fn reset_scene(
     index: usize,
     global: &Encoder,
 ) -> Result<Value> {
+    global.validate_settings()?;
     let scene = require_scene_mut(&mut configuration.condor.scenes, index)?;
     scene.encoder = global.clone();
     scene.sub_scenes = None;
@@ -201,6 +214,7 @@ pub(super) fn reset_key(
     Ok(match key {
         ScenesKey::Frames => bail!(ScenesConfigError::NoDefault("frames")),
         ScenesKey::Encoder => {
+            global.validate_settings()?;
             scene.encoder = global.clone();
             ("encoder", serde_json::to_value(&scene.encoder)?)
         },
@@ -288,6 +302,7 @@ pub(super) fn add_scene(
         bail!(ScenesError::EmptyScene { start, end });
     }
     let encoder = configuration.condor.encoder.clone();
+    encoder.validate_settings()?;
     let scenes = &mut configuration.condor.scenes;
     let position = match placement {
         Placement::Sorted => sorted_insert_index(scenes, start),

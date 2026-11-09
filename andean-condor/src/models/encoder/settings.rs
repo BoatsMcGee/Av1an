@@ -26,6 +26,8 @@ pub enum EncoderSettingsError {
     },
     #[error("SVT-AV1 settings conflict: {0}")]
     SvtMode(&'static str),
+    #[error("unsupported {0} mode: {1}")]
+    UnsupportedMode(EncoderBase, &'static str),
     #[error("Photon Noise {0} must contain at most {1} coefficients")]
     NoiseCoefficients(&'static str, usize),
 }
@@ -98,7 +100,9 @@ impl Encoder {
                 (EncoderBase::X264, "qp") => {
                     (0.0, 81.0, 1.0, "an integer in 0..=81 (bit-depth dependent)")
                 },
-                (EncoderBase::X265, "crf") => (0.0, 51.0, 0.0, "in 0..=51"),
+                (EncoderBase::X265, "crf") => {
+                    (-24.0, 51.0, 0.0, "in -24..=51 (bit-depth dependent)")
+                },
                 (EncoderBase::VVenC, "qp") => (0.0, 63.0, 0.0, "in 0..=63"),
                 (EncoderBase::SVTAV1, "crf" | "cqp") => {
                     (0.0, 70.0, 0.25, "in 0..=70 in quarter steps")
@@ -108,7 +112,9 @@ impl Encoder {
                 },
                 (EncoderBase::SVTAV1, "rc" | "aq-mode") => (0.0, 2.0, 1.0, "an integer in 0..=2"),
                 (EncoderBase::SVTAV1, "preset") => (-1.0, 13.0, 1.0, "an integer in -1..=13"),
-                (EncoderBase::SVTAV1, "pred-struct") => (1.0, 2.0, 1.0, "1 or 2"),
+                (EncoderBase::SVTAV1, "pred-struct") => {
+                    (0.0, 2.0, 1.0, "0, 1 or 2 (or a prediction-structure alias)")
+                },
                 (EncoderBase::SVTAV1, "keyint") => (
                     -2.0,
                     f64::from(i32::MAX),
@@ -117,6 +123,7 @@ impl Encoder {
                 ),
                 (EncoderBase::SVTAV1, "tbr" | "mbr") => (0.0, 100_000.0, 0.0, "in 0..=100000 kbps"),
                 (EncoderBase::FFmpeg, _) => continue,
+                (EncoderBase::VVenC, "passes" | "p" | "pass") => (-1.0, 2.0, 1.0, "-1, 1 or 2"),
                 (_, "passes") => (
                     1.0,
                     if base == EncoderBase::AVM { 1.0 } else { 2.0 },
@@ -145,6 +152,9 @@ impl Encoder {
             if !value.is_finite()
                 || value < min
                 || value > max
+                || (base == EncoderBase::VVenC
+                    && matches!(name.as_str(), "passes" | "p" | "pass")
+                    && value == 0.0)
                 || (step != 0.0 && (value / step).fract() != 0.0)
             {
                 return Err(self.invalid_number(name, requirement));
@@ -169,6 +179,47 @@ impl Encoder {
                     "choose either crf or cqp, not both",
                 ));
             }
+            let quality_aq = if self.parameters().contains_key("crf") {
+                Some(2.0)
+            } else if self.parameters().contains_key("cqp") {
+                Some(0.0)
+            } else {
+                None
+            };
+            let rc_aq = self.parameters().get("rc").and_then(|parameter| {
+                match parameter.to_string_value().as_str() {
+                    "crf" => Some(2.0),
+                    "cqp" => Some(0.0),
+                    _ => None,
+                }
+            });
+            let aq = self.numeric_setting("aq-mode")?;
+            if quality_aq.zip(rc_aq).is_some_and(|(quality, rc)| quality != rc)
+                || quality_aq
+                    .or(rc_aq)
+                    .zip(aq)
+                    .is_some_and(|(implied, explicit)| implied != explicit)
+            {
+                return Err(EncoderSettingsError::SvtMode(
+                    "crf/rc crf require aq-mode 2; cqp/rc cqp require aq-mode 0; explicit modes must agree",
+                ));
+            }
+            let qp = self.numeric_setting("qp")?;
+            let short_qp = self.numeric_setting("q")?;
+            if qp.zip(short_qp).is_some_and(|(long, short)| long != short) {
+                return Err(EncoderSettingsError::SvtMode(
+                    "qp and q specify different quantizers",
+                ));
+            }
+            let quality = self.numeric_setting("crf")?.or(self.numeric_setting("cqp")?);
+            if quality
+                .zip(qp.or(short_qp))
+                .is_some_and(|(quality, qp)| quality.floor().min(63.0) != qp)
+            {
+                return Err(EncoderSettingsError::SvtMode(
+                    "crf/cqp and qp/q specify different quantizers",
+                ));
+            }
             let total = f64::from(pass.1).max(self.numeric_setting("passes")?.unwrap_or(1.0)).max(
                 if self.numeric_setting("pass")?.is_some_and(|pass| pass > 0.0) {
                     2.0
@@ -185,6 +236,56 @@ impl Encoder {
             if (rc == 1.0 && pred != 2.0) || (rc == 2.0 && pred != 1.0) {
                 return Err(EncoderSettingsError::SvtMode(
                     "VBR requires random access (pred-struct 2); CBR requires low delay (pred-struct 1)",
+                ));
+            }
+        }
+        if base == EncoderBase::VVenC {
+            // Native options override the frontend's generated separate-pass arguments.
+            let native_pass = self
+                .numeric_setting("pass")?
+                .unwrap_or_else(|| if pass.1 > 1 { f64::from(pass.0) } else { -1.0 });
+            let passes = self.numeric_setting("passes")?;
+            let short_passes = self.numeric_setting("p")?;
+            if passes.zip(short_passes).is_some_and(|(long, short)| long != short) {
+                return Err(EncoderSettingsError::UnsupportedMode(
+                    base,
+                    "conflicting passes and p options; choose one native pass count",
+                ));
+            }
+            let native_passes = passes
+                .or(short_passes)
+                .unwrap_or_else(|| if pass.1 > 1 { f64::from(pass.1) } else { -1.0 });
+            let rate_control = ["bitrate", "b"]
+                .iter()
+                .filter_map(|name| self.parameters().get(*name))
+                .any(|value| {
+                    value
+                        .to_string_value()
+                        .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+                        .parse::<f64>()
+                        != Ok(0.0)
+                });
+            // vvencapp resolves auto to two for a separate pass or nonzero bitrate;
+            // the SDK's bitrate-independent default is not the CLI contract.
+            let total = if native_passes == -1.0 {
+                if native_pass > 0.0 || rate_control {
+                    2.0
+                } else {
+                    1.0
+                }
+            } else {
+                native_passes
+            };
+            if total > 1.0 && native_pass < 0.0 {
+                return Err(EncoderSettingsError::UnsupportedMode(
+                    base,
+                    "combined native passes require replaying stdin; use frontend separate passes (--passes 2 without a native --pass -1 override)",
+                ));
+            }
+            if native_pass > total {
+                return Err(EncoderSettingsError::UnsupportedMode(
+                    base,
+                    "native pass exceeds its pass count; select compatible native passes/pass options",
                 ));
             }
         }
@@ -211,6 +312,13 @@ impl Encoder {
                         "crf" | "cqp" => Some(0.0),
                         "vbr" => Some(1.0),
                         "cbr" => Some(2.0),
+                        _ => value.parse().ok(),
+                    }
+                } else if self.base() == EncoderBase::SVTAV1 && name == "pred-struct" {
+                    match value.as_str() {
+                        "all-intra" | "ai" => Some(0.0),
+                        "low-delay" | "ld" => Some(1.0),
+                        "random-access" | "ra" => Some(2.0),
                         _ => value.parse().ok(),
                     }
                 } else if self.base() == EncoderBase::SVTAV1 && name == "keyint" {

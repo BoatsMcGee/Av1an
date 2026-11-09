@@ -156,8 +156,16 @@ pub fn configure_encoder(
         if base == EncoderBase::SVTAV1
             && !parameters.contains_key("crf")
             && (parameters.contains_key("cqp")
+                || parameters.contains_key("qp")
+                || parameters.contains_key("q")
+                || parameters
+                    .get("aq-mode")
+                    .is_some_and(|p| matches!(p.to_string_value().as_str(), "0" | "1"))
                 || parameters.get("rc").is_some_and(|p| {
-                    matches!(p.to_string_value().as_str(), "1" | "2" | "vbr" | "cbr")
+                    matches!(
+                        p.to_string_value().as_str(),
+                        "1" | "2" | "vbr" | "cbr" | "cqp"
+                    )
                 }))
             && candidate.parameters().get("crf") == base.default_parameters().get("crf")
         {
@@ -405,7 +413,10 @@ impl ConfigCommand for EncodeCrud {
             },
             EncodeSet::Executable { path } => {
                 warn_missing_path("encoder executable", path);
-                configuration.condor.encoder.set_executable(Some(path.clone()));
+                let mut candidate = configuration.condor.encoder.clone();
+                candidate.set_executable(Some(path.clone()));
+                candidate.validate_settings()?;
+                configuration.condor.encoder = candidate;
                 PropertyChange::new(
                     "executable",
                     configuration.condor.encoder.custom_executable(),
@@ -468,7 +479,16 @@ impl ConfigCommand for EncodeCrud {
             },
             EncodeSet::AppendColorData { value } => {
                 let enabled = value.unwrap_or(Toggle::On).enabled();
-                configuration.condor.encoder.set_append_color_data(enabled);
+                configure_encoder(
+                    &mut configuration.condor.encoder,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(enabled),
+                )?;
                 PropertyChange::new(
                     "append-color-data",
                     configuration.condor.encoder.append_color_data(),
@@ -481,18 +501,19 @@ impl ConfigCommand for EncodeCrud {
         configuration: &mut Configuration,
         key: Option<&Self::Key>,
     ) -> Result<Option<PropertyChange>> {
+        let mut candidate = configuration.condor.encoder.clone();
         let (property, value) = match key {
             None => {
                 // `scenes_directory` is derived from --temp; keep it in place.
                 let parallel = &mut configuration.condor.sequence_config.parallel_encoder;
                 parallel.workers = None;
                 parallel.input = None;
-                configuration.condor.encoder = Encoder::default();
+                candidate = Encoder::default();
                 (
                     "section",
                     json!({
                         "parallel_encoder": serde_json::to_value(&configuration.condor.sequence_config.parallel_encoder)?,
-                        "encoder": serde_json::to_value(&configuration.condor.encoder)?,
+                        "encoder": serde_json::to_value(&candidate)?,
                     }),
                 )
             },
@@ -526,59 +547,57 @@ impl ConfigCommand for EncodeCrud {
                 )
             },
             Some(EncodeKey::Encoder) => {
-                configuration.condor.encoder = Encoder::default();
-                (
-                    "encoder",
-                    serde_json::to_value(&configuration.condor.encoder)?,
-                )
+                candidate = Encoder::default();
+                ("encoder", serde_json::to_value(&candidate)?)
             },
             Some(EncodeKey::Executable) => {
-                configuration.condor.encoder.set_executable(None);
+                candidate.set_executable(None);
                 (
                     "executable",
-                    serde_json::to_value(configuration.condor.encoder.custom_executable())?,
+                    serde_json::to_value(candidate.custom_executable())?,
                 )
             },
             Some(EncodeKey::Passes) => {
-                let base = configuration.condor.encoder.base();
-                if let Some(passes) = configuration.condor.encoder.passes_mut() {
+                let base = candidate.base();
+                if let Some(passes) = candidate.passes_mut() {
                     *passes = base.default_passes();
                 }
-                (
-                    "passes",
-                    serde_json::to_value(configuration.condor.encoder.passes())?,
-                )
+                ("passes", serde_json::to_value(candidate.passes())?)
             },
             Some(EncodeKey::Params) => {
-                let base = configuration.condor.encoder.base();
-                *configuration.condor.encoder.parameters_mut() = base.default_parameters();
-                (
-                    "params",
-                    serde_json::to_value(configuration.condor.encoder.parameters())?,
-                )
+                let base = candidate.base();
+                *candidate.parameters_mut() = base.default_parameters();
+                ("params", serde_json::to_value(candidate.parameters())?)
             },
             Some(EncodeKey::PhotonNoise) => {
-                configuration.condor.encoder.set_photon_noise(None);
+                candidate.set_photon_noise(None);
                 (
                     "photon-noise",
-                    serde_json::to_value(configuration.condor.encoder.photon_noise())?,
+                    serde_json::to_value(candidate.photon_noise())?,
                 )
             },
             Some(EncodeKey::FfmpegFilter) => {
-                configuration.condor.encoder.set_ffmpeg_filter(None);
+                candidate.set_ffmpeg_filter(None);
                 (
                     "ffmpeg-filter",
-                    serde_json::to_value(configuration.condor.encoder.ffmpeg_filter())?,
+                    serde_json::to_value(candidate.ffmpeg_filter())?,
                 )
             },
             Some(EncodeKey::AppendColorData) => {
-                configuration.condor.encoder.set_append_color_data(true);
+                candidate.set_append_color_data(true);
                 (
                     "append-color-data",
-                    serde_json::to_value(configuration.condor.encoder.append_color_data())?,
+                    serde_json::to_value(candidate.append_color_data())?,
                 )
             },
         };
+        if !matches!(
+            key,
+            Some(EncodeKey::Workers | EncodeKey::Input | EncodeKey::ScenesDirectory)
+        ) {
+            candidate.validate_settings()?;
+            configuration.condor.encoder = candidate;
+        }
         Ok(Some(PropertyChange {
             property: property.to_owned(),
             value,
@@ -719,6 +738,103 @@ mod tests {
             .expect_err("explicit conflict");
             assert_eq!(encoder, before);
         }
+    }
+
+    #[test]
+    fn c04_f6_explicit_quality_choices_replace_stock_not_custom_crf() {
+        for params in [
+            "--qp 32",
+            "-q 32 --aq-mode 0",
+            "--rc cqp",
+            "--aq-mode 0",
+            "--aq-mode 1",
+            "--cqp 25.25 --rc cqp",
+            "--qp 32 --rc cqp",
+            "--rc cqp --qp 32",
+        ] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+            configure_encoder(
+                &mut encoder,
+                None,
+                None,
+                Some(params),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("deterministic explicit choice");
+            assert!(
+                !encoder.parameters().contains_key("crf"),
+                "stock CRF overrides {params}"
+            );
+        }
+        for params in [
+            "--crf 25 --aq-mode 0",
+            "--aq-mode 0 --crf 25",
+            "--crf 25 --qp 32",
+            "--qp 32 --crf 25",
+            "--cqp 25 --aq-mode 2",
+            "--rc cqp --aq-mode 2",
+            "--rc crf --cqp 25",
+            "--qp 25 -q 32",
+        ] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+            let before = encoder.clone();
+            let error = configure_encoder(
+                &mut encoder,
+                None,
+                None,
+                Some(params),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("explicit conflict");
+            assert!(
+                matches!(
+                    error.downcast_ref::<EncodeConfigError>(),
+                    Some(EncodeConfigError::SvtMode(_))
+                ),
+                "{params}: {error:#}"
+            );
+            assert_eq!(encoder, before);
+        }
+        let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+        encoder.set_quantizer(20.0);
+        let before = encoder.clone();
+        let error = configure_encoder(
+            &mut encoder,
+            None,
+            None,
+            Some("--qp 32"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("custom quality must not disappear");
+        assert!(
+            matches!(
+                error.downcast_ref::<EncodeConfigError>(),
+                Some(EncodeConfigError::SvtMode(_))
+            ),
+            "{error:#}"
+        );
+        assert_eq!(encoder, before);
+        configure_encoder(
+            &mut encoder,
+            None,
+            None,
+            Some("--qp 20 --aq-mode 2"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("compatible explicit controls");
+        assert_eq!(encoder.quantizer(), Some(20.0));
     }
 
     #[test]

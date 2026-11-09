@@ -445,7 +445,9 @@ impl ConfigCommand for InitCrud {
             InitKey::Input => Err(InitConfigError::NoDefault("input").into()),
             InitKey::Output => Err(InitConfigError::NoDefault("output").into()),
             InitKey::Encoder => {
-                configuration.condor.encoder = Encoder::default();
+                let candidate = Encoder::default();
+                candidate.validate_settings()?;
+                configuration.condor.encoder = candidate;
                 Ok(Some(PropertyChange::new(
                     "encoder",
                     &configuration.condor.encoder,
