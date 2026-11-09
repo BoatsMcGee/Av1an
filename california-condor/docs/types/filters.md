@@ -15,13 +15,31 @@ $ condor detect-scenes --filters "resize:scaler=bilinear;width=540;height=960;"
 $ condor encode --filters "crop:top=140;bottom=140;" --filters "trim:start=24;end=240;"
 ```
 
-Keys are case-insensitive. Omitted keys keep source values. List values use commas (e.g. `sigma=3.0,0.0,0.0`).
+Filter names are case-sensitive; keys are case-insensitive. Omitted optional keys keep
+their defaults. The colon is required, including for defaults-only filters such as
+`crop:`. Trailing semicolons are allowed. List values use commas (e.g.
+`sigma=3.0,0.0,0.0`); spaces around keys, typed values and list items are ignored.
+String values such as `degrain`'s `prefix` retain their case, Unicode, spaces, colons
+and additional `=` characters.
+
+Unknown or repeated keys, missing `=`, empty typed values/lists, malformed numbers
+and invalid enum values are errors. Booleans accept only `true`, `false`, `1` or `0`,
+including in lists. Floating-point values must be finite. Dimensions must be positive;
+crop amounts and frame indices must be nonnegative and fit the plugin's integer type.
+When both trim bounds are supplied, `end` must be at least `start`. Zero remains valid
+for fields that support it, such as crop amounts and WNNM's passthrough sigma.
+
+For example, `crop:top=abc` reports the filter, field and invalid value instead of
+panicking. Invalid CLI filter edits leave the saved configuration unchanged; parsing
+does not open video or load filter plugins. Clip-dependent constraints are checked
+when the filter runs.
 
 ## Filter Reference
 
 | Filter      | Arguments                                                                 | Notes                                    |
 | ----------- | ------------------------------------------------------------------------- | ---------------------------------------- |
 | `resize`    | `scaler?`, `width?`, `height?`, `format?`                                 | See [Scaler](#scaler) and [Format](#format) |
+| `output-format` / `output_format` | `bit_depth?`, `chroma?`, `width?`, `height?` | Preserves omitted depth/chroma until decoding. Same fields and validation as [FFMS2 Filters](#ffms2-filters). |
 | `crop`      | `top?`, `bottom?`, `left?`, `right?` (pixels)                             |                                          |
 | `trim`      | `start?`, `end?` (frames)                                                 |                                          |
 | `rescale`   | `kernel` (required), `width` (required), `height` (required), `doubler` (required) | Requires vs-jetpack + vodesfunc. See [Kernel](#kernel) and [Doubler](#doubler) |

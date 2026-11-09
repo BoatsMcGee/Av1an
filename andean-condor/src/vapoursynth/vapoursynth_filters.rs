@@ -210,423 +210,332 @@ pub enum VapourSynthFilter {
     },
 }
 
+fn parse_value<T: FromStr>(value: &str) -> Result<T>
+where
+    T::Err: Display,
+{
+    value.parse().map_err(|error: T::Err| anyhow::anyhow!(error.to_string()))
+}
+
+fn parse_plugin_uint(value: &str) -> Result<usize> {
+    // RATIONALE: These usize fields are narrowed to u32 by the plugin adapters.
+    parse_value::<u32>(value).map(|value| value as usize)
+}
+
+fn parse_dimension(value: &str) -> Result<usize> {
+    let dimension = parse_plugin_uint(value)?;
+    anyhow::ensure!(dimension > 0, "dimension must be positive");
+    Ok(dimension)
+}
+
+fn parse_rescale_dimension(value: &str) -> Result<usize> {
+    // RATIONALE: Rescale emits f64 sizes, without the other adapters' u32 narrowing.
+    let dimension = parse_value::<usize>(value)?;
+    anyhow::ensure!(dimension > 0, "dimension must be positive");
+    Ok(dimension)
+}
+
+fn parse_bool(value: &str) -> Result<bool> {
+    match value {
+        "true" | "1" => Ok(true),
+        "false" | "0" => Ok(false),
+        _ => bail!("expected true, false, 1 or 0"),
+    }
+}
+
+fn parse_finite(value: &str) -> Result<f64> {
+    let value = parse_value::<f64>(value)?;
+    anyhow::ensure!(value.is_finite(), "expected a finite number");
+    Ok(value)
+}
+
+/// Consumed fields leave only unknown keys; string values remain verbatim.
+struct FilterArguments<'a> {
+    filter: &'a str,
+    values: BTreeMap<String, &'a str>,
+}
+
+impl FilterArguments<'_> {
+    fn optional<T>(&mut self, field: &str, parse: impl Fn(&str) -> Result<T>) -> Result<Option<T>> {
+        self.values
+            .remove(field)
+            .map(|value| {
+                parse(value.trim()).map_err(|error| {
+                    anyhow::anyhow!(
+                        "filter {}: invalid {field} value {value:?}: {error}",
+                        self.filter
+                    )
+                })
+            })
+            .transpose()
+    }
+
+    fn required<T>(&mut self, field: &str, parse: impl Fn(&str) -> Result<T>) -> Result<T> {
+        self.optional(field, parse)?.ok_or_else(|| {
+            anyhow::anyhow!("filter {}: missing required field {field}", self.filter)
+        })
+    }
+
+    fn list<T>(
+        &mut self,
+        field: &str,
+        parse: impl Fn(&str) -> Result<T>,
+    ) -> Result<Option<Vec<T>>> {
+        self.optional(field, |value| {
+            value.split(',').map(|item| parse(item.trim())).collect()
+        })
+    }
+
+    fn check_keys(&self, allowed: &[&str]) -> Result<()> {
+        if let Some((key, value)) =
+            self.values.iter().find(|(key, _)| !allowed.contains(&key.as_str()))
+        {
+            bail!(
+                "filter {}: unknown field {key} with value {value:?}",
+                self.filter
+            );
+        }
+        Ok(())
+    }
+}
+
 impl FromStr for VapourSynthFilter {
     type Err = anyhow::Error;
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts: Vec<&str> = s.split(':').collect();
-        let variant_name = parts[0];
-        let variant_args = parts[1]
-            .split(';')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|arg| {
-                let mut parts = arg.splitn(2, '=');
-                let name = parts
-                    .next()
-                    .expect("Failed to parse filter argument")
-                    .to_string()
-                    .to_lowercase();
-                let value = parts.next().map(|v| v.trim().to_string()).unwrap_or_default();
-                (name, value)
-            })
-            .collect::<BTreeMap<_, _>>();
-        match variant_name {
-            "output-format" | "output_format" => {
-                let native = Ffms2Filter::from_str(s)?;
-                native.validate()?;
-                Ok(native.to_vapoursynth().remove(0))
-            },
-            "crop" => Ok(VapourSynthFilter::Crop {
-                top: variant_args
-                    .get("top")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                bottom: variant_args
-                    .get("bottom")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                left: variant_args
-                    .get("left")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                right: variant_args
-                    .get("right")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-            }),
-            "resize" => Ok(VapourSynthFilter::Resize {
-                scaler: variant_args
-                    .get("scaler")
-                    .map(|v| Scaler::from_str(v).expect("Failed to parse filter argument value")),
-                width: variant_args
-                    .get("width")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                height: variant_args
-                    .get("height")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                format: variant_args.get("format").map(|v| {
-                    FFPixelFormat::from_str(v).expect("Failed to parse filter argument value")
-                }),
-            }),
-            "trim" => Ok(VapourSynthFilter::Trim {
-                start: variant_args
-                    .get("start")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                end: variant_args
-                    .get("end")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-            }),
-            "rescale" => Ok(VapourSynthFilter::Rescale {
-                kernel: variant_args
-                    .get("kernel")
-                    .map(|v| VSJETKernel::from_str(v).expect("Failed to parse kernel"))
-                    .expect("Failed to parse kernel"),
-                width: variant_args
-                    .get("width")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value"))
-                    .expect("Failed to parse width"),
-                height: variant_args
-                    .get("height")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value"))
-                    .expect("Failed to parse height"),
-                doubler: variant_args
-                    .get("doubler")
-                    .map(|v| Doubler::from_str(v).expect("Failed to parse filter argument value"))
-                    .expect("Failed to parse doubler"),
-            }),
-            "wnnm" => Ok(VapourSynthFilter::WNNM {
-                sigma: variant_args.get("sigma").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                block_size: variant_args
-                    .get("block_size")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                block_step: variant_args
-                    .get("block_step")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                group_size: variant_args
-                    .get("group_size")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                bm_range: variant_args
-                    .get("bm_range")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                radius: variant_args
-                    .get("radius")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                ps_num: variant_args
-                    .get("ps_num")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                ps_range: variant_args
-                    .get("ps_range")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                residual: variant_args.get("residual").map(|v| matches!(v.as_str(), "true" | "1")),
-                adaptive_aggregation: variant_args
-                    .get("adaptive_aggregation")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-            }),
-            "bilateral" => Ok(VapourSynthFilter::Bilateral {
-                sigma_s: variant_args.get("sigma_s").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                sigma_r: variant_args.get("sigma_r").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                planes: variant_args
-                    .get("planes")
-                    .map(|v| v.split(',').map(|s| matches!(s, "1" | "true")).collect()),
-                algorithm: variant_args.get("algorithm").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<u32>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                pbficnum: variant_args.get("pbficnum").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<u32>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-            }),
-            "degrain" => Ok(VapourSynthFilter::Degrain {
-                blksize: variant_args.get("blksize").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                overlap: variant_args.get("overlap").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                pad: variant_args.get("pad").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                pel: variant_args
-                    .get("pel")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                sharp: variant_args
-                    .get("sharp")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                rfilter: variant_args
-                    .get("rfilter")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                radius: variant_args
-                    .get("radius")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                search: variant_args
-                    .get("search")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                searchparam: variant_args
-                    .get("searchparam")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                mvlambda: variant_args
-                    .get("mvlambda")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                chroma: variant_args.get("chroma").map(|v| matches!(v.as_str(), "true" | "1")),
-                lsad: variant_args
-                    .get("lsad")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                plevel: variant_args
-                    .get("plevel")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                globalmv: variant_args.get("globalmv").map(|v| matches!(v.as_str(), "true" | "1")),
-                pnew: variant_args
-                    .get("pnew")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pzero: variant_args
-                    .get("pzero")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pglobal: variant_args
-                    .get("pglobal")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                badsad: variant_args
-                    .get("badsad")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                badrange: variant_args
-                    .get("badrange")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                meander: variant_args.get("meander").map(|v| matches!(v.as_str(), "true" | "1")),
-                trymany: variant_args
-                    .get("trymany")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                satd: variant_args.get("satd").map(|v| matches!(v.as_str(), "true" | "1")),
-                recalculate: variant_args
-                    .get("recalculate")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                recalc_thsad: variant_args
-                    .get("recalc_thsad")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_smooth: variant_args
-                    .get("recalc_smooth")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                recalc_blksize: variant_args.get("recalc_blksize").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                recalc_overlap: variant_args.get("recalc_overlap").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                thsad: variant_args.get("thsad").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                thsad2: variant_args.get("thsad2").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                planes: variant_args.get("planes").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<usize>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                limit: variant_args.get("limit").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<f64>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                thscd1: variant_args
-                    .get("thscd1")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thscd2: variant_args
-                    .get("thscd2")
-                    .map(|v| v.parse::<f64>().expect("Failed to parse filter argument value")),
-                prefix: variant_args.get("prefix").cloned(),
-            }),
-            "zoom_degrain" => Ok(VapourSynthFilter::ZoomDegrain {
-                hpad: variant_args
-                    .get("hpad")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                vpad: variant_args
-                    .get("vpad")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pel: variant_args
-                    .get("pel")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                levels: variant_args
-                    .get("levels")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                chroma: variant_args.get("chroma").map(|v| matches!(v.as_str(), "true" | "1")),
-                sharp: variant_args
-                    .get("sharp")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                rfilter: variant_args
-                    .get("rfilter")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                blksize: variant_args
-                    .get("blksize")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                blksizev: variant_args
-                    .get("blksizev")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                search: variant_args
-                    .get("search")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                searchparam: variant_args
-                    .get("searchparam")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pelsearch: variant_args
-                    .get("pelsearch")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                lambda: variant_args
-                    .get("lambda")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                lsad: variant_args
-                    .get("lsad")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                plevel: variant_args
-                    .get("plevel")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                global: variant_args.get("global").map(|v| matches!(v.as_str(), "true" | "1")),
-                pnew: variant_args
-                    .get("pnew")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pzero: variant_args
-                    .get("pzero")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                pglobal: variant_args
-                    .get("pglobal")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                overlap: variant_args
-                    .get("overlap")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                overlapv: variant_args
-                    .get("overlapv")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                divide: variant_args
-                    .get("divide")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                badsad: variant_args
-                    .get("badsad")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                badrange: variant_args
-                    .get("badrange")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                truemotion: variant_args
-                    .get("truemotion")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                meander: variant_args.get("meander").map(|v| matches!(v.as_str(), "true" | "1")),
-                trymany: variant_args.get("trymany").map(|v| matches!(v.as_str(), "true" | "1")),
-                fields: variant_args.get("fields").map(|v| matches!(v.as_str(), "true" | "1")),
-                tff: variant_args.get("tff").map(|v| matches!(v.as_str(), "true" | "1")),
-                search_coarse: variant_args
-                    .get("search_coarse")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                dct: variant_args
-                    .get("dct")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalculate: variant_args
-                    .get("recalculate")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                recalc_thsad: variant_args
-                    .get("recalc_thsad")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_smooth: variant_args
-                    .get("recalc_smooth")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-                recalc_blksize: variant_args
-                    .get("recalc_blksize")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_blksizev: variant_args
-                    .get("recalc_blksizev")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_search: variant_args
-                    .get("recalc_search")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_searchparam: variant_args
-                    .get("recalc_searchparam")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_lambda: variant_args
-                    .get("recalc_lambda")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_overlap: variant_args
-                    .get("recalc_overlap")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_overlapv: variant_args
-                    .get("recalc_overlapv")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                recalc_divide: variant_args
-                    .get("recalc_divide")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thsad: variant_args
-                    .get("thsad")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thsadc: variant_args
-                    .get("thsadc")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                plane: variant_args
-                    .get("plane")
-                    .map(|v| v.parse::<i32>().expect("Failed to parse filter argument value")),
-                limit: variant_args
-                    .get("limit")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                limitc: variant_args
-                    .get("limitc")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thscd1: variant_args
-                    .get("thscd1")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-                thscd2: variant_args
-                    .get("thscd2")
-                    .map(|v| v.parse::<usize>().expect("Failed to parse filter argument value")),
-            }),
-            "fgs" => Ok(VapourSynthFilter::FGS {
-                iso: variant_args
-                    .get("iso")
-                    .map(|v| v.parse::<u32>().expect("Failed to parse filter argument value"))
-                    .expect("FGS filter requires an `iso` argument"),
-                chroma_iso: variant_args
-                    .get("chroma_iso")
-                    .map(|v| v.parse::<u32>().expect("Failed to parse filter argument value")),
-                cy: variant_args.get("cy").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                ccb: variant_args.get("ccb").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                ccr: variant_args.get("ccr").map(|v| {
-                    v.split(',')
-                        .map(|s| s.parse::<i8>().expect("Failed to parse filter argument value"))
-                        .collect()
-                }),
-                dynamic_seed: variant_args
-                    .get("dynamic_seed")
-                    .map(|v| matches!(v.as_str(), "true" | "1")),
-            }),
-            _ => Err(anyhow::anyhow!("Invalid variant name: {}", variant_name)),
+        let (variant_name, arguments) = s.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!("filter {s:?}: expected name:key=value; (missing ':')")
+        })?;
+        anyhow::ensure!(!variant_name.is_empty(), "filter name must not be empty");
+        let mut args = FilterArguments {
+            filter: variant_name,
+            values: BTreeMap::new(),
+        };
+        for argument in arguments.split(';').filter(|argument| !argument.trim().is_empty()) {
+            let (key, value) = argument.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("filter {variant_name}: argument {argument:?} must be key=value")
+            })?;
+            let key = key.trim().to_lowercase();
+            anyhow::ensure!(
+                !key.is_empty(),
+                "filter {variant_name}: empty argument key in {argument:?}"
+            );
+            anyhow::ensure!(
+                args.values.insert(key.clone(), value).is_none(),
+                "filter {variant_name}: duplicate field {key} with value {value:?}"
+            );
         }
+        let filter = match variant_name {
+            "output-format" | "output_format" => {
+                let bit_depth = args.optional("bit_depth", |value| {
+                    let depth = parse_value::<u8>(value)?;
+                    anyhow::ensure!(matches!(depth, 8 | 10 | 12), "expected 8, 10 or 12");
+                    Ok(depth)
+                })?;
+                let chroma = args.optional("chroma", parse_value)?;
+                let width = args.optional("width", parse_value)?;
+                let height = args.optional("height", parse_value)?;
+                Ffms2Filter::OutputFormat {
+                    bit_depth,
+                    chroma,
+                    width,
+                    height,
+                }
+                .validate()
+                .map_err(|error| anyhow::anyhow!("filter {variant_name}: {error}"))?;
+                Self::OutputFormat {
+                    bit_depth,
+                    chroma,
+                    width,
+                    height,
+                }
+            },
+            "crop" => Self::Crop {
+                top: args.optional("top", parse_plugin_uint)?,
+                bottom: args.optional("bottom", parse_plugin_uint)?,
+                left: args.optional("left", parse_plugin_uint)?,
+                right: args.optional("right", parse_plugin_uint)?,
+            },
+            "resize" => Self::Resize {
+                scaler: args.optional("scaler", parse_value)?,
+                width: args.optional("width", parse_dimension)?,
+                height: args.optional("height", parse_dimension)?,
+                format: args.optional("format", parse_value)?,
+            },
+            "trim" => {
+                let start = args.optional("start", parse_plugin_uint)?;
+                let end = args.optional("end", parse_plugin_uint)?;
+                if let (Some(start), Some(end)) = (start, end) {
+                    anyhow::ensure!(
+                        end >= start,
+                        "filter trim: end value {end} must be >= start value {start}"
+                    );
+                }
+                Self::Trim { start, end }
+            },
+            "rescale" => {
+                args.check_keys(&["kernel", "width", "height", "doubler"])?;
+                Self::Rescale {
+                    kernel: args.required("kernel", parse_value)?,
+                    width: args.required("width", parse_rescale_dimension)?,
+                    height: args.required("height", parse_rescale_dimension)?,
+                    doubler: args.required("doubler", parse_value)?,
+                }
+            },
+            "wnnm" => Self::WNNM {
+                sigma: args.list("sigma", parse_finite)?,
+                block_size: args.optional("block_size", parse_plugin_uint)?,
+                block_step: args.optional("block_step", parse_plugin_uint)?,
+                group_size: args.optional("group_size", parse_plugin_uint)?,
+                bm_range: args.optional("bm_range", parse_plugin_uint)?,
+                radius: args.optional("radius", parse_plugin_uint)?,
+                ps_num: args.optional("ps_num", parse_plugin_uint)?,
+                ps_range: args.optional("ps_range", parse_plugin_uint)?,
+                residual: args.optional("residual", parse_bool)?,
+                adaptive_aggregation: args.optional("adaptive_aggregation", parse_bool)?,
+            },
+            "bilateral" => Self::Bilateral {
+                sigma_s: args.list("sigma_s", parse_finite)?,
+                sigma_r: args.list("sigma_r", parse_finite)?,
+                planes: args.list("planes", parse_bool)?,
+                // RATIONALE: vszip documents algorithm 0..=2 and PBFICnum 2..=256.
+                algorithm: args.list("algorithm", |value| {
+                    let value = parse_value::<u32>(value)?;
+                    anyhow::ensure!(value <= 2, "expected algorithm 0, 1 or 2");
+                    Ok(value)
+                })?,
+                pbficnum: args.list("pbficnum", |value| {
+                    let value = parse_value::<u32>(value)?;
+                    anyhow::ensure!((2..=256).contains(&value), "expected PBFICnum in 2..=256");
+                    Ok(value)
+                })?,
+            },
+            "degrain" => Self::Degrain {
+                blksize: args.list("blksize", parse_plugin_uint)?,
+                overlap: args.list("overlap", parse_plugin_uint)?,
+                pad: args.list("pad", parse_plugin_uint)?,
+                pel: args.optional("pel", parse_plugin_uint)?,
+                sharp: args.optional("sharp", parse_plugin_uint)?,
+                rfilter: args.optional("rfilter", parse_plugin_uint)?,
+                radius: args.optional("radius", parse_plugin_uint)?,
+                search: args.optional("search", parse_plugin_uint)?,
+                searchparam: args.optional("searchparam", parse_plugin_uint)?,
+                mvlambda: args.optional("mvlambda", parse_plugin_uint)?,
+                chroma: args.optional("chroma", parse_bool)?,
+                lsad: args.optional("lsad", parse_plugin_uint)?,
+                plevel: args.optional("plevel", parse_plugin_uint)?,
+                globalmv: args.optional("globalmv", parse_bool)?,
+                pnew: args.optional("pnew", parse_plugin_uint)?,
+                pzero: args.optional("pzero", parse_plugin_uint)?,
+                pglobal: args.optional("pglobal", parse_plugin_uint)?,
+                badsad: args.optional("badsad", parse_plugin_uint)?,
+                badrange: args.optional("badrange", parse_plugin_uint)?,
+                meander: args.optional("meander", parse_bool)?,
+                trymany: args.optional("trymany", parse_plugin_uint)?,
+                satd: args.optional("satd", parse_bool)?,
+                recalculate: args.optional("recalculate", parse_bool)?,
+                recalc_thsad: args.optional("recalc_thsad", parse_plugin_uint)?,
+                recalc_smooth: args.optional("recalc_smooth", parse_bool)?,
+                recalc_blksize: args.list("recalc_blksize", parse_plugin_uint)?,
+                recalc_overlap: args.list("recalc_overlap", parse_plugin_uint)?,
+                thsad: args.list("thsad", parse_plugin_uint)?,
+                thsad2: args.list("thsad2", parse_plugin_uint)?,
+                planes: args.list("planes", parse_plugin_uint)?,
+                limit: args.list("limit", parse_finite)?,
+                thscd1: args.optional("thscd1", parse_plugin_uint)?,
+                thscd2: args.optional("thscd2", parse_finite)?,
+                prefix: args.values.remove("prefix").map(str::to_owned),
+            },
+            "zoom_degrain" => Self::ZoomDegrain {
+                hpad: args.optional("hpad", parse_plugin_uint)?,
+                vpad: args.optional("vpad", parse_plugin_uint)?,
+                pel: args.optional("pel", parse_plugin_uint)?,
+                levels: args.optional("levels", parse_plugin_uint)?,
+                chroma: args.optional("chroma", parse_bool)?,
+                sharp: args.optional("sharp", parse_plugin_uint)?,
+                rfilter: args.optional("rfilter", parse_plugin_uint)?,
+                blksize: args.optional("blksize", parse_plugin_uint)?,
+                blksizev: args.optional("blksizev", parse_plugin_uint)?,
+                search: args.optional("search", parse_plugin_uint)?,
+                searchparam: args.optional("searchparam", parse_plugin_uint)?,
+                pelsearch: args.optional("pelsearch", parse_plugin_uint)?,
+                lambda: args.optional("lambda", parse_plugin_uint)?,
+                lsad: args.optional("lsad", parse_plugin_uint)?,
+                plevel: args.optional("plevel", parse_plugin_uint)?,
+                global: args.optional("global", parse_bool)?,
+                pnew: args.optional("pnew", parse_plugin_uint)?,
+                pzero: args.optional("pzero", parse_plugin_uint)?,
+                pglobal: args.optional("pglobal", parse_plugin_uint)?,
+                overlap: args.optional("overlap", parse_plugin_uint)?,
+                overlapv: args.optional("overlapv", parse_plugin_uint)?,
+                divide: args.optional("divide", parse_plugin_uint)?,
+                badsad: args.optional("badsad", parse_plugin_uint)?,
+                badrange: args.optional("badrange", parse_plugin_uint)?,
+                truemotion: args.optional("truemotion", parse_bool)?,
+                meander: args.optional("meander", parse_bool)?,
+                trymany: args.optional("trymany", parse_bool)?,
+                fields: args.optional("fields", parse_bool)?,
+                tff: args.optional("tff", parse_bool)?,
+                search_coarse: args.optional("search_coarse", parse_plugin_uint)?,
+                dct: args.optional("dct", parse_plugin_uint)?,
+                recalculate: args.optional("recalculate", parse_bool)?,
+                recalc_thsad: args.optional("recalc_thsad", parse_plugin_uint)?,
+                recalc_smooth: args.optional("recalc_smooth", parse_bool)?,
+                recalc_blksize: args.optional("recalc_blksize", parse_plugin_uint)?,
+                recalc_blksizev: args.optional("recalc_blksizev", parse_plugin_uint)?,
+                recalc_search: args.optional("recalc_search", parse_plugin_uint)?,
+                recalc_searchparam: args.optional("recalc_searchparam", parse_plugin_uint)?,
+                recalc_lambda: args.optional("recalc_lambda", parse_plugin_uint)?,
+                recalc_overlap: args.optional("recalc_overlap", parse_plugin_uint)?,
+                recalc_overlapv: args.optional("recalc_overlapv", parse_plugin_uint)?,
+                recalc_divide: args.optional("recalc_divide", parse_plugin_uint)?,
+                thsad: args.optional("thsad", parse_plugin_uint)?,
+                thsadc: args.optional("thsadc", parse_plugin_uint)?,
+                plane: args.optional("plane", |value| {
+                    let plane = parse_value::<i32>(value)?;
+                    // RATIONALE: ZooMVTools documents -1=all, 0=Y, 1=U, 2=V.
+                    anyhow::ensure!((-1..=2).contains(&plane), "expected plane -1, 0, 1 or 2");
+                    Ok(plane)
+                })?,
+                limit: args.optional("limit", parse_plugin_uint)?,
+                limitc: args.optional("limitc", parse_plugin_uint)?,
+                thscd1: args.optional("thscd1", parse_plugin_uint)?,
+                thscd2: args.optional("thscd2", parse_plugin_uint)?,
+            },
+            "fgs" => {
+                args.check_keys(&["iso", "chroma_iso", "cy", "ccb", "ccr", "dynamic_seed"])?;
+                let iso = args.required("iso", parse_value)?;
+                let chroma_iso = args.optional("chroma_iso", parse_value)?;
+                let mut coefficients = |field, maximum| {
+                    args.optional(field, |value| {
+                        let values = value
+                            .split(',')
+                            .map(|item| parse_value::<i8>(item.trim()))
+                            .collect::<Result<Vec<_>>>()?;
+                        anyhow::ensure!(
+                            values.len() <= maximum,
+                            "expected at most {maximum} coefficients"
+                        );
+                        Ok(values)
+                    })
+                };
+                let cy = coefficients("cy", 24)?;
+                let ccb = coefficients("ccb", 25)?;
+                let ccr = coefficients("ccr", 25)?;
+                Self::FGS {
+                    iso,
+                    chroma_iso,
+                    cy,
+                    ccb,
+                    ccr,
+                    dynamic_seed: args.optional("dynamic_seed", parse_bool)?,
+                }
+            },
+            _ => bail!("Invalid filter name: {variant_name}"),
+        };
+        args.check_keys(&[])?;
+        Ok(filter)
     }
 }
 
