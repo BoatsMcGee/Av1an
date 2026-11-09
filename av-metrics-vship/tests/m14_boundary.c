@@ -3,12 +3,15 @@
 #include "headers/VshipAPI.h"
 #include <stddef.h>
 #include <stdio.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
-static unsigned counts[6]; /* probe, init, free, compute, reset, reset_score */
+static _Atomic unsigned counts[8]; /* probe, init, free, compute, reset, reset_score, count, info */
+static _Atomic unsigned gpu_counts[2][4]; /* M28: FullCheck/Init by requested device. */
 static int setting(const char *key, int fallback) { const char *s=getenv(key); return s ? atoi(s) : fallback; }
-unsigned m14_count(unsigned i) { return counts[i]; }
+unsigned m14_count(unsigned i) { if (i>=8) abort(); return counts[i]; }
+unsigned m28_gpu_count(unsigned kind, unsigned gpu) { if (kind>=2 || gpu>=4) abort(); return gpu_counts[kind][gpu]; }
 /* M20: record native identity/order; reject stale handles before dereferencing. */
 typedef struct { int type; unsigned id, calls; } Handle;
 static Handle *live[64];
@@ -26,9 +29,17 @@ static void record(unsigned kind, Handle *h) {
     trace[trace_len++]=kind*10000+h->id*100+h->calls;
 }
 Vship_Version Vship_GetVersion(void) { return (Vship_Version){5,1,setting("M14_PATCH",2),(Vship_Backend)setting("M14_BACKEND",3)}; }
-Vship_Exception Vship_GetDeviceCount(int *n) { *n=1; return Vship_NoError; }
-Vship_Exception Vship_GetDeviceInfo(Vship_DeviceInfo *info, int gpu) { (void)gpu; memset(info,0,sizeof(*info)); return Vship_NoError; }
-Vship_Exception Vship_GPUFullCheck(int gpu) { (void)gpu; counts[0]++; return (Vship_Exception)status(2,"M14_PROBE_STATUS"); }
+Vship_Exception Vship_GetDeviceCount(int *n) { counts[6]++; *n=setting("M28_DEVICES",0) ? 3 : 1; return Vship_NoError; }
+Vship_Exception Vship_GetDeviceInfo(Vship_DeviceInfo *info, int gpu) {
+    counts[7]++; memset(info,0,sizeof(*info));
+    if (setting("M28_DEVICES",0)) info->integrated=setting("M28_DEVICES",0)==2 || gpu!=1;
+    return Vship_NoError;
+}
+Vship_Exception Vship_GPUFullCheck(int gpu) {
+    counts[0]++; if (gpu>=0 && gpu<4) gpu_counts[0][gpu]++;
+    if (setting("M28_DEVICES",0) && (gpu<0 || gpu>=3)) return Vship_BadDeviceArgument;
+    return (Vship_Exception)status(2,"M14_PROBE_STATUS");
+}
 int Vship_GetErrorMessage(Vship_Exception e, char *out, int len) {
     if ((unsigned)e > 17) abort();
     return snprintf(out,(size_t)len,"known vship status");
@@ -37,6 +48,10 @@ int Vship_GetDetailedLastError(char *out, int len) { (void)out; (void)len; retur
 int Vship_GetDetailedLastErrorHandler(Vship_Handle h, char *out, int len) { (void)h; (void)out; (void)len; return 0; }
 Vship_Exception Vship_InitHandler(Vship_Handle *h, void *arg) {
     unsigned id=++counts[1];
+    int type; memcpy(&type,arg,sizeof(int));
+    int gpu=type==1 ? ((Vship_InitSSIMULACRA2_1*)arg)->gpu_id :
+            type==2 ? ((Vship_InitButteraugli_1*)arg)->gpu_id : ((Vship_InitCVVDP_1*)arg)->gpu_id;
+    if (gpu>=0 && gpu<4) gpu_counts[1][gpu]++;
     int error=status(1,"M20_INIT_STATUS");
     /* A failed out-parameter is not an owned handle, even when non-null. */
     if (error) { *h=&failed_output; return (Vship_Exception)error; }

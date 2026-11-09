@@ -288,7 +288,7 @@ fn the_backend_is_reported_when_constructing_a_scorer() {
         scorer.backend(),
         VshipBackend::Hip | VshipBackend::Cuda | VshipBackend::Vulkan | VshipBackend::Cpu
     ));
-    assert_eq!(scorer.gpu_id(), 0);
+    assert_eq!(Some(scorer.gpu_id()), av_metrics_vship::default_gpu_id());
     assert_eq!(scorer.metric(), VshipMetric::Ssimulacra2);
 }
 

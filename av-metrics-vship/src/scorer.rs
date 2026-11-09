@@ -11,7 +11,7 @@ use std::{
     marker::PhantomData,
     mem::size_of,
     ptr,
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
 };
 
 use av_decoders::{
@@ -970,9 +970,15 @@ impl VshipScorer {
     /// be scored against a 720p encode without the caller having to say so.
     /// Pass an explicit target to scale to some third size instead.
     ///
+    /// Default-device construction shares a successful capability probe with
+    /// availability checks. An explicitly configured device is checked afresh,
+    /// even when it is the default index. Every scorer creates its own handler;
+    /// initialization and scoring can fail independently of cached availability.
+    ///
     /// # Errors
     ///
     /// Returns [`VshipError::LibraryNotFound`] if libvship could not be loaded,
+    /// [`VshipError::CallFailed`] if the device capability check fails,
     /// [`VshipError::InvalidConfiguration`] if the configuration is unusable,
     /// [`VshipError::UnsupportedFormat`] if either format is outside libvship's
     /// supported set, and [`VshipError::MetricUnavailable`] if a handler cannot
@@ -1014,7 +1020,12 @@ impl VshipScorer {
         let cvvdp_strings = CvvdpStrings::new(&config)?;
 
         let api = VshipApi::load()?;
-        api.gpu_full_check(config.gpu_id_or_default())?;
+        let gpu_id = config.gpu_id_or_default();
+        if !config.has_explicit_gpu_id() && default_gpu_id() == Some(gpu_id) {
+            default_gpu_full_check(api, gpu_id)?;
+        } else {
+            api.gpu_full_check(gpu_id)?;
+        }
 
         let handler = MetricHandler::new(
             api,
@@ -1077,7 +1088,9 @@ impl VshipScorer {
     /// answer and `Vship_GPUFullCheck` must pass on a device. Any of those
     /// failing reports unavailability rather than panicking.
     ///
-    /// Cheap to call: the library is resolved once and cached.
+    /// The resolved default device's successful capability check is shared with
+    /// version requests and default constructors. Failed checks may retry;
+    /// runtime initialization or scoring errors do not invalidate that success.
     #[inline]
     #[must_use]
     pub fn is_available() -> bool {
@@ -1085,6 +1098,9 @@ impl VshipScorer {
     }
 
     /// The runtime libvship version string, if available.
+    ///
+    /// Borrows process-lifetime storage and shares the default capability cache
+    /// with [`Self::is_available`].
     #[inline]
     #[must_use]
     pub fn libvship_version() -> Option<&'static str> {
@@ -1440,10 +1456,24 @@ fn availability(gpu_id: u32) -> Result<&'static str, VshipError> {
     // The version is queried before the device check, so a library that loaded
     // but cannot run reports as unavailable rather than as a working scorer.
     let version = CACHED_VERSION.get_or_init(|| api.version_string());
-    api.gpu_full_check(gpu_id)?;
+    default_gpu_full_check(api, gpu_id)?;
 
     // The static owns the string for the process lifetime, so callers can borrow it.
     Ok(version.as_str())
+}
+
+/// Cache only successful capability checks for the resolved default device.
+fn default_gpu_full_check(api: &VshipApi, gpu_id: u32) -> Result<(), VshipError> {
+    static CHECKED: Mutex<Option<u32>> = Mutex::new(None);
+
+    // Serialize the first success, not just its publication. Failed probes retry;
+    // explicit devices and runtime init/compute never use or invalidate this cache.
+    let mut checked = CHECKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *checked != Some(gpu_id) {
+        api.gpu_full_check(gpu_id)?;
+        *checked = Some(gpu_id);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

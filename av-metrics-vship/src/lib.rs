@@ -68,6 +68,7 @@ pub use scorer::{
 };
 
 /// The runtime libvship version string, if libvship is loaded and usable.
+/// Shares the successful default-device capability check with [`is_available`].
 #[inline]
 #[must_use]
 pub fn libvship_version() -> Option<&'static str> {
@@ -76,8 +77,10 @@ pub fn libvship_version() -> Option<&'static str> {
 
 /// Whether vship scoring is available on this system.
 ///
-/// Cheap to call: libvship is resolved once and cached. Requires both a
-/// loadable library and a device that passes `Vship_GPUFullCheck`.
+/// Requires a loadable library and a default device passing `Vship_GPUFullCheck`.
+/// Successful capability checks are cached and shared with version requests and
+/// default constructors; failed checks may retry. Runtime initialization and
+/// scoring can still fail independently.
 #[inline]
 #[must_use]
 pub fn is_available() -> bool {

@@ -433,7 +433,19 @@ directory to an absolute path; other platforms retain normal relative-path seman
 
 `is_available()` needs more than a successful `dlopen`: `Vship_GetVersion` must answer and `Vship_GPUFullCheck` must pass on a device. Since libvship 5.1.2, a missing Vulkan driver is reported through the C API instead of aborting during load. Missing runtime libraries for other backends can still prevent loading. Any unavailable library or device returns `false`, so callers can use the VapourSynth plugin path instead.
 
-The result is cached, so the call is cheap. `VshipScorer::backend()` reports which backend the loaded build targets, and `device_name()` names the device.
+The resolved default device's **successful** `Vship_GPUFullCheck` is cached and
+shared by free/associated availability and version calls and default scorer
+constructors. Concurrent first requests perform one successful probe. Failed
+capability checks may retry; they are not cached as permanent absence. Existing
+library-loading and default-device selection caches are unchanged; this does not
+add hotplug or enumeration-failure recovery.
+
+An explicit `with_gpu_id(...)` always validates that index afresh, including
+explicit device 0 or the default index. Every scorer still creates its own native
+handler. Initialization and compute failures remain errors, independently of
+cached availability, and do not invalidate a successful capability check.
+`devices()`, `device_info()`, and `device_name()` may still query fresh metadata.
+`VshipScorer::backend()` reports which backend the loaded build targets.
 
 ## Testing
 

@@ -21,6 +21,377 @@ mod common;
 #[path = "../../test-support/m24_runtime.rs"]
 mod m24_runtime;
 
+/// Catches repeated default probes, check-then-store races, cached failures,
+/// skipped explicit admission, and routing a selected device to the wrong init.
+#[test]
+#[cfg(unix)]
+fn m28_default_capability_cache() {
+    if let Ok(scenario) = std::env::var("M28_CHILD") {
+        m28_child(&scenario);
+        return;
+    }
+    let dir = tempfile::tempdir().expect("capability fixture directory");
+    let library = dir.path().join(if cfg!(target_os = "macos") {
+        "libvship.dylib"
+    } else {
+        "libvship.so"
+    });
+    compile(&library, false, &[]);
+    let mut errors = Vec::new();
+    for scenario in ["mixed", "constructor-first", "concurrent", "all-integrated", "retry"] {
+        let mut child = Command::new(std::env::current_exe().expect("executable"))
+            .args(["--exact", "m28_default_capability_cache", "--nocapture"])
+            .env("M28_CHILD", scenario)
+            .env(
+                "M28_DEVICES",
+                if scenario == "all-integrated" {
+                    "2"
+                } else {
+                    "1"
+                },
+            )
+            .env("M14_LIBRARY", &library)
+            .env("M14_BACKEND", "3")
+            .env("M14_PATCH", "2")
+            .env(
+                "M14_PROBE_STATUS",
+                if scenario == "retry" { "777" } else { "0" },
+            )
+            .env("M14_COMPUTE_STATUS", "0")
+            .env("M20_INIT_STATUS", "0")
+            .env_remove("M14_TAG")
+            .env("VSHIP_PLUGIN_PATH", dir.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("capability child");
+        let start = Instant::now();
+        while child.try_wait().expect("status").is_none() {
+            if start.elapsed() > Duration::from_secs(30) {
+                child.kill().expect("kill");
+                child.wait().expect("reap");
+                panic!("M28 timed out: {scenario}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let out = child.wait_with_output().expect("output");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if !out.status.success() || !stdout.contains("1 passed; 0 failed") {
+            errors.push(format!(
+                "{scenario}: {stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        } else {
+            print!("{stdout}");
+        }
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+#[cfg(unix)]
+fn m28_child(scenario: &str) {
+    // SAFETY: exact fixture signatures; the mapping outlives calls and threads.
+    let lib =
+        unsafe { libloading::Library::new(std::env::var_os("M14_LIBRARY").expect("library")) }
+            .expect("mapping");
+    // SAFETY: these exports are defined in m14_boundary.c.
+    let (counter, gpu_counter, control) = unsafe {
+        (
+            lib.get::<unsafe extern "C" fn(u32) -> u32>(b"m14_count\0").expect("counter"),
+            lib.get::<unsafe extern "C" fn(u32, u32) -> u32>(b"m28_gpu_count\0")
+                .expect("GPU counter"),
+            lib.get::<unsafe extern "C" fn(u32, i32)>(b"m20_set\0").expect("control"),
+        )
+    };
+    // SAFETY: bounded indices, live mapping; counters are C11 atomics.
+    let count = |i| unsafe { counter(i) };
+    // SAFETY: only kinds 0..2 and devices 0..4 are used.
+    let gpu_count = |kind, gpu| unsafe { gpu_counter(kind, gpu) };
+    // SAFETY: defined controls; mutations happen only outside concurrent calls.
+    let set = |i, value| unsafe { control(i, value) };
+    let format = VideoFormat {
+        width: 32,
+        height: 32,
+        bit_depth: 8,
+        chroma_sampling: ChromaSubsampling::Yuv420,
+        color_range: None,
+        color_primaries: None,
+        color_transfer_characteristic: None,
+        color_space: None,
+        chroma_location: None,
+    };
+    let new = |config| VshipScorer::new(config, format, format, None);
+    if scenario == "retry" {
+        assert!(
+            !av_metrics_vship::is_available(),
+            "failed first probe is unavailable"
+        );
+        assert!(
+            VshipScorer::libvship_version().is_none(),
+            "failed default probe hides version"
+        );
+        assert!(
+            matches!(new(VshipConfig::new()), Err(VshipError::CallFailed {
+            function: "Vship_GPUFullCheck", status: 777, message
+        }) if message == "libvship error 777"),
+            "default retry retains native function/status/message"
+        );
+        assert_eq!(
+            (count(0), count(1), count(2)),
+            (3, 0, 0),
+            "failed probes retry without handlers"
+        );
+        set(2, 0);
+    }
+    if scenario == "constructor-first" {
+        let scorer = new(VshipConfig::new()).expect("first default constructor");
+        assert_eq!(
+            scorer.gpu_id(),
+            1,
+            "constructor resolves the discrete default"
+        );
+        drop(scorer);
+        assert_eq!(
+            (count(0), count(1), count(2)),
+            (1, 1, 1),
+            "first constructor probes and owns one handler"
+        );
+    }
+    let versions = if scenario == "concurrent" {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(12));
+        let mut threads = Vec::new();
+        for i in 0..12 {
+            let barrier = std::sync::Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                if i % 2 == 0 {
+                    assert!(
+                        av_metrics_vship::is_available(),
+                        "concurrent free availability"
+                    );
+                    VshipScorer::libvship_version().expect("concurrent version")
+                } else {
+                    assert!(
+                        VshipScorer::is_available(),
+                        "concurrent associated availability"
+                    );
+                    av_metrics_vship::libvship_version().expect("concurrent version")
+                }
+            }));
+        }
+        threads
+            .into_iter()
+            .map(|thread| thread.join().expect("joined"))
+            .collect::<Vec<_>>()
+    } else {
+        (0..4)
+            .map(|i| {
+                if i % 2 == 0 {
+                    assert!(av_metrics_vship::is_available(), "free availability");
+                    VshipScorer::libvship_version().expect("version")
+                } else {
+                    assert!(VshipScorer::is_available(), "associated availability");
+                    av_metrics_vship::libvship_version().expect("version")
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    for version in &versions {
+        assert_eq!(*version, "5.1.2", "pinned fixture version");
+        assert_eq!(
+            version.as_ptr(),
+            versions[0].as_ptr(),
+            "static borrowed version identity"
+        );
+    }
+    let expected_probes = if scenario == "retry" { 4 } else { 1 };
+    assert_eq!(
+        count(0),
+        expected_probes,
+        "one successful default probe, including concurrent first requests"
+    );
+    let chosen = if scenario == "all-integrated" { 2 } else { 1 };
+    assert_eq!(
+        av_metrics_vship::default_gpu_id(),
+        Some(chosen),
+        "discrete preference or last integrated device"
+    );
+    assert_eq!(
+        gpu_count(0, chosen),
+        expected_probes,
+        "probe the chosen index, never assumed zero"
+    );
+    assert_eq!(
+        gpu_count(0, 0),
+        0,
+        "default never probes device zero in the multi-GPU fixture"
+    );
+    assert_eq!(
+        (count(6), count(7)),
+        (1, if chosen == 2 { 3 } else { 2 }),
+        "selection enumerated only once"
+    );
+    assert_eq!(
+        count(1),
+        if scenario == "constructor-first" {
+            1
+        } else {
+            0
+        },
+        "availability creates no handlers"
+    );
+    println!(
+        "M28 {scenario}: default={chosen}, probes={}, enumeration/info={}/{}, borrowed version={:p}",
+        count(0),
+        count(6),
+        count(7),
+        versions[0].as_ptr()
+    );
+    if scenario == "all-integrated" {
+        let scorer = new(VshipConfig::new()).expect("last integrated default constructor");
+        assert_eq!(scorer.gpu_id(), 2, "last integrated device is the default");
+        drop(scorer);
+        assert_eq!(
+            (gpu_count(0, 2), gpu_count(1, 2), count(2)),
+            (1, 1, 1),
+            "default two reaches init, reuses probe, and frees its handler"
+        );
+    }
+    if scenario != "mixed" {
+        return;
+    }
+
+    for metric in VshipMetric::all() {
+        let config = VshipConfig::new().with_metric(metric);
+        let probes = count(0);
+        let scorer = new(config.clone()).expect("cached default constructor");
+        assert_eq!(
+            scorer.gpu_id(),
+            1,
+            "default constructor keeps chosen device"
+        );
+        drop(scorer);
+        assert_eq!(
+            count(0),
+            probes,
+            "default constructor reuses capability success"
+        );
+        for gpu in [0, 2] {
+            let before = (gpu_count(0, gpu), gpu_count(1, gpu));
+            let scorer = new(config.clone().with_gpu_id(gpu)).expect("explicit constructor");
+            assert_eq!(
+                scorer.gpu_id(),
+                gpu,
+                "explicit constructor keeps requested device"
+            );
+            drop(scorer);
+            assert_eq!(
+                (gpu_count(0, gpu), gpu_count(1, gpu)),
+                (before.0 + 1, before.1 + 1),
+                "{metric:?}: requested device reaches both FullCheck and Init"
+            );
+        }
+    }
+    drop(new(VshipConfig::new().with_gpu_id(1)).expect("explicit default also validates"));
+    assert_eq!(
+        (gpu_count(0, 0), gpu_count(0, 1), gpu_count(0, 2)),
+        (3, 2, 3),
+        "every explicit constructor probes, including explicit default index"
+    );
+    assert_eq!(
+        (gpu_count(1, 0), gpu_count(1, 1), gpu_count(1, 2)),
+        (3, 4, 3),
+        "FullCheck and Init both receive selected IDs for every metric"
+    );
+    assert_eq!(
+        (count(1), count(2)),
+        (10, 10),
+        "fresh owned handler per constructor"
+    );
+    assert!(
+        matches!(new(VshipConfig::new().with_gpu_id(3)), Err(VshipError::CallFailed {
+        function: "Vship_GPUFullCheck", status: 8, message
+    }) if message == "known vship status"),
+        "invalid explicit device retains native function/status/message"
+    );
+    assert_eq!(
+        (gpu_count(0, 3), gpu_count(1, 3), count(1)),
+        (1, 0, 10),
+        "invalid explicit device never allocates or falls back"
+    );
+    set(2, 777);
+    assert!(
+        matches!(new(VshipConfig::new().with_gpu_id(0)), Err(VshipError::CallFailed {
+        function: "Vship_GPUFullCheck", status: 777, message
+    }) if message == "libvship error 777"),
+        "explicit probe failure retains native function/status/message"
+    );
+    assert_eq!(count(1), 10, "failed explicit probe creates no handler");
+    assert!(
+        av_metrics_vship::is_available(),
+        "explicit failure cannot poison default success"
+    );
+    set(2, 0);
+    drop(new(VshipConfig::new().with_gpu_id(0)).expect("explicit recovery"));
+    let probes = count(0);
+    set(1, 777);
+    assert!(
+        matches!(new(VshipConfig::new()), Err(VshipError::MetricUnavailable { reason, .. })
+        if reason.contains("777") && reason.contains("Vship_InitHandler")),
+        "cached admission does not hide init failure"
+    );
+    assert!(
+        VshipScorer::is_available(),
+        "init failure cannot poison default success"
+    );
+    set(1, 0);
+    let frame = FrameBuilder::new(32, 32, ChromaSubsampling::Yuv420, 8)
+        .build::<u8>()
+        .expect("frame");
+    let mut scorer = new(VshipConfig::new()).expect("init recovery");
+    set(3, 777);
+    assert!(
+        matches!(scorer.submit_pair(&frame, &frame), Err(VshipError::CallFailed {
+        function: "Vship_ComputeHandler", status: 777, message
+    }) if message == "libvship error 777"),
+        "cached admission does not hide compute function/status/message"
+    );
+    assert!(
+        av_metrics_vship::is_available(),
+        "compute failure cannot poison default success"
+    );
+    set(3, 0);
+    assert_eq!(
+        scorer.submit_pair(&frame, &frame).expect("compute recovery").score,
+        Some(42.0),
+        "compute recovers on the owned handler"
+    );
+    drop(scorer);
+    drop(new(VshipConfig::new()).expect("later default constructor"));
+    assert_eq!(
+        count(0),
+        probes,
+        "init/compute failures neither clear nor re-probe cached capability"
+    );
+    assert_eq!(
+        (count(1), count(2)),
+        (14, 13),
+        "only failed init has no owned output to free"
+    );
+    assert_eq!(
+        av_metrics_vship::libvship_version().expect("version").as_ptr(),
+        versions[0].as_ptr(),
+        "native scoring failures retain the borrowed version"
+    );
+    println!(
+        "M28 mixed: explicit FullCheck/Init IDs checked; status 8/777, probe/init/compute recovery; probes={}, init/free={}/{}, compute={}",
+        count(0),
+        count(1),
+        count(2),
+        count(3)
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn m24_runtime_overrides_and_staged_release() {
@@ -55,7 +426,7 @@ fn m24_runtime_overrides_and_staged_release() {
     );
 }
 
-/// Catches per-request version clones/leaks without caching device admission.
+/// Catches per-request version clones/leaks while retaining fresh explicit admission.
 #[test]
 #[cfg(unix)]
 fn m21_version_borrows_cached_storage() {
@@ -126,7 +497,7 @@ fn m21_child() {
         .expect("fixture version requests must not skip");
         assert_eq!(version, "5.1.2", "pinned fixture version");
         versions.push(version);
-        assert_eq!(count(0), request, "every request probes the device");
+        assert_eq!(count(0), 1, "default requests share successful admission");
     }
     println!(
         "M21 version=5.1.2 pointers={:?}; probes={}",
@@ -140,23 +511,28 @@ fn m21_child() {
             "repeated requests borrow the same stored version"
         );
     }
+    assert_eq!(
+        (count(1), count(2)),
+        (0, 0),
+        "version probes allocate no handlers"
+    );
     // SAFETY: control 2 changes only probe status in the isolated child.
     unsafe { control(2, 777) };
     assert!(
-        av_metrics_vship::libvship_version().is_none(),
-        "failed probe hides cached version"
+        av_metrics_vship::libvship_version().is_some(),
+        "default version retains successful admission"
     );
     assert!(
-        VshipScorer::libvship_version().is_none(),
-        "associated version also probes"
+        VshipScorer::libvship_version().is_some(),
+        "associated version shares successful admission"
     );
     assert!(
-        !av_metrics_vship::is_available(),
-        "failed probe remains unavailable"
+        av_metrics_vship::is_available(),
+        "default availability shares successful admission"
     );
     assert!(
-        !VshipScorer::is_available(),
-        "associated availability also probes"
+        VshipScorer::is_available(),
+        "associated availability shares successful admission"
     );
     let format = VideoFormat {
         width: 32,
@@ -171,18 +547,24 @@ fn m21_child() {
     };
     assert!(
         matches!(
-            VshipScorer::new(VshipConfig::new(), format, format, None),
+            VshipScorer::new(
+                VshipConfig::new()
+                    .with_gpu_id(av_metrics_vship::default_gpu_id().expect("default")),
+                format,
+                format,
+                None
+            ),
             Err(VshipError::CallFailed {
                 function: "Vship_GPUFullCheck",
                 status: 777,
                 ..
             })
         ),
-        "cached version must not mask native probe errors"
+        "cached default version must not mask explicit native probe errors"
     );
     assert_eq!(
         (count(0), count(1), count(2)),
-        (9, 0, 0),
+        (2, 0, 0),
         "failed probes allocate no handlers"
     );
     // SAFETY: restore the same child-local probe control to success.
@@ -196,11 +578,25 @@ fn m21_child() {
     );
     assert_eq!(
         (count(0), count(1), count(2)),
-        (10, 0, 0),
-        "recovery probes without allocating handlers"
+        (2, 0, 0),
+        "default version continues borrowing without probes or handlers"
+    );
+    drop(
+        VshipScorer::new(
+            VshipConfig::new().with_gpu_id(av_metrics_vship::default_gpu_id().expect("default")),
+            format,
+            format,
+            None,
+        )
+        .expect("explicit device recovered"),
+    );
+    assert_eq!(
+        (count(0), count(1), count(2)),
+        (3, 1, 1),
+        "explicit recovery revalidates and owns one handler"
     );
     println!(
-        "M21 failed probe status=777 retained; recovered pointer={:p}; probes=10, init/free=0/0",
+        "M21 explicit failed probe status=777 retained; recovered pointer={:p}; probes=3, init/free=1/1 (version probes allocate none)",
         recovered.as_ptr()
     );
 }
