@@ -379,21 +379,32 @@ suppresses the printed `export` line.
 Vulkan initialization is lazy in libvship 5.1.2 and later, so the library can
 be loaded on a machine without a Vulkan driver and report itself unavailable.
 
-Set `VSHIP_LIB_DIR` or `VSHIP_PLUGIN_PATH` at build time so `build.rs` records the directory it finds, and at run time so `dlopen` finds the same one. Without either, the crate still compiles cleanly but reports itself unavailable, and the VapourSynth plugin path is used instead.
+Set `VSHIP_LIB_DIR` or `VSHIP_PLUGIN_PATH` in the environment of the running
+application to select that directory. Neither variable needs to be set when
+compiling: no native library is probed or required at build time, and no
+build-machine path is embedded as a search hint. If runtime discovery or device
+admission fails, native scoring reports unavailability and callers can use the
+VapourSynth plugin path instead.
 
 
 ## Discovery order
 
-libvship is on no loader search path, so `dlopen` alone would never find it. Candidates are tried most specific first:
+VapourSynth plugins are often outside the loader's search path. Runtime candidates are tried most specific first:
 
 1. `VSHIP_PLUGIN_PATH` — the user's explicit override.
-2. `VSHIP_LIB_DIR` — the build-hint override `build.rs` records when it finds a library at compile time.
+2. `VSHIP_LIB_DIR` — an alternative explicit runtime directory override.
 3. `<dir(VSSCRIPT_PATH)>/plugins`, then `<dir(VSSCRIPT_PATH)>` — the VapourSynth runtime that owns the plugin, and its own directory.
 4. Every entry of `VAPOURSYNTH_EXTRA_PLUGIN_PATH` — VapourSynth's own extra-plugin path list, `;`-separated on Windows and `:`-separated elsewhere.
 5. The platform system directories (`C:\Windows\System32`, `C:\Windows\SysWOW64`).
 6. The bare file names `libvship.dll`, `vship.dll` (or `.dylib` / `.so` elsewhere), so the OS loader's own search path applies as a last resort.
 
-Each directory is tried under both names, because an installation may use either. `build.rs` performs the same probe at compile time purely to record the `VSHIP_LIB_DIR` hint, and never fails the build. `ffi::library_candidates` returns the full list in this order, which is what the discovery tests assert against.
+Each directory is tried under both names, because an installation may use either.
+`ffi::library_candidates` returns the full list in this order, which is what the
+discovery tests assert against. For bundled releases, Windows' loader includes
+the application directory. Unix bare-name loading may need a runtime loader path
+such as `LD_LIBRARY_PATH` on Linux or `DYLD_LIBRARY_PATH` on macOS pointing at the
+staged library directory; copying a library beside the executable alone does not
+add that directory to the Unix loader's search path.
 
 On every platform, an absent, empty or bare-filename `VSSCRIPT_PATH` selects no
 directory: `vsscript.dll` does not add the current directory or `./plugins` to

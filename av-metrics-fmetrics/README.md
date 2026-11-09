@@ -273,12 +273,16 @@ macOS is untested: the hand-link uses `--whole-archive`, a GNU ld and lld flag.
 
 At runtime the library is looked for in:
 
-1. `FMETRICS_LIB_PATH` or `FMETRICS_LIB_DIR`
+1. `FMETRICS_LIB_PATH`, then `FMETRICS_LIB_DIR` — explicit runtime directory overrides
 2. The directory holding the running executable
 3. Platform system directories
 4. Bare names, letting the platform loader's own search path apply
 
-Staging the library beside the executable is therefore enough.
+Staging the library beside the executable is therefore enough. No native library
+is probed or required at build time, and no build-machine path is embedded as a
+search hint. Set the directory overrides in the running application's environment,
+not just when compiling. A missing or incompatible library is reported when used;
+`is_available()` returns `false`.
 
 ## Availability
 

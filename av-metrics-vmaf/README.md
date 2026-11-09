@@ -391,22 +391,23 @@ meson install -C libvmaf/build
 
 ## Configuration
 
-The build script searches for libvmaf in this order:
+libvmaf is discovered only at runtime, in this order:
 
 1. **`VMAF_LIB_DIR`** — a directory containing the library. Set this when libvmaf is
-   somewhere non-standard, or when cross-compiling.
-2. Well-known system locations: `/usr/lib`, `/usr/lib64`, `/usr/local/lib`, `/lib`,
-   `/lib64` and `$CONDA_PREFIX/lib` on Linux; `/opt/homebrew/lib`, `/usr/local/lib`,
-   `/opt/local/lib` and `$CONDA_PREFIX/lib` on macOS.
+   somewhere non-standard on the machine running the binary.
+2. Bare library names, using the platform loader's search path. Windows includes
+   the application directory; on Unix, a bundled library may require a runtime
+   loader path such as `LD_LIBRARY_PATH` on Linux or `DYLD_LIBRARY_PATH` on macOS.
 
 ```bash
+# Set this in the environment of the application using the crate.
 export VMAF_LIB_DIR=/opt/libvmaf/lib
-cargo build --release
 ```
 
-`VMAF_LIB_DIR` is also honoured at runtime, so a binary can be pointed at a libvmaf
-installed after the fact. If nothing is found at build time, the crate still compiles
-and prints a warning; scoring then reports unavailability at runtime.
+No native library is probed or required at build time, and no build-machine path
+is embedded as a search hint. Set `VMAF_LIB_DIR` when running the binary, not just
+when compiling it. A missing or incompatible library is reported when used;
+`is_available()` returns `false`.
 
 ### Frame selection
 

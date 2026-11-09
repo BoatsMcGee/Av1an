@@ -31,3 +31,20 @@ The native test is ignored in ordinary suites because it requires this compiler;
 only on Windows. Linux `m22_` tests exercise production **path/policy selection**
 using native Linux paths, not Windows DLL loading or dependency precedence.
 Native Windows execution is required before claiming Windows loader acceptance.
+
+## Runtime-only native discovery retention (Unix)
+
+```sh
+cargo +stable test --profile ci -p av-metrics-vmaf -p av-metrics-vship -p av-metrics-fmetrics m24_ -- --nocapture
+```
+
+These tests reuse the pinned C ABI fixtures and production scorers. Fresh children
+run copied test executables from a separate media directory with cleared inherited
+environment and poisoned, unconsumed build-host variables. Each runtime directory
+override is tested alone, with no fixture beside the executable or loader path.
+Then the fixture moves beside the executable and all overrides are unset:
+fmetrics must discover that sibling directly; VMAF/vship use only the staged
+runtime `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS) for bare-name loading.
+Temporary libraries and executables are removed by the parent. These are retention
+checks, not reproductions of a runtime failure: the removed build hints were inert.
+Native Windows loader acceptance still requires the separate gate above.

@@ -17,6 +17,44 @@ use v_frame::{chroma::ChromaSubsampling, frame::FrameBuilder};
 #[cfg(unix)]
 mod common;
 
+#[cfg(unix)]
+#[path = "../../test-support/m24_runtime.rs"]
+mod m24_runtime;
+
+#[test]
+#[cfg(unix)]
+fn m24_runtime_overrides_and_staged_release() {
+    if std::env::var_os("M24_CHILD").is_some() {
+        // Load through production discovery before mapping fixture counters.
+        assert_eq!(
+            av_metrics_vship::libvship_version(),
+            Some("5.1.2"),
+            "production discovery selects the pinned runtime"
+        );
+        child();
+        return;
+    }
+    m24_runtime::run(
+        "m24_runtime_overrides_and_staged_release",
+        if cfg!(target_os = "macos") {
+            "libvship.dylib"
+        } else {
+            "libvship.so"
+        },
+        &["VSHIP_PLUGIN_PATH", "VSHIP_LIB_DIR"],
+        true,
+        |library| compile(library, false, &[]),
+        |command, library| {
+            command
+                .env("M14_BACKEND", "3")
+                .env("M14_PATCH", "2")
+                .env("M14_PROBE_STATUS", "0")
+                .env("M14_COMPUTE_STATUS", "0")
+                .env("M14_LIBRARY", library);
+        },
+    );
+}
+
 /// Catches per-request version clones/leaks without caching device admission.
 #[test]
 #[cfg(unix)]

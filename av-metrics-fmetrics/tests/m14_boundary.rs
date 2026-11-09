@@ -14,6 +14,42 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+#[path = "../../test-support/m24_runtime.rs"]
+mod m24_runtime;
+
+#[test]
+#[cfg(unix)]
+fn m24_runtime_overrides_and_staged_release() {
+    if std::env::var_os("M24_CHILD").is_some() {
+        // Load through production discovery before mapping fixture counters.
+        assert_eq!(
+            av_metrics_fmetrics::fmetrics_version().as_deref(),
+            Some("0.1.0"),
+            "production discovery selects the pinned runtime"
+        );
+        child();
+        return;
+    }
+    m24_runtime::run(
+        "m24_runtime_overrides_and_staged_release",
+        if cfg!(target_os = "macos") {
+            "libfmetrics.dylib"
+        } else {
+            "libfmetrics.so"
+        },
+        &["FMETRICS_LIB_PATH", "FMETRICS_LIB_DIR"],
+        false,
+        |library| compile(library, false, &[]),
+        |command, library| {
+            command
+                .env("M14_VERSION", "0.1.0")
+                .env("M14_STATUS", "0")
+                .env("M14_LIBRARY", library);
+        },
+    );
+}
+
 #[test]
 #[cfg(unix)]
 fn m14_native_status_and_version_contract() {

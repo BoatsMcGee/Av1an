@@ -20,6 +20,40 @@ const MARKERS: [&str; 5] = [
     "vmaf_picture_wrap",
 ];
 
+#[path = "../../test-support/m24_runtime.rs"]
+mod m24_runtime;
+
+#[test]
+fn m24_runtime_overrides_and_staged_release() {
+    if std::env::var_os("M24_CHILD").is_some() {
+        // Load through production discovery before mapping fixture counters.
+        assert_eq!(
+            av_metrics_vmaf::libvmaf_version(),
+            Some("3.2.0"),
+            "production discovery selects the pinned runtime"
+        );
+        check_child(true);
+        return;
+    }
+    m24_runtime::run(
+        "m24_runtime_overrides_and_staged_release",
+        if cfg!(target_os = "macos") {
+            "libvmaf.dylib"
+        } else {
+            "libvmaf.so"
+        },
+        &["VMAF_LIB_DIR"],
+        true,
+        |library| compile(library, 0),
+        |command, library| {
+            command
+                .env("M13_VERSION", "3.2.0")
+                .env("M13_MARKER_NAME", "")
+                .env("M13_LIBRARY", library);
+        },
+    );
+}
+
 #[test]
 fn m13_rejects_unverified_versions_before_native_setup() {
     run_cases(
@@ -77,9 +111,16 @@ fn run_cases(test: &str, marker: usize, versions: &[&str], accepted: bool) {
     } else {
         "libvmaf.so"
     });
+    compile(&library, marker);
+    for version in versions {
+        run_child(test, &library, directory.path(), version, MARKERS[marker]);
+    }
+}
+
+fn compile(library: &Path, marker: usize) {
     let output = Command::new("cc")
         .args(["-shared", "-fPIC", "-std=c11", "-Wall", "-Wextra", "-Werror", "-o"])
-        .arg(&library)
+        .arg(library)
         .arg(format!("-DM13_MARKER={marker}"))
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -92,9 +133,6 @@ fn run_cases(test: &str, marker: usize, versions: &[&str], accepted: bool) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for version in versions {
-        run_child(test, &library, directory.path(), version, MARKERS[marker]);
-    }
 }
 
 fn run_child(test: &str, library: &Path, directory: &Path, version: &str, marker: &str) {
