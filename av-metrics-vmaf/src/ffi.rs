@@ -739,9 +739,13 @@ fn open_library() -> Result<Library, VmafError> {
     }
 
     tracing::debug!(?failures, "no libvmaf candidate could be loaded");
-    Err(VmafError::LibraryLoadFailed {
+    Err(library_load_error(&failures))
+}
+
+fn library_load_error(failures: &[String]) -> VmafError {
+    VmafError::LibraryLoadFailed {
         attempts: failures.join("; "),
-    })
+    }
 }
 
 /// Qualify deliberate paths, leaving only actual bare names to safe OS search.
@@ -779,6 +783,36 @@ fn windows_directory_override(value: &std::ffi::OsStr) -> std::io::Result<Option
     Ok(Some(directory))
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn windows_load_error(error: impl std::error::Error + Send + Sync + 'static) -> std::io::Error {
+    std::io::Error::other(WindowsLoadError(error))
+}
+
+// libloading's Windows Display omits the OS cause; retain and render its chain.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug)]
+struct WindowsLoadError<E>(E);
+
+#[cfg(any(target_os = "windows", test))]
+impl<E: std::error::Error> std::fmt::Display for WindowsLoadError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.0)?;
+        let mut source = self.0.source();
+        while let Some(cause) = source {
+            write!(formatter, ": {cause}")?;
+            source = cause.source();
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl<E: std::error::Error + 'static> std::error::Error for WindowsLoadError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
 /// # Safety
 /// The caller must trust native initializers and terminators in the selected DLL.
 #[cfg(target_os = "windows")]
@@ -798,7 +832,7 @@ unsafe fn load_library(candidate: &Path) -> std::io::Result<Library> {
     // SAFETY: delegated to the caller, including native initializers/terminators.
     unsafe { WindowsLibrary::load_with_flags(&path, flags) }
         .map(Library::from)
-        .map_err(std::io::Error::other)
+        .map_err(windows_load_error)
 }
 
 #[cfg(not(target_os = "windows"))]
