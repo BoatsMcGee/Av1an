@@ -494,8 +494,8 @@ impl FromStr for VapourSynthFilter {
                 thsadc: args.optional("thsadc", parse_plugin_uint)?,
                 plane: args.optional("plane", |value| {
                     let plane = parse_value::<i32>(value)?;
-                    // RATIONALE: ZooMVTools documents -1=all, 0=Y, 1=U, 2=V.
-                    anyhow::ensure!((-1..=2).contains(&plane), "expected plane -1, 0, 1 or 2");
+                    // RATIONALE: Native PlaneSelection uses 0=Y, 1=U, 2=V, 3=UV, 4=all.
+                    anyhow::ensure!((0..=4).contains(&plane), "expected plane in 0..=4");
                     Ok(plane)
                 })?,
                 limit: args.optional("limit", parse_plugin_uint)?,

@@ -131,7 +131,14 @@ mod tests {
             ["zoom_degrain", "plane", "2147483648"]
         ),
         ("zoom_degrain:plane=-2", ["zoom_degrain", "plane", "-2"]),
-        ("zoom_degrain:plane=3", ["zoom_degrain", "plane", "3"]),
+        (
+            "zoom_degrain:plane=-1",
+            ["zoom_degrain", "plane", "-1", "0..=4"]
+        ),
+        (
+            "zoom_degrain:plane=5",
+            ["zoom_degrain", "plane", "5", "0..=4"]
+        ),
         (
             "zoom_degrain:recalc_overlap=4294967296",
             ["zoom_degrain", "recalc_overlap", "4294967296"]
@@ -232,11 +239,22 @@ mod tests {
     }
 
     #[test]
-    fn i07_zoom_plane_range_preserves_all_planes_sentinel() {
-        rejects("zoom_degrain:plane=-2", &["zoom_degrain", "plane", "-2"]);
-        for plane in -1..=2 {
-            assert!(format!("zoom_degrain:plane={plane}").parse::<VapourSynthFilter>().is_ok());
+    fn i07_zoom_plane_range_matches_native_selections() {
+        for plane in 0..=4 {
+            let input = format!("zoom_degrain:plane={plane}");
+            let VapourSynthFilter::ZoomDegrain { plane: actual, .. } =
+                input.parse().expect("native plane selection")
+            else {
+                panic!("zoom_degrain")
+            };
+            assert_eq!(actual, Some(plane));
         }
+        let VapourSynthFilter::ZoomDegrain { plane, .. } =
+            "zoom_degrain:".parse().expect("native default")
+        else {
+            panic!("zoom_degrain")
+        };
+        assert_eq!(plane, None);
     }
 
     #[test]
@@ -268,7 +286,7 @@ mod tests {
             "degrain:",
             "degrain:overlap=0,0;chroma=1;recalculate=false;limit=0,1;thscd2=0;",
             "zoom_degrain:",
-            "zoom_degrain:levels=0;overlap=0;plane=-1;limit=0;trymany=true;recalc_smooth=0;",
+            "zoom_degrain:levels=0;overlap=0;plane=4;limit=0;trymany=true;recalc_smooth=0;",
             "fgs:iso=0;chroma_iso=0;cy=-128,127;dynamic_seed=0;",
             "output-format:bit_depth=10;",
             "output_format:CHROMA=444;width=16;",

@@ -32,8 +32,8 @@ pub struct Degrain {
     pub thsad: Option<u32>,
     /// Chroma SAD threshold. Defaults to thsad.
     pub thsadc: Option<u32>,
-    /// Which planes to process: -1=all, 0=luma, 1=chroma U, 2=chroma V.
-    /// Default -1.
+    /// Which planes to process: 0=luma, 1=chroma U, 2=chroma V,
+    /// 3=both chroma planes, 4=all planes (default).
     pub plane: Option<i32>,
     /// Maximum absolute change per pixel (luma). Default 0.
     pub limit: Option<u32>,
@@ -128,7 +128,6 @@ impl Degrain {
                 ("opt", self.opt),
             ],
         )?;
-        // plane is signed (-1 = all)
         Self::argument_set_int(&mut arguments, "plane", self.plane.map(|d| d as i64))?;
         let node = Self::invoke_and_get_node(core, arguments, Some("clip"))?;
         Ok(node)

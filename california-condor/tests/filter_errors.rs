@@ -50,6 +50,12 @@ mod tests {
                 error.contains(filter.split(':').next().expect("name")) && error.contains(field),
                 "{filter}: {error}"
             );
+            if let Some(value) = filter.strip_prefix("zoom_degrain:plane=") {
+                assert!(
+                    error.contains(value) && error.contains("0..=4"),
+                    "{filter}: {error}"
+                );
+            }
             for forbidden in ["panicked", "backtrace", "index out of bounds", "Failed to open"] {
                 assert!(!error.contains(forbidden), "{filter}: {error}");
             }
@@ -92,6 +98,16 @@ mod tests {
     cli_error!(i07_cli_bilateral, "bilateral:planes=true,maybe", "planes");
     cli_error!(i07_cli_degrain, "degrain:recalculate=maybe", "recalculate");
     cli_error!(i07_cli_zoom_degrain, "zoom_degrain:hpad=abc", "hpad");
+    cli_error!(
+        i07_cli_zoom_plane_negative,
+        "zoom_degrain:plane=-1",
+        "plane"
+    );
+    cli_error!(
+        i07_cli_zoom_plane_above_range,
+        "zoom_degrain:plane=5",
+        "plane"
+    );
     cli_error!(i07_cli_fgs, "fgs:", "iso");
     cli_error!(i07_cli_output_format, "output-format:typo=1", "typo");
     cli_error!(i07_cli_missing_delimiter, "crop", ":");
