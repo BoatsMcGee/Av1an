@@ -129,8 +129,8 @@ The easiest path — a binary package is available:
 pacman -S vmaf
 ```
 
-This installs `libvmaf.so` to `/usr/lib`, which the build script finds
-automatically. Note that Arch's package is built **without** CUDA.
+This installs `libvmaf.so` to `/usr/lib`, which the platform loader finds
+at runtime. Note that Arch's package is built **without** CUDA.
 
 ### Debian / Ubuntu
 

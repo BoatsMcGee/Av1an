@@ -48,3 +48,20 @@ runtime `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS) for bare-name loading.
 Temporary libraries and executables are removed by the parent. These are retention
 checks, not reproductions of a runtime failure: the removed build hints were inert.
 Native Windows loader acceptance still requires the separate gate above.
+
+### Linux archive smoke environment
+
+The Linux release archive uses the packaged executable's `$ORIGIN` runpath,
+not the test artifacts' injected `LD_LIBRARY_PATH`. Its workflow smoke check
+clears native-library, model, and loader-path overrides locally before invoking
+`./condor --version`; build-tree exports remain available to other steps.
+This removes runner-path overrides, not the platform's system-library fallback.
+
+```sh
+python3 test-support/m24_archive_smoke.py
+```
+
+This offline regression executes the actual workflow version command and its
+environment setup against an environment-reporting probe. Eleven poisoned
+overrides must be absent while unrelated environment survives. It verifies that
+command boundary, not archive contents or a hosted Actions run.
