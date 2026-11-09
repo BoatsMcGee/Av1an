@@ -416,7 +416,7 @@ const fn picture_pool_size(n_threads: u32) -> u32 {
 }
 
 /// libvmaf log levels, used to keep the C library quiet by default.
-pub(crate) const LOG_LEVEL_ERROR: c_int = 1;
+pub(crate) const LOG_LEVEL_NONE: c_int = 0;
 
 #[cfg(all(test, unix))]
 #[path = "cuda_tests.rs"]

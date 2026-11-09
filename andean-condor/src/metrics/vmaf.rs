@@ -136,13 +136,8 @@ fn stock_model(features: &[VmafFeature]) -> VmafModel {
 /// # Progress
 ///
 /// `on_score` is called with `(position in the selection, score)` for each
-/// scored frame, in the order the frames were visited.
-///
-/// libvmaf extracts on its own threads, so a score becomes readable only once
-/// its features exist, which lags the submission by a few frames. Scores are
-/// reported as they land rather than all at the end, so a caller sees them
-/// progressively; the final few are reported after [`VmafScorer::finish`]
-/// flushes.
+/// scored frame after successful finalization, in selection order. For progress
+/// during decoding/submission, use [`score_probed_frames_with_progress`].
 ///
 /// # Errors
 ///
@@ -157,6 +152,45 @@ pub fn score_probed_frames(
     selected: &[usize],
     indexing: OutputIndexing,
     cancelled: Option<&AtomicBool>,
+    on_score: impl FnMut(usize, f64),
+) -> Result<Vec<f64>> {
+    score_probed_frames_with_progress(
+        reference,
+        distorted,
+        config,
+        selected,
+        indexing,
+        cancelled,
+        |_| {},
+        on_score,
+    )
+}
+
+/// Score selected frames, reporting submission independently of final scores.
+///
+/// `on_submitted(position)` runs only after successful acceptance of a pair,
+/// before finalization. `on_score(position, score)` runs only after successful
+/// finalization and collection of every score. Positions index `selected`, not
+/// source frames. Empty selections invoke neither native code nor callbacks.
+///
+/// # Errors
+///
+/// Reports configuration, decode, cancellation and native errors as in
+/// [`score_probed_frames`]. Failed/rejected pairs have no submission callback;
+/// finalization/query failures have no score callbacks or partial result vector.
+#[inline]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "preserve the score-only API while separating submitted progress"
+)]
+pub fn score_probed_frames_with_progress(
+    reference: &mut av_decoders::Decoder,
+    distorted: &mut av_decoders::Decoder,
+    config: &QualityMetric,
+    selected: &[usize],
+    indexing: OutputIndexing,
+    cancelled: Option<&AtomicBool>,
+    mut on_submitted: impl FnMut(usize),
     mut on_score: impl FnMut(usize, f64),
 ) -> Result<Vec<f64>> {
     if selected.is_empty() {
@@ -181,10 +215,6 @@ pub fn score_probed_frames(
     // probe pass, `submitted` only the libvmaf call, so the fetch cost is
     // roughly their difference.
     let mut submitted = Duration::ZERO;
-    // The lowest index whose score has not been reported yet. libvmaf scores
-    // indices in order as its extractors complete, so advancing this by however
-    // many scores each drain returned reports each one exactly once.
-    let mut reported = 0_usize;
 
     // libvmaf's temporal extractors depend on the *index sequence* given to
     // `vmaf_read_pictures`, not on frames arriving in one batch, so
@@ -201,7 +231,7 @@ pub fn score_probed_frames(
         indexing,
         cancelled,
         probe::check_geometry,
-        |_position, reference_planes, distorted_planes| {
+        |position, reference_planes, distorted_planes| {
             let submitted_at = Instant::now();
             let result = scorer
                 .submit_pair_raw(
@@ -211,15 +241,8 @@ pub fn score_probed_frames(
                 .map(|_| ())
                 .map_err(describe_error);
             submitted += submitted_at.elapsed();
-            // Scores are drained only once a pair has been submitted, so a
-            // frame is never reported before libvmaf has seen its
-            // reference.
             result?;
-
-            for score in scorer.drain_scores(reported).map_err(describe_error)? {
-                on_score(reported, score);
-                reported += 1;
-            }
+            on_submitted(position);
             Ok(())
         },
     )?;
@@ -228,12 +251,6 @@ pub fn score_probed_frames(
     let finished = Instant::now();
     let scores = scorer.finish().map_err(describe_error)?;
     let finished = finished.elapsed();
-
-    // Whatever the sliding window had not finished is only available now.
-    for score in scores.iter().skip(reported) {
-        on_score(reported, *score);
-        reported += 1;
-    }
 
     tracing::debug!(
         frames = selected.len(),
@@ -250,6 +267,10 @@ pub fn score_probed_frames(
             scores.len(),
             selected.len()
         );
+    }
+
+    for (position, score) in scores.iter().enumerate() {
+        on_score(position, *score);
     }
 
     Ok(scores)
@@ -295,6 +316,11 @@ fn describe_error(error: VmafError) -> anyhow::Error {
         other => anyhow::anyhow!(other),
     }
 }
+
+#[cfg(test)]
+#[cfg(unix)]
+#[path = "vmaf_tests.rs"]
+mod m18_tests;
 
 #[cfg(test)]
 mod tests {
@@ -414,7 +440,7 @@ mod tests {
     /// Every field is spelled out rather than derived from another value,
     /// because `QualityMetric` is an enum and so cannot use struct-update
     /// syntax.
-    fn metric(features: Vec<VmafFeature>) -> QualityMetric {
+    pub(super) fn metric(features: Vec<VmafFeature>) -> QualityMetric {
         QualityMetric::VMAF {
             target_range: (94.0, 96.0),
             resolution: None,

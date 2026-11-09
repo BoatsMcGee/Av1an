@@ -52,6 +52,101 @@ fn small_pair(distortion: Distortion) -> SyntheticPair {
     SyntheticPair::generate(64, 48, 8, ChromaSubsampling::Yuv420, 12, distortion)
 }
 
+/// Capture native stderr in an isolated process, never redirect production FDs.
+#[test]
+fn m18_stock_cpu_stderr_and_scores() {
+    use std::{
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    if let Ok(threads) = std::env::var("M18_CPU_CHILD") {
+        let threads = threads.parse().expect("threads");
+        let pair = small_pair(Distortion::Moderate);
+        let format = VideoFormat {
+            width: 64,
+            height: 48,
+            bit_depth: 8,
+            chroma_sampling: ChromaSubsampling::Yuv420,
+        };
+        let config = model_config().with_backend(BackendPreference::CpuOnly).with_threads(threads);
+        let mut scorer = VmafScorer::new(config.clone(), format).expect("required CPU stock model");
+        assert_eq!(scorer.backend(), Backend::Cpu);
+        let mut reference = pair.reference.decoder();
+        let mut distorted = pair.distorted.decoder();
+        for index in 0..12 {
+            let reference = reference.read_video_frame::<u8>().expect("reference");
+            let distorted = distorted.read_video_frame::<u8>().expect("distorted");
+            assert_eq!(
+                scorer.submit_pair(&reference, &distorted).expect("submit"),
+                index
+            );
+            assert!(scorer.drain_scores(0).expect("pending scores").is_empty());
+        }
+        let scores = scorer.finish().expect("final scores");
+        assert_eq!(scores.len(), 12);
+        assert_eq!(scorer.finish().expect("repeat finish"), scores);
+        assert_eq!(scorer.drain_scores(0).expect("drain"), scores);
+        assert!(scorer.drain_scores(12).expect("advanced cursor").is_empty());
+        let mut baseline = VmafScorer::new(config, format).expect("reference native path");
+        let expected = baseline
+            .score_decoders::<u8>(
+                &mut pair.reference.decoder(),
+                &mut pair.distorted.decoder(),
+                |_, _| {},
+            )
+            .expect("reference scores");
+        assert_eq!(
+            scores,
+            expected.iter().map(|score| score.score).collect::<Vec<_>>(),
+            "same inputs and existing native score_decoders path, exact identity"
+        );
+        println!(
+            "M18 CPU threads={threads}: 12 finite scores, exact score_decoders match, repeated finish/drain stable"
+        );
+        assert!(scores.iter().all(|score| score.is_finite()));
+        return;
+    }
+    if !is_available() {
+        assert!(
+            std::env::var_os("AV_METRICS_REQUIRE_CPU").is_none(),
+            "required CPU gate needs libvmaf"
+        );
+        eprintln!("UNEXECUTED M18 real CPU gate: libvmaf unavailable");
+        return;
+    }
+    for threads in [0, 2] {
+        let mut child = Command::new(std::env::current_exe().expect("executable"))
+            .args(["--exact", "m18_stock_cpu_stderr_and_scores", "--nocapture"])
+            .env("M18_CPU_CHILD", threads.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("CPU child");
+        let start = Instant::now();
+        while child.try_wait().expect("status").is_none() {
+            if start.elapsed() > Duration::from_secs(30) {
+                child.kill().expect("kill");
+                child.wait().expect("reap");
+                panic!("CPU child timeout");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().expect("output");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("running 1 test") && stdout.contains("1 passed; 0 failed"),
+            "exact nonzero filter"
+        );
+        assert!(stderr.is_empty(), "native stderr must be empty: {stderr}");
+        eprintln!(
+            "{stdout}M18 CPU threads={threads}: captured stderr={} bytes",
+            output.stderr.len()
+        );
+    }
+}
+
 /// Manual hardware gate: no absence skip once explicitly requested.
 #[test]
 fn m11_required_cuda_matches_cpu_on_same_clip() {
@@ -520,10 +615,14 @@ fn draining_reports_final_scores_once_and_matches_the_finished_ones() {
             .expect("submitting a pair should succeed");
     }
 
-    // Draining without a flush reports whatever libvmaf has already computed.
-    // It may report nothing, but it must never invent an index, and each
-    // score it does report must be final, because that is what makes an
-    // incremental report safe to show as it arrives.
+    assert!(
+        scorer.drain_scores(0).expect("pending drain").is_empty(),
+        "readiness is not guaranteed before successful finalization"
+    );
+    let finished = scorer.finish().expect("scoring should succeed");
+    assert_eq!(finished.len(), total, "one score per submitted pair");
+
+    // The caller advances its own cursor; final reads need no readiness polling.
     let mut drained = Vec::new();
     loop {
         let batch = scorer.drain_scores(drained.len()).expect("draining scores should succeed");
@@ -537,32 +636,17 @@ fn draining_reports_final_scores_once_and_matches_the_finished_ones() {
         drained.extend(batch);
     }
 
-    let finished = scorer.finish().expect("scoring should succeed");
-    assert_eq!(finished.len(), total, "one score per submitted pair");
-
-    // Draining before the flush is what makes the report live. On a clip this
-    // small libvmaf may finish extracting before the first drain, so a zero
-    // count is legitimate; what must not happen is scores appearing only
-    // after the flush. This asserts the weaker, always-true property so the
-    // test does not become flaky on timing, while `redrained` below proves
-    // every score is reachable both before and after the flush.
-    assert!(
-        drained.len() <= total,
-        "the drain must never report more scores than were submitted"
-    );
+    assert_eq!(drained.len(), total, "every final score is drained once");
 
     for (position, &score) in drained.iter().enumerate() {
         assert!(
             (score - finished[position]).abs() < 1e-9,
-            "score at {position} changed between the drain and the finish: {score} then {}, so it \
-             was not final when it was drained",
+            "score at {position} changed after finalization: {score} vs {}",
             finished[position]
         );
     }
 
-    // Once `finish` has flushed, draining from the start yields every score,
-    // and each one matches. This is what lets a caller stop tracking
-    // positions once it has flushed.
+    // Repeating the same caller-controlled cursor deliberately rereads scores.
     let redrained = scorer.drain_scores(0).expect("draining after a flush");
     assert_eq!(
         redrained, finished,

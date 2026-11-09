@@ -5,6 +5,7 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 typedef struct {
     int pix_fmt;
@@ -29,16 +30,38 @@ typedef struct {
     Geometry geometry;
     Record *records;
     unsigned next_index;
+    unsigned flushed;
 } Context;
 
 enum {
     FETCH, CHECKOUT, READ, TRANSFER, RUST_RETURN, WORKER_REF, WORKER_RELEASE,
     NATIVE_RELEASE, DUPLICATE, ZERO_UNREF, CLOSE_OWNED, CLOSE, CLOSE_REFS,
-    BAD_INDEX, MODEL_DESTROY, RUST_UNREF, ALLOC, FREE, COUNTERS
+    BAD_INDEX, MODEL_DESTROY, RUST_UNREF, ALLOC, FREE, FLUSH, QUERY, EARLY,
+    POSTFLUSH, NOISY, COUNTERS
 };
 static unsigned counts[COUNTERS];
 static int model;
-unsigned m09_count(unsigned index) { return counts[index]; }
+static Context *active;
+unsigned m09_count(unsigned index) {
+    if (index == COUNTERS) {
+        unsigned sum = 0;
+        for (Record *r = active->records; r; r = r->next)
+            if (r->rust_owner)
+                for (unsigned i = 0; i < 3; i++)
+                    for (unsigned j = 0; j < r->picture.h[i] * r->picture.stride[i]; j++)
+                        sum += ((unsigned char *)r->picture.data[i])[j];
+        return sum;
+    }
+    return counts[index];
+}
+static void event(const char *name, unsigned index) {
+    const char *path = getenv("M18_EVENTS");
+    if (!path) return;
+    FILE *file = fopen(path, "a");
+    if (!file) abort();
+    fprintf(file, "%s%u\n", name, index);
+    fclose(file);
+}
 static unsigned setting(const char *name) {
     const char *value = getenv(name);
     return value ? (unsigned)atoi(value) : 0;
@@ -50,6 +73,9 @@ int vmaf_init(Context **out, Configuration cfg) {
     if (!*out) return -12;
     counts[ALLOC]++;
     (*out)->cfg = cfg;
+    active = *out;
+    if (cfg.log_level) counts[NOISY]++;
+    event("init", 0);
     return 0;
 }
 int vmaf_preallocate_pictures(Context *ctx, PoolConfiguration cfg) {
@@ -110,11 +136,19 @@ static void release_workers(Context *ctx) {
     }
 }
 int vmaf_read_pictures(Context *ctx, Picture *ref, Picture *dist, unsigned index) {
+    if (ctx->flushed) { counts[POSTFLUSH]++; return -22; }
     if (!ref && !dist) {
+        counts[FLUSH]++;
+        event("flush", 0);
         release_workers(ctx);
-        return setting("M09_FAIL_FLUSH") ? -73 : 0;
+        if (setting("M09_FAIL_FLUSH")) return -73;
+        ctx->flushed = 1;
+        return 0;
     }
     counts[READ]++;
+    event("submit", index);
+    event("reference", ((unsigned char *)ref->data[0])[0]);
+    event("distorted", ((unsigned char *)dist->data[0])[0]);
     if (index != ctx->next_index) counts[BAD_INDEX]++;
     Picture *pair[] = { ref, dist };
     for (unsigned i = 0; i < 2; i++) {
@@ -179,9 +213,17 @@ int vmaf_use_feature(Context *ctx, const char *name, void *opts) {
     (void)ctx; (void)name; (void)opts; return 0;
 }
 int vmaf_score_at_index(Context *ctx, void *handle, double *out, unsigned index) {
-    (void)handle;
+    counts[QUERY]++;
+    event("query", index);
+    if (!handle) return -22;
+    if (setting("M18_MODE") && !ctx->flushed) {
+        counts[EARLY]++;
+        if (ctx->cfg.log_level) fprintf(stderr, "ERROR no feature at index %u\n", index);
+        return -22;
+    }
+    if (setting("M18_MODE") == 2 && index == 1) return -74;
     if (index >= ctx->next_index) return -22;
-    *out = 99.0;
+    *out = setting("M18_MODE") ? 90.0 + index : 99.0;
     return 0;
 }
 int vmaf_feature_score_pooled(Context *ctx, const char *name, int method,

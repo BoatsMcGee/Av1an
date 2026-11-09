@@ -29,9 +29,8 @@ use libloading::Library;
 
 use crate::error::VmafError;
 
-/// Report errors only. This is the quietest level that still surfaces failures,
-/// and it avoids libvmaf writing to stderr during normal operation.
-pub const LOG_LEVEL_ERROR: c_int = 1;
+/// Silence native stderr; checked native statuses still surface as Rust errors.
+pub const LOG_LEVEL_NONE: c_int = 0;
 
 /// Opaque libvmaf scoring context, allocated by `vmaf_init`.
 #[repr(C)]
@@ -169,7 +168,7 @@ impl Default for VmafConfiguration {
     #[inline]
     fn default() -> Self {
         Self {
-            log_level: LOG_LEVEL_ERROR,
+            log_level: LOG_LEVEL_NONE,
             n_threads: 0,
             n_subsample: 1,
             cpumask: 0,
@@ -436,6 +435,10 @@ fn clone_error(error: &VmafError) -> VmafError {
         },
         VmafError::CallFailed { function, status } => VmafError::CallFailed {
             function,
+            status: *status,
+        },
+        VmafError::ScoreQueryFailed { index, status } => VmafError::ScoreQueryFailed {
+            index: *index,
             status: *status,
         },
         VmafError::InvalidConfiguration { reason } => VmafError::InvalidConfiguration {

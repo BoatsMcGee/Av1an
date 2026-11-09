@@ -31,6 +31,234 @@ const ALLOC: u32 = 16;
 const FREE: u32 = 17;
 
 #[test]
+fn m18_finalization_boundary() {
+    if let Ok(scenario) = std::env::var("M18_CHILD") {
+        m18_check(&scenario);
+        return;
+    }
+    let directory = tempfile::tempdir().expect("M18 fixture");
+    let library = directory.path().join(if cfg!(target_os = "macos") {
+        "libvmaf.dylib"
+    } else {
+        "libvmaf.so"
+    });
+    let output = Command::new("cc")
+        .args(["-shared", "-fPIC", "-std=c99", "-Wall", "-Wextra", "-Werror", "-o"])
+        .arg(&library)
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/m09_ownership.c"
+        ))
+        .output()
+        .expect("M18 requires cc");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut failed = Vec::new();
+    for scenario in ["early", "repeat", "query_error", "flush_error", "postflush", "logging"] {
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", "m18_finalization_boundary", "--nocapture"])
+            .env("M18_CHILD", scenario)
+            .env(
+                "M18_MODE",
+                if scenario == "query_error" { "2" } else { "1" },
+            )
+            .env(
+                "M09_FAIL_FLUSH",
+                if scenario == "flush_error" { "1" } else { "0" },
+            )
+            .env("M09_THREADS", "2")
+            .env("M09_NONZERO", "1")
+            .env("M18_LIBRARY", &library)
+            .env("VMAF_LIB_DIR", directory.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("M18 child");
+        let start = Instant::now();
+        while child.try_wait().expect("status").is_none() {
+            if start.elapsed() > Duration::from_secs(30) {
+                child.kill().expect("kill");
+                child.wait().expect("reap");
+                panic!("M18 {scenario} timeout");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().expect("output");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("M18 {scenario}: {stdout}\n{stderr}");
+        assert!(stdout.contains("running 1 test"), "nonzero exact filter");
+        if !output.status.success() {
+            failed.push(scenario);
+        }
+    }
+    assert!(failed.is_empty(), "failed M18 scenarios: {failed:?}");
+}
+
+fn m18_check(scenario: &str) {
+    // SAFETY: fixture stays loaded while its documented counter function is used.
+    let library =
+        unsafe { libloading::Library::new(std::env::var_os("M18_LIBRARY").expect("fixture")) }
+            .expect("library");
+    // SAFETY: exact signature defined in m09_ownership.c, indices 0..=23.
+    let counter = unsafe { library.get::<unsafe extern "C" fn(u32) -> u32>(b"m09_count\0") }
+        .expect("counter");
+    // SAFETY: all calls use defined indices while fixture is loaded.
+    let count = |index| unsafe { counter(index) };
+    let mut scorer = VmafScorer::new(
+        VmafConfig::new().with_backend(BackendPreference::CpuOnly).with_threads(2),
+        VideoFormat {
+            width: 8,
+            height: 8,
+            bit_depth: 8,
+            chroma_sampling: ChromaSubsampling::Yuv420,
+        },
+    )
+    .expect("constructor");
+    let bytes = [128u8; 64];
+    let planes = [(8, 8), (4, 4), (4, 4)]
+        .map(|(w, h)| PlaneSource::from_bytes(&bytes, w, h, w as isize, 0, 1).expect("planes"));
+    for index in 0..3 {
+        assert_eq!(
+            scorer.submit_pair_raw(planes, planes).expect("submission"),
+            index,
+            "sequential accepted index"
+        );
+        if scenario == "early" {
+            assert!(
+                scorer.drain_scores(0).expect("pending").is_empty(),
+                "no interim scores"
+            );
+            assert_eq!(count(19), 0, "no native score queries before flush");
+        }
+    }
+    if scenario == "flush_error" {
+        for attempt in 1..=2 {
+            assert_call(
+                &scorer.finish().expect_err("flush failure"),
+                "vmaf_read_pictures",
+                -73,
+            );
+            assert_eq!(count(18), attempt, "failed flush must not mark finalized");
+            assert!(
+                scorer.drain_scores(0).expect("not finalized").is_empty(),
+                "failed flush leaves scores unavailable"
+            );
+            assert_eq!(count(19), 0, "failed flush must not query scores");
+        }
+    } else if scenario == "query_error" {
+        for error in [
+            scorer.finish().expect_err("final query"),
+            scorer.drain_scores(1).expect_err("final drain"),
+        ] {
+            assert!(
+                matches!(
+                    error,
+                    VmafError::ScoreQueryFailed {
+                        index: 1,
+                        status: -74
+                    }
+                ),
+                "exact query error: {error:?}"
+            );
+            let message = error.to_string();
+            assert!(
+                message.contains("vmaf_score_at_index")
+                    && message.contains("-74")
+                    && message.contains("1"),
+                "raw function/status/index: {error:?}"
+            );
+        }
+        assert_eq!(
+            count(18),
+            1,
+            "final query errors do not require a second flush"
+        );
+    } else {
+        assert_eq!(
+            scorer.finish().expect("all final scores"),
+            [90.0, 91.0, 92.0],
+            "all final scores retain index order"
+        );
+        let mut cursor = 0;
+        let drained = scorer.drain_scores(cursor).expect("final drain");
+        cursor += drained.len();
+        assert_eq!(
+            drained,
+            [90.0, 91.0, 92.0],
+            "drain matches the full final vector"
+        );
+        assert!(
+            scorer.drain_scores(cursor).expect("advanced cursor").is_empty(),
+            "caller-advanced drain has no duplicates"
+        );
+        assert_eq!(
+            scorer.drain_scores(1).expect("suffix cursor"),
+            [91.0, 92.0],
+            "caller selects the starting index"
+        );
+        if scenario == "repeat" {
+            assert_eq!(
+                scorer.finish().expect("stable repeated finish"),
+                drained,
+                "finish always returns the full vector"
+            );
+        }
+        if scenario == "postflush" {
+            let sum = count(23);
+            let changed = [7u8; 64];
+            let changed = [(8, 8), (4, 4), (4, 4)].map(|(w, h)| {
+                PlaneSource::from_bytes(&changed, w, h, w as isize, 0, 1).expect("changed")
+            });
+            assert!(
+                scorer.submit_pair_raw(changed, changed).is_err(),
+                "reject submissions after successful flush"
+            );
+            assert_eq!(
+                count(23),
+                sum,
+                "post-flush rejection before either host copy"
+            );
+            assert_eq!(count(READ), 3, "no post-flush native submission");
+            assert_eq!(count(FETCH), 8, "no post-flush replacement fetches");
+        }
+        if scenario == "logging" {
+            assert_eq!(count(22), 0, "native diagnostics disabled");
+        }
+        assert_eq!(count(18), 1, "exactly one native flush");
+        assert_eq!(count(21), 0, "no native calls into a flushed context");
+    }
+    drop(scorer);
+    assert_eq!(
+        count(CHECKOUT),
+        count(TRANSFER) + count(RUST_RETURN),
+        "one disposition per checkout"
+    );
+    assert_eq!(count(TRANSFER), 6, "three transferred picture pairs");
+    assert_eq!(
+        count(WORKER_REF),
+        count(WORKER_RELEASE),
+        "all worker refs released"
+    );
+    for index in [DUPLICATE, ZERO_UNREF, CLOSE_OWNED, CLOSE_REFS, BAD_INDEX] {
+        assert_eq!(
+            count(index),
+            0,
+            "no ownership/index violation at counter {index}"
+        );
+    }
+    assert_eq!(count(CLOSE), 1, "context closes once");
+    assert_eq!(count(ALLOC), count(FREE), "all fixture allocations freed");
+    eprintln!(
+        "M18 {scenario} counters {:?}",
+        (0..23).map(count).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn m09_picture_ownership() {
     if let Ok(scenario) = std::env::var("M09_CHILD") {
         check_scenario(&scenario);

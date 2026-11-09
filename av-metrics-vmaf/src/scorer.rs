@@ -367,9 +367,8 @@ pub struct FrameScore {
 /// A VMAF scoring session.
 ///
 /// Scores are produced by streaming matching frame pairs from a reference and a
-/// distorted [`Decoder`]. libvmaf uses a sliding window, so the score for index
-/// *n* is only final once frame *n+1* has been submitted; the last score
-/// therefore arrives on flush.
+/// distorted [`Decoder`]. Temporal features and worker completion are only
+/// guaranteed after a successful flush, so scores are read only then.
 ///
 /// A `VmafScorer` is single-use and drives a single native `VmafContext`, which
 /// libvmaf documents as not safe for concurrent use. It is [`Send`] so it can
@@ -387,6 +386,8 @@ pub struct VmafScorer {
     /// Scratch buffers for the C strings handed to `vmaf_init`.
     _model_spec: CString,
     scored: usize,
+    /// Native flush is single-use, even when final scores are read repeatedly.
+    flushed: bool,
     /// Ensures `!Sync`, because a context is single-threaded.
     _not_sync: PhantomData<*mut ()>,
 }
@@ -465,7 +466,7 @@ impl VmafScorer {
         let api = load_api()?;
 
         let configuration = VmafConfiguration {
-            log_level: backend::LOG_LEVEL_ERROR,
+            log_level: backend::LOG_LEVEL_NONE,
             n_threads: config.n_threads,
             // Always 1. libvmaf applies this as a gate on the *spatial*
             // extractors only, so a higher value would leave the frames in
@@ -518,6 +519,7 @@ impl VmafScorer {
             pictures: None,
             _model_spec: model_spec,
             scored: 0,
+            flushed: false,
             _not_sync: PhantomData,
         };
         let api = scorer.context.api();
@@ -688,16 +690,15 @@ impl VmafScorer {
 
     /// Score every matching frame pair from the two decoders.
     ///
-    /// Returns one [`FrameScore`] per frame. Scores are emitted as soon as the
-    /// sliding window makes them final, so the final score only appears at the
-    /// end.
+    /// Returns one [`FrameScore`] per frame. Scores and callbacks are delivered
+    /// after successful finalization, not during submission.
     ///
     /// # Errors
     ///
     /// Returns [`VmafError::InputMismatch`] if the two clips disagree on
     /// format, [`VmafError::FrameCountMismatch`] if their lengths differ,
-    /// and [`VmafError::Decode`] or [`VmafError::CallFailed`] on downstream
-    /// failures.
+    /// and [`VmafError::Decode`], [`VmafError::CallFailed`] or
+    /// [`VmafError::ScoreQueryFailed`] on downstream failures.
     #[expect(
         clippy::missing_inline_in_public_items,
         reason = "inlining the scoring loop would duplicate the whole body"
@@ -802,16 +803,10 @@ impl VmafScorer {
         let total = self.scored;
         scores.reserve(total);
         for index in 0..total as u32 {
-            if let Some(score) = self.score_at(index)? {
-                scores.push(score.clone());
-                on_score(scores.len() - 1, &score);
-            } else {
-                // Compacting here would shift every later score down a slot and
-                // silently misattribute it to the wrong frame, so a missing
-                // score is an error rather than something to
-                // skip over.
-                return Err(VmafError::MissingScore { index });
-            }
+            scores.push(self.score_at(index)?);
+        }
+        for (index, score) in scores.iter().enumerate() {
+            on_score(index, score);
         }
 
         Ok(scores)
@@ -902,6 +897,12 @@ impl VmafScorer {
         distorted: PlaneSet<'_>,
     ) -> Result<(), VmafError> {
         self.ensure_active()?;
+        if self.flushed {
+            return Err(VmafError::InvalidConfiguration {
+                reason: "scorer has been flushed; create a new scorer to submit more frames"
+                    .to_owned(),
+            });
+        }
         let (reference_picture, distorted_picture) =
             self.pictures.as_mut().expect("active scorer owns a complete pair");
         Self::fill_pictures(
@@ -1093,9 +1094,12 @@ impl VmafScorer {
         Ok(())
     }
 
-    /// Flush libvmaf's sliding window.
+    /// Finalize native extraction exactly once on success; failures remain errors.
     fn flush(&mut self) -> Result<(), VmafError> {
         self.ensure_active()?;
+        if self.flushed {
+            return Ok(());
+        }
         // SAFETY: libvmaf documents null pictures as the flush signal.
         let status = unsafe {
             (self.context.api().read_pictures)(
@@ -1105,30 +1109,30 @@ impl VmafScorer {
                 self.scored as u32,
             )
         };
-        ffi::check(status, "vmaf_read_pictures")
+        ffi::check(status, "vmaf_read_pictures")?;
+        self.flushed = true;
+        Ok(())
     }
 
-    /// Read the score for a frame index, if libvmaf has produced one.
-    fn score_at(&self, index: u32) -> Result<Option<FrameScore>, VmafError> {
+    /// Read a final score. Callers must successfully flush first.
+    fn score_at(&self, index: u32) -> Result<FrameScore, VmafError> {
         let mut score = 0.0f64;
-        // SAFETY: `self.model` is null, which selects the context's single
-        // configured model, and `score` is a valid out-pointer.
+        // SAFETY: the context and its nonnull configured model are live, native
+        // extraction has been flushed, and `score` is a valid out-pointer.
         let status = unsafe {
             (self.context.api().score_at_index)(self.context.raw, self.model, &mut score, index)
         };
         if status != 0 {
-            // A score that is not ready yet is expected before the flush, and
-            // is reported as `None` rather than an error.
-            return Ok(None);
+            return Err(VmafError::ScoreQueryFailed { index, status });
         }
 
-        Ok(Some(FrameScore {
+        Ok(FrameScore {
             score,
             // Feature values are pooled over the clip rather than read per index,
             // because extractors do not expose a score for every frame. They are
             // available through `pooled_features` once scoring has finished.
             features: Vec::new(),
-        }))
+        })
     }
 
     /// Score an explicit sequence of frame pairs, taken in the order given.
@@ -1188,6 +1192,7 @@ impl VmafScorer {
     /// and native errors. Failed submissions do not advance the scored count.
     /// If replacement acquisition fails after native acceptance, this scorer
     /// becomes unusable; create a new scorer instead of retrying or reading scores.
+    /// Submissions after successful finalization are rejected before copying.
     #[inline]
     pub fn submit_pair<T: Pixel>(
         &mut self,
@@ -1206,14 +1211,14 @@ impl VmafScorer {
 
     /// Finish a [`Self::submit_pair`] sequence and collect every score.
     ///
-    /// Call this once, after the last pair has been submitted. Flushing runs
-    /// the extractors to completion, after which every index has a score.
+    /// Flushing runs the extractors to completion. Repeated calls return the
+    /// full final vector without flushing again; no more pairs may be submitted.
     ///
     /// # Errors
     ///
-    /// Returns [`VmafError::MissingScore`] if libvmaf produced no score for a
-    /// submitted index. That is reported rather than skipped, because omitting
-    /// an entry would shift every later score into the wrong slot.
+    /// Returns [`VmafError::CallFailed`] on flush failure, or
+    /// [`VmafError::ScoreQueryFailed`] with the native status and index on a final
+    /// query failure. No shortened vector is returned.
     ///
     /// [`VmafError::InvalidConfiguration`] if no pair was submitted.
     #[inline]
@@ -1233,49 +1238,36 @@ impl VmafScorer {
 
         let mut scores = Vec::with_capacity(self.scored);
         for index in 0..total {
-            // A missing score is an error rather than a skipped entry: omitting
-            // it would return a shorter vector and shift every
-            // later score into the wrong slot.
-            let Some(frame) = self.score_at(index)? else {
-                return Err(VmafError::MissingScore { index });
-            };
+            let frame = self.score_at(index)?;
             scores.push(frame.score);
         }
 
         Ok(scores)
     }
 
-    /// Collect every score libvmaf has finished computing, without flushing.
+    /// Read final scores from `from` in index order, without flushing.
     ///
-    /// libvmaf extracts on its own threads and scores an index once the
-    /// features for it exist, so after a few submissions some scores are
-    /// readable while others are not yet. This reports whichever have
-    /// landed, in index order, starting from `from`. Each index is returned
-    /// at most once: indices below `from` are not revisited, so repeatedly
-    /// draining from the position the last call returned keeps every score
-    /// and reports each exactly once.
-    ///
-    /// Scores that have not been computed yet are simply absent from the
-    /// result. Use [`Self::finish`] once the last pair is submitted, which
-    /// flushes and then requires a score for every index.
+    /// Before successful [`Self::finish`], returns empty without querying native
+    /// scores: interim readiness is not guaranteed for stock temporal models.
+    /// Afterward, advance `from` by the returned length to avoid duplicate reads.
+    /// The cursor belongs to the caller; repeating the same cursor rereads scores.
     ///
     /// # Errors
     ///
-    /// Returns [`VmafError::CallFailed`] if libvmaf rejects the read.
+    /// Returns [`VmafError::ScoreQueryFailed`] if a final native query fails.
     #[inline]
     pub fn drain_scores(&mut self, from: usize) -> Result<Vec<f64>, VmafError> {
         self.ensure_active()?;
+        if !self.flushed {
+            return Ok(Vec::new());
+        }
         let total = u32::try_from(self.scored).map_err(|_| VmafError::InvalidConfiguration {
             reason: "too many frame pairs to index".to_owned(),
         })?;
 
         let mut scores = Vec::new();
         for index in u32::try_from(from).unwrap_or(u32::MAX)..total {
-            // A score that is not ready is the normal case while extraction is
-            // still in flight, so it ends the run rather than failing.
-            let Some(frame) = self.score_at(index)? else {
-                break;
-            };
+            let frame = self.score_at(index)?;
             scores.push(frame.score);
         }
 
@@ -1302,6 +1294,7 @@ impl VmafScorer {
     /// errors, or [`VmafError::CallFailed`] if libvmaf rejects the pair.
     /// Errors do not advance the scored count. Replacement acquisition failure
     /// after native acceptance makes the scorer unusable, including score reads.
+    /// Submissions after successful finalization are rejected before copying.
     #[inline]
     pub fn submit_pair_raw(
         &mut self,

@@ -11,8 +11,8 @@ VapourSynth script without this crate knowing which.
 
 ## Features
 
-- **Per-frame scores**, streamed as frames are decoded. Unlike the stock VapourSynth
-  VMAF plugin, nothing is written to disk and no result is available only at the end.
+- **Per-frame scores**, collected after native finalization. Frame pairs are
+  submitted as they are decoded; no score files or JSON logs are written.
 - **CUDA when it works, CPU otherwise.** The backend is chosen by actually
   constructing a complete scorer, then reported via [`VmafScorer::backend`], so a
   silent fallback can never be mistaken for GPU acceleration.
@@ -51,8 +51,21 @@ println!("VMAF: {:.3}", VmafScorer::pool(&scores, PoolMethod::Mean)?);
 ```
 
 Scores are also emitted through the callback passed to
-[`score_decoders`][`VmafScorer::score_decoders`], which is useful for reporting
-progress while a long encode is being scored.
+[`score_decoders`][`VmafScorer::score_decoders`], after successful finalization.
+Stock temporal models and asynchronous workers do not guarantee interim score
+readiness. `drain_scores(from)` therefore returns empty before `finish()`, without
+querying libvmaf. Afterward it reads final scores in index order; advance the
+caller-owned cursor by the returned length to avoid duplicate reads.
+
+`finish()` returns the full final vector, including on repeated calls, but flushes
+the native context only once on success. Further submissions are rejected before
+copying. Flush errors retain their native function/status; final score query errors
+retain `vmaf_score_at_index`, the submitted index and raw status. Native C logging
+is disabled (`VMAF_LOG_LEVEL_NONE`); failures still propagate through Rust errors.
+
+Av1an's `score_vmaf_frames_with_progress` reports accepted submissions separately
+from real final score callbacks. Quality Check and Target Quality use submission
+progress during decoding, without inventing scores or counting final scores twice.
 
 ## Cargo features
 

@@ -957,52 +957,24 @@ impl TargetQuality {
 
             // The probe encode contains only the frames this pass selected, so
             // it is compacted and is read by position within the
-            // selection. The metric reports each frame's score as
-            // it is produced. Target Quality reduces those to a
-            // per-scene statistic and has no per-frame
-            // view, so only the position is used: it drives the progress bar
-            // through the same relay the plugin branches report through.
-            //
-            // The UI decides between the encode and compare bars by comparing
-            // `frames_encoded` against `total_frames`, and only learns that
-            // comparing has begun from a report whose `completed` is 0. The
-            // plugin branches get that from the frame the compare node emits
-            // before any score. A metric that reports strictly after scoring
-            // each pair never sends a 0, so the bar would stay on the last
-            // encode count and then jump straight to the next pass. Sending
-            // the zero-count report once up front declares the phase.
-            let mut declare_compare = true;
+            // selection. VMAF submission drives the same progress relay as the
+            // other engines' score callbacks; final scores must not count twice.
             let report = |position: usize, _score: f64| {
-                // A failed send only means the UI stopped listening, which is
-                // not a scoring error, so it is deliberately ignored.
-                if declare_compare {
-                    declare_compare = false;
-                    let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                        id: "Compare".to_owned(),
-                        completion: SequenceCompletion::Frames {
-                            completed: 0,
-                            total: probed.len() as u64,
-                        },
-                    }));
-                }
-                let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                    id: "Compare".to_owned(),
-                    completion: SequenceCompletion::Frames {
-                        completed: (position + 1) as u64,
-                        total: probed.len() as u64,
-                    },
-                }));
+                report_compare_progress(&compare_progress_tx, probed.len(), position + 1);
             };
 
             let scored = if is_vmaf {
-                metrics::score_vmaf_frames(
+                metrics::score_vmaf_frames_with_progress(
                     reference,
                     distorted.decoder(),
                     &config.metric,
                     &probed,
                     OutputIndexing::Compacted,
                     Some(cancelled),
-                    report,
+                    |position| {
+                        report_compare_progress(&compare_progress_tx, probed.len(), position + 1);
+                    },
+                    |_, _| {},
                 )
             } else {
                 // A name with no entry point here yields an error rather than a
@@ -1526,6 +1498,31 @@ pub enum TargetQualityError {
     QualityMeasurementFailed,
 }
 
+/// The UI needs a zero report to switch from encoding to comparing. Emit it
+/// with the first accepted frame; a closed UI receiver is not a scoring error.
+fn report_compare_progress(
+    progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+    total: usize,
+    completed: usize,
+) {
+    if completed == 1 {
+        let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
+            id: "Compare".to_owned(),
+            completion: SequenceCompletion::Frames {
+                completed: 0,
+                total: total as u64,
+            },
+        }));
+    }
+    let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
+        id: "Compare".to_owned(),
+        completion: SequenceCompletion::Frames {
+            completed: completed as u64,
+            total: total as u64,
+        },
+    }));
+}
+
 pub(super) fn log_native_fallback(
     error: &anyhow::Error,
     engine: Option<Engine>,
@@ -1545,6 +1542,7 @@ mod tests {
     use std::sync;
 
     use super::{SequenceCompletion, SequenceStatus, Status, TargetQuality, Task};
+
     use crate::{
         core::{
             encoder::{EncoderResult, StringOrBytes},
@@ -1555,6 +1553,26 @@ mod tests {
             sequence::target_quality::types::QualityMetric,
         },
     };
+
+    #[test]
+    fn m18_compare_submission_progress_declares_phase_once() {
+        let (tx, rx) = sync::mpsc::channel();
+        for completed in 1..=3 {
+            super::report_compare_progress(&tx, 3, completed);
+        }
+        for expected in [0, 1, 2, 3] {
+            assert!(
+                matches!(rx.try_recv().expect("compare status"), SequenceStatus::Whole(Status::Processing {
+                    id, completion: SequenceCompletion::Frames { completed, total }
+                }) if id == "Compare" && completed == expected && total == 3),
+                "compare declares zero once, then reports each accepted frame"
+            );
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "final scores do not count submission twice"
+        );
+    }
 
     /// A `Task` with `passes` recorded passes; only the count is consulted.
     fn task_with_passes(index: usize, passes: usize) -> Task {

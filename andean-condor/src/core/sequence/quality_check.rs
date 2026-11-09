@@ -276,19 +276,43 @@ impl QualityCheck {
         // Each score is reported as the metric produces it, mapped back to its
         // global frame number so the UI's per-frame report lines up with the
         // clip.
-        let scores = metrics::score_vmaf_frames(
+        let scores = metrics::score_vmaf_frames_with_progress(
             reference,
             distorted.decoder(),
             &config.metric,
             &selected,
             OutputIndexing::Aligned,
             Some(cancelled),
+            |position| Self::report_vmaf_submission(total_frames, position, progress_tx),
             |position, score| {
-                Self::report_frame_score(&selected, total_frames, position, score, progress_tx);
+                Self::report_frame_score(
+                    &selected,
+                    total_frames,
+                    position,
+                    score,
+                    total_frames,
+                    progress_tx,
+                );
             },
         )?;
 
         Self::group_native_scores(&scores, total_frames, scene_frame_indices)
+    }
+
+    /// Submission drives progress while native temporal scores are unavailable.
+    fn report_vmaf_submission(
+        total_frames: usize,
+        position: usize,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+    ) {
+        let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
+            id: DETAILS.name.to_owned(),
+            completion: SequenceCompletion::Custom {
+                name: DETAILS.name.to_owned(),
+                completed: (position + 1) as f64,
+                total: total_frames as f64,
+            },
+        }));
     }
 
     /// Report one frame's score as it is produced.
@@ -301,6 +325,7 @@ impl QualityCheck {
         total_frames: usize,
         position: usize,
         score: f64,
+        completed: usize,
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
     ) {
         // Progress is advisory: a closed receiver means the UI went away, which
@@ -310,7 +335,7 @@ impl QualityCheck {
                 id: DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Custom {
                     name: DETAILS.name.to_owned(),
-                    completed: (position + 1) as f64,
+                    completed: completed as f64,
                     total: total_frames as f64,
                 },
             },
@@ -410,7 +435,14 @@ impl QualityCheck {
                 OutputIndexing::Aligned,
                 Some(cancelled),
                 |position, score| {
-                    Self::report_frame_score(&selected, total_frames, position, score, progress_tx);
+                    Self::report_frame_score(
+                        &selected,
+                        total_frames,
+                        position,
+                        score,
+                        position + 1,
+                        progress_tx,
+                    );
                 },
             ),
             Engine::Fmetrics => metrics::fmetrics::score_probed_frames(
@@ -421,7 +453,14 @@ impl QualityCheck {
                 OutputIndexing::Aligned,
                 Some(cancelled),
                 |position, score| {
-                    Self::report_frame_score(&selected, total_frames, position, score, progress_tx);
+                    Self::report_frame_score(
+                        &selected,
+                        total_frames,
+                        position,
+                        score,
+                        position + 1,
+                        progress_tx,
+                    );
                 },
             ),
             // `engine` returns `None` rather than naming a plugin engine, so
@@ -945,4 +984,62 @@ pub enum QualityCheckError {
     QualityMeasurementFailed,
     #[error("Cancelled")]
     Cancelled,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn m18_final_scores_do_not_regress_submission_progress() {
+        let (tx, rx) = sync::mpsc::channel();
+        for position in 0..3 {
+            QualityCheck::report_vmaf_submission(3, position, &tx);
+        }
+        for position in 0..3 {
+            QualityCheck::report_frame_score(
+                &[4, 7, 9],
+                3,
+                position,
+                90.0 + position as f64,
+                3,
+                &tx,
+            );
+        }
+        for expected in 1..=3 {
+            assert!(
+                matches!(rx.try_recv().expect("submitted status"),SequenceStatus::Whole(Status::Processing {
+                completion: SequenceCompletion::Custom { completed,total,.. },..
+            }) if completed == expected as f64 && total == 3.0)
+            );
+        }
+        for (expected_frame, expected_score) in [(4, 90.0), (7, 91.0), (9, 92.0)] {
+            match rx.try_recv().expect("score status") {
+                SequenceStatus::Subprocess {
+                    parent:
+                        Status::Processing {
+                            completion:
+                                SequenceCompletion::Custom {
+                                    completed, total, ..
+                                },
+                            ..
+                        },
+                    child:
+                        Status::Processing {
+                            completion: SequenceCompletion::FrameScore { frame, score },
+                            ..
+                        },
+                } => {
+                    assert_eq!(
+                        (completed, total),
+                        (3.0, 3.0),
+                        "final scoring must not restart the progress bar"
+                    );
+                    assert_eq!((frame, score), (expected_frame, expected_score));
+                },
+                other => panic!("unexpected status: {other:?}"),
+            }
+        }
+        assert!(rx.try_recv().is_err(), "no double-counted progress");
+    }
 }

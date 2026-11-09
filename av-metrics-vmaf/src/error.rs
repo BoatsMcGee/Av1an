@@ -44,6 +44,15 @@ pub enum VmafError {
         status: i32,
     },
 
+    /// A final score query failed after successful native finalization.
+    #[error("libvmaf call `vmaf_score_at_index` failed for frame {index} with status {status}")]
+    ScoreQueryFailed {
+        /// Sequential submitted frame index, never compacted on query failure.
+        index: u32,
+        /// Original native status, not reclassified as temporary unavailability.
+        status: i32,
+    },
+
     /// A configuration value could not be passed to libvmaf.
     #[error("Invalid VMAF configuration: {reason}")]
     InvalidConfiguration {
