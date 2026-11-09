@@ -20,7 +20,7 @@ use andean_condor::{
     },
     models::input::Input as InputModel,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use thiserror::Error as ThisError;
 use tracing::{debug, error, info, trace, warn};
 
@@ -33,6 +33,53 @@ use crate::{
     },
     configuration::{CliSequenceConfig, CliSequenceData},
 };
+
+#[derive(Debug, ThisError)]
+#[error("{primary}; additionally, {display:#}")]
+struct SecondaryDisplayFailure {
+    primary: String,
+    display: anyhow::Error,
+}
+
+// Execute must consume/drop its progress sender before finalization so the
+// display can exit on disconnect. Join before warnings or either error escapes:
+// a running display still owns the terminal and the panic hook.
+fn finish_stage(
+    stage: &str,
+    executed: Result<((), Vec<anyhow::Error>)>,
+    join_display: impl FnOnce() -> thread::Result<Result<()>>,
+) -> Result<()> {
+    let displayed = join_display()
+        .map_err(|payload| {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            anyhow::anyhow!("{stage} TUI thread panicked: {message}")
+        })
+        .and_then(|result| result.with_context(|| format!("{stage} TUI thread failed")));
+    match executed {
+        Ok(((), processing_warnings)) => {
+            for warning in processing_warnings {
+                warn!("{}", warning);
+            }
+            displayed
+        },
+        Err(primary) => match displayed {
+            Ok(()) => Err(primary),
+            Err(display) => {
+                // Context retains anyhow's typed primary downcast/cause chain;
+                // its diagnostic leads with that primary, not the display error.
+                let context = SecondaryDisplayFailure {
+                    primary: primary.to_string(),
+                    display,
+                };
+                Err(primary.context(context))
+            },
+        },
+    }
+}
 
 /// Opens `data`, logging its progress, if available.
 ///
@@ -191,17 +238,8 @@ pub fn run_scene_detector_tui(
         scd_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let (_, processing_warnings) = scene_detector.execute(condor, progress_tx, cancelled)?;
-
-    for warning in processing_warnings.iter() {
-        warn!("{}", warning);
-    }
-
-    tui_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Scene Detection TUI thread panicked"))??;
-
-    Ok(())
+    let executed = scene_detector.execute(condor, progress_tx, cancelled);
+    finish_stage("Scene Detection", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
@@ -254,17 +292,8 @@ pub fn run_noise_detector_tui(
         nd_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let (_, processing_warnings) = noise_detector.execute(condor, progress_tx, cancelled)?;
-
-    for warning in processing_warnings.iter() {
-        warn!("{}", warning);
-    }
-
-    tui_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Noise Detection TUI thread panicked"))??;
-
-    Ok(())
+    let executed = noise_detector.execute(condor, progress_tx, cancelled);
+    finish_stage("Noise Detection", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
@@ -332,17 +361,8 @@ pub fn run_benchmarker_tui(
         benchmarker_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let (_, processing_warnings) = benchmarker.execute(condor, progress_tx, cancelled)?;
-
-    for warning in processing_warnings.iter() {
-        warn!("{}", warning);
-    }
-
-    tui_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Benchmarker TUI thread panicked"))??;
-
-    Ok(())
+    let executed = benchmarker.execute(condor, progress_tx, cancelled);
+    finish_stage("Benchmarker", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
@@ -418,17 +438,8 @@ pub fn run_target_quality_tui(
         tq_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let (_, processing_warnings) = target_quality.execute(condor, progress_tx, cancelled)?;
-
-    for warning in processing_warnings.iter() {
-        warn!("{}", warning);
-    }
-
-    tui_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Target Quality TUI thread panicked"))??;
-
-    Ok(())
+    let executed = target_quality.execute(condor, progress_tx, cancelled);
+    finish_stage("Target Quality", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
@@ -483,17 +494,8 @@ pub fn run_quality_check_tui(
         qc_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let (_, processing_warnings) = quality_check.execute(condor, progress_tx, cancelled)?;
-
-    for warning in processing_warnings.iter() {
-        warn!("{}", warning);
-    }
-
-    tui_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Quality Check TUI thread panicked"))??;
-
-    Ok(())
+    let executed = quality_check.execute(condor, progress_tx, cancelled);
+    finish_stage("Quality Check", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
@@ -632,24 +634,8 @@ pub fn run_parallel_encoder_tui(
         pe_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    // Joined before propagating either result: a TUI thread still running owns
-    // raw mode and the panic hook, so letting one escape into the next
-    // sequence would hand both to two apps at once.
     let executed = parallel_encoder.execute(condor, progress_tx, cancelled);
-
-    let tui_result = tui_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Parallel Encoder TUI thread panicked"))?;
-
-    let (_, processing_warnings) = executed?;
-
-    for warning in processing_warnings.iter() {
-        warn!("{}", warning);
-    }
-
-    tui_result?;
-
-    Ok(())
+    finish_stage("Parallel Encoder", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
@@ -681,17 +667,8 @@ pub fn run_scene_concatenator_tui(
         sc_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let (_, processing_warnings) = scene_concatenator.execute(condor, progress_tx, cancelled)?;
-
-    for warning in processing_warnings.iter() {
-        warn!("{}", warning);
-    }
-
-    tui_handle
-        .join()
-        .map_err(|_| anyhow::anyhow!("Scene Concatenator TUI thread panicked"))??;
-
-    Ok(())
+    let executed = scene_concatenator.execute(condor, progress_tx, cancelled);
+    finish_stage("Scene Concatenator", executed, || tui_handle.join())
 }
 
 #[derive(Debug, ThisError)]
@@ -703,4 +680,289 @@ pub enum TUIError {
          input filters."
     )]
     FramesMismatchWithInputFilters(u64, u64),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::Seek,
+        process::{Command, Stdio},
+        sync::{Mutex, mpsc},
+    };
+
+    use tracing_subscriber::{Layer, layer::SubscriberExt};
+
+    use super::*;
+
+    #[derive(Clone, Copy, Debug)]
+    enum StageOutcome {
+        Success,
+        ImmediateFailure,
+        AfterProgressFailure,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum DisplayOutcome {
+        Success,
+        IoFailure,
+        PanicStr,
+        PanicString,
+        PanicOpaque,
+    }
+
+    #[derive(Debug, ThisError)]
+    #[error("typed primary stage failure")]
+    struct StageFailure;
+
+    type Events = Arc<Mutex<Vec<&'static str>>>;
+
+    struct Warnings(Events);
+
+    impl<S: tracing::Subscriber> Layer<S> for Warnings {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                self.0.lock().unwrap().push("warning");
+            }
+        }
+    }
+
+    // Removing the production join (or moving warnings before it) breaks this
+    // ordering check. Only the stage/display work is fake, not finalization.
+    fn lifecycle_case(
+        stage: &'static str,
+        stage_outcome: StageOutcome,
+        display_outcome: DisplayOutcome,
+    ) -> Result<()> {
+        let events = Events::default();
+        let caller_events = Arc::clone(&events);
+        let (release_tx, release_rx) = mpsc::channel();
+        let (control_tx, control_rx) = mpsc::channel();
+        let caller = thread::spawn(move || {
+            let (progress_tx, progress_rx) = mpsc::channel();
+            let (started_tx, started_rx) = mpsc::channel();
+            let display_events = Arc::clone(&caller_events);
+            let mut display = Some(thread::spawn(move || -> Result<()> {
+                display_events.lock().unwrap().push("display_started");
+                started_tx.send(()).unwrap();
+                for () in progress_rx {
+                    display_events.lock().unwrap().push("progress");
+                }
+                display_events.lock().unwrap().push("progress_closed");
+                release_rx.recv().unwrap();
+                display_events.lock().unwrap().push("display_restored");
+                display_events.lock().unwrap().push("display_finished");
+                match display_outcome {
+                    DisplayOutcome::Success => Ok(()),
+                    DisplayOutcome::IoFailure => {
+                        Err(std::io::Error::other("injected display I/O failure").into())
+                    },
+                    DisplayOutcome::PanicStr => panic!("display panic payload"),
+                    DisplayOutcome::PanicString => {
+                        std::panic::panic_any(String::from("owned display panic payload"));
+                    },
+                    DisplayOutcome::PanicOpaque => std::panic::panic_any(123_u32),
+                }
+            }));
+            started_rx.recv().unwrap();
+            // Like Sequence::execute, the fake stage consumes its only sender
+            // on both success and error; no test-held clone can mask a hang.
+            let executed = {
+                if matches!(stage_outcome, StageOutcome::AfterProgressFailure) {
+                    progress_tx.send(()).unwrap();
+                }
+                caller_events.lock().unwrap().push("stage_end");
+                drop(progress_tx);
+                if matches!(stage_outcome, StageOutcome::Success) {
+                    Ok(((), vec![anyhow::anyhow!("processing warning")]))
+                } else {
+                    Err(anyhow::Error::new(StageFailure).context("stage execution failed"))
+                }
+            };
+            let subscriber =
+                tracing_subscriber::registry().with(Warnings(Arc::clone(&caller_events)));
+            let result = tracing::subscriber::with_default(subscriber, || {
+                finish_stage(stage, executed, || {
+                    caller_events.lock().unwrap().push("join_entered");
+                    control_tx.send("join_entered").unwrap();
+                    let joined = display.take().unwrap().join();
+                    caller_events.lock().unwrap().push("display_joined");
+                    joined
+                })
+            });
+            caller_events.lock().unwrap().push("caller_returned");
+            control_tx.send("caller_returned").unwrap();
+            // RED must clean up too if the old helper returns without joining.
+            if let Some(display) = display {
+                let _ = display.join();
+            }
+            result
+        });
+        // The first signal proves either entry into the real join callback or
+        // an early return. Never infer ordering from a scheduling-dependent poll.
+        let first = control_rx.recv()?;
+        let released = release_tx.send(());
+        let result = caller.join().expect("fake caller must not panic");
+        released?;
+        let events = events.lock().unwrap();
+        anyhow::ensure!(
+            first == "join_entered",
+            "returned before joining: {events:?}"
+        );
+        let position = |name| -> Result<usize> {
+            events
+                .iter()
+                .position(|event| *event == name)
+                .ok_or_else(|| anyhow::anyhow!("missing {name}: {events:?}"))
+        };
+        anyhow::ensure!(
+            position("display_started")? < position("stage_end")?
+                && position("stage_end")? < position("progress_closed")?
+                && position("progress_closed")? < position("display_restored")?
+                && position("display_restored")? < position("display_finished")?
+                && position("display_finished")? < position("display_joined")?
+                && position("display_joined")? < position("caller_returned")?,
+            "out of order: {events:?}"
+        );
+        anyhow::ensure!(
+            events.contains(&"progress")
+                == matches!(stage_outcome, StageOutcome::AfterProgressFailure),
+            "wrong progress: {events:?}"
+        );
+        if matches!(stage_outcome, StageOutcome::Success) {
+            anyhow::ensure!(
+                events.iter().filter(|event| **event == "warning").count() == 1
+                    && position("display_joined")? < position("warning")?
+                    && position("warning")? < position("caller_returned")?,
+                "warning missing or emitted before join: {events:?}"
+            );
+        } else {
+            anyhow::ensure!(!events.contains(&"warning"));
+        }
+        if matches!(stage_outcome, StageOutcome::Success)
+            && matches!(display_outcome, DisplayOutcome::Success)
+        {
+            return result;
+        }
+        let error = result.expect_err("injected failure must reach the caller");
+        let diagnostic = format!("{error:#}");
+        if !matches!(stage_outcome, StageOutcome::Success) {
+            anyhow::ensure!(
+                error.downcast_ref::<StageFailure>().is_some(),
+                "{diagnostic}"
+            );
+            anyhow::ensure!(
+                error.to_string().starts_with("stage execution failed"),
+                "{diagnostic}"
+            );
+            anyhow::ensure!(
+                diagnostic.contains("typed primary stage failure"),
+                "{diagnostic}"
+            );
+            if matches!(display_outcome, DisplayOutcome::Success) {
+                anyhow::ensure!(
+                    diagnostic == "stage execution failed: typed primary stage failure"
+                );
+            }
+        }
+        let secondary = match display_outcome {
+            DisplayOutcome::Success => return Ok(()),
+            DisplayOutcome::IoFailure => "injected display I/O failure",
+            DisplayOutcome::PanicStr => "display panic payload",
+            DisplayOutcome::PanicString => "owned display panic payload",
+            DisplayOutcome::PanicOpaque => "non-string panic payload",
+        };
+        anyhow::ensure!(
+            diagnostic.contains(stage) && diagnostic.contains(secondary),
+            "{diagnostic}"
+        );
+        if matches!(stage_outcome, StageOutcome::Success)
+            && matches!(display_outcome, DisplayOutcome::IoFailure)
+        {
+            anyhow::ensure!(
+                error.downcast_ref::<std::io::Error>().is_some(),
+                "{diagnostic}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn t02_shared_lifecycle() -> Result<()> {
+        // File-backed output cannot fill a pipe if a regressed join hangs. The
+        // watchdog only bounds failures; timing is not the ordering assertion.
+        let mut output = tempfile::tempfile()?;
+        let mut child = Command::new(std::env::current_exe()?)
+            .args(["--exact", "tui::tests::t02_lifecycle_child", "--ignored", "--nocapture"])
+            .stdout(Stdio::from(output.try_clone()?))
+            .stderr(Stdio::from(output.try_clone()?))
+            .spawn()?;
+        let watched: Result<()> = (|| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if child.try_wait()?.is_some() {
+                    return Ok(());
+                }
+                anyhow::ensure!(
+                    Instant::now() < deadline,
+                    "lifecycle child exceeded 30s watchdog"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        })();
+        if watched.is_err() {
+            let _ = child.kill();
+        }
+        let status = child.wait()?;
+        output.rewind()?;
+        let text = std::io::read_to_string(output)?;
+        anyhow::ensure!(watched.is_ok() && status.success(), "{watched:?}\n{text}");
+        anyhow::ensure!(
+            text.contains("1 passed; 0 failed"),
+            "child did not run: {text}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "bounded child of t02_shared_lifecycle, not a standalone test"]
+    fn t02_lifecycle_child() -> Result<()> {
+        let mut failures = Vec::new();
+        // These are the seven production finish_stage call-site identities.
+        // Runtime coverage is the common lifecycle, not native encoder jobs.
+        for stage in [
+            "Scene Detection",
+            "Noise Detection",
+            "Benchmarker",
+            "Target Quality",
+            "Quality Check",
+            "Parallel Encoder",
+            "Scene Concatenator",
+        ] {
+            for stage_outcome in [
+                StageOutcome::Success,
+                StageOutcome::ImmediateFailure,
+                StageOutcome::AfterProgressFailure,
+            ] {
+                for display_outcome in [
+                    DisplayOutcome::Success,
+                    DisplayOutcome::IoFailure,
+                    DisplayOutcome::PanicStr,
+                    DisplayOutcome::PanicString,
+                    DisplayOutcome::PanicOpaque,
+                ] {
+                    if let Err(error) = lifecycle_case(stage, stage_outcome, display_outcome) {
+                        failures.push(format!(
+                            "{stage}/{stage_outcome:?}/{display_outcome:?}: {error:#}"
+                        ));
+                    }
+                }
+            }
+        }
+        anyhow::ensure!(failures.is_empty(), "{}", failures.join("\n"));
+        Ok(())
+    }
 }
