@@ -1,0 +1,24 @@
+# Opt-in pure production serialization check; no native plugins, secrets, or publishing.
+name: miri-grain
+on:
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  serialization:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install optional Miri toolchain
+        run: rustup toolchain install nightly --profile minimal --component miri
+      - name: Check production writer without native dependencies
+        run: cargo +nightly miri test --manifest-path tests/miri-grain/Cargo.toml --lib i12_fields_padding_and_moves_are_deterministic

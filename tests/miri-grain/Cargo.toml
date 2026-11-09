@@ -1,0 +1,11 @@
+# Standalone, std-only access to the production writer: no native workspace dependencies.
+[package]
+name = "miri-grain"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+path = "../../andean-condor/src/vapoursynth/plugins/fgs/dav1d_fg/raw.rs"

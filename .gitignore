@@ -94,6 +94,7 @@ docs/_build/
 
 # PyBuilder
 target/
+/tests/miri-grain/Cargo.lock
 
 # Jupyter Notebook
 .ipynb_checkpoints

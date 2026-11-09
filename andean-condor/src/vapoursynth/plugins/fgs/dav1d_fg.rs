@@ -1,50 +1,14 @@
 use anyhow::Result;
 use av1_grain::{GrainTableSegment, TransferFunction, generate_photon_noise_params};
 
+use self::raw::Dav1dFilmGrainDataRaw;
 use super::FGS;
 use crate::{
     core::input::color_range::ColorRange,
     vapoursynth::{VapourSynthError, plugins::PluginFunction},
 };
 
-/// Raw binary representation of `Dav1dFilmGrainData` matching the C struct
-/// layout from dav1d's `headers.h`. All fields are primitive types so the
-/// struct can be safely re-interpreted as bytes.
-#[repr(C)]
-pub(crate) struct Dav1dFilmGrainDataRaw {
-    seed: u32,
-    num_y_points: i32,
-    y_points: [[u8; 2]; 14],
-    chroma_scaling_from_luma: i32,
-    num_uv_points: [i32; 2],
-    uv_points: [[[u8; 2]; 10]; 2],
-    scaling_shift: i32,
-    ar_coeff_lag: i32,
-    ar_coeffs_y: [i8; 24],
-    ar_coeffs_uv: [[i8; 28]; 2],
-    ar_coeff_shift: u64,
-    grain_scale_shift: i32,
-    uv_mult: [i32; 2],
-    uv_luma_mult: [i32; 2],
-    uv_offset: [i32; 2],
-    overlap_flag: i32,
-    clip_to_restricted_range: i32,
-}
-
-// Safety: all fields are POD; repr(C) guarantees a stable layout.
-impl Dav1dFilmGrainDataRaw {
-    #[inline]
-    unsafe fn as_bytes(&self) -> &[u8] {
-        // SAFETY: `Dav1dFilmGrainDataRaw` is `#[repr(C)]` and contains only
-        // primitive types (integers and fixed-size arrays thereof).
-        unsafe {
-            std::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
-    }
-}
+mod raw;
 
 /// Convert an `av1_grain::GrainTableSegment` (produced by
 /// `generate_photon_noise_params`) into the C-compatible binary blob.
@@ -186,13 +150,146 @@ impl FGS {
         // Convert to binary
         let raw: Dav1dFilmGrainDataRaw = (&params).into();
 
-        // SAFETY: `Dav1dFilmGrainDataRaw` is `#[repr(C)]` and contains only
-        // primitive types (integers and fixed-size arrays thereof).
-        let entry_bytes = unsafe { raw.as_bytes() };
-
         // The vs-fgs plugin indexes `fgs_data` entries with
         // `std::min((size_t)n, fg_data_array.size() - 1)`, so a single
         // entry applies to every frame.
-        Ok(entry_bytes.to_vec())
+        Ok(raw.to_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::{offset_of, size_of};
+
+    use super::*;
+    use crate::{
+        models::encoder::photon_noise::PhotonNoise,
+        vapoursynth::script_builder::{VapourSynthPluginScript, script::Line},
+    };
+
+    fn fgs() -> FGS {
+        FGS {
+            photon_noise: PhotonNoise {
+                iso: 800,
+                chroma_iso: Some(400),
+                width: Some(1280),
+                height: Some(720),
+                c_y: Some(vec![-128, 0, 127]),
+                ccb: Some(vec![-127, 126]),
+                ccr: Some(vec![125, -126, 124]),
+            },
+            dynamic_seed: None,
+            simd_mask: None,
+        }
+    }
+
+    #[test]
+    fn i12_fgs_blob_overrides_zero_tails_and_script_hex() {
+        let fgs = fgs();
+        let bytes = fgs
+            .build_grain_binary(None, None, TransferFunction::BT1886, None)
+            .expect("FGS blob");
+        assert_eq!(bytes.len(), size_of::<Dav1dFilmGrainDataRaw>());
+        for (offset, capacity, expected) in [
+            (
+                offset_of!(Dav1dFilmGrainDataRaw, ar_coeffs_y),
+                24,
+                vec![128, 0, 127],
+            ),
+            (
+                offset_of!(Dav1dFilmGrainDataRaw, ar_coeffs_uv),
+                28,
+                vec![129, 126],
+            ),
+            (
+                offset_of!(Dav1dFilmGrainDataRaw, ar_coeffs_uv) + 28,
+                28,
+                vec![125, 130, 124],
+            ),
+        ] {
+            assert_eq!(&bytes[offset..offset + expected.len()], expected);
+            assert!(bytes[offset + expected.len()..offset + capacity].iter().all(|&b| b == 0));
+        }
+
+        // The generated scaling points must keep their unused ABI slots zero.
+        let count_at = |offset| {
+            i32::from_ne_bytes(bytes[offset..offset + 4].try_into().expect("i32 count")) as usize
+        };
+        for (count_offset, points_offset, capacity) in [
+            (
+                offset_of!(Dav1dFilmGrainDataRaw, num_y_points),
+                offset_of!(Dav1dFilmGrainDataRaw, y_points),
+                14,
+            ),
+            (
+                offset_of!(Dav1dFilmGrainDataRaw, num_uv_points),
+                offset_of!(Dav1dFilmGrainDataRaw, uv_points),
+                10,
+            ),
+            (
+                offset_of!(Dav1dFilmGrainDataRaw, num_uv_points) + 4,
+                offset_of!(Dav1dFilmGrainDataRaw, uv_points) + 20,
+                10,
+            ),
+        ] {
+            let count = count_at(count_offset);
+            assert!(count <= capacity);
+            assert!(
+                bytes[points_offset + count * 2..points_offset + capacity * 2]
+                    .iter()
+                    .all(|&b| b == 0)
+            );
+        }
+
+        let (_, lines) = fgs.generate_script("clip".to_owned()).expect("FGS script");
+        let Line::Expression(_, expression) = &lines[0] else {
+            panic!("expected FGS expression")
+        };
+        let hex = expression
+            .split("bytes.fromhex(\"")
+            .nth(1)
+            .expect("hex literal")
+            .split('"')
+            .next()
+            .expect("closing quote");
+        let (pairs, remainder) = hex.as_bytes().as_chunks::<2>();
+        assert!(remainder.is_empty());
+        let decoded: Vec<u8> = pairs
+            .iter()
+            .map(|pair| {
+                u8::from_str_radix(std::str::from_utf8(pair).expect("ASCII hex"), 16)
+                    .expect("hex byte")
+            })
+            .collect();
+        assert_eq!(decoded, bytes);
+        assert_eq!(
+            fgs.build_grain_binary(None, None, TransferFunction::BT1886, None)
+                .expect("repeated FGS blob"),
+            bytes
+        );
+    }
+
+    #[test]
+    fn i12_fgs_coefficient_capacity_checks() {
+        for (field, capacity) in [("c_y", 24), ("ccb", 25), ("ccr", 25)] {
+            let mut fgs = fgs();
+            for len in [capacity, capacity + 1] {
+                let coefficients = match field {
+                    "c_y" => &mut fgs.photon_noise.c_y,
+                    "ccb" => &mut fgs.photon_noise.ccb,
+                    _ => &mut fgs.photon_noise.ccr,
+                };
+                *coefficients = Some(vec![127; len]);
+                let result = fgs.build_grain_binary(None, None, TransferFunction::BT1886, None);
+                if len == capacity {
+                    assert!(result.is_ok());
+                } else {
+                    let error = result.expect_err("reject coefficients exceeding capacity");
+                    assert!(
+                        error.to_string().contains(&format!("{field} must be at most {capacity}"))
+                    );
+                }
+            }
+        }
     }
 }
