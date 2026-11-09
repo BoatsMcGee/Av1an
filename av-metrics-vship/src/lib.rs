@@ -24,6 +24,12 @@
 //! scorer uses one synchronous handler for every metric. [`VshipMetric::Cvvdp`]
 //! is temporal: submit frames in order and request history resets at scene breaks.
 //!
+//! Distinct thread-local scorers share a native-call lock: pinned libvship writes
+//! global error state even across different handles. Device probes, init, compute,
+//! reset and free are serialized through short-diagnostic capture; user callbacks
+//! run outside the lock. Raw [`ffi::VshipApi`] pointers and independent native
+//! bindings/plugins do not participate in this synchronization.
+//!
 //! # Example
 //!
 //! ```no_run

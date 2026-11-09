@@ -618,7 +618,7 @@ impl MetricHandler {
         // The init struct is metric-agnostic on the C side: `Vship_InitHandler`
         // reads its `struct_type` discriminator to learn which layout it was
         // handed, so all three variants are built here and one is selected.
-        let status = match metric {
+        let result = api.call("Vship_InitHandler", || match metric {
             VshipMetric::Ssimulacra2 => {
                 let init = VshipInitSsimulacra2_1 {
                     struct_type: VshipStructType::InitSsimulacra2,
@@ -679,9 +679,9 @@ impl MetricHandler {
                     )
                 }
             },
-        };
+        });
 
-        if let Err(error) = ffi::check(status, "Vship_InitHandler") {
+        if let Err(error) = result {
             return Err(VshipError::MetricUnavailable {
                 metric: metric.as_str().to_owned(),
                 reason: error.to_string(),
@@ -724,7 +724,7 @@ impl MetricHandler {
                 // writable score struct whose discriminator
                 // matches the metric, and the handler is owned
                 // by `self`.
-                let status = unsafe {
+                api.call("Vship_ComputeHandler", || unsafe {
                     (api.compute_handler)(
                         self.handle,
                         std::ptr::from_mut(&mut out).cast::<c_void>(),
@@ -733,8 +733,7 @@ impl MetricHandler {
                         line_size.as_ptr(),
                         line_size2.as_ptr(),
                     )
-                };
-                ffi::check(status, "Vship_ComputeHandler")?;
+                })?;
                 check_score_tag(out.struct_type, VshipStructType::ScoreSsimulacra2)?;
                 score.score = Some(out.score);
             },
@@ -744,7 +743,7 @@ impl MetricHandler {
                 // device.
                 let mut out = VshipScoreButteraugli::default();
                 // SAFETY: as above, for the Butteraugli score layout.
-                let status = unsafe {
+                api.call("Vship_ComputeHandler", || unsafe {
                     (api.compute_handler)(
                         self.handle,
                         std::ptr::from_mut(&mut out).cast::<c_void>(),
@@ -753,8 +752,7 @@ impl MetricHandler {
                         line_size.as_ptr(),
                         line_size2.as_ptr(),
                     )
-                };
-                ffi::check(status, "Vship_ComputeHandler")?;
+                })?;
                 check_score_tag(out.struct_type, VshipStructType::ScoreButteraugli)?;
                 score.norm_q = Some(out.norm_q);
                 score.norm_3 = Some(out.norm_3);
@@ -763,7 +761,7 @@ impl MetricHandler {
             VshipMetric::Cvvdp => {
                 let mut out = VshipScoreCvvdp::default();
                 // SAFETY: as above, for the CVVDP score layout.
-                let status = unsafe {
+                api.call("Vship_ComputeHandler", || unsafe {
                     (api.compute_handler)(
                         self.handle,
                         std::ptr::from_mut(&mut out).cast::<c_void>(),
@@ -772,8 +770,7 @@ impl MetricHandler {
                         line_size.as_ptr(),
                         line_size2.as_ptr(),
                     )
-                };
-                ffi::check(status, "Vship_ComputeHandler")?;
+                })?;
                 check_score_tag(out.struct_type, VshipStructType::ScoreCvvdp)?;
                 score.score = Some(out.score);
             },
@@ -786,15 +783,15 @@ impl MetricHandler {
     fn reset(&self, api: &'static VshipApi) -> Result<(), VshipError> {
         // SAFETY: `handle` is owned by `self` and `Vship_Reset` takes no other
         // arguments.
-        let status = unsafe { (api.reset)(self.handle) };
-        ffi::check(status, "Vship_Reset")
+        api.call("Vship_Reset", || unsafe { (api.reset)(self.handle) })
     }
 
     /// Clear this handler's accumulated score, leaving its frame history.
     fn reset_score(&self, api: &'static VshipApi) -> Result<(), VshipError> {
         // SAFETY: as `reset`.
-        let status = unsafe { (api.reset_score)(self.handle) };
-        ffi::check(status, "Vship_ResetScore")
+        api.call("Vship_ResetScore", || unsafe {
+            (api.reset_score)(self.handle)
+        })
     }
 }
 
@@ -820,7 +817,9 @@ impl Drop for MetricHandler {
         if let Ok(api) = VshipApi::load() {
             // SAFETY: `handle` came from `Vship_InitHandler` and is released
             // exactly once, here.
-            unsafe { (api.free_handler)(self.handle) };
+            let _ = api.call("Vship_FreeHandler", || unsafe {
+                (api.free_handler)(self.handle)
+            });
         }
     }
 }
@@ -1468,6 +1467,7 @@ fn default_gpu_full_check(api: &VshipApi, gpu_id: u32) -> Result<(), VshipError>
 
     // Serialize the first success, not just its publication. Failed probes retry;
     // explicit devices and runtime init/compute never use or invalidate this cache.
+    // Lock order: this capability cache -> ffi's native-call lock, never the reverse.
     let mut checked = CHECKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if *checked != Some(gpu_id) {
         api.gpu_full_check(gpu_id)?;

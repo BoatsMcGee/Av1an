@@ -62,6 +62,20 @@ The callback passed to `score_decoders` fires once per pair, which is useful for
 
 A scorer is neither `Send` nor `Sync`: construct, use and drop it on the same thread. Each scorer owns one opaque native handler and submits synchronously through `&mut self`.
 
+Distinct scorers may live on different threads, but pinned libvship 5.1.2 writes
+a shared global error object even when their native handles differ. This binding
+serializes device probes, initialization, compute, reset and destruction across
+its safe APIs, including each call's short diagnostic. Progress callbacks run
+outside that lock. This limits concurrent native throughput across scorers;
+relaxing it requires verified upstream thread-local or synchronized error state.
+Scorer ownership and borrowed-plane lifetimes are unchanged.
+
+Public `ffi::VshipApi` function pointers bypass this guard. Raw callers must
+coordinate error-state access and prevent overlap with safe APIs themselves.
+The lock does not coordinate independent native bindings, VapourSynth plugins or
+duplicate crate versions. Short status messages do not read global error details;
+the safe API does not retrieve `GetDetailedLastError`.
+
 ### Borrowed plane uploads
 
 `PlaneSource<'a>` borrows storage through fallible `from_bytes`, `from_u16` or

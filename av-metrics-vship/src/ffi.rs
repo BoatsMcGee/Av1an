@@ -26,12 +26,20 @@
 use std::{
     ffi::{c_char, c_int, c_void},
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
 };
 
 use libloading::Library;
 
 use crate::error::VshipError;
+
+#[cfg(test)]
+#[path = "m29_tests.rs"]
+mod m29_tests;
+
+// ponytail: serialize this binding's error-writing native calls across all scorers.
+// Relax only after upstream's shared lastError is verified thread-local or synchronized.
+static NATIVE_CALLS: Mutex<()> = Mutex::new(());
 
 /// A libvship metric handler: an opaque pointer allocated by
 /// `Vship_InitHandler`.
@@ -743,6 +751,13 @@ impl Default for VshipDeviceInfo {
 /// Contains only function pointers and copyable data, so it is `Send + Sync`
 /// and can be cached process-wide. The [`Library`] backing these pointers is
 /// leaked by [`VshipApi::load`] and never unloaded.
+///
+/// # Raw-call safety
+///
+/// Public function pointers bypass the safe wrapper's shared native-call lock.
+/// Callers must prevent raw error-state readers/writers from overlapping safe
+/// APIs or other raw calls. This binding cannot coordinate separate bindings,
+/// plugins or duplicate crate versions that do not share its lock.
 #[derive(Clone, Copy)]
 pub struct VshipApi {
     /// Checked once at admission, before any device or handler call.
@@ -809,8 +824,9 @@ impl VshipApi {
         let mut count: c_int = 0;
         // SAFETY: `count` is a writable out-pointer for one `c_int`, which is
         // exactly what `Vship_GetDeviceCount` writes.
-        let status = unsafe { (self.get_device_count)(&raw mut count) };
-        check(status, "Vship_GetDeviceCount")?;
+        self.call("Vship_GetDeviceCount", || unsafe {
+            (self.get_device_count)(&raw mut count)
+        })?;
 
         u32::try_from(count).map_err(|_| VshipError::DeviceCount { count })
     }
@@ -825,8 +841,9 @@ impl VshipApi {
         let mut info = VshipDeviceInfo::default();
         // SAFETY: `info` is a writable `VshipDeviceInfo` the library fills in
         // place, and `gpu_id` is narrowed from a value libvship enumerated.
-        let status = unsafe { (self.get_device_info)(&raw mut info, gpu_id as c_int) };
-        check(status, "Vship_GetDeviceInfo")?;
+        self.call("Vship_GetDeviceInfo", || unsafe {
+            (self.get_device_info)(&raw mut info, gpu_id as c_int)
+        })?;
 
         Ok(info)
     }
@@ -846,8 +863,33 @@ impl VshipApi {
     pub fn gpu_full_check(&self, gpu_id: u32) -> Result<(), VshipError> {
         // SAFETY: `gpu_id` was narrowed from an enumerated index, and the
         // function takes no pointers.
-        let status = unsafe { (self.gpu_full_check)(gpu_id as c_int) };
-        check(status, "Vship_GPUFullCheck")
+        self.call("Vship_GPUFullCheck", || unsafe {
+            (self.gpu_full_check)(gpu_id as c_int)
+        })
+    }
+
+    /// Run one error-writing native call and capture its short diagnostic.
+    /// Resolve the API, default-device caches and arguments before entering;
+    /// the closure must not reenter this lock or invoke user callbacks.
+    pub(crate) fn call(
+        &self,
+        function: &'static str,
+        call: impl FnOnce() -> c_int,
+    ) -> Result<(), VshipError> {
+        // No Rust logical state is protected: unwinding cannot invalidate it.
+        // Recover poison so Drop still releases an already-owned native handle.
+        let _guard = NATIVE_CALLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let status = call();
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(VshipError::CallFailed {
+                function,
+                status,
+                // Use the resolved API, never load()/check() under this lock.
+                message: short_error_message(self, status),
+            })
+        }
     }
 
     /// Load libvship and resolve the entry points the scorer needs.
@@ -912,9 +954,6 @@ pub fn check(status: c_int, function: &'static str) -> Result<(), VshipError> {
 #[inline]
 #[must_use]
 pub fn error_message(exception: c_int) -> String {
-    /// Buffer size for a status code's message.
-    const CAPACITY: usize = 1024;
-
     // The native helper casts to an internal C++ enum; do not feed it unknown
     // codes. Numeric diagnostics are meaningful without native interpretation.
     if !(0..=17).contains(&exception) {
@@ -926,6 +965,18 @@ pub fn error_message(exception: c_int) -> String {
     let Ok(api) = VshipApi::load() else {
         return fallback_message(exception);
     };
+
+    short_error_message(api, exception)
+}
+
+fn short_error_message(api: &VshipApi, exception: c_int) -> String {
+    const CAPACITY: usize = 1024;
+
+    // The pinned short helper constructs only a local string from the status;
+    // unlike GetDetailedLastError it never reads native global lastError.
+    if !(0..=17).contains(&exception) {
+        return fallback_message(exception);
+    }
 
     let mut buffer = vec![0 as c_char; CAPACITY];
     // SAFETY: `exception` is a valid status code, and `buffer` is a writable
