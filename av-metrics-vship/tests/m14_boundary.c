@@ -28,7 +28,7 @@ static void record(unsigned kind, Handle *h) {
 Vship_Version Vship_GetVersion(void) { return (Vship_Version){5,1,setting("M14_PATCH",2),(Vship_Backend)setting("M14_BACKEND",3)}; }
 Vship_Exception Vship_GetDeviceCount(int *n) { *n=1; return Vship_NoError; }
 Vship_Exception Vship_GetDeviceInfo(Vship_DeviceInfo *info, int gpu) { (void)gpu; memset(info,0,sizeof(*info)); return Vship_NoError; }
-Vship_Exception Vship_GPUFullCheck(int gpu) { (void)gpu; counts[0]++; return (Vship_Exception)setting("M14_PROBE_STATUS",0); }
+Vship_Exception Vship_GPUFullCheck(int gpu) { (void)gpu; counts[0]++; return (Vship_Exception)status(2,"M14_PROBE_STATUS"); }
 int Vship_GetErrorMessage(Vship_Exception e, char *out, int len) {
     if ((unsigned)e > 17) abort();
     return snprintf(out,(size_t)len,"known vship status");

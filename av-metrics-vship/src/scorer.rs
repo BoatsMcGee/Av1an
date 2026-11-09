@@ -1424,12 +1424,11 @@ fn availability(gpu_id: u32) -> Result<&'static str, VshipError> {
     let api = VshipApi::load()?;
     // The version is queried before the device check, so a library that loaded
     // but cannot run reports as unavailable rather than as a working scorer.
-    let version = CACHED_VERSION.get_or_init(|| api.version_string()).clone();
+    let version = CACHED_VERSION.get_or_init(|| api.version_string());
     api.gpu_full_check(gpu_id)?;
 
-    // The string is leaked once so callers can hold it as `&'static str`, which
-    // matches how the version is cached in the libvmaf binding too.
-    Ok(Box::leak(version.into_boxed_str()))
+    // The static owns the string for the process lifetime, so callers can borrow it.
+    Ok(version.as_str())
 }
 
 #[cfg(test)]

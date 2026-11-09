@@ -17,6 +17,156 @@ use v_frame::{chroma::ChromaSubsampling, frame::FrameBuilder};
 #[cfg(unix)]
 mod common;
 
+/// Catches per-request version clones/leaks without caching device admission.
+#[test]
+#[cfg(unix)]
+fn m21_version_borrows_cached_storage() {
+    if std::env::var_os("M21_CHILD").is_some() {
+        m21_child();
+        return;
+    }
+    let dir = tempfile::tempdir().expect("version fixture directory");
+    let library = dir.path().join(if cfg!(target_os = "macos") {
+        "libvship.dylib"
+    } else {
+        "libvship.so"
+    });
+    compile(&library, false, &[]);
+    let mut child = Command::new(std::env::current_exe().expect("executable"))
+        .args(["--exact", "m21_version_borrows_cached_storage", "--nocapture"])
+        .env("M21_CHILD", "1")
+        .env("M14_LIBRARY", &library)
+        .env("M14_BACKEND", "3")
+        .env("M14_PATCH", "2")
+        .env("M14_PROBE_STATUS", "0")
+        .env("VSHIP_PLUGIN_PATH", dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("version child");
+    let start = Instant::now();
+    while child.try_wait().expect("status").is_none() {
+        if start.elapsed() > Duration::from_secs(30) {
+            child.kill().expect("kill");
+            child.wait().expect("reap");
+            panic!("M21 timed out");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let out = child.wait_with_output().expect("output");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed; 0 failed"),
+        "{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    print!("{stdout}");
+}
+
+#[cfg(unix)]
+fn m21_child() {
+    // SAFETY: exact fixture exports; mapping outlives all calls and reads.
+    let lib =
+        unsafe { libloading::Library::new(std::env::var_os("M14_LIBRARY").expect("library")) }
+            .expect("mapping");
+    // SAFETY: these signatures are defined in m14_boundary.c.
+    let (counter, control) = unsafe {
+        (
+            lib.get::<unsafe extern "C" fn(u32) -> u32>(b"m14_count\0").expect("counter"),
+            lib.get::<unsafe extern "C" fn(u32, i32)>(b"m20_set\0").expect("control"),
+        )
+    };
+    // SAFETY: only defined counter indices 0..3 are used while mapped.
+    let count = |i| unsafe { counter(i) };
+    let mut versions = Vec::new();
+    for request in 1..=4 {
+        let version = if request % 2 == 0 {
+            VshipScorer::libvship_version()
+        } else {
+            av_metrics_vship::libvship_version()
+        }
+        .expect("fixture version requests must not skip");
+        assert_eq!(version, "5.1.2", "pinned fixture version");
+        versions.push(version);
+        assert_eq!(count(0), request, "every request probes the device");
+    }
+    println!(
+        "M21 version=5.1.2 pointers={:?}; probes={}",
+        versions.iter().map(|version| version.as_ptr()).collect::<Vec<_>>(),
+        count(0)
+    );
+    for version in &versions[1..] {
+        assert_eq!(
+            version.as_ptr(),
+            versions[0].as_ptr(),
+            "repeated requests borrow the same stored version"
+        );
+    }
+    // SAFETY: control 2 changes only probe status in the isolated child.
+    unsafe { control(2, 777) };
+    assert!(
+        av_metrics_vship::libvship_version().is_none(),
+        "failed probe hides cached version"
+    );
+    assert!(
+        VshipScorer::libvship_version().is_none(),
+        "associated version also probes"
+    );
+    assert!(
+        !av_metrics_vship::is_available(),
+        "failed probe remains unavailable"
+    );
+    assert!(
+        !VshipScorer::is_available(),
+        "associated availability also probes"
+    );
+    let format = VideoFormat {
+        width: 32,
+        height: 32,
+        bit_depth: 8,
+        chroma_sampling: ChromaSubsampling::Yuv420,
+        color_range: None,
+        color_primaries: None,
+        color_transfer_characteristic: None,
+        color_space: None,
+        chroma_location: None,
+    };
+    assert!(
+        matches!(
+            VshipScorer::new(VshipConfig::new(), format, format, None),
+            Err(VshipError::CallFailed {
+                function: "Vship_GPUFullCheck",
+                status: 777,
+                ..
+            })
+        ),
+        "cached version must not mask native probe errors"
+    );
+    assert_eq!(
+        (count(0), count(1), count(2)),
+        (9, 0, 0),
+        "failed probes allocate no handlers"
+    );
+    // SAFETY: restore the same child-local probe control to success.
+    unsafe { control(2, 0) };
+    let recovered = av_metrics_vship::libvship_version().expect("device recovered");
+    assert_eq!(recovered, "5.1.2", "cached content survives probe failures");
+    assert_eq!(
+        recovered.as_ptr(),
+        versions[0].as_ptr(),
+        "recovery reuses the stored version"
+    );
+    assert_eq!(
+        (count(0), count(1), count(2)),
+        (10, 0, 0),
+        "recovery probes without allocating handlers"
+    );
+    println!(
+        "M21 failed probe status=777 retained; recovered pointer={:p}; probes=10, init/free=0/0",
+        recovered.as_ptr()
+    );
+}
+
 /// Catches serial handler multiplication, lost ownership on errors, and resets
 /// before preflight. This drives the production constructor/submission boundary.
 #[test]
