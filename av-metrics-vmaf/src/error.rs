@@ -13,6 +13,19 @@ pub enum VmafError {
     )]
     LibraryNotFound,
 
+    /// The loaded library does not match the bounded, header-verified ABI.
+    #[error(
+        "Incompatible libvmaf runtime `{version}`: {reason}. Reinstall the pinned v3.2.1 \
+         release archive/package (verified runtime `3.2.0`, without picture conversion/wrap \
+         exports), or point VMAF_LIB_DIR at it. Modified binaries are unsupported."
+    )]
+    IncompatibleLibrary {
+        /// Observed version, or a diagnostic for an invalid native string.
+        version: String,
+        /// Unverified version or known incompatible API export.
+        reason: String,
+    },
+
     /// libvmaf was found but the required symbols could not be resolved.
     #[error("Failed to load symbol `{symbol}` from libvmaf: {message}")]
     SymbolNotFound {

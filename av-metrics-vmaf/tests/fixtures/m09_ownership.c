@@ -43,7 +43,7 @@ static unsigned setting(const char *name) {
     const char *value = getenv(name);
     return value ? (unsigned)atoi(value) : 0;
 }
-const char *vmaf_version(void) { return "3.2.1"; }
+const char *vmaf_version(void) { return "3.2.0"; }
 int vmaf_init(Context **out, Configuration cfg) {
     memset(counts, 0, sizeof(counts));
     *out = calloc(1, sizeof(Context));
@@ -142,7 +142,7 @@ int vmaf_read_pictures(Context *ctx, Picture *ref, Picture *dist, unsigned index
     ctx->next_index++;
     return 0;
 }
-void vmaf_close(Context *ctx) {
+int vmaf_close(Context *ctx) {
     counts[CLOSE]++;
     release_workers(ctx);
     for (Record *r = ctx->records; r;) {
@@ -161,6 +161,7 @@ void vmaf_close(Context *ctx) {
     }
     free(ctx);
     counts[FREE]++;
+    return 0;
 }
 int vmaf_model_load(void **out, void *cfg, const char *name) {
     (void)cfg; (void)name;

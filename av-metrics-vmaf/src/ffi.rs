@@ -5,11 +5,11 @@
 //! No `bindgen` is used: the surface needed here is small and stable, and
 //! declaring it by hand keeps the build free of a libclang dependency.
 //!
-//! Every struct layout and function signature below was verified against the
-//! headers shipped with libvmaf 3.2.1, not inferred. That matters: the 3.x API
-//! differs substantially from earlier releases, notably in how models are
-//! loaded (`vmaf_model_load` plus `vmaf_use_features_from_model`, rather than
-//! passing model arrays into `vmaf_init`).
+//! Declarations target release v3.2.1 (f85a853692a8c730d0270cd733c8bb30b5b93b7c),
+//! whose source archive reports runtime `3.2.0`. The loader rejects unverified
+//! versions and known newer picture-ABI exports before any layout-sensitive call.
+//! This bounded guard is not attestation of arbitrary modified binaries. Tests
+//! compare layouts with real C headers; ordinary builds need neither headers nor C.
 //!
 //! # Loading strategy
 //!
@@ -239,7 +239,7 @@ pub struct VmafCudaPictureConfiguration {
 }
 
 type VmafInit = unsafe extern "C" fn(*mut *mut VmafContext, VmafConfiguration) -> c_int;
-type VmafClose = unsafe extern "C" fn(*mut VmafContext);
+type VmafClose = unsafe extern "C" fn(*mut VmafContext) -> c_int;
 type VmafReadPictures =
     unsafe extern "C" fn(*mut VmafContext, *mut VmafPicture, *mut VmafPicture, c_uint) -> c_int;
 type VmafScoreAtIndex =
@@ -316,7 +316,7 @@ pub struct VmafApi {
     pub use_feature: VmafUseFeature,
 
     /// Releases a picture's buffers.
-    pub picture_unref: unsafe extern "C" fn(*mut VmafPicture),
+    pub picture_unref: unsafe extern "C" fn(*mut VmafPicture) -> c_int,
     /// Fetches a picture whose buffers libvmaf has sized for the context.
     pub fetch_preallocated_picture:
         unsafe extern "C" fn(*mut VmafContext, *mut VmafPicture) -> c_int,
@@ -383,9 +383,8 @@ impl VmafApi {
     /// # Errors
     ///
     /// Returns [`VmafError::LibraryNotFound`] when no candidate library could
-    /// be opened, or [`VmafError::SymbolNotFound`] when a required entry
-    /// point is missing, which would indicate an incompatible libvmaf
-    /// build.
+    /// be opened, [`VmafError::IncompatibleLibrary`] for an unverified ABI, or
+    /// [`VmafError::SymbolNotFound`] when a required entry point is missing.
     pub fn load() -> Result<&'static Self, VmafError> {
         static API: OnceLock<Result<VmafApi, VmafError>> = OnceLock::new();
 
@@ -401,6 +400,10 @@ impl VmafApi {
 fn clone_error(error: &VmafError) -> VmafError {
     match error {
         VmafError::LibraryNotFound => VmafError::LibraryNotFound,
+        VmafError::IncompatibleLibrary { version, reason } => VmafError::IncompatibleLibrary {
+            version: version.clone(),
+            reason: reason.clone(),
+        },
         VmafError::SymbolNotFound { symbol, message } => VmafError::SymbolNotFound {
             symbol: symbol.clone(),
             message: message.clone(),
@@ -473,13 +476,43 @@ fn resolve() -> Result<VmafApi, VmafError> {
             // that lives as long as the library.
             let raw = vmaf_version();
             if raw.is_null() {
-                return Err(VmafError::SymbolNotFound {
-                    symbol: "vmaf_version".to_owned(),
-                    message: "returned a null pointer".to_owned(),
+                return Err(VmafError::IncompatibleLibrary {
+                    version: "<null>".to_owned(),
+                    reason: "vmaf_version returned a null pointer".to_owned(),
                 });
             }
-            std::ffi::CStr::from_ptr(raw).to_str().unwrap_or("unknown")
+            let bytes = std::ffi::CStr::from_ptr(raw);
+            bytes.to_str().map_err(|_| VmafError::IncompatibleLibrary {
+                version: format!("<non-UTF8 {:?}>", bytes.to_bytes()),
+                reason: "vmaf_version is not UTF-8".to_owned(),
+            })?
         };
+
+        if version != "3.2.0" {
+            return Err(VmafError::IncompatibleLibrary {
+                version: version.to_owned(),
+                reason: "version has no verified header mapping".to_owned(),
+            });
+        }
+        // SECURITY: newer color layouts can also report 3.2.0. These exports
+        // arrived with/after that layout (0497a0f2, 700124a4); probe presence
+        // only, NEVER call an entry point with an unverified signature.
+        for marker in [
+            b"vmaf_picture_convert_context_init\0".as_slice(),
+            b"vmaf_picture_convert\0",
+            b"vmaf_picture_convert_context_close\0",
+            b"vmaf_picture_wrap\0",
+        ] {
+            if library.get::<*const c_void>(marker).is_ok() {
+                return Err(VmafError::IncompatibleLibrary {
+                    version: version.to_owned(),
+                    reason: format!(
+                        "known incompatible picture ABI export `{}`",
+                        symbol_name(marker)
+                    ),
+                });
+            }
+        }
 
         Ok(VmafApi {
             version,
@@ -702,9 +735,11 @@ fn library_candidates() -> Vec<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::mem::{align_of, size_of};
+#[path = "abi_tests.rs"]
+mod abi_tests;
 
+#[cfg(test)]
+mod tests {
     use super::*;
 
     #[cfg(target_os = "linux")]
@@ -779,44 +814,5 @@ mod tests {
         assert_eq!(picture.bpc, 0);
         assert!(picture.data.iter().all(|pointer| pointer.is_null()));
         assert!(picture.priv_.is_null());
-    }
-
-    /// Guards the FFI layouts against accidental reordering. A wrong field
-    /// order still compiles, and surfaces only as an opaque `EINVAL` from
-    /// libvmaf at runtime, which is exactly the bug this test exists to
-    /// prevent.
-    #[test]
-    fn picture_layout_matches_the_c_header() {
-        // Mirrors `typedef struct VmafPicture` in picture.h.
-        #[repr(C)]
-        struct Expected {
-            pix_fmt: VmafPixelFormat,
-            bpc: c_uint,
-            w: [c_uint; 3],
-            h: [c_uint; 3],
-            stride: [isize; 3],
-            data: [*mut c_void; 3],
-            ref_: *mut VmafRef,
-            priv_: *mut c_void,
-        }
-
-        assert_eq!(size_of::<VmafPicture>(), size_of::<Expected>());
-        assert_eq!(align_of::<VmafPicture>(), align_of::<Expected>());
-    }
-
-    #[test]
-    fn configuration_layout_matches_the_c_header() {
-        // Mirrors `typedef struct VmafConfiguration` in libvmaf.h.
-        #[repr(C)]
-        struct Expected {
-            log_level: c_int,
-            n_threads: c_uint,
-            n_subsample: c_uint,
-            cpumask: u64,
-            gpumask: u64,
-        }
-
-        assert_eq!(size_of::<VmafConfiguration>(), size_of::<Expected>());
-        assert_eq!(align_of::<VmafConfiguration>(), align_of::<Expected>());
     }
 }

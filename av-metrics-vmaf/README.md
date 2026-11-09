@@ -64,10 +64,38 @@ progress while a long encode is being scored.
 
 libvmaf is **not** vendored. Install it separately:
 
-- [libvmaf](https://github.com/Netflix/vmaf) 3.2.0 or later.
-- A C toolchain and, for the build, Meson and Ninja.
+- [libvmaf](https://github.com/Netflix/vmaf) release **v3.2.1**, whose verified
+  archive/package runtime string is **`3.2.0`** (see the ABI policy below).
+- Only when building libvmaf itself: a C toolchain, Meson and Ninja. Ordinary
+  Rust crate builds need neither libvmaf, its headers, nor a C compiler.
 - **CUDA only:** the NVIDIA CUDA Toolkit (tested upstream with CUDA >= 11) plus
   [`nv-codec-headers`](https://github.com/FFmpeg/nv-codec-headers).
+
+### Supported runtime ABI
+
+Before initializing CPU **or** CUDA, the loader requires the exact `vmaf_version()`
+string `3.2.0`, verified against release v3.2.1 at
+[`f85a853692a8c730d0270cd733c8bb30b5b93b7c`][pinned headers]. The tag and runtime
+version differ: that release's [Meson project version][pinned version] is 3.2.0.
+Unverified strings (including `3.2.1`, other releases, and git/dev suffixes), null,
+and non-UTF8 versions return `VmafError::IncompatibleLibrary`.
+
+Version alone is insufficient: newer development archives can still report
+`3.2.0` while enlarging `VmafPicture` with color metadata. The loader also rejects
+the presence of **any** of these known new-layout exports, without calling them:
+
+- `vmaf_picture_convert_context_init`
+- `vmaf_picture_convert`
+- `vmaf_picture_convert_context_close`
+- `vmaf_picture_wrap`
+
+The [color/conversion change][color ABI] and [wrapping change][wrap ABI] establish
+these markers. Backports exporting them are conservatively rejected too. This is
+a bounded compatibility guard, **not binary attestation**: arbitrary modified
+binaries that reuse versions and hide markers are unsupported. There is no bypass,
+including `CpuOnly`. Reinstall the pinned release archive/package or point
+`VMAF_LIB_DIR` at a compatible installation; the error identifies the observed
+version/marker. An opened but incompatible library is not silently replaced.
 
 ## Building libvmaf
 
@@ -106,9 +134,11 @@ meson install -C build
 ### From source, any platform
 
 ```bash
-git clone --branch v3.2.1 --depth 1 https://github.com/Netflix/vmaf.git
-cd vmaf
-meson setup libvmaf libvmaf/build --buildtype release
+# Use the immutable source archive, not a git checkout whose version has a suffix.
+curl --fail -L https://github.com/Netflix/vmaf/archive/f85a853692a8c730d0270cd733c8bb30b5b93b7c.tar.gz -o vmaf-v3.2.1.tar.gz
+tar -xzf vmaf-v3.2.1.tar.gz
+cd vmaf-f85a853692a8c730d0270cd733c8bb30b5b93b7c
+meson setup libvmaf/build libvmaf --buildtype release
 meson install -C libvmaf/build
 ```
 
@@ -269,13 +299,12 @@ with no built-in models. `features: ["weighted"]` maps to `vmaf_b_v0.6.3` and
 > ```
 
 > [!NOTE]
-> `vmaf.exe`, the import library in `mingw64/lib/` and the headers are all optional:
-> `vmaf.exe` is only useful for cross-checking scores by hand, and this crate never
-> needs the headers because it declares the C ABI itself.
+> `vmaf.exe`, the import library in `mingw64/lib/` and the headers are optional for
+> ordinary crate builds and scoring. Development header verification below does
+> require real headers; the installer currently copies only DLLs and models.
 
-Verified on a machine with no MSYS2 installed: the full `correctness` suite passes,
-including the check that pins our scores to libvmaf's own CLI and to FFmpeg's
-`libvmaf` filter.
+Windows native runtime and header-oracle execution remain platform acceptance
+gates; Linux verification does not establish Windows ABI execution.
 
 ### Models
 
@@ -325,7 +354,7 @@ If you would rather compile it yourself, MSYS2 with MinGW-w64 is the configurati
 upstream documents and tests:
 
 ```bash
-meson setup libvmaf libvmaf/build --buildtype release --default-library shared
+meson setup libvmaf/build libvmaf --buildtype release --default-library shared
 meson install -C libvmaf/build
 ```
 
@@ -462,6 +491,45 @@ byte-identical across platforms and machines.
 cargo test -p av-metrics-vmaf
 ```
 
+`m13_` tests check the actual loader with isolated counted C fixtures: unsupported
+versions and each same-version new-ABI marker must reach **zero** init, pool, or
+fetch calls. The verified runtime still constructs and scores a marker pair.
+Those runtime fixtures run on Unix and require `cc`; they do not execute real CUDA.
+
+The test-only `m13_real_headers_match_layouts_and_detect_offset_drift` compiles and
+executes `tests/fixtures/m13_headers.c` with a C11 GCC/Clang compiler (`CC`, default
+`cc`). It compares all shared struct sizes, alignments, field offsets and widths,
+including both nested geometries, against **actual public headers**, and compiles
+function signature checks. A temporary changed real picture header must fail the
+same comparison. Installed CPU headers are selected by `VMAF_INCLUDE_DIR` (parent
+of `libvmaf/`) or Unix pkg-config's include directory. CPU packages omitting the
+public CUDA header use the [unmodified pinned test copy][header provenance]; the
+private release signature uses a documented upstream declaration excerpt.
+
+Without headers/compiler this gate explicitly reports `UNEXECUTED`; setting
+`AV_METRICS_REQUIRE_CPU=1` (as CPU CI does) makes missing prerequisites fail,
+not silently pass. Explicit invalid `VMAF_INCLUDE_DIR` also fails. Normal crate
+builds never compile the probe or download headers.
+
+```bash
+AV_METRICS_REQUIRE_CPU=1 cargo +stable test --profile ci -p av-metrics-vmaf m13_ -- --nocapture
+```
+
+For the analogous Windows header gate, extract `mingw64/include/libvmaf/` from
+the **same pinned** `mingw-w64-x86_64-vmaf-3.2.1-1-any.pkg.tar.zst` used for the
+DLL (or use that package's MSYS2 installation). Do not use unrelated latest headers.
+No Windows pkg-config is assumed. With a C11 Clang/GCC executable on PATH:
+
+```powershell
+$env:VMAF_INCLUDE_DIR = "C:\path\to\extracted\mingw64\include"
+$env:CC = "clang"
+$env:AV_METRICS_REQUIRE_CPU = "1"
+cargo +stable test --profile ci -p av-metrics-vmaf m13_ -- --nocapture
+```
+
+This compiles the portable C probe and exercises its drift check on that platform;
+Windows/macOS execution and real GPU acceptance must still be run there.
+
 Tests that require libvmaf skip themselves when it is unavailable, so the suite is
 green without a native installation. On Unix, `m09_picture_ownership` always
 compiles a self-contained C ABI fixture with `cc` and runs isolated child tests
@@ -547,6 +615,11 @@ BSD-2-Clause-Patent, matching [libvmaf]. Any binary redistributing libvmaf must 
 carry its license text.
 
 [libvmaf]: https://github.com/Netflix/vmaf
+[pinned headers]: https://github.com/Netflix/vmaf/blob/f85a853692a8c730d0270cd733c8bb30b5b93b7c/libvmaf/include/libvmaf/picture.h#L38-L46
+[pinned version]: https://github.com/Netflix/vmaf/blob/f85a853692a8c730d0270cd733c8bb30b5b93b7c/libvmaf/meson.build#L1-L14
+[color ABI]: https://github.com/Netflix/vmaf/commit/0497a0f299706b3124241f6ffc7fffc81d5665eb
+[wrap ABI]: https://github.com/Netflix/vmaf/commit/700124a4cc354ac555b49fe14e71e6d27af73a35
+[header provenance]: tests/fixtures/headers/README.md
 [models]: https://github.com/Netflix/vmaf/tree/v3.2.1/model "libvmaf model files"
 [libvmaf 3.2.1's CUDA implementation]: https://github.com/Netflix/vmaf/blob/f85a853692a8c730d0270cd733c8bb30b5b93b7c/libvmaf/src/cuda/common.c#L104-L154
 [state import/close implementation]: https://github.com/Netflix/vmaf/blob/f85a853692a8c730d0270cd733c8bb30b5b93b7c/libvmaf/src/libvmaf.c#L187-L195

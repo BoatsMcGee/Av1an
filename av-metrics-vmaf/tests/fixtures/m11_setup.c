@@ -86,7 +86,7 @@ void m12_release_reserved(void) {
 unsigned m11_count(unsigned backend, unsigned index) {
     return backend < 2 ? counts[backend][index] : globals[index];
 }
-const char *vmaf_version(void) { return "3.2.1"; }
+const char *vmaf_version(void) { return "3.2.0"; }
 int vmaf_cuda_state_init(CudaState **out, CudaConfiguration cfg) {
     bad_if(cfg.cu_ctx != NULL);
     globals[STATE_INIT]++;
@@ -267,15 +267,16 @@ int vmaf_fetch_preallocated_picture(Context *ctx, Picture *out) {
     counts[ctx->cuda][CHECKOUT]++;
     return 0;
 }
-void vmaf_picture_unref(Picture *p) {
+int vmaf_picture_unref(Picture *p) {
     Record *r = p ? p->ref : NULL;
-    if (!r) { globals[BAD]++; return; }
+    if (!r) { globals[BAD]++; return -22; }
     bad_if(!r->owned || r->owner->closed);
-    if (!r->owned || r->owner->closed) return;
+    if (!r->owned || r->owner->closed) return -22;
     r->owned = 0;
     counts[r->owner->cuda][RETURN]++;
     if (pool_pressure()) available++;
     memset(p, 0, sizeof(*p));
+    return 0;
 }
 int vmaf_read_pictures(Context *ctx, Picture *ref, Picture *dist, unsigned index) {
     if (!ref && !dist) {
@@ -316,8 +317,8 @@ int vmaf_feature_score_pooled(Context *ctx, const char *name, int method,
     *out = 1.0;
     return 0;
 }
-void vmaf_close(Context *ctx) {
-    if (ctx == &failed_context) { globals[BAD]++; return; }
+int vmaf_close(Context *ctx) {
+    if (ctx == &failed_context) { globals[BAD]++; return -22; }
     bad_if(ctx->closed);
     bad_if(counts[ctx->cuda][MODEL_ALLOC] != counts[ctx->cuda][MODEL_DESTROY]);
     for (Record *r = records; r; r = r->next) bad_if(r->owner == ctx && r->owned);
@@ -330,6 +331,7 @@ void vmaf_close(Context *ctx) {
     }
     ctx->closed = 1;
     counts[ctx->cuda][CLOSE]++;
+    return 0;
 }
 void m11_cleanup(void) {
     while (records) { Record *next = records->next; free(records); records = next; }

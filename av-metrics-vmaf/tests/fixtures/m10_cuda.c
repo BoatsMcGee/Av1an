@@ -83,13 +83,14 @@ int vmaf_cuda_preallocate_pictures(CudaContext *ctx, CudaPictures cfg) {
     if (!ctx || !ctx->state.resource) m10_counts[BAD_CALL]++;
     return setting("M10_SCENARIO") == 7 ? -84 : 0;
 }
-void vmaf_close(CudaContext *ctx) {
+int vmaf_close(CudaContext *ctx) {
     m10_counts[CONTEXT_CLOSE]++;
     if (ctx->state.resource) {
         m10_counts[CONTEXT_RELEASE]++;
         release_resource(&ctx->state);
     }
     free(ctx);
+    return 0;
 }
 int vmaf_preallocate_pictures(CudaContext *ctx, PoolConfiguration cfg) {
     (void)ctx; (void)cfg;
