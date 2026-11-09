@@ -460,7 +460,9 @@ mod tests {
         };
         assert!(matches!(
             error,
-            VmafError::LibraryNotFound | VmafError::IncompatibleLibrary { .. }
+            VmafError::LibraryNotFound
+                | VmafError::LibraryLoadFailed { .. }
+                | VmafError::IncompatibleLibrary { .. }
         ));
     }
 }

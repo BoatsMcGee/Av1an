@@ -338,6 +338,20 @@ or persist it for future shells:
 [Environment]::SetEnvironmentVariable('VSHIP_PLUGIN_PATH', "$PWD\vship", 'User')
 ```
 
+On Windows, `VSHIP_PLUGIN_PATH` and `VSHIP_LIB_DIR` name **existing directories**,
+not DLL files. Invalid nonempty overrides are ignored with a warning; empty ones
+are unset. Relative directories are explicit selections and become absolute,
+preserving Unicode. Keep private dependency DLLs beside libvship: qualified loads
+search siblings before safe defaults (application directory, user-added DLL
+directories, System32). Bare fallback searches only those defaults, not ordinary
+PATH or implicit media CWD. An explicitly selected `.` still trusts CWD.
+`VSSCRIPT_PATH=vsscript.dll` selects no directory; use a qualified DLL path such
+as `./runtime/vsscript.dll` to discover its sibling plugins. Extra plugin paths
+are explicit directories separated by `;`; empty entries are ignored and invalid
+directories warn. No global DLL search settings change. Already-loaded modules,
+OS redirection, and other components' DLL policy are not isolated or attested.
+Linux loading is unchanged. See the [required native Windows regression gate](../test-support/README.md).
+
 Then confirm it works:
 
 ```powershell

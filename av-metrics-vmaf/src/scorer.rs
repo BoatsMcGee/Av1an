@@ -417,7 +417,7 @@ impl VmafScorer {
     ///
     /// # Errors
     ///
-    /// Returns [`VmafError::LibraryNotFound`] if libvmaf could not be loaded,
+    /// Returns [`VmafError::LibraryLoadFailed`] if libvmaf could not be loaded,
     /// [`VmafError::UnsupportedFormat`] if the format is outside libvmaf's
     /// supported set, and [`VmafError::CallFailed`] if no requested backend can
     /// be initialised.

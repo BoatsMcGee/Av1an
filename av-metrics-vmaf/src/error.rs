@@ -13,6 +13,13 @@ pub enum VmafError {
     )]
     LibraryNotFound,
 
+    /// No candidate loaded; includes attempted paths and original OS diagnostics.
+    #[error("libvmaf could not be loaded. Set VMAF_LIB_DIR to its directory. Attempts: {attempts}")]
+    LibraryLoadFailed {
+        /// Candidate paths and loader errors, including missing dependencies.
+        attempts: String,
+    },
+
     /// The loaded library does not match the bounded, header-verified ABI.
     #[error(
         "Incompatible libvmaf runtime `{version}`: {reason}. Reinstall the pinned v3.2.1 \

@@ -407,7 +407,7 @@ impl VmafApi {
     ///
     /// # Errors
     ///
-    /// Returns [`VmafError::LibraryNotFound`] when no candidate library could
+    /// Returns [`VmafError::LibraryLoadFailed`] when no candidate library could
     /// be opened, [`VmafError::IncompatibleLibrary`] for an unverified ABI, or
     /// [`VmafError::SymbolNotFound`] when a required entry point is missing.
     pub fn load() -> Result<&'static Self, VmafError> {
@@ -425,6 +425,9 @@ impl VmafApi {
 fn clone_error(error: &VmafError) -> VmafError {
     match error {
         VmafError::LibraryNotFound => VmafError::LibraryNotFound,
+        VmafError::LibraryLoadFailed { attempts } => VmafError::LibraryLoadFailed {
+            attempts: attempts.clone(),
+        },
         VmafError::IncompatibleLibrary { version, reason } => VmafError::IncompatibleLibrary {
             version: version.clone(),
             reason: reason.clone(),
@@ -719,7 +722,7 @@ fn open_library() -> Result<Library, VmafError> {
         // SAFETY: loading an arbitrary shared library executes its
         // initialisers. This is the intended way to use libvmaf, and
         // the candidate paths are constrained to libvmaf file names.
-        match unsafe { Library::new(&candidate) } {
+        match unsafe { load_library(&candidate) } {
             Ok(library) => {
                 // A bare file name says nothing about where the loader found
                 // it, so only an explicit candidate directory is worth keeping.
@@ -736,8 +739,81 @@ fn open_library() -> Result<Library, VmafError> {
     }
 
     tracing::debug!(?failures, "no libvmaf candidate could be loaded");
-    Err(VmafError::LibraryNotFound)
+    Err(VmafError::LibraryLoadFailed {
+        attempts: failures.join("; "),
+    })
 }
+
+/// Qualify deliberate paths, leaving only actual bare names to safe OS search.
+/// The boolean selects sibling-dependency search, which requires a full path.
+#[cfg(any(target_os = "windows", test))]
+fn windows_load_policy(candidate: &Path) -> std::io::Result<(PathBuf, bool)> {
+    if candidate.as_os_str().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty DLL path",
+        ));
+    }
+    if candidate.file_name().is_some_and(|name| name == candidate.as_os_str()) {
+        Ok((candidate.to_path_buf(), false))
+    } else {
+        std::path::absolute(candidate).map(|path| (path, true))
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_directory_override(value: &std::ffi::OsStr) -> std::io::Result<Option<PathBuf>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let directory = std::path::absolute(Path::new(value))?;
+    if !directory.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{} is not an existing library directory",
+                directory.display()
+            ),
+        ));
+    }
+    Ok(Some(directory))
+}
+
+/// # Safety
+/// The caller must trust native initializers and terminators in the selected DLL.
+#[cfg(target_os = "windows")]
+unsafe fn load_library(candidate: &Path) -> std::io::Result<Library> {
+    use libloading::os::windows::{
+        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        Library as WindowsLibrary,
+    };
+    let (path, siblings) = windows_load_policy(candidate)?;
+    let flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+        | if siblings {
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+        } else {
+            0
+        };
+    // SECURITY: per-load search only; never retry with flags 0 or mutate global policy.
+    // SAFETY: delegated to the caller, including native initializers/terminators.
+    unsafe { WindowsLibrary::load_with_flags(&path, flags) }
+        .map(Library::from)
+        .map_err(std::io::Error::other)
+}
+
+#[cfg(not(target_os = "windows"))]
+unsafe fn load_library(candidate: &Path) -> std::io::Result<Library> {
+    // SAFETY: delegated to the caller, including native initializers/terminators.
+    unsafe { Library::new(candidate) }.map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+#[path = "../../test-support/m22_loader_policy.rs"]
+mod m22_loader_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "../../test-support/m22_windows_loader.rs"]
+mod m22_windows_tests;
 
 /// Candidate libvmaf paths, most specific first.
 fn library_candidates() -> Vec<PathBuf> {
@@ -751,6 +827,15 @@ fn library_candidates() -> Vec<PathBuf> {
 
     let mut candidates = Vec::with_capacity(names.len() * 2);
 
+    #[cfg(target_os = "windows")]
+    if let Some(value) = std::env::var_os("VMAF_LIB_DIR") {
+        match windows_directory_override(&value) {
+            Ok(Some(directory)) => candidates.extend(names.iter().map(|name| directory.join(name))),
+            Ok(None) => {},
+            Err(error) => tracing::warn!(%error, "ignoring invalid VMAF_LIB_DIR"),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
     if let Ok(directory) = std::env::var("VMAF_LIB_DIR")
         && !directory.is_empty()
     {

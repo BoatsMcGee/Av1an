@@ -18,7 +18,7 @@ VapourSynth script without this crate knowing which.
   silent fallback can never be mistaken for GPU acceleration.
 - **Optional dependency.** libvmaf is opened with `dlopen` at runtime, so the crate
   compiles on machines that do not have it. Scoring reports
-  [`VmafError::LibraryNotFound`] rather than failing the build.
+  [`VmafError::LibraryLoadFailed`] rather than failing the build.
 - **No `bindgen`.** The C surface is declared by hand, keeping the build free of a
   libclang dependency.
 
@@ -192,6 +192,18 @@ Pick whichever route suits you:
 
 Then point `VMAF_LIB_DIR` at the directory containing `libvmaf.dll`.
 
+`VMAF_LIB_DIR` is a **directory**, not a DLL filename. On Windows, a nonempty
+override must name an existing directory; invalid overrides are ignored with a
+warning. Relative directories are deliberately resolved against the current
+directory to absolute paths. Empty overrides remain unset. Unicode paths work.
+Keep dependency DLLs beside libvmaf: qualified loads search that directory first,
+then safe OS defaults (application directory, user-added DLL directories, System32).
+Bare-name fallback uses only those defaults, not ordinary PATH or implicit media
+CWD. Selecting `.` explicitly still trusts CWD. No global DLL search setting is
+changed. Already-loaded modules, OS redirection, and other components' DLL policies
+remain outside this isolation; it is not binary attestation. Linux loading is
+unchanged. See the [required native Windows regression gate](../test-support/README.md).
+
 > [!IMPORTANT]
 > Every prebuilt Windows DLL is compiled **without CUDA**, so Windows gets CPU-only
 > VMAF. libvmaf's CUDA build needs `nvcc` and `nv-codec-headers`, which are not part
@@ -211,8 +223,8 @@ Four DLLs are enough, and all four come from MSYS2's ordinary binary packages:
 | `libwinpthread-1.dll` | `mingw-w64-x86_64-libwinpthread-git` | pthreads, imported by `libvmaf.dll` |
 
 The last three are hard imports of `libvmaf.dll`: without any one of them the
-loader fails the module with Win32 error 126, so a partial install leaves VMAF silently
-unavailable rather than reporting a missing library. The library's only other imports
+loader fails the module with Win32 error 126. Load errors retain attempted paths
+and OS diagnostics, so check for missing sibling dependencies. The library's only other imports
 are `kernel32.dll` and `msvcrt.dll`, which every Windows install already has.
 
 MSYS2 lists the libstdc++ package with its `+` characters percent-encoded, so the
@@ -646,5 +658,5 @@ carry its license text.
 [`av-decoders`]: https://github.com/rust-av/av-decoders
 [`VmafScorer::backend`]: https://docs.rs/av-metrics-vmaf/latest/av_metrics_vmaf/struct.VmafScorer.html#method.backend
 [`VmafScorer::score_decoders`]: https://docs.rs/av-metrics-vmaf/latest/av_metrics_vmaf/struct.VmafScorer.html#method.score_decoders
-[`VmafError::LibraryNotFound`]: https://docs.rs/av-metrics-vmaf/latest/av_metrics_vmaf/enum.VmafError.html
+[`VmafError::LibraryLoadFailed`]: https://docs.rs/av-metrics-vmaf/latest/av_metrics_vmaf/enum.VmafError.html
 [`VmafError::MissingScore`]: https://docs.rs/av-metrics-vmaf/latest/av_metrics_vmaf/enum.VmafError.html

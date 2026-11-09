@@ -239,6 +239,19 @@ compile on Windows), builds `fmetrics.dll`, and installs it to `$PWD\fmetrics`.
 `-Destination` chooses another directory; the script prints the
 `SetEnvironmentVariable` line that points the crate at it.
 
+On Windows, `FMETRICS_LIB_PATH` and `FMETRICS_LIB_DIR` name **existing directories**,
+not DLL files. Invalid nonempty overrides are ignored with a warning; empty ones
+are unset. Relative directories deliberately select a path relative to CWD and
+become absolute, preserving Unicode. Keep private dependency DLLs beside fmetrics:
+qualified loads search siblings before safe defaults (application directory,
+user-added DLL directories, System32). Bare fallback uses only those defaults,
+not ordinary PATH or implicit media CWD; selecting `.` explicitly still trusts CWD.
+Failures retain attempted paths and original OS diagnostics, including missing
+dependencies. No global DLL search settings change. Already-loaded modules, OS
+redirection, and other components' DLL policy remain outside this isolation; it
+does not attest binaries. Linux loading is unchanged. See the
+[required native Windows regression gate](../test-support/README.md).
+
 ### Linux
 
 Needs Zig 0.16.x, Git and a C compiler:

@@ -1027,7 +1027,7 @@ fn open_library() -> Result<Library, std::io::Error> {
         // SAFETY: loading an arbitrary shared library executes its
         // initialisers. This is the intended way to use libvship, and
         // the candidate paths are constrained to libvship file names.
-        match unsafe { Library::new(&candidate) } {
+        match unsafe { load_library(&candidate) } {
             Ok(library) => return Ok(library),
             Err(error) => failures.push(format!("{}: {error}", candidate.display())),
         }
@@ -1038,6 +1038,99 @@ fn open_library() -> Result<Library, std::io::Error> {
         std::io::ErrorKind::NotFound,
         failures.join("; "),
     ))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_load_policy(candidate: &Path) -> std::io::Result<(PathBuf, bool)> {
+    if candidate.as_os_str().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty DLL path",
+        ));
+    }
+    if candidate.file_name().is_some_and(|name| name == candidate.as_os_str()) {
+        Ok((candidate.to_path_buf(), false))
+    } else {
+        std::path::absolute(candidate).map(|path| (path, true))
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_directory_override(value: &std::ffi::OsStr) -> std::io::Result<Option<PathBuf>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let directory = std::path::absolute(Path::new(value))?;
+    if !directory.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{} is not an existing library directory",
+                directory.display()
+            ),
+        ));
+    }
+    Ok(Some(directory))
+}
+
+/// # Safety
+/// The caller must trust native initializers and terminators in the selected DLL.
+#[cfg(target_os = "windows")]
+unsafe fn load_library(candidate: &Path) -> std::io::Result<Library> {
+    use libloading::os::windows::{
+        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        Library as WindowsLibrary,
+    };
+    let (path, siblings) = windows_load_policy(candidate)?;
+    let flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+        | if siblings {
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+        } else {
+            0
+        };
+    // SECURITY: per-load search only; never retry with flags 0 or mutate global policy.
+    // SAFETY: delegated to the caller, including native initializers/terminators.
+    unsafe { WindowsLibrary::load_with_flags(&path, flags) }
+        .map(Library::from)
+        .map_err(std::io::Error::other)
+}
+
+#[cfg(not(target_os = "windows"))]
+unsafe fn load_library(candidate: &Path) -> std::io::Result<Library> {
+    // SAFETY: delegated to the caller, including native initializers/terminators.
+    unsafe { Library::new(candidate) }.map_err(std::io::Error::other)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_script_directory(script: &Path) -> std::io::Result<Option<PathBuf>> {
+    script
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(std::path::absolute)
+        .transpose()
+}
+
+#[cfg(test)]
+#[path = "../../test-support/m22_loader_policy.rs"]
+mod m22_loader_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "../../test-support/m22_windows_loader.rs"]
+mod m22_windows_tests;
+
+#[test]
+fn m22_bare_vsscript_does_not_select_media_cwd() {
+    assert_eq!(
+        windows_script_directory(Path::new("vsscript.dll")).expect("bare script"),
+        None
+    );
+    let directory = windows_script_directory(Path::new("./runtime/vsscript.dll"))
+        .expect("relative script")
+        .expect("intentional directory");
+    assert!(
+        directory.is_absolute(),
+        "an intentional runtime directory must be qualified"
+    );
 }
 
 /// Candidate libvship paths, most specific first.
@@ -1063,6 +1156,18 @@ pub fn library_candidates() -> Vec<PathBuf> {
 
     // 2. The VapourSynth runtime that owns the plugin. `VSSCRIPT_PATH` names
     //    the script DLL, so the plugin directory is its sibling `plugins`.
+    #[cfg(target_os = "windows")]
+    if let Some(script) = std::env::var_os("VSSCRIPT_PATH") {
+        match windows_script_directory(Path::new(&script)) {
+            Ok(Some(runtime)) => {
+                candidates.extend(names.iter().map(|name| runtime.join("plugins").join(name)));
+                candidates.extend(names.iter().map(|name| runtime.join(name)));
+            },
+            Ok(None) => {},
+            Err(error) => tracing::warn!(%error, "ignoring invalid VSSCRIPT_PATH"),
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
     if let Ok(script) = std::env::var("VSSCRIPT_PATH")
         && !script.is_empty()
         && let Some(runtime) = Path::new(&script).parent()
@@ -1073,6 +1178,21 @@ pub fn library_candidates() -> Vec<PathBuf> {
 
     // 3. VapourSynth's own extra-plugin path list, which is `;`-separated on
     //    Windows and `:`-separated elsewhere.
+    #[cfg(target_os = "windows")]
+    if let Some(extra) = std::env::var_os("VAPOURSYNTH_EXTRA_PLUGIN_PATH") {
+        for entry in std::env::split_paths(&extra).filter(|entry| !entry.as_os_str().is_empty()) {
+            match windows_directory_override(entry.as_os_str()) {
+                Ok(Some(directory)) => {
+                    candidates.extend(names.iter().map(|name| directory.join(name)))
+                },
+                Ok(None) => {},
+                Err(error) => {
+                    tracing::warn!(%error, "ignoring invalid VAPOURSYNTH_EXTRA_PLUGIN_PATH entry")
+                },
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
     if let Ok(extra) = std::env::var("VAPOURSYNTH_EXTRA_PLUGIN_PATH") {
         let separator = if cfg!(target_os = "windows") {
             ';'
@@ -1206,6 +1326,18 @@ fn library_names() -> &'static [&'static str] {
 #[inline]
 #[must_use]
 fn env_directory(variable: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let value = std::env::var_os(variable)?;
+        match windows_directory_override(&value) {
+            Ok(directory) => directory,
+            Err(error) => {
+                tracing::warn!(%error, variable, "ignoring invalid library directory");
+                None
+            },
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
     std::env::var(variable)
         .ok()
         .filter(|value| !value.is_empty())

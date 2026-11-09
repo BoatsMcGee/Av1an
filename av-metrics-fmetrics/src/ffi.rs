@@ -622,6 +622,18 @@ pub fn library_names() -> &'static [&'static str] {
 /// Read an environment variable as a non-empty path.
 #[inline]
 fn env_directory(variable: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let value = std::env::var_os(variable)?;
+        match windows_directory_override(&value) {
+            Ok(directory) => directory,
+            Err(error) => {
+                tracing::warn!(%error, variable, "ignoring invalid library directory");
+                None
+            },
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
     std::env::var(variable)
         .ok()
         .filter(|value| !value.is_empty())
@@ -794,15 +806,13 @@ fn windows_directory(_subdirectory: &str) -> Option<PathBuf> {
 /// Resolve every entry point, leaking the [`Library`] so the code it points at
 /// stays mapped.
 fn resolve() -> Result<FmetricsApi, std::io::Error> {
-    // `libloading::Error` is not an `io::Error`, so the last failure is
-    // carried as its message.
-    let mut last = "no fmetrics candidate could be loaded".to_owned();
+    let mut failures = Vec::new();
 
     for candidate in library_candidates() {
         // SAFETY: every path handled here is either an explicit user override
         // or a conventional library location; loading a shared object
         // from a trusted path is the intended use of this crate.
-        match unsafe { Library::new(&candidate) } {
+        match unsafe { load_library(&candidate) } {
             Ok(library) => {
                 // Leaked deliberately: dropping it would `dlclose` the library
                 // and leave every pointer below dangling, so
@@ -866,16 +876,89 @@ fn resolve() -> Result<FmetricsApi, std::io::Error> {
                     },
                     Err(error) => {
                         // `library` drops here, unloading the bad candidate.
-                        last = error.to_string();
+                        failures.push(format!("{}: {error}", candidate.display()));
                     },
                 }
             },
-            Err(error) => last = error.to_string(),
+            Err(error) => failures.push(format!("{}: {error}", candidate.display())),
         }
     }
 
-    Err(std::io::Error::new(std::io::ErrorKind::NotFound, last))
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        failures.join("; "),
+    ))
 }
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_load_policy(candidate: &Path) -> std::io::Result<(PathBuf, bool)> {
+    if candidate.as_os_str().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty DLL path",
+        ));
+    }
+    if candidate.file_name().is_some_and(|name| name == candidate.as_os_str()) {
+        Ok((candidate.to_path_buf(), false))
+    } else {
+        std::path::absolute(candidate).map(|path| (path, true))
+    }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_directory_override(value: &std::ffi::OsStr) -> std::io::Result<Option<PathBuf>> {
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let directory = std::path::absolute(Path::new(value))?;
+    if !directory.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{} is not an existing library directory",
+                directory.display()
+            ),
+        ));
+    }
+    Ok(Some(directory))
+}
+
+/// # Safety
+/// The caller must trust native initializers and terminators in the selected DLL.
+#[cfg(target_os = "windows")]
+unsafe fn load_library(candidate: &Path) -> std::io::Result<Library> {
+    use libloading::os::windows::{
+        LOAD_LIBRARY_SEARCH_DEFAULT_DIRS, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR,
+        Library as WindowsLibrary,
+    };
+    let (path, siblings) = windows_load_policy(candidate)?;
+    let flags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
+        | if siblings {
+            LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+        } else {
+            0
+        };
+    // SECURITY: per-load search only; never retry with flags 0 or mutate global policy.
+    // SAFETY: delegated to the caller, including native initializers/terminators.
+    unsafe { WindowsLibrary::load_with_flags(&path, flags) }
+        .map(Library::from)
+        .map_err(std::io::Error::other)
+}
+
+#[cfg(not(target_os = "windows"))]
+unsafe fn load_library(candidate: &Path) -> std::io::Result<Library> {
+    // SAFETY: delegated to the caller, including native initializers/terminators.
+    unsafe { Library::new(candidate) }.map_err(std::io::Error::other)
+}
+
+#[cfg(test)]
+#[path = "../../test-support/m22_loader_policy.rs"]
+mod m22_loader_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "../../test-support/m22_windows_loader.rs"]
+mod m22_windows_tests;
+
 /// Resolve one symbol, naming it in the error if it is missing.
 ///
 /// # Errors
