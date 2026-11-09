@@ -41,10 +41,14 @@ where
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
     ) -> Result<((), Vec<anyhow::Error>)> {
-        let warnings = vec![];
+        let mut warnings = vec![];
 
-        if condor.scenes.is_empty() {
-            return Err(anyhow::Error::new(BitrateOptimizerError::ScenesEmpty));
+        // Only warn when configured
+        if configured_with_empty_scenes(
+            condor.sequence_config.bitrate_optimizer()?.bitrate_sigma_threshold,
+            condor.scenes.is_empty(),
+        ) {
+            warnings.push(anyhow::Error::new(BitrateOptimizerError::ScenesEmpty));
         }
 
         Ok(((), warnings))
@@ -53,10 +57,17 @@ where
     #[inline]
     fn initialize(
         &mut self,
-        _condor: &mut Condor<DataHandler, ConfigHandler>,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
         _progress_tx: sync::mpsc::Sender<SequenceStatus>,
     ) -> Result<((), Vec<anyhow::Error>)> {
-        let warnings = vec![];
+        let mut warnings = vec![];
+
+        if configured_with_empty_scenes(
+            condor.sequence_config.bitrate_optimizer()?.bitrate_sigma_threshold,
+            condor.scenes.is_empty(),
+        ) {
+            warnings.push(anyhow::Error::new(BitrateOptimizerError::ScenesEmpty));
+        }
 
         Ok(((), warnings))
     }
@@ -108,19 +119,20 @@ where
             let Some(final_pass) = scene.sequence_data.get_target_quality()?.passes.last() else {
                 continue;
             };
-            if final_pass.bitrate <= bitrate_sigma_threshold {
-                continue;
-            }
-
-            debug!(
-                "Optimized Scene {}: Bitrate: {}({}), Quantizer: {}",
+            let Some(target_quantizer) = optimize_scene(
                 index,
+                final_pass.quantizer,
                 final_pass.bitrate,
-                (final_pass.bitrate - bitrate_average) / bitrate_standard_deviation,
-                quantizer_average.round(),
-            );
-            scene.encoder.set_quantizer(quantizer_average.round());
+                quantizer_average,
+                bitrate_average,
+                bitrate_standard_deviation,
+                bitrate_sigma_threshold,
+            ) else {
+                continue;
+            };
+            scene.encoder.set_quantizer(target_quantizer);
 
+            // Archived: Alternative "efficiency" approach
             // let data = scene
             //     .sequence_data
             //     .get_target_quality()?
@@ -165,4 +177,94 @@ pub enum BitrateOptimizerError {
     PreviousPassDataNotFound,
     #[error("Failed to measure quality")]
     QualityMeasurementFailed,
+}
+
+/// Whether an empty scene list is worth reporting.
+#[inline]
+fn configured_with_empty_scenes(bitrate_sigma_threshold: Option<u8>, scenes_empty: bool) -> bool {
+    bitrate_sigma_threshold.is_some() && scenes_empty
+}
+
+/// The quantizer scene `index` should be re-encoded at, or `None` to leave it
+/// alone.
+///
+/// A scene is optimized only when its bitrate is an outlier *and* the average
+/// quantizer costs it more bits than it already spends. A scene already encoded
+/// at or above the average quantizer would gain nothing.
+#[inline]
+fn optimize_scene(
+    index: usize,
+    quantizer: f64,
+    bitrate: f64,
+    quantizer_average: f64,
+    bitrate_average: f64,
+    bitrate_standard_deviation: f64,
+    bitrate_sigma_threshold: f64,
+) -> Option<f64> {
+    if bitrate <= bitrate_sigma_threshold {
+        return None;
+    }
+
+    let target_quantizer = quantizer_average.round();
+    if quantizer >= target_quantizer {
+        debug!(
+            "Skipping Scene {}: Quantizer {} is already at or above the average {}",
+            index, quantizer, target_quantizer
+        );
+        return None;
+    }
+
+    debug!(
+        "Optimized Scene {}: Bitrate: {}({}), Quantizer: {}",
+        index,
+        bitrate,
+        (bitrate - bitrate_average) / bitrate_standard_deviation,
+        target_quantizer,
+    );
+    Some(target_quantizer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A bitrate outlier encoded below the average quantizer is raised to it.
+    #[test]
+    fn an_outlier_below_the_average_quantizer_is_raised() {
+        let optimized = optimize_scene(0, 20.0, 10_000.0, 36.0, 2_800.0, 4_000.0, 6_800.0);
+
+        assert_eq!(optimized, Some(36.0));
+    }
+
+    /// A scene already at or above the average quantizer is left alone: raising
+    /// it further would cost more bits, not fewer.
+    #[test]
+    fn a_scene_at_or_above_the_average_quantizer_is_untouched() {
+        assert_eq!(
+            optimize_scene(0, 36.0, 10_000.0, 36.0, 2_800.0, 4_000.0, 6_800.0),
+            None
+        );
+        assert_eq!(
+            optimize_scene(0, 40.0, 10_000.0, 36.0, 2_800.0, 4_000.0, 6_800.0),
+            None
+        );
+    }
+
+    /// A scene within the sigma threshold is not an outlier and is untouched.
+    #[test]
+    fn a_scene_within_the_sigma_threshold_is_untouched() {
+        assert_eq!(
+            optimize_scene(0, 20.0, 5_000.0, 36.0, 2_800.0, 4_000.0, 6_800.0),
+            None
+        );
+    }
+
+    /// An empty scene list is only worth reporting when the optimizer is
+    /// configured; otherwise the sequence is inert and the warning is noise.
+    #[test]
+    fn an_empty_scene_list_warns_only_when_configured() {
+        assert!(!configured_with_empty_scenes(None, true));
+        assert!(!configured_with_empty_scenes(Some(1), false));
+        assert!(configured_with_empty_scenes(Some(1), true));
+    }
 }
