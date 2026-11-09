@@ -490,6 +490,8 @@ impl Encoder {
         static BUFFER_CAPACITY: usize = 128;
         let base_encoder = self.base();
         let clip_info = input.clip_info()?;
+        let y4m_header = input.y4m_header(Some(end_frame - start_frame))?;
+        let mut reader = input.frame_reader()?;
 
         let mut system = sysinfo::System::new();
         let mut encoder = Command::new(self.executable())
@@ -508,7 +510,6 @@ impl Encoder {
         let stderr_output_clone = Arc::clone(&stderr_output);
         let (frame_tx, frame_rx) = mpsc::channel();
 
-        let y4m_header = input.y4m_header(Some(end_frame - start_frame))?;
         let mut stdin = encoder.stdin.take().expect("Encoder should have STDIN");
         let stderr = encoder.stderr.take().expect("Encoder should have STDERR");
 
@@ -590,7 +591,7 @@ impl Encoder {
         // Decode frames in main thread
         let decode_start_time = Instant::now();
         for index in start_frame..end_frame {
-            let frame = input.y4m_frame(index)?;
+            let frame = reader.y4m_frame(index)?;
             frames_decoded += 1;
             frame_tx.send(frame.into_inner())?;
         }

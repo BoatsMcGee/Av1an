@@ -441,6 +441,10 @@ impl ZoneEncoder {
         let first = tasks.front().expect("zone plan was built from tasks");
         let directory = first.output.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         let mut encoder = first.encoder.clone();
+        let started = SystemTime::now();
+        let header = Cursor::new(input.y4m_header(Some(total_frames))?.into_bytes());
+        let clip_info = input.clip_info()?;
+        let mut reader = input.frame_reader()?;
         let zone_files = apply_zone_options(&mut encoder, &plan, &directory)?;
         let extension = encoder.output_extension();
         let whole_output = directory.join(format!("zone-pass.temp.{extension}"));
@@ -453,10 +457,6 @@ impl ZoneEncoder {
                 }
             }
         };
-
-        let started = SystemTime::now();
-        let header = Cursor::new(input.y4m_header(Some(total_frames))?.into_bytes());
-        let clip_info = input.clip_info()?;
 
         // Encoder progress reports whole-stream frame counts; the receiver
         // side of the pass re-labels them "Encode".
@@ -511,7 +511,7 @@ impl ZoneEncoder {
                 if cancelled.load(Ordering::Relaxed) {
                     break 'feed;
                 }
-                match input.y4m_frame(index) {
+                match reader.y4m_frame(index) {
                     Ok(frame) => {
                         if frames_tx.send(frame).is_err() {
                             break 'feed;
@@ -525,6 +525,7 @@ impl ZoneEncoder {
             }
         }
         drop(frames_tx); // EOF for the encoder
+        drop(reader);
 
         let encoded = encode_thread.join().expect("zone encoder thread panicked");
         // The relay ends once the encode thread drops its progress sender.

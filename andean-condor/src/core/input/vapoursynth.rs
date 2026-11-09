@@ -369,9 +369,8 @@ pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> R
             let source = source_path(path, import_method, cache_path.as_deref())?;
             let call = SourceCall::new(import_method);
 
-            // Created once, in a fixed script: a `ModifyNode` runs again for
-            // every frame, so building the source inside one would
-            // reopen the file and reload its index each time.
+            // Keep the source in the script: each new reader or metadata query
+            // applies `ModifyNode`, which must not reopen/reindex the source.
             let (script, variables) = call.script(&source, cache_path.as_deref())?;
 
             Ok(Input::VapourSynth {
@@ -632,8 +631,8 @@ fn write_y4m_frame(frame: &FrameRef<'_>) -> Result<Vec<u8>> {
 }
 
 /// Writes one frame at `index` as a complete y4m frame.
-pub fn y4m_frame(decoder: &mut Decoder, index: usize, stream: &mut Vec<u8>) -> Result<()> {
-    let frame = output_node(decoder)?.get_frame(index)?;
+pub fn y4m_frame(node: &Node<'_>, index: usize, stream: &mut Vec<u8>) -> Result<()> {
+    let frame = node.get_frame(index).with_context(|| format!("get y4m frame {index}"))?;
     let data = write_y4m_frame(&frame).with_context(|| format!("serialize y4m frame {index}"))?;
     stream.extend_from_slice(FRAME_HEADER);
     stream.extend_from_slice(&data);
@@ -744,8 +743,9 @@ mod tests {
             assert_eq!(actual, expected);
         } else {
             let mut actual = b"retained output\n".to_vec();
+            let node = output_node(input.decoder()).expect("output node");
             for index in 0..payloads.len() {
-                y4m_frame(input.decoder(), index, &mut actual).expect("single frame");
+                y4m_frame(&node, index, &mut actual).expect("single frame");
             }
             assert_eq!(
                 actual,
@@ -918,7 +918,8 @@ mod tests {
             );
         }
         let mut stream = b"retained output\n".to_vec();
-        let error = y4m_frame(input.decoder(), 1, &mut stream).expect_err("reject live RGB output");
+        let node = output_node(input.decoder()).expect("live RGB output");
+        let error = y4m_frame(&node, 1, &mut stream).expect_err("reject live RGB output");
         assert!(
             matches!(
                 error.downcast_ref::<DecoderError>(),

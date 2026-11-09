@@ -249,6 +249,21 @@ impl Input {
         FrameFeed::new(self, first, end)
     }
 
+    /// Opens an indexed Y4M reader, retaining one filtered output node for
+    /// this feed. Native input borrows its existing decoder without reopening.
+    /// Drop the reader before changing the input or its filter settings.
+    #[inline]
+    pub fn frame_reader(&mut self) -> Result<FrameReader<'_>> {
+        Ok(FrameReader {
+            kind: match self {
+                Input::Video { decoder, .. } => FrameReaderKind::NativeBorrowed(decoder),
+                Input::VapourSynth { decoder, .. } | Input::VapourSynthScript { decoder, .. } => {
+                    FrameReaderKind::VapourSynth(vapoursynth::output_node(decoder)?)
+                },
+            },
+        })
+    }
+
     /// Describes the clip, caching the result on the input.
     #[inline]
     pub fn clip_info(&mut self) -> Result<ClipInfo> {
@@ -316,16 +331,7 @@ impl Input {
     /// FFMS2's planes directly, without building an av-decoders `Frame`.
     #[inline]
     pub fn y4m_frame(&mut self, index: usize) -> Result<Cursor<Vec<u8>>> {
-        let mut stream = Cursor::new(Vec::new());
-        match self {
-            Input::Video { decoder, .. } => {
-                ffms2::y4m_frame(decoder, index, stream.get_mut())?;
-            },
-            Input::VapourSynth { decoder, .. } | Input::VapourSynthScript { decoder, .. } => {
-                vapoursynth::y4m_frame(decoder, index, stream.get_mut())?;
-            },
-        }
-        Ok(stream)
+        self.frame_reader()?.y4m_frame(index)
     }
 
     /// Sends `frame_indices` as y4m frames through `frame_sender`, in order.
@@ -455,7 +461,8 @@ impl<'a> FrameSource<'a> {
     }
 }
 
-/// Reads frames for a [`FrameSource`] on a single thread.
+/// Reads indexed frames on a single thread, retaining the feed's output node
+/// or native decoder. The graph is immutable for the reader's lifetime.
 pub struct FrameReader<'a> {
     kind: FrameReaderKind<'a>,
 }
@@ -463,9 +470,29 @@ pub struct FrameReader<'a> {
 enum FrameReaderKind<'a> {
     VapourSynth(Node<'a>),
     Native(Box<Input>),
+    NativeBorrowed(&'a mut Decoder),
 }
 
 impl FrameReader<'_> {
+    /// Reads one complete Y4M frame at an absolute index. Calls may repeat or
+    /// seek to any index; a failed read returns no partial frame bytes.
+    #[inline]
+    pub fn y4m_frame(&mut self, index: usize) -> Result<Cursor<Vec<u8>>> {
+        let mut stream = Cursor::new(Vec::new());
+        match &mut self.kind {
+            FrameReaderKind::VapourSynth(node) => {
+                vapoursynth::y4m_frame(node, index, stream.get_mut())?;
+            },
+            FrameReaderKind::Native(input) => {
+                ffms2::y4m_frame(input.decoder(), index, stream.get_mut())?;
+            },
+            FrameReaderKind::NativeBorrowed(decoder) => {
+                ffms2::y4m_frame(decoder, index, stream.get_mut())?;
+            },
+        }
+        Ok(stream)
+    }
+
     /// Sends `frame_indices` as Y4M frames through `frame_sender`, in order.
     /// VapourSynth sources keep at most `window` frames in flight, so with a
     /// bounded `frame_sender` resident frames stay bounded by `window`.
@@ -481,6 +508,12 @@ impl FrameReader<'_> {
                 vapoursynth::y4m_frames(node, frame_sender, frame_indices, window.max(1))
             },
             FrameReaderKind::Native(input) => input.y4m_frames(frame_sender.clone(), frame_indices),
+            FrameReaderKind::NativeBorrowed(decoder) => {
+                ffms2::y4m_frames(decoder, frame_indices, |frame| {
+                    frame_sender.send(Cursor::new(frame))?;
+                    Ok(())
+                })
+            },
         }
     }
 }
@@ -496,6 +529,10 @@ pub enum InputError {
     #[error("File {0} is not a VapourSynth script")]
     NotAVapourSynthScript(PathBuf),
 }
+
+#[cfg(test)]
+mod i09_tests;
+
 #[cfg(test)]
 mod tests {
     use av_decoders::Rational32;
