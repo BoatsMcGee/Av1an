@@ -92,34 +92,6 @@ fn throughput(criterion: &mut Criterion) {
     group.finish();
 }
 
-/// How cost scales with the number of handlers in the pool.
-fn thread_scaling(criterion: &mut Criterion) {
-    if !scoring_available() {
-        return;
-    }
-
-    let pair = SyntheticPair::generate(
-        1920,
-        1080,
-        8,
-        ChromaSubsampling::Yuv420,
-        BENCH_FRAMES,
-        Distortion::Mild,
-    );
-
-    let mut group = criterion.benchmark_group("vship/handlers");
-
-    for handlers in [1u32, 2, 4, 8] {
-        let config = VshipConfig::new().with_handler_threads(handlers);
-        group.throughput(Throughput::Elements(BENCH_FRAMES as u64));
-        group.bench_function(format!("{handlers}-handlers"), |bencher| {
-            bencher.iter(|| black_box(score_once(&pair, config.clone())));
-        });
-    }
-
-    group.finish();
-}
-
 /// Cost per metric, so an encoder's default choice can be weighed against the
 /// alternatives.
 fn per_metric(criterion: &mut Criterion) {
@@ -137,8 +109,7 @@ fn per_metric(criterion: &mut Criterion) {
     );
 
     for metric in VshipMetric::all() {
-        // A temporal metric builds one handler whatever this asks for, so one
-        // is requested throughout to keep the comparison like-for-like.
+        // All metrics use one synchronous handler.
         let config = VshipConfig::new().with_metric(metric).with_handler_threads(1);
         let label = metric.as_str().to_lowercase();
 
@@ -194,5 +165,5 @@ fn decode_only(criterion: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, throughput, thread_scaling, per_metric, decode_only);
+criterion_group!(benches, throughput, per_metric, decode_only);
 criterion_main!(benches);

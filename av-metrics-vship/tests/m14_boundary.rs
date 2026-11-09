@@ -14,6 +14,361 @@ use std::{
 #[cfg(unix)]
 use v_frame::{chroma::ChromaSubsampling, frame::FrameBuilder};
 
+#[cfg(unix)]
+mod common;
+
+/// Catches serial handler multiplication, lost ownership on errors, and resets
+/// before preflight. This drives the production constructor/submission boundary.
+#[test]
+#[cfg(unix)]
+fn m20_single_handler_native_ownership() {
+    if std::env::var_os("M20_CHILD").is_some() {
+        m20_child();
+        return;
+    }
+    let dir = tempfile::tempdir().expect("handler fixture directory");
+    let library = dir.path().join(if cfg!(target_os = "macos") {
+        "libvship.dylib"
+    } else {
+        "libvship.so"
+    });
+    compile(&library, false, &[]);
+    let mut errors = Vec::new();
+    for (scenario, requested) in [
+        ("ok", "1"),
+        ("ok", "3"),
+        ("ok", "default"),
+        ("ok", "max"),
+        ("compute17", "3"),
+        ("compute777", "3"),
+        ("compute-123", "3"),
+        ("tag", "3"),
+        ("history", "3"),
+        ("score", "3"),
+        ("gap", "3"),
+        ("init", "3"),
+    ] {
+        let mut child = Command::new(std::env::current_exe().expect("executable"))
+            .args(["--exact", "m20_single_handler_native_ownership", "--nocapture"])
+            .env("M20_CHILD", scenario)
+            .env("M20_REQUESTED", requested)
+            .env("M14_LIBRARY", &library)
+            .env("M14_BACKEND", "3")
+            .env("M14_PATCH", "2")
+            .env("M14_PROBE_STATUS", "0")
+            .env("M14_COMPUTE_STATUS", "0")
+            .env_remove("M14_TAG")
+            .env_remove("M19_RESET_STATUS")
+            .env("VSHIP_PLUGIN_PATH", dir.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("handler child");
+        let start = Instant::now();
+        while child.try_wait().expect("status").is_none() {
+            if start.elapsed() > Duration::from_secs(30) {
+                child.kill().expect("kill");
+                child.wait().expect("reap");
+                panic!("M20 timed out: {scenario}/{requested}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let out = child.wait_with_output().expect("output");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if !out.status.success() || !stdout.contains("1 passed; 0 failed") {
+            errors.push(format!(
+                "{scenario}/{requested}: {stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        } else {
+            print!("{stdout}");
+        }
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+#[cfg(unix)]
+fn m20_child() {
+    use av_metrics_vship::{PlaneSet, PlaneSource};
+    let scenario = std::env::var("M20_CHILD").expect("scenario");
+    let requested = std::env::var("M20_REQUESTED").expect("requested");
+    // SAFETY: exact fixture exports; mapping outlives all scorers and reads.
+    let lib =
+        unsafe { libloading::Library::new(std::env::var_os("M14_LIBRARY").expect("library")) }
+            .expect("mapping");
+    // SAFETY: these signatures are defined in m14_boundary.c.
+    let (counter, control, trace) = unsafe {
+        (
+            lib.get::<unsafe extern "C" fn(u32) -> u32>(b"m14_count\0").expect("counter"),
+            lib.get::<unsafe extern "C" fn(u32, i32)>(b"m20_set\0").expect("control"),
+            lib.get::<unsafe extern "C" fn(u32) -> u32>(b"m20_trace\0").expect("trace"),
+        )
+    };
+    // SAFETY: bounded fixture indices and live mapping throughout this function.
+    let count = |i| unsafe { counter(i) };
+    // SAFETY: only defined control indices 0..6 are used.
+    let set = |i, value| unsafe { control(i, value) };
+    let events = || {
+        (0..256)
+            .map(|i| {
+                // SAFETY: every trace index is checked by the fixture.
+                unsafe { trace(i) }
+            })
+            .take_while(|&n| n != 0)
+            .collect::<Vec<_>>()
+    };
+    let clip = common::SyntheticClip::generate(
+        32,
+        32,
+        8,
+        ChromaSubsampling::Yuv420,
+        1,
+        common::Distortion::Mild,
+    );
+    let format = VideoFormat::from_details(clip.decoder().get_video_details());
+    let frame = FrameBuilder::new(32, 32, ChromaSubsampling::Yuv420, 8)
+        .build::<u8>()
+        .expect("frame");
+    let bad = FrameBuilder::new(16, 32, ChromaSubsampling::Yuv420, 8)
+        .build::<u8>()
+        .expect("bad frame");
+    fn raw(f: &v_frame::frame::Frame<u8>) -> PlaneSet<'_> {
+        [
+            PlaneSource::from_plane(&f.y_plane).expect("Y"),
+            PlaneSource::from_plane(f.u_plane.as_ref().expect("U")).expect("U"),
+            PlaneSource::from_plane(f.v_plane.as_ref().expect("V")).expect("V"),
+        ]
+    }
+    for metric in VshipMetric::all() {
+        if matches!(scenario.as_str(), "history" | "score" | "gap") && metric != VshipMetric::Cvvdp
+        {
+            continue;
+        }
+        for i in [0, 1, 3, 4, 5] {
+            set(i, 0);
+        }
+        // Restore the normal metric tag after the preceding metric's error case.
+        let tag = match metric {
+            VshipMetric::Ssimulacra2 => 4,
+            VshipMetric::Butteraugli => 5,
+            VshipMetric::Cvvdp => 6,
+        };
+        set(0, tag);
+        let mut config = VshipConfig::new()
+            .with_metric(metric)
+            .with_disable_temporal(matches!(scenario.as_str(), "history" | "score"));
+        if requested != "default" {
+            config = config.with_handler_threads(if requested == "max" {
+                u32::MAX
+            } else {
+                requested.parse().expect("integer")
+            });
+        }
+        let legacy = if requested == "default" {
+            4
+        } else if requested == "max" {
+            u32::MAX
+        } else {
+            requested.parse().expect("integer")
+        };
+        if requested == "max" {
+            // Fail safely on the old implementation, before a giant allocation.
+            assert_eq!(
+                config.handler_count(),
+                1,
+                "extreme legacy request is not an allocation count"
+            );
+        }
+        let before = (count(1), count(2));
+        if scenario == "init" {
+            set(1, 777);
+        }
+        let result = VshipScorer::new(config, format, format, None);
+        if scenario == "init" {
+            assert!(
+                matches!(result, Err(VshipError::MetricUnavailable { reason, .. }) if reason.contains("777")),
+                "failed init retains its native error"
+            );
+            assert_eq!(
+                (count(1), count(2)),
+                (before.0 + 1, before.1),
+                "failed init never owns its output"
+            );
+            continue;
+        }
+        let mut scorer = result.expect("production scorer");
+        assert_eq!(
+            count(1) - before.0,
+            1,
+            "one native init for {metric:?}, legacy request {legacy}"
+        );
+        assert_eq!(
+            (scorer.handler_count(), scorer.config().handler_count()),
+            (1, 1),
+            "both public counts report actual ownership"
+        );
+        assert_eq!(
+            scorer.config().handler_threads(),
+            legacy,
+            "legacy request retained"
+        );
+        let id = count(1);
+        let expected = if metric == VshipMetric::Butteraugli {
+            (None, Some(42.0), Some(43.0), Some(44.0))
+        } else {
+            (Some(42.0), None, None, None)
+        };
+        let score = scorer.submit_pair(&frame, &frame).expect("first score");
+        assert_eq!(
+            (score.score, score.norm_q, score.norm_3, score.norm_inf),
+            expected,
+            "metric output fields retain their values"
+        );
+        let start = events().len();
+        let snapshot = (count(3), count(4), count(5));
+        for (a, b) in [(&frame, &bad), (&bad, &frame)] {
+            assert!(
+                matches!(
+                    scorer.submit_pair_raw_with_reset(raw(a), raw(b), true),
+                    Err(VshipError::InputMismatch { .. })
+                ),
+                "reject either invalid side before reset"
+            );
+        }
+        assert_eq!(
+            (count(3), count(4), count(5)),
+            snapshot,
+            "both sides preflight before native mutation"
+        );
+        assert_eq!(
+            scorer.submitted().expect("submitted"),
+            1,
+            "invalid pairs do not advance submissions"
+        );
+        match scenario.as_str() {
+            "compute17" => set(3, 17),
+            "compute777" => set(3, 777),
+            "compute-123" => set(3, -123),
+            "tag" => set(0, 777),
+            "history" | "gap" => set(4, -123),
+            "score" => set(5, 777),
+            _ => {},
+        }
+        let mut callbacks = Vec::new();
+        let result = if scenario == "gap" {
+            scorer
+                .submit_pair_raw_with_reset(raw(&frame), raw(&frame), true)
+                .map(|s| vec![s])
+        } else {
+            scorer.score_decoders::<u8>(&mut clip.decoder(), &mut clip.decoder(), |i, s| {
+                callbacks.push((i, *s))
+            })
+        };
+        if scenario == "ok" {
+            let scores = result.expect("second score");
+            assert_eq!(scores, vec![score], "decoder score retains metric output");
+            assert_eq!(
+                callbacks,
+                vec![(0, score)],
+                "one callback for a successful frame"
+            );
+            let third = scorer
+                .submit_pair_raw_with_reset(raw(&frame), raw(&frame), true)
+                .expect("raw reset score");
+            assert_eq!(third, score, "raw submission retains metric output");
+            assert_eq!(
+                scorer.submitted().expect("submitted"),
+                3,
+                "all three successful calls count"
+            );
+            // Trace encoding: kind * 10000 + native id * 100 + per-handle calls.
+            let mut expected_events = vec![30000 + id * 100 + 2];
+            if metric == VshipMetric::Cvvdp {
+                expected_events.push(40000 + id * 100 + 2);
+            }
+            expected_events.push(30000 + id * 100 + 3);
+            assert_eq!(
+                &events()[start..],
+                expected_events,
+                "same native handle and increasing call order, no round robin"
+            );
+            assert_eq!(
+                (count(4), count(5)),
+                if metric == VshipMetric::Cvvdp {
+                    (1, 0)
+                } else {
+                    (0, 0)
+                },
+                "raw reset is a stateless no-op"
+            );
+        } else {
+            let error = result.expect_err("injected native error");
+            if scenario == "tag" {
+                assert!(
+                    matches!(error, VshipError::InvalidScoreTag { actual: 777, expected } if expected == tag),
+                    "reject unknown native score tag without returning its score"
+                );
+            } else {
+                let (function, status) = match scenario.as_str() {
+                    "compute17" => ("Vship_ComputeHandler", 17),
+                    "compute777" => ("Vship_ComputeHandler", 777),
+                    "compute-123" => ("Vship_ComputeHandler", -123),
+                    "history" | "gap" => ("Vship_Reset", -123),
+                    "score" => ("Vship_ResetScore", 777),
+                    _ => unreachable!(),
+                };
+                assert!(
+                    matches!(error, VshipError::CallFailed { function: f, status: s, .. } if f == function && s == status),
+                    "retain failing native function and raw status"
+                );
+            }
+            assert!(callbacks.is_empty(), "failed frame never reaches callback");
+            assert_eq!(
+                scorer.submitted().expect("submitted"),
+                1,
+                "only successful frames advance submitted"
+            );
+            let base = id * 100;
+            let expected_events = match scenario.as_str() {
+                "gap" => vec![40000 + base + 1],
+                "history" => vec![30000 + base + 2, 40000 + base + 2],
+                "score" => vec![30000 + base + 2, 40000 + base + 2, 50000 + base + 2],
+                _ => vec![30000 + base + 2],
+            };
+            assert_eq!(
+                &events()[start..],
+                expected_events,
+                "native failure stops subsequent work on the owned handle"
+            );
+        }
+        assert_eq!(count(2), before.1, "errors retain native ownership");
+        drop(scorer);
+        assert_eq!(
+            (count(1), count(2)),
+            (before.0 + 1, before.1 + 1),
+            "one native init/free per scorer"
+        );
+        assert_eq!(
+            events().last().copied(),
+            Some(
+                20000
+                    + id * 100
+                    + if scenario == "gap" {
+                        1
+                    } else if scenario == "ok" {
+                        3
+                    } else {
+                        2
+                    }
+            ),
+            "free the same native handle exactly once, after its last call"
+        );
+        println!(
+            "M20 {metric:?}/{requested}/{scenario}: init/free=1/1, native identity={id}, ordered trace and success-only submissions checked"
+        );
+    }
+}
+
 #[test]
 #[cfg(unix)]
 fn m14_native_discriminants_and_admission() {
@@ -344,7 +699,7 @@ fn m19_child() {
     );
     assert_eq!(
         (count(PROBE), count(INIT), count(FREE), count(COMPUTE)),
-        (1, handlers, 0, 1),
+        (1, 1, 0, 1),
         "resets do not allocate, free, probe or compute"
     );
     for _ in 0..handlers {
@@ -352,7 +707,7 @@ fn m19_child() {
         assert_eq!(
             (score.score, score.norm_q, score.norm_3, score.norm_inf),
             expected_score,
-            "scores survive resets across every native handler"
+            "scores survive resets across repeated submissions"
         );
     }
     assert_eq!(
@@ -363,11 +718,11 @@ fn m19_child() {
     drop(scorer);
     assert_eq!(
         (count(INIT), count(FREE)),
-        (handlers, handlers),
+        (1, 1),
         "balanced native cleanup"
     );
     println!(
-        "M19 {metric:?}: init/free={handlers}/{handlers}; submitted/compute={}/{}; scores unchanged",
+        "M19 {metric:?}: init/free=1/1; submitted/compute={}/{}; scores unchanged",
         1 + handlers,
         count(COMPUTE)
     );

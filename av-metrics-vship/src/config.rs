@@ -17,10 +17,9 @@ use crate::{
     scorer::GPU_UNSET,
 };
 
-/// Default number of metric handlers, and so of concurrent scoring workers.
+/// Default legacy handler-thread request.
 ///
-/// libvship processes one frame pair per handler, so throughput scales with the
-/// number of handlers until the device saturates.
+/// Retained for compatibility; the synchronous scorer always owns one handler.
 pub const DEFAULT_HANDLER_THREADS: u32 = 4;
 
 /// Butteraugli's default intensity target, in nits.
@@ -211,9 +210,9 @@ impl Default for CvvdpParams {
 
 /// A vship scoring configuration.
 ///
-/// The defaults describe what libvship's own CLI does for an ordinary encode:
-/// SSIMULACRA2 on the best available device, four handler threads, and the SDR
-/// reference white point and display model the library defaults to.
+/// Defaults to SSIMULACRA2 on the best available device and libvship's SDR
+/// reference white point and display model. The legacy handler-thread request
+/// defaults to four, but synchronous scoring always uses one handler.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VshipConfig {
     metric: VshipMetric,
@@ -238,7 +237,7 @@ impl Default for VshipConfig {
 }
 
 impl VshipConfig {
-    /// A configuration using the default metric, device and thread count.
+    /// A configuration using the default metric, device and legacy thread request.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -261,10 +260,10 @@ impl VshipConfig {
         self
     }
 
-    /// Set how many metric handlers to create, one per concurrent worker.
+    /// Retain a legacy handler-thread request; synchronous scoring ignores it.
     ///
-    /// Zero is clamped to one, since a pool with no handlers could not score
-    /// anything.
+    /// Zero is still clamped to one for compatibility. This value is returned by
+    /// [`Self::handler_threads`]; [`Self::handler_count`] always reports one.
     #[inline]
     #[must_use]
     pub const fn with_handler_threads(mut self, handler_threads: u32) -> Self {
@@ -411,7 +410,7 @@ impl VshipConfig {
         self.gpu_id != GPU_UNSET
     }
 
-    /// The configured handler count.
+    /// The stored legacy handler-thread request, not the actual handler count.
     #[inline]
     #[must_use]
     pub const fn handler_threads(&self) -> u32 {
@@ -432,18 +431,13 @@ impl VshipConfig {
         &self.cvvdp
     }
 
-    /// How many handlers to build for this configuration.
+    /// How many handlers the synchronous scorer builds: always one.
     ///
-    /// A temporal metric gets exactly one, because its score depends on every
-    /// frame it has seen and so cannot be split across workers.
+    /// Independent of the legacy [`Self::handler_threads`] request.
     #[inline]
     #[must_use]
     pub fn handler_count(&self) -> usize {
-        if self.metric.is_temporal() {
-            1
-        } else {
-            usize::try_from(self.handler_threads).unwrap_or(1)
-        }
+        1
     }
 
     /// Validate the configuration, without touching libvship.
@@ -946,15 +940,15 @@ mod tests {
     }
 
     #[test]
-    fn handler_count_follows_metric_temporality() {
+    fn m20_handler_count_is_independent_of_legacy_request() {
         let config = VshipConfig::new().with_handler_threads(8);
 
-        assert_eq!(config.handler_count(), 8);
+        assert_eq!(config.handler_threads(), 8);
+        assert_eq!(config.handler_count(), 1);
         assert_eq!(
             config.clone().with_metric(VshipMetric::Butteraugli).handler_count(),
-            8
+            1
         );
-        // A temporal metric cannot be split, so exactly one handler is built.
         assert_eq!(config.with_metric(VshipMetric::Cvvdp).handler_count(), 1);
     }
 

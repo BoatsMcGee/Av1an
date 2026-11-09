@@ -35,7 +35,7 @@ macro_rules! require_vship {
     };
 }
 
-/// A config that keeps handler construction cheap.
+/// A config retaining a non-default legacy handler-thread request.
 fn config_for(metric: VshipMetric) -> VshipConfig {
     VshipConfig::new().with_metric(metric).with_handler_threads(2)
 }
@@ -292,9 +292,9 @@ fn the_backend_is_reported_when_constructing_a_scorer() {
     assert_eq!(scorer.metric(), VshipMetric::Ssimulacra2);
 }
 
-/// A per-pair metric builds one handler per worker thread.
+/// A per-pair metric needs only one synchronous handler.
 #[test]
-fn a_nontemporal_metric_builds_one_handler_per_thread() {
+fn a_nontemporal_metric_builds_exactly_one_handler() {
     require_vship!();
 
     let pair = small_pair(Distortion::Mild);
@@ -307,7 +307,7 @@ fn a_nontemporal_metric_builds_one_handler_per_thread() {
     )
     .expect("scorer should initialise");
 
-    assert_eq!(scorer.handler_count(), 3);
+    assert_eq!(scorer.handler_count(), 1);
 }
 
 /// CVVDP is temporal, so it keeps exactly one handler however many threads the

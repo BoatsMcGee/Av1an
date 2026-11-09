@@ -9,7 +9,7 @@ Frames come from [`av-decoders`], so a clip can be read from Y4M, FFMS2, FFmpeg 
 ## Features
 
 - **Per-pair scores, straight from `Vship_ComputeHandler`.** Unlike the libvmaf binding, there is no sliding window and no flush: the value for a pair is final the moment the call returns.
-- **A handler per worker.** A non-temporal metric creates one handler per configured thread and distributes pairs across them round-robin, so the device sees parallel work.
+- **One owned handler per scorer.** All metrics submit synchronously; no unused handler pool or round-robin dispatch is needed.
 - **Temporal CVVDP is handled correctly.** It builds a single handler, sees pairs in index order, and calls `Vship_Reset` at an index discontinuity so a scene break is not scored as a motion event.
 - **Finds libvship where you actually have it.** libvship ships as a VapourSynth plugin, not a standalone library, so discovery looks in `VSHIP_PLUGIN_PATH`, `VSHIP_LIB_DIR`, `<dir(VSSCRIPT_PATH)>/plugins` and `VAPOURSYNTH_EXTRA_PLUGIN_PATH` before falling back to the loader's own search path.
 - **Optional dependency.** libvship is opened with `dlopen` at runtime, so the crate compiles on machines that do not have it and `is_available()` returns `false` rather than the build failing.
@@ -47,7 +47,7 @@ let mut distorted = Decoder::from_file("distorted.mkv")?;
 let reference_format = VideoFormat::from_details(reference.get_video_details());
 let distorted_format = VideoFormat::from_details(distorted.get_video_details());
 let mut scorer =
-    VshipScorer::new(VshipConfig::new().with_handler_threads(4), reference_format, distorted_format, None)?;
+    VshipScorer::new(VshipConfig::new(), reference_format, distorted_format, None)?;
 
 let scores = scorer.score_decoders::<u8>(&mut reference, &mut distorted, |_, _| {})?;
 let pooled = VshipScorer::pool(&scores, VshipMetric::Ssimulacra2, PoolMethod::Mean)?;
@@ -60,7 +60,7 @@ println!("SSIMULACRA2: {pooled:.4}");
 
 The callback passed to `score_decoders` fires once per pair, which is useful for reporting progress while a long encode is being scored. Every returned [`FrameScore`] is complete at that point, so no flush follows the loop.
 
-A scorer is `Send` but not `Sync`: one scorer owns its whole handler pool and drives it serially, so it can be moved into a worker thread but not shared across threads.
+A scorer is neither `Send` nor `Sync`: construct, use and drop it on the same thread. Each scorer owns one opaque native handler and submits synchronously through `&mut self`.
 
 ### Borrowed plane uploads
 
@@ -171,7 +171,7 @@ libvship reports a score per pair, so reducing a clip to one number is this crat
 | --- | --- | --- |
 | `with_metric` | `Ssimulacra2` | Which metric to compute. |
 | `with_gpu_id` | auto | Device index. Unset by default, so a discrete GPU is chosen at run time; see [Device selection](#device-selection). |
-| `with_handler_threads` | `4` | Handlers in the pool. Clamped to at least one; ignored for CVVDP, which always uses one. |
+| `with_handler_threads` | `4` | Stored legacy request, clamped to at least one. Ignored by synchronous scoring for every metric; `handler_count()` reports the actual count of one. |
 | `with_q_norm` | `2` | Butteraugli's norm exponent. Must be positive. |
 | `with_intensity_multiplier` | `203.0` | Butteraugli's peak display brightness in nits. Must be positive and finite. |
 | `with_display_model` | `standard_fhd` | CVVDP's display model key. Must be non-empty. Fails on an interior NUL. |
@@ -210,7 +210,12 @@ accuracy. Real native-vs-VapourSynth parity is compiled in Andean's
 That required gate fails if the runtime/plugin is missing; ordinary suites report
 it UNEXECUTED. Its provisional tolerance is not evidence of measured accuracy.
 
-The defaults match what libvship's own CLI does for an ordinary encode. The default handler count is [`DEFAULT_HANDLER_THREADS`], which is 4 — the same as the VapourSynth plugin's own default, so the two paths agree when nothing is configured. A `threads` setting maps directly onto `with_handler_threads`.
+The default legacy request [`DEFAULT_HANDLER_THREADS`] remains 4 for compatibility. `handler_threads()` returns that stored request, and Av1an's `threads` setting still maps onto it, but neither creates workers nor changes the actual handler count of one. Metric option defaults are unchanged.
+
+`submitted()` counts successful frames, including any required post-frame resets;
+failed compute/reset calls do not advance it or invoke the score callback. Both
+inputs pass preflight before native state changes. Public resets and raw submissions
+with `reset_temporal=true` are native no-ops for stateless metrics.
 
 `with_display_model` and `with_display_model_json` return `Result`, because both strings cross into C and an interior NUL cannot be represented there. `VshipConfig::validate` checks the remaining constraints without touching libvship, so an unusable configuration is reported before a device is claimed.
 
@@ -400,7 +405,7 @@ All test input is generated in memory as a y4m byte stream and fed to `av-decode
 cargo bench -p av-metrics-vship
 ```
 
-Criterion benchmarks cover throughput at several resolutions, scaling with the handler count, cost per metric, and decoding alone for comparison. They are deliberately **not** run in CI: Criterion adds minutes per run and its output is noisy on shared runners, so enforcing a regression threshold would produce flaky failures. The scoring benchmarks skip themselves when libvship is unavailable.
+Criterion benchmarks cover throughput at several resolutions, cost per metric, and decoding alone for comparison. They are deliberately **not** run in CI: Criterion adds minutes per run and its output is noisy on shared runners, so enforcing a regression threshold would produce flaky failures. The scoring benchmarks skip themselves when libvship is unavailable.
 
 ## Licence
 

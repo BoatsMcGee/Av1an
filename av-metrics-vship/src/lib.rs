@@ -21,9 +21,8 @@
 //!
 //! [`VshipMetric::Ssimulacra2`] and [`VshipMetric::Butteraugli`] are per-pair:
 //! each score is final the moment `Vship_ComputeHandler` returns, and the
-//! scorer keeps one handler per worker. [`VshipMetric::Cvvdp`] is temporal, so
-//! it keeps a single handler, sees frames in order, and resets its history at a
-//! scene break.
+//! scorer uses one synchronous handler for every metric. [`VshipMetric::Cvvdp`]
+//! is temporal: submit frames in order and request history resets at scene breaks.
 //!
 //! # Example
 //!
@@ -33,7 +32,7 @@
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // Requires libvship and a usable GPU at runtime; see the crate README.
-//! let config = VshipConfig::new().with_handler_threads(4);
+//! let config = VshipConfig::new();
 //!
 //! let mut reference = Decoder::from_file("reference.mkv")?;
 //! let mut distorted = Decoder::from_file("distorted.mkv")?;

@@ -226,7 +226,8 @@ mod tests {
         );
         assert_eq!(
             calls(),
-            "3 3 5 10 8 8 10 8 8\nreset\nreset\n3 3 5 10 8 8 10 8 8\n"
+            "3 3 5 10 8 8 10 8 8\n3 3 5 10 8 8 10 8 8\n",
+            "stateless raw submissions never reset native handlers"
         );
 
         // The real typed adapter also preserves padded u16 strides.

@@ -9,6 +9,22 @@
 static unsigned counts[6]; /* probe, init, free, compute, reset, reset_score */
 static int setting(const char *key, int fallback) { const char *s=getenv(key); return s ? atoi(s) : fallback; }
 unsigned m14_count(unsigned i) { return counts[i]; }
+/* M20: record native identity/order; reject stale handles before dereferencing. */
+typedef struct { int type; unsigned id, calls; } Handle;
+static Handle *live[64];
+static unsigned trace[256], trace_len;
+static int controls[6], overridden[6], failed_output;
+void m20_set(unsigned i, int status) { if (i>=6) abort(); controls[i]=status; overridden[i]=1; }
+unsigned m20_trace(unsigned i) { return i<trace_len ? trace[i] : 0; }
+static int status(unsigned i, const char *key) { return overridden[i] ? controls[i] : setting(key,0); }
+static Handle *owned(Vship_Handle h) {
+    for (unsigned i=1; i<64; i++) if (live[i] && live[i]==h) return live[i];
+    abort();
+}
+static void record(unsigned kind, Handle *h) {
+    if (trace_len>=256) abort();
+    trace[trace_len++]=kind*10000+h->id*100+h->calls;
+}
 Vship_Version Vship_GetVersion(void) { return (Vship_Version){5,1,setting("M14_PATCH",2),(Vship_Backend)setting("M14_BACKEND",3)}; }
 Vship_Exception Vship_GetDeviceCount(int *n) { *n=1; return Vship_NoError; }
 Vship_Exception Vship_GetDeviceInfo(Vship_DeviceInfo *info, int gpu) { (void)gpu; memset(info,0,sizeof(*info)); return Vship_NoError; }
@@ -19,20 +35,31 @@ int Vship_GetErrorMessage(Vship_Exception e, char *out, int len) {
 }
 int Vship_GetDetailedLastError(char *out, int len) { (void)out; (void)len; return 0; }
 int Vship_GetDetailedLastErrorHandler(Vship_Handle h, char *out, int len) { (void)h; (void)out; (void)len; return 0; }
-Vship_Exception Vship_InitHandler(Vship_Handle *h, void *arg) { counts[1]++; *h=malloc(sizeof(int)); memcpy(*h,arg,sizeof(int)); return Vship_NoError; }
-Vship_Exception Vship_FreeHandler(Vship_Handle h) { counts[2]++; free(h); return Vship_NoError; }
+Vship_Exception Vship_InitHandler(Vship_Handle *h, void *arg) {
+    unsigned id=++counts[1];
+    int error=status(1,"M20_INIT_STATUS");
+    /* A failed out-parameter is not an owned handle, even when non-null. */
+    if (error) { *h=&failed_output; return (Vship_Exception)error; }
+    if (id>=64) abort();
+    Handle *p=malloc(sizeof(*p)); if (!p) abort();
+    memcpy(&p->type,arg,sizeof(int)); p->id=id; p->calls=0;
+    live[id]=p; *h=p; record(1,p); return Vship_NoError;
+}
+Vship_Exception Vship_FreeHandler(Vship_Handle h) {
+    Handle *p=owned(h); counts[2]++; record(2,p); live[p->id]=NULL; free(p); return Vship_NoError;
+}
 Vship_Exception Vship_ComputeHandler(Vship_Handle h, void *out, const uint8_t *a[3], const uint8_t *b[3], const int64_t as[3], const int64_t bs[3]) {
     (void)a; (void)b; (void)as; (void)bs; counts[3]++;
-    int type=*(int*)h;
+    Handle *p=owned(h); p->calls++; record(3,p); int type=p->type;
     if (type==1) ((Vship_ScoreSSIMULACRA2*)out)->score=42;
     else if (type==2) {
         Vship_ScoreButteraugli *s=out; s->normQ=42; s->norm3=43; s->norminf=44;
     } else ((Vship_ScoreCVVDP*)out)->score=42;
-    *(Vship_StructType*)out=(Vship_StructType)setting("M14_TAG",type+3);
-    return (Vship_Exception)setting("M14_COMPUTE_STATUS",0);
+    *(Vship_StructType*)out=(Vship_StructType)(overridden[0] ? controls[0] : setting("M14_TAG",type+3));
+    return (Vship_Exception)status(3,"M14_COMPUTE_STATUS");
 }
-Vship_Exception Vship_Reset(Vship_Handle h) { (void)h; counts[4]++; return (Vship_Exception)setting("M19_RESET_STATUS",0); }
-Vship_Exception Vship_ResetScore(Vship_Handle h) { (void)h; counts[5]++; return (Vship_Exception)setting("M19_RESET_STATUS",0); }
+Vship_Exception Vship_Reset(Vship_Handle h) { counts[4]++; record(4,owned(h)); return (Vship_Exception)status(4,"M19_RESET_STATUS"); }
+Vship_Exception Vship_ResetScore(Vship_Handle h) { counts[5]++; record(5,owned(h)); return (Vship_Exception)status(5,"M19_RESET_STATUS"); }
 Vship_Exception Vship_PinnedMalloc2(void **p, uint64_t size, int gpu) { (void)gpu; *p=malloc((size_t)size); return Vship_NoError; }
 Vship_Exception Vship_PinnedFree2(void *p, int gpu) { (void)gpu; free(p); return Vship_NoError; }
 

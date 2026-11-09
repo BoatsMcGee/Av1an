@@ -11,7 +11,7 @@ use std::{
     marker::PhantomData,
     mem::size_of,
     ptr,
-    sync::{Mutex, OnceLock},
+    sync::OnceLock,
 };
 
 use av_decoders::{
@@ -593,8 +593,8 @@ impl CvvdpStrings {
 /// One libvship handler plus the colorspaces it was built for.
 ///
 /// The handler pointer is owned here and released exactly once by [`Drop`]. It
-/// is not `Send` on its own, because libvship documents a handler as belonging
-/// to one thread; the pool below instead gives each worker its own handler.
+/// and its scorer remain `!Send` and `!Sync`: native handle ownership is
+/// restricted to the creating thread.
 struct MetricHandler {
     handle: VshipHandle,
     src_colorspace: VshipColorspace,
@@ -908,16 +908,6 @@ fn chroma_dimensions(colorspace: &VshipColorspace) -> Result<(i64, i64), VshipEr
     ))
 }
 
-/// The handler pool.
-struct Pool {
-    /// The handlers, indexed by worker.
-    handlers: Vec<MetricHandler>,
-    /// The next handler to use, for a non-temporal metric.
-    next: usize,
-    /// How many pairs have been submitted (not a source-frame index).
-    submitted: u32,
-}
-
 /// A vship scoring session.
 ///
 /// Scores are produced by streaming matching frame pairs from a reference and a
@@ -927,23 +917,32 @@ struct Pool {
 ///
 /// # Threading
 ///
-/// A non-temporal metric builds [`VshipConfig::handler_threads`] handlers, one
-/// per worker, and distributes pairs across them round-robin. CVVDP is
-/// temporal: it builds exactly one handler, sees frames in submission order,
-/// and resets its history at an index discontinuity so a scene break does not
-/// corrupt the score.
+/// Every metric owns one handler. Submission is synchronous through `&mut self`;
+/// [`VshipConfig::handler_threads`] retains only a legacy request, not a worker
+/// count. CVVDP sees frames in submission order; the selection owner requests
+/// history resets at source-index discontinuities.
 ///
-/// A `VshipScorer` is [`Send`] so it can be moved into a worker, but it is not
-/// [`Sync`]: one scorer owns its whole pool and drives it serially.
+/// A scorer is neither [`Send`] nor [`Sync`]. Construct, use and drop it on the
+/// same thread rather than moving or sharing its opaque native handle.
+///
+/// ```compile_fail
+/// use av_metrics_vship::VshipScorer;
+/// fn require_send<T: Send>() {}
+/// require_send::<VshipScorer>();
+/// ```
+///
+/// ```compile_fail
+/// use av_metrics_vship::VshipScorer;
+/// fn require_sync<T: Sync>() {}
+/// require_sync::<VshipScorer>();
+/// ```
 pub struct VshipScorer {
     api: &'static VshipApi,
     config: VshipConfig,
     metric: VshipMetric,
-    /// The handlers, behind a mutex so the pool can be moved between threads
-    /// while each handler stays owned by one of them.
-    handlers: Mutex<Pool>,
-    /// Ensures `!Sync`, because a scorer drives its pool serially.
-    _not_sync: PhantomData<*mut ()>,
+    handler: MetricHandler,
+    /// Successful submissions, not source-frame indices.
+    submitted: u32,
 }
 
 fn input_format_error(input: &str, error: VshipError) -> VshipError {
@@ -1016,18 +1015,14 @@ impl VshipScorer {
         let api = VshipApi::load()?;
         api.gpu_full_check(config.gpu_id_or_default())?;
 
-        let count = config.handler_count();
-        let mut handlers = Vec::with_capacity(count);
-        for _ in 0..count {
-            handlers.push(MetricHandler::new(
-                api,
-                config.metric(),
-                &config,
-                src_colorspace,
-                dis_colorspace,
-                &cvvdp_strings,
-            )?);
-        }
+        let handler = MetricHandler::new(
+            api,
+            config.metric(),
+            &config,
+            src_colorspace,
+            dis_colorspace,
+            &cvvdp_strings,
+        )?;
 
         let metric = config.metric();
 
@@ -1035,12 +1030,8 @@ impl VshipScorer {
             api,
             config,
             metric,
-            handlers: Mutex::new(Pool {
-                handlers,
-                next: 0,
-                submitted: 0,
-            }),
-            _not_sync: PhantomData,
+            handler,
+            submitted: 0,
         })
     }
 
@@ -1072,15 +1063,11 @@ impl VshipScorer {
         self.metric
     }
 
-    /// How many handlers this scorer owns.
-    ///
-    /// Zero only if the pool's lock was poisoned by a panic elsewhere.
+    /// How many handlers this synchronous scorer owns: always one.
     #[inline]
     #[must_use]
     pub fn handler_count(&self) -> usize {
-        // A poisoned lock is reported by [`Self::submitted`] rather than here,
-        // so this is a diagnostic count and must not itself panic.
-        self.handlers.lock().map_or(0, |pool| pool.handlers.len())
+        1
     }
 
     /// Whether libvship is available on this system.
@@ -1248,7 +1235,7 @@ impl VshipScorer {
     /// This is the low-level primitive behind [`Self::score_decoders`]. Prefer
     /// that unless the caller needs to interleave decoding with submission,
     /// which is what makes memory use independent of clip length: only the
-    /// pool and the one pair in flight are live.
+    /// handler and the one pair in flight are live.
     ///
     /// Temporal pairs must be submitted in order. Source indices belong to the
     /// selection owner; this scorer cannot infer gaps from submission counts.
@@ -1263,7 +1250,7 @@ impl VshipScorer {
     /// reset. A native failure may invalidate the handler's progress.
     #[expect(
         clippy::missing_inline_in_public_items,
-        reason = "the pool dispatch and temporal bookkeeping belong in one body"
+        reason = "the plane preparation and temporal bookkeeping belong in one body"
     )]
     pub fn submit_pair<T: Pixel>(
         &mut self,
@@ -1341,15 +1328,14 @@ impl VshipScorer {
         self.submit_planes(reference, distorted, reset_temporal)
     }
 
-    /// How many pairs have been submitted so far.
+    /// How many pairs have completed successfully, including required resets.
     ///
     /// # Errors
     ///
-    /// Returns [`VshipError::InvalidConfiguration`] if the pool's lock was
-    /// poisoned by a panic elsewhere.
+    /// Currently always succeeds; the `Result` is retained for compatibility.
     #[inline]
     pub fn submitted(&self) -> Result<u32, VshipError> {
-        self.handlers.lock().map(|pool| pool.submitted).map_err(|_| poisoned())
+        Ok(self.submitted)
     }
 
     /// Clear the temporal handler's frame history, as a scene break would
@@ -1372,14 +1358,7 @@ impl VshipScorer {
         if !self.metric.is_temporal() {
             return Ok(());
         }
-        let Ok(pool) = self.handlers.lock() else {
-            return Err(poisoned());
-        };
-
-        for handler in &pool.handlers {
-            handler.reset(self.api)?;
-        }
-        Ok(())
+        self.handler.reset(self.api)
     }
 
     /// Clear the temporal handler's accumulated score, leaving its frame
@@ -1395,14 +1374,7 @@ impl VshipScorer {
         if !self.metric.is_temporal() {
             return Ok(());
         }
-        let Ok(pool) = self.handlers.lock() else {
-            return Err(poisoned());
-        };
-
-        for handler in &pool.handlers {
-            handler.reset_score(self.api)?;
-        }
-        Ok(())
+        self.handler.reset_score(self.api)
     }
 
     /// The single path every submitter funnels through.
@@ -1412,37 +1384,17 @@ impl VshipScorer {
         distorted: PlaneSet<'_>,
         reset_temporal: bool,
     ) -> Result<FrameScore, VshipError> {
-        let Ok(mut pool) = self.handlers.lock() else {
-            return Err(poisoned());
-        };
-
-        // Preflight BOTH sides before resets, round-robin selection or counters.
-        // Every handler was initialized with these same per-side colorspaces.
-        let handler = &pool.handlers[0];
+        // Preflight BOTH sides before any native state or counter mutation.
+        let handler = &mut self.handler;
         let reference_arguments =
             validate_planes(&reference, &handler.src_colorspace, "reference")?;
         let distorted_arguments =
             validate_planes(&distorted, &handler.dis_colorspace, "distorted")?;
-        if reset_temporal {
-            for handler in &pool.handlers {
-                handler.reset(self.api)?;
-            }
+        if reset_temporal && self.metric.is_temporal() {
+            handler.reset(self.api)?;
         }
 
-        // A non-temporal metric alternates handlers so the device sees parallel
-        // work; a temporal one owns a single handler that always takes the
-        // pair.
-        let slot = if self.metric.is_temporal() {
-            0
-        } else {
-            let slot = pool.next % pool.handlers.len();
-            pool.next = pool.next.wrapping_add(1);
-            slot
-        };
-
-        pool.submitted = pool.submitted.wrapping_add(1);
-
-        let score = pool.handlers[slot].compute(
+        let score = handler.compute(
             self.api,
             self.metric,
             &reference_arguments,
@@ -1451,18 +1403,11 @@ impl VshipScorer {
         if self.metric.is_temporal() && self.config.cvvdp().disable_temporal {
             // COMPAT: the plugin captures the value, then clears history and
             // accumulated score in this order before exposing that value.
-            pool.handlers[slot].reset(self.api)?;
-            pool.handlers[slot].reset_score(self.api)?;
+            handler.reset(self.api)?;
+            handler.reset_score(self.api)?;
         }
+        self.submitted = self.submitted.wrapping_add(1);
         Ok(score)
-    }
-}
-
-/// The error reported when the pool's lock was poisoned by a panic.
-#[inline]
-fn poisoned() -> VshipError {
-    VshipError::InvalidConfiguration {
-        reason: "the vship handler pool was left poisoned by a panic".to_owned(),
     }
 }
 

@@ -10,6 +10,7 @@
 //!
 //! Prints one `METRIC=... SECONDS=... MEAN=...` line so a driver can compare it
 //! against the other tools without parsing prose.
+//! `handler_threads` is a stored legacy request; scoring always uses one handler.
 
 use std::{hint::black_box, time::Instant};
 

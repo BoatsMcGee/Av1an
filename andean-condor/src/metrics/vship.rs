@@ -70,11 +70,9 @@ pub fn native_supported(metric: &QualityMetric) -> bool {
 
 /// Build a `VshipConfig` from Av1an's metric configuration.
 ///
-/// `threads` becomes libvship's handler count. The VapourSynth plugin path
-/// treats an absent `threads` as 4 streams, so an absent value here likewise
-/// becomes [`av_metrics_vship::DEFAULT_HANDLER_THREADS`] rather than the
-/// library's own thread handling; a present value is honoured verbatim so a
-/// capped pool stays capped.
+/// `threads` is retained as a legacy request, defaulting to
+/// [`av_metrics_vship::DEFAULT_HANDLER_THREADS`] and clamping zero to one.
+/// Native synchronous scoring uses exactly one handler regardless of that request.
 ///
 /// `resolution` is not applied here. It becomes libvship's `target_width` and
 /// `target_height`, and libvship scales each input internally, so no plane is
@@ -134,8 +132,6 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<VshipCon
             gpu_id,
             ..
         } => {
-            // CVVDP is temporal, so its score cannot be split across handlers;
-            // `VshipConfig::handler_count` pins it to one regardless.
             let mut config = with_gpu_id(
                 VshipConfig::new()
                     .with_metric(VshipMetric::Cvvdp)
@@ -192,11 +188,10 @@ fn butteraugli_uses_q_norm(metric: &QualityMetric) -> bool {
     matches!(metric, QualityMetric::BUTTERAUGLI { norm: Some(_), .. })
 }
 
-/// libvship handler count for a configured `threads` value.
+/// Legacy libvship handler-thread request for a configured `threads` value.
 ///
-/// `None` takes the plugin path's default of four handlers, so the two paths
-/// agree when `threads` is unset. `Some(0)` would ask for a pool with no
-/// handlers, which the crate clamps to one.
+/// Retain the default request of four and the crate's zero-to-one clamp for
+/// compatibility. Native synchronous scoring always owns one handler.
 #[inline]
 fn handler_threads(threads: Option<u8>) -> u32 {
     threads.map_or(av_metrics_vship::DEFAULT_HANDLER_THREADS, u32::from)
