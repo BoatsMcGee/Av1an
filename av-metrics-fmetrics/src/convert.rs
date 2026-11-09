@@ -614,7 +614,7 @@ impl RgbImage {
 /// `max_sample` is the source's peak: 255 for 8-bit, 1023 for 10-bit, 4095 for
 /// 12-bit. It must agree with `info.bit_depth`; yuvxyb derives normalization
 /// from depth and range (limited range uses nominal shifted endpoints).
-/// yuvxyb clips normalized Y to [0,1] and C to [-0.5,0.5] before the matrix.
+/// yuvxyb clips normalized Y to `[0,1]` and C to `[-0.5,0.5]` before the matrix.
 /// Video-family SDR is converted through gamma-2.4 linear light to sRGB; existing
 /// sRGB/linear data is not transfer-converted. Odd subsampled edges are replicated
 /// for conversion and cropped back, never resized.

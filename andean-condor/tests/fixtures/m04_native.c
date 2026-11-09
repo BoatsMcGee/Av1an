@@ -14,7 +14,7 @@ typedef struct {
     bool hdr;
 } Image;
 
-const char *fmetrics_version_str(void) { return "m04-test"; }
+const char *fmetrics_version_str(void) { return "0.1.0"; }
 const char *fmetrics_cvvdp_version_str(void) { return "m04-test"; }
 const char *fmetrics_error_str(int error) { return "M04 native image mismatch"; }
 void *fmetrics_workspace_create(void) { return malloc(1); }

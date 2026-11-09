@@ -142,10 +142,27 @@ impl Context {
         // A failed fetch rolls its slot back but may leave dangling fields in
         // the output. Only successful fetches acquire an owning guard.
         crate::ffi::check(status, "vmaf_fetch_preallocated_picture")?;
-        Ok(PooledPicture {
+        let picture = PooledPicture {
             raw: picture,
             api: self.api,
-        })
+        };
+        // Success owns a checkout even when its metadata is invalid. Adopt the
+        // guard before validating so an error returns it before context close.
+        let format = crate::ffi::VmafPixelFormat::try_from(picture.raw.pix_fmt)?;
+        if !matches!(
+            format,
+            crate::ffi::VmafPixelFormat::Yuv420p
+                | crate::ffi::VmafPixelFormat::Yuv422p
+                | crate::ffi::VmafPixelFormat::Yuv444p
+        ) {
+            return Err(VmafError::UnsupportedFormat {
+                reason: format!(
+                    "unsupported libvmaf pool pixel format {}",
+                    picture.raw.pix_fmt
+                ),
+            });
+        }
+        Ok(picture)
     }
 }
 
@@ -441,6 +458,9 @@ mod tests {
         let Err(error) = VmafApi::load() else {
             return;
         };
-        assert!(matches!(error, VmafError::LibraryNotFound));
+        assert!(matches!(
+            error,
+            VmafError::LibraryNotFound | VmafError::IncompatibleLibrary { .. }
+        ));
     }
 }

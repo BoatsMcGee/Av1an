@@ -73,6 +73,24 @@ pub enum VmafPixelFormat {
     Yuv400p = 4,
 }
 
+impl TryFrom<c_int> for VmafPixelFormat {
+    type Error = VmafError;
+
+    #[inline]
+    fn try_from(raw: c_int) -> Result<Self, Self::Error> {
+        match raw {
+            0 => Ok(Self::Unknown),
+            1 => Ok(Self::Yuv420p),
+            2 => Ok(Self::Yuv422p),
+            3 => Ok(Self::Yuv444p),
+            4 => Ok(Self::Yuv400p),
+            _ => Err(VmafError::UnsupportedFormat {
+                reason: format!("libvmaf returned unknown pool pixel format {raw}"),
+            }),
+        }
+    }
+}
+
 /// A single picture handed to libvmaf.
 ///
 /// Pool-allocated `data`, `ref_` and `priv_` belong to a native refcounted
@@ -84,8 +102,8 @@ pub enum VmafPixelFormat {
 /// is `void *`, and the trailing `priv` pointer is populated by native allocation.
 #[repr(C)]
 pub struct VmafPicture {
-    /// Pixel format.
-    pub pix_fmt: VmafPixelFormat,
+    /// Raw native pixel format; validate before any copy or submission.
+    pub pix_fmt: c_int,
     /// Bits per channel: 8, 10, 12 or 16.
     pub bpc: c_uint,
     /// Width of each plane in pixels.
@@ -102,13 +120,21 @@ pub struct VmafPicture {
     pub priv_: *mut c_void,
 }
 
+#[cfg(test)]
+#[test]
+fn m14_c_written_picture_format_accepts_raw_integer() {
+    let mut picture = VmafPicture::zeroed();
+    picture.pix_fmt = 777;
+    assert_eq!(picture.pix_fmt, 777);
+}
+
 impl VmafPicture {
     /// An all-zero picture, ready for libvmaf to populate.
     #[inline]
     #[must_use]
     pub const fn zeroed() -> Self {
         Self {
-            pix_fmt: VmafPixelFormat::Unknown,
+            pix_fmt: VmafPixelFormat::Unknown as c_int,
             bpc: 0,
             w: [0; 3],
             h: [0; 3],
@@ -810,7 +836,7 @@ mod tests {
     #[test]
     fn a_zeroed_picture_has_neutral_fields() {
         let picture = VmafPicture::zeroed();
-        assert_eq!(picture.pix_fmt, VmafPixelFormat::Unknown);
+        assert_eq!(picture.pix_fmt, VmafPixelFormat::Unknown as c_int);
         assert_eq!(picture.bpc, 0);
         assert!(picture.data.iter().all(|pointer| pointer.is_null()));
         assert!(picture.priv_.is_null());

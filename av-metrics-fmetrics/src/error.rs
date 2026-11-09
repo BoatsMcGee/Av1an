@@ -4,6 +4,12 @@
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum FmetricsError {
+    /// The opened binary does not report the verified ABI version.
+    #[error("Incompatible fmetrics: {reason}. No compatibility override is supported.")]
+    IncompatibleLibrary {
+        /// Observed version and supported build instructions.
+        reason: String,
+    },
     /// fmetrics could not be found or opened on this system.
     ///
     /// fmetrics ships as a source library rather than as a prebuilt install, so

@@ -734,6 +734,7 @@ impl MetricHandler {
                     )
                 };
                 ffi::check(status, "Vship_ComputeHandler")?;
+                check_score_tag(out.struct_type, VshipStructType::ScoreSsimulacra2)?;
                 score.score = Some(out.score);
             },
             VshipMetric::Butteraugli => {
@@ -753,6 +754,7 @@ impl MetricHandler {
                     )
                 };
                 ffi::check(status, "Vship_ComputeHandler")?;
+                check_score_tag(out.struct_type, VshipStructType::ScoreButteraugli)?;
                 score.norm_q = Some(out.norm_q);
                 score.norm_3 = Some(out.norm_3);
                 score.norm_inf = Some(out.norm_inf);
@@ -771,6 +773,7 @@ impl MetricHandler {
                     )
                 };
                 ffi::check(status, "Vship_ComputeHandler")?;
+                check_score_tag(out.struct_type, VshipStructType::ScoreCvvdp)?;
                 score.score = Some(out.score);
             },
         }
@@ -792,6 +795,16 @@ impl MetricHandler {
         let status = unsafe { (api.reset_score)(self.handle) };
         ffi::check(status, "Vship_ResetScore")
     }
+}
+
+fn check_score_tag(actual: c_int, expected: VshipStructType) -> Result<(), VshipError> {
+    if actual != expected as c_int {
+        return Err(VshipError::InvalidScoreTag {
+            actual,
+            expected: expected as c_int,
+        });
+    }
+    Ok(())
 }
 
 impl Drop for MetricHandler {

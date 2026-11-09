@@ -1,0 +1,103 @@
+#ifndef VSHIPCOLOR_API_HEADER
+#define VSHIPCOLOR_API_HEADER
+
+#include <stdint.h>
+#include <stdbool.h>
+
+typedef enum Vship_Sample_t{
+    Vship_SampleFLOAT = 0,
+    Vship_SampleHALF = 1,
+    Vship_SampleUINT8 = 2,
+    Vship_SampleUINT9 = 3,
+    Vship_SampleUINT10 = 5,
+    Vship_SampleUINT12 = 7,
+    Vship_SampleUINT14 = 9,
+    Vship_SampleUINT16 = 11,
+} Vship_Sample_t;
+
+typedef enum Vship_Range_t{
+    Vship_RangeLimited = 0,
+    Vship_RangeFull = 1,
+} Vship_Range_t;
+
+typedef struct Vship_ChromaSubsample_t {
+    int subw;// = 0;
+    int subh;// = 0;
+} Vship_ChromaSubsample_t;
+
+typedef enum Vship_ChromaLocation_t{
+    Vship_ChromaLoc_Left = 0,
+    Vship_ChromaLoc_Center = 1,
+    Vship_ChromaLoc_TopLeft = 2,
+    Vship_ChromaLoc_Top = 3,
+} Vship_ChromaLocation_t;
+
+//deprecated arguments, unused
+typedef enum Vship_ColorFamily_t{
+    Vship_ColorYUV,
+    Vship_ColorRGB,
+} Vship_ColorFamily_t;
+
+typedef enum Vship_YUVMatrix_t{
+    Vship_MATRIX_RGB = 0,
+    Vship_MATRIX_BT709 = 1,
+    Vship_MATRIX_BT470_BG = 5,
+    Vship_MATRIX_ST170_M = 6, //same as 5
+    Vship_MATRIX_YCGCO = 8,
+    Vship_MATRIX_BT2020_NCL = 9,
+    Vship_MATRIX_BT2020_CL = 10,
+    Vship_MATRIX_BT2100_ICTCP = 14,
+    Vship_MATRIX_YCGCO_RE = 16,
+    Vship_MATRIX_YCGCO_RO = 17,
+} Vship_YUVMatrix_t;
+
+typedef enum Vship_TransferFunction_t{
+    Vship_TRC_BT709 = 1,
+    Vship_TRC_BT470_M = 4,
+    Vship_TRC_BT470_BG = 5,
+    Vship_TRC_BT601 = 6, //same as 5
+    Vship_TRC_ST240_M = 7,
+    Vship_TRC_Linear = 8,
+    Vship_TRC_sRGB = 13,
+    Vship_TRC_PQ = 16,
+    Vship_TRC_ST428 = 17,
+    Vship_TRC_HLG = 18,
+} Vship_TransferFunction_t;
+
+typedef enum Vship_Primaries_t{
+    Vship_PRIMARIES_INTERNAL = -1, //corresponds to XYZ really
+    Vship_PRIMARIES_BT709 = 1,
+    Vship_PRIMARIES_BT470_M = 4,
+    Vship_PRIMARIES_BT470_BG = 5,
+    Vship_PRIMARIES_ST170_M = 6,
+	Vship_PRIMARIES_ST240_M = 7,  // Equivalent to 6.
+    Vship_PRIMARIES_BT2020 = 9,
+    Vship_PRIMARIES_DisplayP3 = 12,
+} Vship_Primaries_t;
+
+typedef struct Vship_CropRectangle_t {
+    int top;// = 0;
+    int bottom;// = 0;
+    int left;// = 0;
+    int right;// = 0;
+} Vship_CropRectangle_t;
+
+//commentary defines the most classic YUV420P BT709
+typedef struct Vship_Colorspace_t {
+    int64_t width;
+    int64_t height;
+    int64_t target_width;// = -1; //we can resize at the end of conversion
+    int64_t target_height;// = -1; //we can resize at the end of conversion
+    //final size is target_width - crop/target_height - crop (resize is applied before cropping)
+    Vship_Sample_t sample;// = Vship_SampleUINT8;
+    Vship_Range_t range;// = Vship_RangeLimited;
+    Vship_ChromaSubsample_t subsampling;// = {1, 1};
+    Vship_ChromaLocation_t chromaLocation;// = Vship_ChromaLoc_Left;
+    Vship_ColorFamily_t colorFamily;// now unused, matrix 0 is RGB and others are YUV
+    Vship_YUVMatrix_t YUVMatrix;// = Vship_MATRIX_BT709;
+    Vship_TransferFunction_t transferFunction;// = Vship_TRC_BT709;
+    Vship_Primaries_t primaries;// = Vship_PRIMARIES_BT709;
+    Vship_CropRectangle_t crop;// = {0, 0, 0, 0};
+} Vship_Colorspace_t;
+
+#endif

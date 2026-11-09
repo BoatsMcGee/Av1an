@@ -12,6 +12,23 @@ via the [fmetrics](https://github.com/halidecx/fmetrics) C API.
   `is_available()` reports `false`
 - Scores pairs as they are decoded, so no temporary files and no distortion maps
 
+## Supported runtime ABI
+
+The loader accepts only the exact `fmetrics_version_str()` value `0.1.0`, from
+[pinned commit ae87c8e](https://github.com/BoatsMcGee/fmetrics/tree/ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac).
+Null, non-UTF8 and other versions return `FmetricsError::IncompatibleLibrary`
+before any workspace/context allocation. Rebuild that revision and set
+`FMETRICS_LIB_PATH` to its library directory. An opened incompatible binary is
+not silently replaced by another candidate, and there is no compatibility override.
+This is a bounded ABI policy, not attestation of arbitrary modified binaries.
+
+Native statuses use integer-safe `FmetricsErr`: known associated constants keep
+their names; `.0` replaces enum casts. `from_raw` preserves every code, and only
+zero is success. Unknown errors retain the original integer in `CallFailed`.
+Input-only image formats/colorspaces and display models remain typed enums.
+The `m14_` tests compile vendored, unmodified public headers with a C11 compiler;
+ordinary crate builds need no compiler, headers or fmetrics installation.
+
 ## Usage
 
 ```rust

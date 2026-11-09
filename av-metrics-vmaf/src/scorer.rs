@@ -371,7 +371,7 @@ pub struct FrameScore {
 /// *n* is only final once frame *n+1* has been submitted; the last score
 /// therefore arrives on flush.
 ///
-/// A `VmafScorer` is single-use and drives a single [`VmafContext`], which
+/// A `VmafScorer` is single-use and drives a single native `VmafContext`, which
 /// libvmaf documents as not safe for concurrent use. It is [`Send`] so it can
 /// be moved into a worker, but must not be shared.
 pub struct VmafScorer {
@@ -964,8 +964,8 @@ impl VmafScorer {
         pixel_format: Option<VmafPixelFormat>,
         bit_depth: u32,
     ) -> Result<(), VmafError> {
-        Self::validate_picture(reference_picture, reference, bit_depth)?;
-        Self::validate_picture(distorted_picture, distorted, bit_depth)?;
+        Self::validate_picture(reference_picture, reference, pixel_format, bit_depth)?;
+        Self::validate_picture(distorted_picture, distorted, pixel_format, bit_depth)?;
         Self::fill_picture(reference_picture, reference, pixel_format, bit_depth)?;
         Self::fill_picture(distorted_picture, distorted, pixel_format, bit_depth)
     }
@@ -974,8 +974,21 @@ impl VmafScorer {
     fn validate_picture(
         picture: &VmafPicture,
         planes: &PlaneSet<'_>,
+        pixel_format: Option<VmafPixelFormat>,
         bit_depth: u32,
     ) -> Result<(), VmafError> {
+        let expected = pixel_format.ok_or_else(|| VmafError::UnsupportedFormat {
+            reason: "chroma sampling is outside libvmaf's supported set".to_owned(),
+        })?;
+        let actual = VmafPixelFormat::try_from(picture.pix_fmt)?;
+        if actual != expected {
+            return Err(VmafError::UnsupportedFormat {
+                reason: format!(
+                    "libvmaf pool pixel format {} differs from configured {expected:?}",
+                    picture.pix_fmt
+                ),
+            });
+        }
         let bytes_per_sample = match bit_depth {
             8 => 1,
             10 | 12 | 16 => 2,
@@ -1048,10 +1061,7 @@ impl VmafScorer {
         pixel_format: Option<VmafPixelFormat>,
         bit_depth: u32,
     ) -> Result<(), VmafError> {
-        Self::validate_picture(picture, planes, bit_depth)?;
-        picture.pix_fmt = pixel_format.ok_or_else(|| VmafError::UnsupportedFormat {
-            reason: "chroma sampling is outside libvmaf's supported set".to_owned(),
-        })?;
+        Self::validate_picture(picture, planes, pixel_format, bit_depth)?;
         // libvmaf normalizes by bpc; don't rely on pooled metadata retaining it.
         picture.bpc = bit_depth;
         for (index, source) in planes.iter().enumerate() {
@@ -1386,11 +1396,38 @@ mod tests {
     // Only host buffers are used: no native library, model, GPU or native ownership.
     fn m06_host_picture(buffers: &mut [Vec<u8>; 3], width: u32, height: u32) -> VmafPicture {
         let mut picture = VmafPicture::zeroed();
+        picture.pix_fmt = VmafPixelFormat::Yuv444p as std::ffi::c_int;
         picture.w = [width; 3];
         picture.h = [height; 3];
         picture.stride = [isize::try_from(buffers[0].len() / height as usize).unwrap(); 3];
         picture.data = std::array::from_fn(|index| buffers[index].as_mut_ptr().cast());
         picture
+    }
+
+    #[test]
+    fn m14_unknown_distorted_pool_format_rejects_before_either_copy() {
+        let bytes = [7u8; 4];
+        let source = PlaneSource::from_bytes(&bytes, 2, 2, 2, 0, 1).unwrap();
+        let mut reference = std::array::from_fn(|_| vec![0xa5; 4]);
+        let mut distorted = reference.clone();
+        let mut a = m06_host_picture(&mut reference, 2, 2);
+        let mut b = m06_host_picture(&mut distorted, 2, 2);
+        b.pix_fmt = 777;
+        assert!(
+            VmafScorer::fill_pictures(
+                &mut a,
+                &mut b,
+                &[source; 3],
+                &[source; 3],
+                Some(VmafPixelFormat::Yuv444p),
+                8
+            )
+            .is_err()
+        );
+        assert!(
+            reference.iter().chain(&distorted).flatten().all(|&b| b == 0xa5),
+            "preflight both native tags before either copy"
+        );
     }
 
     #[test]

@@ -322,6 +322,23 @@ impl VshipBackend {
     }
 }
 
+impl TryFrom<c_int> for VshipBackend {
+    type Error = VshipError;
+
+    #[inline]
+    fn try_from(raw: c_int) -> Result<Self, Self::Error> {
+        match raw {
+            0 => Ok(Self::Hip),
+            1 => Ok(Self::Cuda),
+            2 => Ok(Self::Vulkan),
+            3 => Ok(Self::Cpu),
+            _ => Err(VshipError::IncompatibleLibrary {
+                reason: format!("unknown backend {raw}"),
+            }),
+        }
+    }
+}
+
 /// The libvship version and the backend it was built against.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,11 +349,11 @@ pub struct VshipVersion {
     pub minor: c_int,
     /// Patch version.
     pub minor_minor: c_int,
-    /// Backend this build targets.
-    pub backend: VshipBackend,
+    /// Raw native backend; validate with [`VshipBackend::try_from`] before use.
+    pub backend: c_int,
 }
 
-/// A status code returned by every libvship entry point.
+/// Known libvship status codes. Native entry points return [`c_int`], not this enum.
 ///
 /// The C enum is grouped by cause but its numeric values are scattered, so
 /// every variant carries an explicit value.
@@ -478,8 +495,8 @@ pub struct VshipInitCvvdp_1 {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VshipScoreSsimulacra2 {
-    /// Must be [`VshipStructType::ScoreSsimulacra2`]. The library checks it.
-    pub struct_type: VshipStructType,
+    /// Raw tag, checked against [`VshipStructType::ScoreSsimulacra2`] after compute.
+    pub struct_type: c_int,
     /// Written by libvship. Higher is better, and 1.0 is the maximum for
     /// identical inputs.
     pub score: f64,
@@ -489,7 +506,7 @@ impl Default for VshipScoreSsimulacra2 {
     #[inline]
     fn default() -> Self {
         Self {
-            struct_type: VshipStructType::ScoreSsimulacra2,
+            struct_type: VshipStructType::ScoreSsimulacra2 as c_int,
             score: 0.0,
         }
     }
@@ -502,8 +519,8 @@ impl Default for VshipScoreSsimulacra2 {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VshipScoreButteraugli {
-    /// Must be [`VshipStructType::ScoreButteraugli`]. The library checks it.
-    pub struct_type: VshipStructType,
+    /// Raw tag, checked against [`VshipStructType::ScoreButteraugli`] after compute.
+    pub struct_type: c_int,
     /// Written by libvship. The score for the configured `Qnorm`.
     pub norm_q: f64,
     /// Written by libvship. The L3 norm of the difference.
@@ -520,7 +537,7 @@ impl Default for VshipScoreButteraugli {
     #[inline]
     fn default() -> Self {
         Self {
-            struct_type: VshipStructType::ScoreButteraugli,
+            struct_type: VshipStructType::ScoreButteraugli as c_int,
             norm_q: 0.0,
             norm_3: 0.0,
             norm_inf: 0.0,
@@ -538,8 +555,8 @@ impl Default for VshipScoreButteraugli {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VshipScoreCvvdp {
-    /// Must be [`VshipStructType::ScoreCvvdp`]. The library checks it.
-    pub struct_type: VshipStructType,
+    /// Raw tag, checked against [`VshipStructType::ScoreCvvdp`] after compute.
+    pub struct_type: c_int,
     /// Written by libvship. Higher is better.
     pub score: f64,
     /// Always null: this crate does not retrieve distortion maps.
@@ -552,7 +569,7 @@ impl Default for VshipScoreCvvdp {
     #[inline]
     fn default() -> Self {
         Self {
-            struct_type: VshipStructType::ScoreCvvdp,
+            struct_type: VshipStructType::ScoreCvvdp as c_int,
             score: 0.0,
             dstp: std::ptr::null(),
             dst_stride: 0,
@@ -561,14 +578,14 @@ impl Default for VshipScoreCvvdp {
 }
 
 type GetVersion = unsafe extern "C" fn() -> VshipVersion;
-type GetDeviceCount = unsafe extern "C" fn(*mut c_int) -> VshipException;
-type GetDeviceInfo = unsafe extern "C" fn(*mut VshipDeviceInfo, c_int) -> VshipException;
-type GpuFullCheck = unsafe extern "C" fn(c_int) -> VshipException;
-type GetErrorMessage = unsafe extern "C" fn(VshipException, *mut c_char, c_int) -> c_int;
+type GetDeviceCount = unsafe extern "C" fn(*mut c_int) -> c_int;
+type GetDeviceInfo = unsafe extern "C" fn(*mut VshipDeviceInfo, c_int) -> c_int;
+type GpuFullCheck = unsafe extern "C" fn(c_int) -> c_int;
+type GetErrorMessage = unsafe extern "C" fn(c_int, *mut c_char, c_int) -> c_int;
 type GetDetailedLastError = unsafe extern "C" fn(*mut c_char, c_int) -> c_int;
 type GetDetailedLastErrorHandler = unsafe extern "C" fn(VshipHandle, *mut c_char, c_int) -> c_int;
-type InitHandler = unsafe extern "C" fn(*mut VshipHandle, *mut c_void) -> VshipException;
-type FreeHandler = unsafe extern "C" fn(VshipHandle) -> VshipException;
+type InitHandler = unsafe extern "C" fn(*mut VshipHandle, *mut c_void) -> c_int;
+type FreeHandler = unsafe extern "C" fn(VshipHandle) -> c_int;
 type ComputeHandler = unsafe extern "C" fn(
     VshipHandle,
     *mut c_void,
@@ -576,18 +593,18 @@ type ComputeHandler = unsafe extern "C" fn(
     *const *const u8,
     *const i64,
     *const i64,
-) -> VshipException;
-type Reset = unsafe extern "C" fn(VshipHandle) -> VshipException;
-type ResetScore = unsafe extern "C" fn(VshipHandle) -> VshipException;
+) -> c_int;
+type Reset = unsafe extern "C" fn(VshipHandle) -> c_int;
+type ResetScore = unsafe extern "C" fn(VshipHandle) -> c_int;
 
 /// Allocates host-pinned memory for plane uploads.
 ///
 /// A buffer allocated this way is only worth it when it is reused across
 /// frames, since the pinning itself is the expensive part.
-type PinnedMalloc2 = unsafe extern "C" fn(*mut *mut c_void, u64, c_int) -> VshipException;
+type PinnedMalloc2 = unsafe extern "C" fn(*mut *mut c_void, u64, c_int) -> c_int;
 
 /// Releases memory from [`PinnedMalloc2`].
-type PinnedFree2 = unsafe extern "C" fn(*mut c_void, c_int) -> VshipException;
+type PinnedFree2 = unsafe extern "C" fn(*mut c_void, c_int) -> c_int;
 
 /// Vulkan-specific device capabilities.
 ///
@@ -728,6 +745,8 @@ impl Default for VshipDeviceInfo {
 /// leaked by [`VshipApi::load`] and never unloaded.
 #[derive(Clone, Copy)]
 pub struct VshipApi {
+    /// Checked once at admission, before any device or handler call.
+    backend: VshipBackend,
     /// Reports the library version and backend.
     pub get_version: GetVersion,
     /// Counts the usable compute devices.
@@ -776,8 +795,7 @@ impl VshipApi {
     #[inline]
     #[must_use]
     pub fn backend(&self) -> VshipBackend {
-        // SAFETY: as `version_string`.
-        unsafe { (self.get_version)() }.backend
+        self.backend
     }
 
     /// The number of compute devices libvship can see.
@@ -842,19 +860,24 @@ impl VshipApi {
     ///
     /// # Errors
     ///
-    /// Returns [`VshipError::Load`] when no candidate library could be opened
-    /// or a required entry point is missing, the latter indicating an
-    /// incompatible libvship build.
+    /// Returns [`VshipError::LibraryNotFound`] when no candidate opens or a
+    /// required entry point is missing, and [`VshipError::IncompatibleLibrary`]
+    /// when the opened binary reports an unverified version or backend.
     #[inline]
     pub fn load() -> Result<&'static Self, VshipError> {
-        static API: OnceLock<Result<VshipApi, VshipException>> = OnceLock::new();
+        static API: OnceLock<Result<VshipApi, std::io::Error>> = OnceLock::new();
 
         match API.get_or_init(resolve) {
             Ok(api) => Ok(api),
-            Err(exception) => Err(VshipError::LibraryNotFound {
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                Err(VshipError::IncompatibleLibrary {
+                    reason: error.to_string(),
+                })
+            },
+            Err(error) => Err(VshipError::LibraryNotFound {
                 reason: format!(
                     "libvship could not be loaded ({}); tried {}",
-                    *exception as c_int,
+                    error,
                     library_candidates()
                         .iter()
                         .map(|candidate| candidate.display().to_string())
@@ -869,13 +892,13 @@ impl VshipApi {
 /// Check a libvship status code, mapping a failure to
 /// [`VshipError::CallFailed`].
 #[inline]
-pub fn check(status: VshipException, function: &'static str) -> Result<(), VshipError> {
-    if status.is_ok() {
+pub fn check(status: c_int, function: &'static str) -> Result<(), VshipError> {
+    if status == 0 {
         Ok(())
     } else {
         Err(VshipError::CallFailed {
             function,
-            status: status as c_int,
+            status,
             message: error_message(status),
         })
     }
@@ -888,9 +911,15 @@ pub fn check(status: VshipException, function: &'static str) -> Result<(), Vship
 /// message longer than the buffer is simply truncated.
 #[inline]
 #[must_use]
-pub fn error_message(exception: VshipException) -> String {
+pub fn error_message(exception: c_int) -> String {
     /// Buffer size for a status code's message.
     const CAPACITY: usize = 1024;
+
+    // The native helper casts to an internal C++ enum; do not feed it unknown
+    // codes. Numeric diagnostics are meaningful without native interpretation.
+    if !(0..=17).contains(&exception) {
+        return fallback_message(exception);
+    }
 
     // A loaded library is required to translate the code, so an unloadable one
     // falls back to the numeric status.
@@ -924,13 +953,29 @@ pub fn error_message(exception: VshipException) -> String {
 /// The message used when libvship cannot be asked about a status code.
 #[inline]
 #[must_use]
-fn fallback_message(exception: VshipException) -> String {
-    format!("libvship error {}", exception as c_int)
+fn fallback_message(exception: c_int) -> String {
+    format!("libvship error {exception}")
 }
 
 /// Resolve one of the candidate libvship libraries.
-fn resolve() -> Result<VshipApi, VshipException> {
+fn resolve() -> Result<VshipApi, std::io::Error> {
     let library = open_library()?;
+    let get_version: GetVersion = required(&library, b"Vship_GetVersion\0")?;
+    // SAFETY: the pinned version record contains only C integers, including
+    // backend. Admission precedes all layout-sensitive/device calls.
+    let version = unsafe { get_version() };
+    if (version.major, version.minor, version.minor_minor) != (5, 1, 2) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "unsupported version {}.{}.{}; expected 5.1.2",
+                version.major, version.minor, version.minor_minor
+            ),
+        ));
+    }
+    // Do not call check/error_message: this OnceLock is still initializing.
+    let backend = VshipBackend::try_from(version.backend)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
     // Keep the mapping alive for the life of the process. The pointers resolved
     // below are only valid while it is loaded.
     let library = Box::leak(Box::new(library));
@@ -940,7 +985,8 @@ fn resolve() -> Result<VshipApi, VshipException> {
     // `name`. The leaked `library` above keeps the code these point at
     // mapped.
     Ok(VshipApi {
-        get_version: required(library, b"Vship_GetVersion\0")?,
+        backend,
+        get_version,
         get_device_count: required(library, b"Vship_GetDeviceCount\0")?,
         get_device_info: required(library, b"Vship_GetDeviceInfo\0")?,
         gpu_full_check: required(library, b"Vship_GPUFullCheck\0")?,
@@ -960,11 +1006,11 @@ fn resolve() -> Result<VshipApi, VshipException> {
 }
 
 /// Resolve a required symbol.
-fn required<T: Copy>(library: &Library, name: &[u8]) -> Result<T, VshipException> {
+fn required<T: Copy>(library: &Library, name: &[u8]) -> Result<T, std::io::Error> {
     // SAFETY: the caller guarantees `T` matches the C signature for `name`.
     unsafe { library.get(name) }
         .map(|symbol| *symbol)
-        .map_err(|_| VshipException::NotSupported)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::NotFound, error.to_string()))
 }
 
 /// Resolve an optional symbol, yielding `None` when the build omits it.
@@ -974,7 +1020,7 @@ fn optional<T: Copy>(library: &Library, name: &[u8]) -> Option<T> {
 }
 
 /// Open the first libvship candidate that loads.
-fn open_library() -> Result<Library, VshipException> {
+fn open_library() -> Result<Library, std::io::Error> {
     let mut failures = Vec::new();
 
     for candidate in library_candidates() {
@@ -988,7 +1034,10 @@ fn open_library() -> Result<Library, VshipException> {
     }
 
     tracing::debug!(?failures, "no libvship candidate could be loaded");
-    Err(VshipException::NoDeviceDetected)
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        failures.join("; "),
+    ))
 }
 
 /// Candidate libvship paths, most specific first.
@@ -1253,6 +1302,39 @@ mod tests {
     use std::mem::{align_of, size_of};
 
     use super::*;
+
+    #[test]
+    fn m14_c_written_fields_accept_raw_integers() {
+        let version = VshipVersion {
+            major: 5,
+            minor: 1,
+            minor_minor: 2,
+            backend: 777,
+        };
+        let score = VshipScoreSsimulacra2 {
+            struct_type: -123,
+            score: 42.0,
+        };
+        assert_eq!(version.backend, 777);
+        assert_eq!(score.struct_type, -123);
+    }
+
+    #[test]
+    fn m14_checked_backend_names_and_unknown_diagnostics() {
+        for (raw, name) in ["HIP", "CUDA", "Vulkan", "CPU"].into_iter().enumerate() {
+            let backend = VshipBackend::try_from(raw as c_int).expect("known backend");
+            assert_eq!(backend as c_int, raw as c_int);
+            assert_eq!(backend.as_str(), name);
+        }
+        for raw in [777, -123] {
+            assert!(
+                VshipBackend::try_from(raw)
+                    .expect_err("unknown backend")
+                    .to_string()
+                    .contains(&raw.to_string())
+            );
+        }
+    }
 
     /// Guards the FFI layouts against accidental reordering. A wrong field
     /// order still compiles, and surfaces only as an opaque status from
@@ -1613,9 +1695,9 @@ mod tests {
 
     #[test]
     fn check_accepts_no_error_and_rejects_the_rest() {
-        assert!(check(VshipException::NoError, "Vship_InitHandler").is_ok());
+        assert!(check(VshipException::NoError as c_int, "Vship_InitHandler").is_ok());
         assert!(matches!(
-            check(VshipException::BadHandler, "Vship_InitHandler"),
+            check(VshipException::BadHandler as c_int, "Vship_InitHandler"),
             Err(VshipError::CallFailed {
                 function: "Vship_InitHandler",
                 status: 10,

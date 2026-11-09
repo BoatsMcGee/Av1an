@@ -395,10 +395,10 @@ impl VshipConfig {
         self.metric
     }
 
-    /// The configured device index, or [`GPU_UNSET`] when none was chosen.
+    /// The configured device index, or `u32::MAX` when none was chosen.
     ///
     /// A default configuration leaves this unset so the scorer can pick a
-    /// discrete device at run time; see [`gpu_id_or_default`].
+    /// discrete device at run time; see [`Self::gpu_id_or_default`].
     #[inline]
     #[must_use]
     pub const fn gpu_id(&self) -> u32 {

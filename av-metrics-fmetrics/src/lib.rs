@@ -37,7 +37,7 @@
 //! fmetrics takes interleaved RGB rather than planar YUV, so each pair is
 //! converted before submission. That conversion is part of the measurement, so
 //! the matrix and range come from the clip's own details rather than a default,
-//! and [`convert`] carries its own tests.
+//! and the conversion module carries its own tests.
 //! yuvxyb converts tagged SDR video through BT.1886 gamma 2.4 to sRGB, while
 //! existing sRGB/linear data retains its encoding. CPU input remains BT.709-gamut
 //! only; unsupported HDR transfers/gamuts return [`FmetricsError::UnsupportedFormat`].

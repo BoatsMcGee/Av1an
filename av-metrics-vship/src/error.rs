@@ -4,6 +4,23 @@
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum VshipError {
+    /// The opened binary does not report a supported version/backend.
+    #[error(
+        "Incompatible libvship: {reason}. Reinstall pinned 5.1.2; no compatibility override is supported."
+    )]
+    IncompatibleLibrary {
+        /// Observed ABI identity or invalid native output.
+        reason: String,
+    },
+
+    /// A successful compute returned a score for a different or unknown struct.
+    #[error("libvship returned score struct tag {actual}, expected {expected}")]
+    InvalidScoreTag {
+        /// Raw native tag, including undocumented values.
+        actual: std::ffi::c_int,
+        /// Tag required by the requested metric.
+        expected: std::ffi::c_int,
+    },
     /// libvship could not be found or opened on this system.
     ///
     /// libvship ships as a VapourSynth plugin rather than as a standalone

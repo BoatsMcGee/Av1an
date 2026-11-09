@@ -15,6 +15,24 @@ Frames come from [`av-decoders`], so a clip can be read from Y4M, FFMS2, FFmpeg 
 - **Optional dependency.** libvship is opened with `dlopen` at runtime, so the crate compiles on machines that do not have it and `is_available()` returns `false` rather than the build failing.
 - **No `bindgen`.** The C surface is declared by hand, keeping the build free of a libclang dependency.
 
+## Supported runtime ABI
+
+Before any GPU probe or handler allocation, the loader requires version **5.1.2**
+from [pinned commit 5a627933](https://codeberg.org/Line-fr/Vship/src/commit/5a627933274196219f782b3b74e13fad47cd6370)
+and a known backend: HIP=0, CUDA=1, Vulkan=2 or CPU=3. Other versions or backend
+integers return `VshipError::IncompatibleLibrary`; reinstall the pinned build.
+An opened incompatible binary is not silently replaced. There is no override;
+version admission is a bounded ABI policy, not attestation of modified binaries.
+
+C statuses, returned version backends and score tags are raw C integers.
+`VshipBackend::try_from(raw)` checks domain conversion; known backend names are
+unchanged. Only status zero is success; `CallFailed` preserves every other code.
+Successful computes with a wrong/unknown score tag return `InvalidScoreTag`
+before interpreting scores. Input-only colorspace/init enums remain typed.
+The `m14_` tests compile unmodified pinned public headers (MIT NON-AI license
+included) and C ABI sinks without GPU SDKs. These are ABI tests, not GPU accuracy
+tests; ordinary crate builds require neither a C compiler nor native headers.
+
 ## Usage
 
 ```rust

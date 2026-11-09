@@ -5,14 +5,14 @@
 //! stable, so declaring it by hand keeps libclang out of the build.
 //!
 //! Every layout, discriminant and signature below was transcribed from
-//! `src/fmetrics.h` at commit `e8bf3cfe06fb78f51864804b2f7003667d4c5a71`.
+//! `src/fmetrics.h` at commit `ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac`.
 //!
 //! [`FmetricsApi::load`] deliberately leaks the [`Library`], so the code its
 //! pointers refer to stays mapped. Only the pointers are kept, and since raw
 //! `fn` pointers are `Send + Sync` the resolved API caches in a [`OnceLock`].
 //!
 //! fmetrics takes **interleaved RGB** in a single buffer with a single stride,
-//! not planar YUV, so [`crate::convert`] produces one packed image per pair.
+//! not planar YUV, so the conversion module produces one packed image per pair.
 
 use std::{
     ffi::{c_char, c_int, c_uint, c_void},
@@ -77,23 +77,27 @@ unsafe impl Send for FmetricsCvvdpCtx {}
 unsafe impl Sync for FmetricsCvvdpCtx {}
 
 /// Result code returned by every fallible fmetrics entry point.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FmetricsErr {
+/// Every integer is valid here: C may return an undocumented status.
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct FmetricsErr(pub c_int);
+
+#[allow(non_upper_case_globals, reason = "retain the documented status names")]
+impl FmetricsErr {
     /// Success.
-    Ok = 0,
+    pub const Ok: Self = Self(0);
     /// A caller-supplied argument was invalid.
-    InvalidArgument = 1,
+    pub const InvalidArgument: Self = Self(1);
     /// The pixel format or colorspace is not supported.
-    UnsupportedFormat = 2,
+    pub const UnsupportedFormat: Self = Self(2);
     /// Reference and distorted dimensions differ.
-    DimensionMismatch = 3,
+    pub const DimensionMismatch: Self = Self(3);
     /// An allocation failed.
-    OutOfMemory = 4,
+    pub const OutOfMemory: Self = Self(4);
     /// The image is too small for five-scale IW-SSIM.
-    IwssimImgTooSmall = 5,
+    pub const IwssimImgTooSmall: Self = Self(5);
     /// An internal error.
-    Internal = 6,
+    pub const Internal: Self = Self(6);
 }
 
 impl FmetricsErr {
@@ -104,22 +108,26 @@ impl FmetricsErr {
         matches!(self, Self::Ok)
     }
 
-    /// The `FmetricsErr` for an arbitrary integer, treating unknown values as
-    /// [`FmetricsErr::Internal`].
-    ///
-    /// A value outside the enum cannot be named, and an unnamed failure is
-    /// still a failure, so it must not be read as success.
+    /// Preserve an arbitrary native status without normalizing unknown codes.
     #[inline]
     #[must_use]
     pub const fn from_raw(value: c_int) -> Self {
-        match value {
-            0 => Self::Ok,
-            1 => Self::InvalidArgument,
-            2 => Self::UnsupportedFormat,
-            3 => Self::DimensionMismatch,
-            4 => Self::OutOfMemory,
-            5 => Self::IwssimImgTooSmall,
-            _ => Self::Internal,
+        Self(value)
+    }
+}
+
+impl std::fmt::Debug for FmetricsErr {
+    #[inline]
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            0 => formatter.write_str("Ok"),
+            1 => formatter.write_str("InvalidArgument"),
+            2 => formatter.write_str("UnsupportedFormat"),
+            3 => formatter.write_str("DimensionMismatch"),
+            4 => formatter.write_str("OutOfMemory"),
+            5 => formatter.write_str("IwssimImgTooSmall"),
+            6 => formatter.write_str("Internal"),
+            raw => write!(formatter, "Unknown({raw})"),
         }
     }
 }
@@ -554,6 +562,11 @@ impl FmetricsApi {
         match API.get_or_init(resolve) {
             Ok(api) => Ok(api),
             // `error` is a plain data value here, not a borrowed one.
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                Err(FmetricsError::IncompatibleLibrary {
+                    reason: error.to_string(),
+                })
+            },
             Err(error) => Err(FmetricsError::LibraryNotFound {
                 reason: format!(
                     "{error}; tried {}",
@@ -593,7 +606,7 @@ pub fn check(error: FmetricsErr, function: &'static str) -> Result<(), FmetricsE
     } else {
         Err(FmetricsError::CallFailed {
             function,
-            code: error as c_int,
+            code: error.0,
             message: error_message(error),
         })
     }
@@ -629,6 +642,10 @@ fn env_directory(variable: &str) -> Option<PathBuf> {
 #[inline]
 #[must_use]
 pub fn error_message(error: FmetricsErr) -> String {
+    // Unknown codes need no native interpretation (and retain their raw value).
+    if !(0..=6).contains(&error.0) {
+        return format!("unknown fmetrics error {}", error.0);
+    }
     FmetricsApi::load().map_or_else(
         |_| format!("(fmetrics error {error:?}; the library is not loaded)"),
         |api| {
@@ -830,6 +847,26 @@ fn resolve() -> Result<FmetricsApi, std::io::Error> {
                 // the next candidate rather than reporting a partial API.
                 match api {
                     Ok(api) => {
+                        // Admission must not recurse into check/error_message while
+                        // initializing the same OnceLock. No workspace exists yet.
+                        // SAFETY: the version entry point returns a static C string.
+                        let pointer = unsafe { (api.version_str)() };
+                        let version = if pointer.is_null() {
+                            "<null>".to_owned()
+                        } else {
+                            // SAFETY: pointer is non-null, static and NUL-terminated.
+                            unsafe { std::ffi::CStr::from_ptr(pointer) }
+                                .to_str()
+                                .map_or_else(|_| "<non-UTF8>".to_owned(), str::to_owned)
+                        };
+                        if version != "0.1.0" {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "unsupported fmetrics version {version:?}; rebuild pinned 0.1.0 (ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac)"
+                                ),
+                            ));
+                        }
                         std::mem::forget(library);
                         return Ok(api);
                     },
@@ -886,6 +923,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn m14_unknown_status_is_not_normalized_to_internal() {
+        for raw in [777, -123] {
+            assert_ne!(FmetricsErr::from_raw(raw), FmetricsErr::Internal);
+            assert!(!FmetricsErr::from_raw(raw).is_ok());
+            assert_eq!(FmetricsErr::from_raw(raw).0, raw);
+        }
+    }
+
+    #[test]
+    fn m14_known_status_debug_names_remain_unchanged() {
+        for (raw, name) in [
+            "Ok",
+            "InvalidArgument",
+            "UnsupportedFormat",
+            "DimensionMismatch",
+            "OutOfMemory",
+            "IwssimImgTooSmall",
+            "Internal",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(format!("{:?}", FmetricsErr::from_raw(raw as c_int)), name);
+        }
+    }
+
+    #[test]
     fn error_codes_round_trip_through_raw() {
         for error in [
             FmetricsErr::Ok,
@@ -896,16 +960,15 @@ mod tests {
             FmetricsErr::IwssimImgTooSmall,
             FmetricsErr::Internal,
         ] {
-            assert_eq!(FmetricsErr::from_raw(error as c_int), error);
+            assert_eq!(FmetricsErr::from_raw(error.0), error);
             assert_eq!(error.is_ok(), error == FmetricsErr::Ok);
         }
     }
 
     #[test]
     fn unknown_error_code_is_a_failure_not_success() {
-        // A value outside the enum cannot be named, and an unnamed failure must
-        // not be read as success.
-        assert_eq!(FmetricsErr::from_raw(99), FmetricsErr::Internal);
+        // Undocumented native failures retain their codes and never become success.
+        assert_eq!(FmetricsErr::from_raw(99).0, 99);
         assert!(!FmetricsErr::from_raw(99).is_ok());
         assert!(!FmetricsErr::from_raw(-1).is_ok());
     }

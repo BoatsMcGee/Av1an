@@ -97,6 +97,12 @@ including `CpuOnly`. Reinstall the pinned release archive/package or point
 `VMAF_LIB_DIR` at a compatible installation; the error identifies the observed
 version/marker. An opened but incompatible library is not silently replaced.
 
+`VmafPicture::pix_fmt` is a raw C integer; `VideoFormat::pixel_format` still returns
+a typed domain value. Pool checkouts adopt an owning guard **before** checking
+native format metadata. Unknown/unsupported formats are rejected and returned
+exactly once, before any host copy/submission; failed fetch outputs remain unowned.
+The actual pool format is validated, not overwritten with configured metadata.
+
 ## Building libvmaf
 
 libvmaf's own prerequisites are Python >= 3.6, Meson >= 0.56.1, Ninja >= 1.7.1,
