@@ -15,15 +15,6 @@ use crate::core::{
     sequence::{SequenceCompletion, SequenceStatus, Status, parallel_encoder::DETAILS},
 };
 
-/// Record one finished final-pass frame and return the running total.
-///
-/// `fetch_add` returns the pre-increment value, so the count returned here
-/// includes the frame just recorded.
-#[inline]
-pub(super) fn count_frame(count: &AtomicUsize) -> usize {
-    count.fetch_add(1, Ordering::Relaxed) + 1
-}
-
 /// The first recorded FFmpeg filter failure, keyed by scene, if any.
 pub(super) fn first_filter_failure(
     failures: &BTreeMap<usize, Arc<Mutex<Option<String>>>>,
@@ -66,15 +57,22 @@ pub(super) fn relay_progress(
     scene: usize,
     total_scene_frames: usize,
     total_process_frames: usize,
+    scene_frames_encoded: &AtomicUsize,
     total_final_pass_frames_encoded: &AtomicUsize,
 ) -> Result<()> {
     for progress in encode_progress_rx {
         if progress.pass.0 == total_passes && progress.frame > 0 {
-            let total_final_encoded = count_frame(total_final_pass_frames_encoded);
+            // The encoder reports a running frame number, so the scene's
+            // progress is its maximum.
+            let previous = scene_frames_encoded.fetch_max(progress.frame, Ordering::Relaxed);
+            let gained = progress.frame.saturating_sub(previous);
+            if gained > 0 {
+                total_final_pass_frames_encoded.fetch_add(gained, Ordering::Relaxed);
+            }
             task_progress_tx.send(SequenceStatus::Whole(Status::Processing {
                 id:         DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Frames {
-                    completed: total_final_encoded as u64,
+                    completed: total_final_pass_frames_encoded.load(Ordering::Relaxed) as u64,
                     total:     total_process_frames as u64,
                 },
             }))?;
@@ -131,21 +129,34 @@ mod tests {
         mpsc::{Receiver, Sender, channel},
     };
 
-    use super::{count_frame, relay_progress};
+    use super::relay_progress;
     use crate::core::{encoder::EncodeProgress, sequence::SequenceStatus};
 
     /// Drives `relay_progress` with one scene's final pass and returns every
     /// status it emitted.
-    fn relay_one_scene(frames: usize) -> Vec<SequenceStatus> {
+    ///
+    /// `reported` is the sequence of frame numbers the encoder emits, so a
+    /// batching encoder that skips numbers can be simulated.
+    fn relay_one_scene(frames: usize, reported: &[usize]) -> Vec<SequenceStatus> {
         let (tx, rx): (Sender<EncodeProgress>, Receiver<EncodeProgress>) = channel();
         let (status_tx, status_rx) = std::sync::mpsc::channel();
+        let scene_frames = AtomicUsize::new(0);
         let total_final = AtomicUsize::new(0);
 
         let handle = std::thread::spawn(move || {
-            relay_progress(rx, &status_tx, 1, 7, frames, frames, &total_final)
+            relay_progress(
+                rx,
+                &status_tx,
+                1,
+                7,
+                frames,
+                frames,
+                &scene_frames,
+                &total_final,
+            )
         });
 
-        for frame in 1..=frames {
+        for &frame in reported {
             tx.send(EncodeProgress {
                 pass: (1, 1),
                 frame,
@@ -164,7 +175,7 @@ mod tests {
     #[test]
     fn a_finished_scene_and_a_finished_encode_report_completion() {
         let frames = 3_usize;
-        let statuses = relay_one_scene(frames);
+        let statuses = relay_one_scene(frames, &[1, 2, 3]);
 
         let scene_completed = statuses.iter().any(|status| {
             matches!(
@@ -192,51 +203,57 @@ mod tests {
         );
     }
 
-    /// The count must include the frame just recorded, or the bar stops one
-    /// short of its total.
+    /// An encoder that batches its progress output reports a running frame
+    /// number, so the shared total must follow the frames rather than the
+    /// number of reports. Counting reports leaves the total short and
+    /// `Whole(Completed)` never fires.
     #[test]
-    fn the_frame_count_includes_the_frame_just_recorded() {
-        let count = AtomicUsize::new(0);
-        for expected in 1..=44_usize {
-            assert_eq!(
-                count_frame(&count),
-                expected,
-                "frame {expected} should count itself"
-            );
-        }
-        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 44);
+    fn a_batching_encoder_still_reaches_the_total() {
+        let frames = 10_usize;
+        let statuses = relay_one_scene(frames, &[1, 5, 10]);
+
+        let completed = highest_reported_total(&statuses);
+        assert_eq!(
+            completed,
+            Some(frames as u64),
+            "the total must count frames, not reports"
+        );
+
+        assert!(
+            statuses.iter().any(|status| {
+                matches!(
+                    status,
+                    SequenceStatus::Whole(crate::core::sequence::Status::Completed { .. })
+                )
+            }),
+            "the encode must report completion once every frame is counted"
+        );
     }
 
-    /// Concurrent workers must not lose a count.
+    /// A repeated frame number must not be counted twice, or the total
+    /// overshoots its target and the bar never completes.
     #[test]
-    fn concurrent_counts_do_not_lose_frames() {
-        let workers = 8_usize;
-        let per_worker = 500_usize;
-        let total = workers * per_worker;
-        let count = AtomicUsize::new(0);
+    fn a_repeated_frame_number_is_counted_once() {
+        let frames = 4_usize;
+        let statuses = relay_one_scene(frames, &[1, 2, 2, 3, 4]);
 
-        let counts: Vec<Vec<usize>> = std::thread::scope(|scope| {
-            let mut handles = Vec::with_capacity(workers);
-            for _ in 0..workers {
-                handles.push(scope.spawn(|| {
-                    let mut seen = Vec::with_capacity(per_worker);
-                    for _ in 0..per_worker {
-                        seen.push(count_frame(&count));
-                    }
-                    seen
-                }));
-            }
-            handles
-                .into_iter()
-                .map(|handle| handle.join().expect("worker should not panic"))
-                .collect()
-        });
+        assert_eq!(highest_reported_total(&statuses), Some(frames as u64));
+    }
 
-        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), total);
-
-        // Every value from 1 to the total is handed out exactly once.
-        let mut all: Vec<usize> = counts.into_iter().flatten().collect();
-        all.sort_unstable();
-        assert_eq!(all, (1..=total).collect::<Vec<_>>());
+    /// The highest whole-encode frame total any status reported.
+    fn highest_reported_total(statuses: &[SequenceStatus]) -> Option<u64> {
+        statuses
+            .iter()
+            .filter_map(|status| match status {
+                SequenceStatus::Whole(crate::core::sequence::Status::Processing {
+                    completion:
+                        crate::core::sequence::SequenceCompletion::Frames {
+                            completed, ..
+                        },
+                    ..
+                }) => Some(*completed),
+                _ => None,
+            })
+            .max()
     }
 }

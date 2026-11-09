@@ -233,6 +233,8 @@ impl ParallelEncoder {
                         task.original_index, worker_id
                     );
                     let started = std::time::SystemTime::now();
+                    let scene_frames_encoded = Arc::new(AtomicUsize::new(0));
+                    let scene_frames_encoded_relay = Arc::clone(&scene_frames_encoded);
                     s.spawn(move || -> Result<()> {
                         relay_progress(
                             encode_progress_rx,
@@ -241,6 +243,7 @@ impl ParallelEncoder {
                             task.original_index,
                             total_scene_frames,
                             total_process_frames,
+                            &scene_frames_encoded_relay,
                             &total_final_pass_frames_encoded,
                         )
                     });

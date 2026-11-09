@@ -94,6 +94,7 @@ impl ParallelEncoder {
                                     spawn_filter(frx, &task, None, window)?;
                                 let (encode_progress_tx, encode_progress_rx) =
                                     std::sync::mpsc::channel::<EncodeProgress>();
+                                let scene_frames_encoded = AtomicUsize::new(0);
                                 let (encode_result, produce_result) = thread::scope(|s2| {
                                     let relay_tx = progress_tx.clone();
                                     let total_passes = task.encoder.total_passes();
@@ -106,6 +107,7 @@ impl ParallelEncoder {
                                             task.original_index,
                                             scene_frames,
                                             total_process_frames,
+                                            &scene_frames_encoded,
                                             total_final,
                                         )
                                     });
