@@ -15,6 +15,18 @@
 
 If not specified, `ssimulacra2` is used.
 
+## Temporal CVVDP scenes
+
+With temporal CVVDP enabled (the default), Quality Check and Target Quality start
+a fresh metric session for each scene. History and accumulated scores do not
+carry between scenes; ordered cumulative per-frame values are retained within
+each scene. Direct clip-wide scoring APIs still use one session per sequence.
+
+Source gaps *within* a scene retain their backend restrictions: native Vship can
+clear history while retaining accumulation; fmetrics and the VapourSynth CVVDP
+plugin cannot. Use independent frames (`disable_temporal=true`) or native Vship
+for those selections. Independent-frame CVVDP and other metrics are unchanged.
+
 ## Examples
 
 - `> condor target-quality --metric ssimulacra2 --target 85`

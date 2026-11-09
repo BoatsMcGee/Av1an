@@ -33,6 +33,10 @@ static double marker(State *s, int sample) {
     s->sum += sample;
     return value;
 }
+static int pair_sample(int a, int b) {
+    const char *scope = getenv("M15_SCOPE");
+    return scope && !strncmp(scope, "m27a", 4) ? a + 3 * b : a;
+}
 const char *fmetrics_version_str(void) { audit("fv"); return "0.1.0"; }
 const char *fmetrics_cvvdp_version_str(void) { return "M15-boundary-not-CVVDP"; }
 const char *fmetrics_error_str(FmetricsErr e) { (void)e; return "M15 combined reset failure"; }
@@ -52,7 +56,8 @@ FmetricsErr fmetrics_cvvdp_create(int w, int h, float fps, FmetricsCvvdpDisplayM
 }
 void fmetrics_cvvdp_destroy(FmetricsCvvdpCtx *p) { event("fc-"); free(p); }
 FmetricsErr fmetrics_cvvdp_process_frame(FmetricsCvvdpCtx *c, const FmetricsImg *a, const FmetricsImg *b, FmetricsCvvdpResult *r) {
-    (void)b; event("fp"); r->jod = marker((State *)c, *(const uint8_t *)a->data); r->quality = r->jod + 0.5; return FMETRICS_OK;
+    event("fp"); if (fail("fp") || (fail("fp2") && ((State *)c)->sum > 0)) return FMETRICS_ERR_INTERNAL;
+    r->jod = marker((State *)c, pair_sample(*(const uint8_t *)a->data, *(const uint8_t *)b->data)); r->quality = r->jod + 0.5; return FMETRICS_OK;
 }
 FmetricsErr fmetrics_cvvdp_reset(FmetricsCvvdpCtx *c) {
     event("fr"); if (fail("fr")) return FMETRICS_ERR_INTERNAL;
@@ -78,8 +83,8 @@ Vship_Exception Vship_InitHandler(Vship_Handle *h, void *arg) {
 }
 Vship_Exception Vship_FreeHandler(Vship_Handle h) { event("vc-"); free(h); return Vship_NoError; }
 Vship_Exception Vship_ComputeHandler(Vship_Handle h, void *out, const uint8_t *a[3], const uint8_t *b[3], const int64_t as[3], const int64_t bs[3]) {
-    (void)b; (void)as; (void)bs; event("vp");
-    Vship_ScoreCVVDP *s=out; s->structType=Vship_StructScoreCVVDP; s->score=marker(h,*a[0]); return Vship_NoError;
+    (void)as; (void)bs; event("vp"); if (fail("vp") || (fail("vp2") && ((State *)h)->sum > 0)) return (Vship_Exception)1;
+    Vship_ScoreCVVDP *s=out; s->structType=Vship_StructScoreCVVDP; s->score=marker(h,pair_sample(*a[0],*b[0])); return Vship_NoError;
 }
 Vship_Exception Vship_Reset(Vship_Handle h) {
     event("vr"); if (fail("vr")) return (Vship_Exception)1;

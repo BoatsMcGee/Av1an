@@ -162,6 +162,24 @@ pub fn score_probed_frames(
     selected: &[usize],
     indexing: OutputIndexing,
     cancelled: Option<&AtomicBool>,
+    on_score: impl FnMut(usize, f64),
+) -> Result<Vec<f64>> {
+    score_probed_frames_from(
+        reference, distorted, config, selected, indexing, 0, 0, cancelled, on_score,
+    )
+}
+
+/// A fresh scorer for a scene, with its actual compacted-output offset.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn score_probed_frames_from(
+    reference: &mut av_decoders::Decoder,
+    distorted: &mut av_decoders::Decoder,
+    config: &QualityMetric,
+    selected: &[usize],
+    indexing: OutputIndexing,
+    output_start: usize,
+    reference_next: usize,
+    cancelled: Option<&AtomicBool>,
     mut on_score: impl FnMut(usize, f64),
 ) -> Result<Vec<f64>> {
     if selected.is_empty() {
@@ -211,11 +229,13 @@ pub fn score_probed_frames(
     let mut scores = Vec::with_capacity(total);
 
     let pass = Instant::now();
-    probe::probe_selected_frames::<(), _>(
+    probe::probe_selected_frames_from::<_>(
         reference,
         distorted,
         selected,
         indexing,
+        output_start,
+        reference_next,
         cancelled,
         probe::check_geometry,
         |position, reference_planes, distorted_planes| {

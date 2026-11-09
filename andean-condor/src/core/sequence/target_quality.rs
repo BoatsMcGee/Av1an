@@ -736,6 +736,11 @@ impl TargetQuality {
         cancelled: &Arc<AtomicBool>,
     ) -> Result<(Vec<Task>, Vec<anyhow::Error>)> {
         let warnings: Vec<anyhow::Error> = vec![];
+        let temporal = metrics::scene_temporal(&config.metric);
+        let scenes: Vec<_> = tasks.iter().map(|task| task.frame_indices.as_slice()).collect();
+        if temporal && metrics::probe::validate_scene_selection(&scenes)? == 0 {
+            return Ok((Vec::new(), warnings));
+        }
         let pass_directory = target_quality_directory.join(pass.to_string());
         let output = concat_method.with_extension(&target_quality_directory.join(pass.to_string()));
         let framerate = input.clip_info()?.frame_rate;
@@ -938,6 +943,7 @@ impl TargetQuality {
         // the relay thread, which would otherwise wait on the sender
         // this scope owns.
         let mut scoring_cancelled = false;
+        let mut scoring_error = None;
 
         let mut native_scores = if native {
             let probed: Vec<usize> =
@@ -959,10 +965,6 @@ impl TargetQuality {
             // it is compacted and is read by position within the
             // selection. VMAF submission drives the same progress relay as the
             // other engines' score callbacks; final scores must not count twice.
-            let report = |position: usize, _score: f64| {
-                report_compare_progress(&compare_progress_tx, probed.len(), position + 1);
-            };
-
             let scored = if is_vmaf {
                 metrics::score_vmaf_frames_with_progress(
                     reference,
@@ -982,23 +984,14 @@ impl TargetQuality {
                 // other native failure and the progress
                 // relay is joined on the way out.
                 match engine {
-                    Some(Engine::Vship) => metrics::score_vship_frames(
+                    Some(engine @ (Engine::Vship | Engine::Fmetrics)) => Self::score_native_scenes(
+                        engine,
                         reference,
                         distorted.decoder(),
                         &config.metric,
-                        &probed,
-                        OutputIndexing::Compacted,
-                        Some(cancelled),
-                        report,
-                    ),
-                    Some(Engine::Fmetrics) => metrics::fmetrics::score_probed_frames(
-                        reference,
-                        distorted.decoder(),
-                        &config.metric,
-                        &probed,
-                        OutputIndexing::Compacted,
-                        Some(cancelled),
-                        report,
+                        &scenes,
+                        &compare_progress_tx,
+                        cancelled,
                     ),
                     // Unreachable: `engine` names only engines that score natively. A
                     // failure rather than a `return` so adding a fourth engine
@@ -1031,6 +1024,10 @@ impl TargetQuality {
                     scoring_cancelled = true;
                     None
                 },
+                Err(error) if error.is::<metrics::SceneScoringStarted>() => {
+                    scoring_error = Some(error);
+                    None
+                },
                 Err(error) if is_vmaf => return Err(error),
                 Err(error) => {
                     // The engine is named because the failure is usually
@@ -1043,11 +1040,14 @@ impl TargetQuality {
             None
         };
 
-        if scoring_cancelled {
+        if scoring_cancelled || scoring_error.is_some() {
             // Dropped before joining: the thread ends only once every sender is
             // gone, and this scope still owns one.
             drop(compare_progress_tx);
             compare_thread.join().expect("compare progress thread should join")?;
+            if let Some(error) = scoring_error {
+                return Err(error);
+            }
             return Ok((Vec::new(), warnings));
         }
 
@@ -1063,6 +1063,7 @@ impl TargetQuality {
         // plugin branches below run. For the vship metrics the plugin
         // branch is reached only when libvship was unavailable or
         // failed.
+        let mut comparison_error = None;
         let mut scores = if native_scores.is_some() {
             let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Completed {
                 id: "Compare".to_owned(),
@@ -1099,7 +1100,9 @@ impl TargetQuality {
             )?;
             let core = get_core(env)?;
 
-            let reference_node = {
+            let reference_node = if temporal {
+                reference_node
+            } else {
                 let frame_nodes: Vec<_> = tasks
                     .iter()
                     .map(|task| {
@@ -1265,20 +1268,45 @@ impl TargetQuality {
                         gpu_id: gpu_id.map(u32::from),
                         ..Default::default()
                     };
-                    let node = plugin.invoke(
-                        core,
-                        &reference_node,
-                        &distorted_node,
-                        // The compacted encode/node indices cannot describe source gaps.
-                        tasks.iter().flat_map(|task| task.frame_indices.iter().copied()),
-                    )?;
-                    CVVDP::get_scores(&node, None, compare_progress_tx)?
+                    if temporal {
+                        match plugin.collect_scene_values(
+                            core,
+                            &reference_node,
+                            &distorted_node,
+                            &scenes,
+                            OutputIndexing::Compacted,
+                            compare_progress_tx,
+                            cancelled,
+                            |_, _| Ok(()),
+                        ) {
+                            Ok(values) => values,
+                            Err(error) => {
+                                comparison_error = Some(error);
+                                Vec::new()
+                            },
+                        }
+                    } else {
+                        let node = plugin.invoke(
+                            core,
+                            &reference_node,
+                            &distorted_node,
+                            // The compacted encode/node indices cannot describe source gaps.
+                            tasks.iter().flat_map(|task| task.frame_indices.iter().copied()),
+                        )?;
+                        CVVDP::get_scores(&node, None, compare_progress_tx)?
+                    }
                 },
             }
         };
         let ended = SystemTime::now();
 
         compare_thread.join().expect("compare progress thread should join")?;
+        if let Some(error) = comparison_error {
+            if error.is::<metrics::probe::Cancelled>() {
+                return Ok((Vec::new(), warnings));
+            }
+            return Err(error);
+        }
         drop(progress_tx);
 
         // `results` covers only the tasks encoded this run and is indexed by
@@ -1340,6 +1368,31 @@ impl TargetQuality {
     #[inline]
     fn pass_is_complete(tasks: &[Task], pass: u8) -> bool {
         !tasks.is_empty() && tasks.iter().all(|task| task.passes.len() >= usize::from(pass))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn score_native_scenes(
+        engine: Engine,
+        reference: &mut av_decoders::Decoder,
+        distorted: &mut av_decoders::Decoder,
+        metric: &QualityMetric,
+        scenes: &[&[usize]],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<f64>> {
+        let total = scenes.iter().map(|scene| scene.len()).sum();
+        metrics::score_scene_frames(
+            engine,
+            reference,
+            distorted,
+            metric,
+            scenes,
+            OutputIndexing::Compacted,
+            Some(cancelled),
+            |position, _| {
+                report_compare_progress(progress_tx, total, position + 1);
+            },
+        )
     }
 
     /// Returns the highest quantizer whose probe scored within the target

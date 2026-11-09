@@ -14,11 +14,10 @@
 //! # Availability and fallback
 //!
 //! libvship ships as a VapourSynth plugin and is opened with `dlopen` at
-//! runtime, so it may be absent. [`is_available`] reports whether the library
-//! loaded and a device passed libvship's full check. When it has, this path is
-//! preferred over the plugin branches; when it has not, or if scoring fails at
-//! any point, the caller falls back to those branches, whose behaviour is
-//! unchanged.
+//! runtime, so it may be absent. [`av_metrics_vship::is_available`] reports
+//! whether the library loaded and a device passed libvship's full check. This
+//! path is preferred when usable. Callers can fall back to plugins on failure,
+//! but do not retry a temporal scene pass after frame progress was reported.
 //!
 //! # Temporal metrics
 //!
@@ -227,9 +226,9 @@ fn with_gpu_id(mut config: VshipConfig, gpu_id: Option<u8>) -> VshipConfig {
 ///
 /// For CVVDP the scorer keeps a single handler and sees frames in submission
 /// order. The probe driver visits `selected` in the order given, so a temporal
-/// metric's history is reset whenever the driver signals a discontinuity -- a
-/// scene break, or the start of a non-contiguous selection -- rather than
-/// carrying history across frames it never saw.
+/// metric's history is reset at source-index gaps rather than carrying history
+/// across frames it never saw. This clip-wide API has no scene boundaries;
+/// QC/TQ scene dispatch instead starts a fresh scorer per temporal scene.
 ///
 /// # Progress
 ///
@@ -251,6 +250,24 @@ pub fn score_probed_frames(
     config: &QualityMetric,
     selected: &[usize],
     indexing: OutputIndexing,
+    cancelled: Option<&AtomicBool>,
+    on_score: impl FnMut(usize, f64),
+) -> Result<Vec<f64>> {
+    score_probed_frames_from(
+        reference, distorted, config, selected, indexing, 0, 0, cancelled, on_score,
+    )
+}
+
+/// A fresh scorer for a scene, with its actual compacted-output offset.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn score_probed_frames_from(
+    reference: &mut av_decoders::Decoder,
+    distorted: &mut av_decoders::Decoder,
+    config: &QualityMetric,
+    selected: &[usize],
+    indexing: OutputIndexing,
+    output_start: usize,
+    reference_next: usize,
     cancelled: Option<&AtomicBool>,
     mut on_score: impl FnMut(usize, f64),
 ) -> Result<Vec<f64>> {
@@ -306,11 +323,13 @@ pub fn score_probed_frames(
     let mut previous: Option<usize> = None;
 
     let pass = Instant::now();
-    probe::probe_selected_frames::<(), _>(
+    probe::probe_selected_frames_from::<_>(
         reference,
         distorted,
         selected,
         indexing,
+        output_start,
+        reference_next,
         cancelled,
         probe::check_geometry,
         |position, reference_planes, distorted_planes| {

@@ -25,6 +25,9 @@ pub mod zone_encoder;
 #[cfg(test)]
 mod metric_fallback_tests;
 
+#[cfg(test)]
+mod m27a_tests;
+
 pub trait Sequence<DataHandler, ConfigHandler>
 where
     DataHandler: SequenceDataHandler,

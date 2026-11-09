@@ -45,6 +45,103 @@ pub use vship::score_probed_frames as score_vship_frames;
 
 use crate::models::sequence::target_quality::types::QualityMetric;
 
+/// Retrying a partially reported scene pass would duplicate/backslide progress.
+#[derive(Debug, thiserror::Error)]
+#[error("scene scoring failed after reporting frame progress; not retrying through a plugin")]
+pub(crate) struct SceneScoringStarted;
+
+/// Score a QC/TQ scene selection, reporting whole-selection positions.
+/// Enabled-temporal CVVDP gets a fresh scorer for each nonempty scene; all other
+/// configurations retain one flattened call. Scores remain ordered prefixes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn score_scene_frames(
+    engine: Engine,
+    reference: &mut av_decoders::Decoder,
+    distorted: &mut av_decoders::Decoder,
+    config: &QualityMetric,
+    scenes: &[&[usize]],
+    indexing: OutputIndexing,
+    cancelled: Option<&std::sync::atomic::AtomicBool>,
+    mut on_score: impl FnMut(usize, f64),
+) -> anyhow::Result<Vec<f64>> {
+    if scene_temporal(config) {
+        let total = probe::validate_scene_selection(scenes)?;
+        let mut scores = Vec::with_capacity(total);
+        let mut offset = 0;
+        let mut reference_next = 0;
+        let mut reported = false;
+        for scene in scenes.iter().filter(|scene| !scene.is_empty()) {
+            if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+                return Err(probe::Cancelled.into());
+            }
+            let report = |position, value| {
+                reported = true;
+                on_score(offset + position, value);
+            };
+            let values = match engine {
+                Engine::Fmetrics => fmetrics::score_probed_frames_from(
+                    reference,
+                    distorted,
+                    config,
+                    scene,
+                    indexing,
+                    offset,
+                    reference_next,
+                    cancelled,
+                    report,
+                ),
+                Engine::Vship => vship::score_probed_frames_from(
+                    reference,
+                    distorted,
+                    config,
+                    scene,
+                    indexing,
+                    offset,
+                    reference_next,
+                    cancelled,
+                    report,
+                ),
+                _ => anyhow::bail!("no native scene scorer for {engine}"),
+            }
+            .map_err(|error| {
+                if reported {
+                    error.context(SceneScoringStarted)
+                } else {
+                    error
+                }
+            })?;
+            offset += scene.len(); // Validated sum bounds all scene/local positions.
+            reference_next = scene
+                .last()
+                .and_then(|index| index.checked_add(1))
+                .expect("validated nonempty scene source indices");
+            scores.extend(values);
+        }
+        return Ok(scores);
+    }
+    let selected: Vec<_> = scenes.iter().flat_map(|scene| scene.iter().copied()).collect();
+    match engine {
+        Engine::Fmetrics => fmetrics::score_probed_frames(
+            reference, distorted, config, &selected, indexing, cancelled, on_score,
+        ),
+        Engine::Vship => vship::score_probed_frames(
+            reference, distorted, config, &selected, indexing, cancelled, on_score,
+        ),
+        _ => anyhow::bail!("no native scene scorer for {engine}"),
+    }
+}
+
+/// Only enabled-temporal CVVDP needs independent scene sessions.
+pub(crate) const fn scene_temporal(metric: &QualityMetric) -> bool {
+    matches!(
+        metric,
+        QualityMetric::CVVDP {
+            disable_temporal: None | Some(false),
+            ..
+        }
+    )
+}
+
 /// Which implementation produced a score.
 ///
 /// Recorded so a number is never compared across engines by accident: the same

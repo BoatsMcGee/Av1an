@@ -396,8 +396,9 @@ impl QualityCheck {
     ///
     /// Returns `Ok(None)` when the caller should use its VapourSynth branch:
     /// the metric has no native engine, no engine's library is usable, or
-    /// scoring failed. Such failures are logged; the plugin fallback checks its
-    /// own capabilities and can reject unsupported enabled-temporal CVVDP gaps.
+    /// scoring failed before temporal frame progress. Failures after that
+    /// progress propagate instead of duplicating callbacks through a fallback.
+    /// The plugin checks its own enabled-temporal CVVDP gap capabilities.
     fn measure_native(
         input: &mut Input,
         output_path: &std::path::Path,
@@ -411,7 +412,16 @@ impl QualityCheck {
             return Ok(None);
         };
 
-        let (total_frames, selected) = Self::native_selection(scene_frame_indices);
+        let scenes: Vec<_> =
+            scene_frame_indices.iter().map(|(_, indices)| indices.as_slice()).collect();
+        let total_frames = if metrics::scene_temporal(&config.metric) {
+            metrics::probe::validate_scene_selection(&scenes)?
+        } else {
+            scenes.iter().map(|indices| indices.len()).sum()
+        };
+        if total_frames == 0 {
+            return Self::group_native_scores(&[], 0, scene_frame_indices).map(Some);
+        }
 
         let reference = input.decoder();
         let mut distorted = Input::from_video(&InputModel::Video {
@@ -426,54 +436,26 @@ impl QualityCheck {
         })?;
 
         // Each score is reported as the engine produces it.
-        let scores = match engine {
-            Engine::Vship => metrics::score_vship_frames(
-                reference,
-                distorted.decoder(),
-                &config.metric,
-                &selected,
-                OutputIndexing::Aligned,
-                Some(cancelled),
-                |position, score| {
-                    Self::report_frame_score(
-                        &selected,
-                        total_frames,
-                        position,
-                        score,
-                        position + 1,
-                        progress_tx,
-                    );
-                },
-            ),
-            Engine::Fmetrics => metrics::fmetrics::score_probed_frames(
-                reference,
-                distorted.decoder(),
-                &config.metric,
-                &selected,
-                OutputIndexing::Aligned,
-                Some(cancelled),
-                |position, score| {
-                    Self::report_frame_score(
-                        &selected,
-                        total_frames,
-                        position,
-                        score,
-                        position + 1,
-                        progress_tx,
-                    );
-                },
-            ),
-            // `engine` returns `None` rather than naming a plugin engine, so
-            // reaching this means the ordering changed without this dispatch
-            // following it.
-            Engine::VapourSynth | Engine::Vmaf => return Ok(None),
-        };
+        let scores = Self::score_native_scenes(
+            engine,
+            reference,
+            distorted.decoder(),
+            &config.metric,
+            &scenes,
+            progress_tx,
+            cancelled,
+        );
 
         let scores = match scores {
             Ok(scores) => scores,
             // A cancelled pass must not be retried through the plugin, which
             // would ignore the abort and score the whole selection again.
-            Err(error) if error.is::<metrics::probe::Cancelled>() => return Err(error),
+            Err(error)
+                if error.is::<metrics::probe::Cancelled>()
+                    || error.is::<metrics::SceneScoringStarted>() =>
+            {
+                return Err(error);
+            },
             Err(error) => {
                 // The engine is named because the failure is usually
                 // library-specific and the fallback is otherwise silent.
@@ -483,6 +465,38 @@ impl QualityCheck {
         };
 
         Self::group_native_scores(&scores, total_frames, scene_frame_indices).map(Some)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn score_native_scenes(
+        engine: Engine,
+        reference: &mut av_decoders::Decoder,
+        distorted: &mut av_decoders::Decoder,
+        metric: &QualityMetric,
+        scenes: &[&[usize]],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<f64>> {
+        let selected: Vec<_> = scenes.iter().flat_map(|scene| scene.iter().copied()).collect();
+        metrics::score_scene_frames(
+            engine,
+            reference,
+            distorted,
+            metric,
+            scenes,
+            OutputIndexing::Aligned,
+            Some(cancelled),
+            |position, score| {
+                Self::report_frame_score(
+                    &selected,
+                    selected.len(),
+                    position,
+                    score,
+                    position + 1,
+                    progress_tx,
+                );
+            },
+        )
     }
 
     /// Whether the reference side is a VapourSynth graph rather than a native
@@ -517,6 +531,12 @@ impl QualityCheck {
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Vec<SceneMeasurement>> {
+        let temporal = metrics::scene_temporal(&config.metric);
+        let scenes: Vec<_> =
+            scene_frame_indices.iter().map(|(_, indices)| indices.as_slice()).collect();
+        if temporal && metrics::probe::validate_scene_selection(&scenes)? == 0 {
+            return Self::group_native_scores(&[], 0, scene_frame_indices);
+        }
         // Owned, so it outlives the `&mut v_input` borrow taken below.
         let mut v_input_owned = input.as_vapoursynth_script()?;
         let v_input = v_input_owned.as_mut();
@@ -534,7 +554,9 @@ impl QualityCheck {
         )?;
         let core = get_core(env)?;
 
-        let reference_node = {
+        let reference_node = if temporal {
+            reference_node
+        } else {
             let frame_nodes: Vec<_> = scene_frame_indices
                 .iter()
                 .map(|(_, indices)| {
@@ -563,27 +585,31 @@ impl QualityCheck {
                 ..Default::default()
             }
             .invoke(core)?;
-            let frame_nodes: Vec<_> = scene_frame_indices
-                .iter()
-                .map(|(_, indices)| {
-                    indices
-                        .iter()
-                        .map(|index| {
-                            Trim {
-                                first: Some(*index as u32),
-                                last: Some(*index as u32),
-                                ..Default::default()
-                            }
-                            .invoke(core, &source_node)
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flatten()
-                .collect();
+            if temporal {
+                source_node
+            } else {
+                let frame_nodes: Vec<_> = scene_frame_indices
+                    .iter()
+                    .map(|(_, indices)| {
+                        indices
+                            .iter()
+                            .map(|index| {
+                                Trim {
+                                    first: Some(*index as u32),
+                                    last: Some(*index as u32),
+                                    ..Default::default()
+                                }
+                                .invoke(core, &source_node)
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
 
-            Splice::invoke(core, &frame_nodes)?
+                Splice::invoke(core, &frame_nodes)?
+            }
         };
 
         // Map local frame index to the global frame index
@@ -593,17 +619,17 @@ impl QualityCheck {
             .collect::<Vec<_>>();
         let total_frames = global_frames.len();
 
-        // Scene is complete when the last frame is compared
-        let mut scene_last_local_index = Vec::with_capacity(scene_frame_indices.len());
+        // Exclusive ends also allow empty scenes without inventing a last frame.
+        let mut scene_end_local_index = Vec::with_capacity(scene_frame_indices.len());
         let mut local_index = 0;
         for (_, indices) in scene_frame_indices {
             local_index += indices.len();
-            scene_last_local_index.push(local_index - 1);
+            scene_end_local_index.push(local_index);
         }
 
         let progress_tx_clone = progress_tx.clone();
         let (compare_progress_tx, compare_progress_rx) = sync::mpsc::channel();
-        thread::spawn(move || -> Result<()> {
+        let compare_thread = thread::spawn(move || -> Result<()> {
             for progress in compare_progress_rx {
                 match progress {
                     SequenceStatus::Whole(Status::Processing {
@@ -640,7 +666,7 @@ impl QualityCheck {
         )));
         let on_frame = {
             let progress_tx = progress_tx.clone();
-            let scene_last_local_index = scene_last_local_index.clone();
+            let scene_end_local_index = scene_end_local_index.clone();
             let scene_indices =
                 scene_frame_indices.iter().map(|(index, _)| *index).collect::<Vec<_>>();
             let statistic = config.statistic;
@@ -666,9 +692,9 @@ impl QualityCheck {
                     },
                 });
 
-                let scene_index = scene_last_local_index
+                let scene_index = scene_end_local_index
                     .iter()
-                    .position(|last| *last >= local_index)
+                    .position(|end| *end > local_index)
                     .expect("local index belongs to a scene");
                 let mut scene_state =
                     scene_state_clone.lock().expect("scene state mutex should acquire lock");
@@ -682,7 +708,7 @@ impl QualityCheck {
                 }
                 scene_scores[scene_index].push(*score);
                 if !scene_completed[scene_index]
-                    && scene_last_local_index[scene_index] == local_index
+                    && scene_end_local_index[scene_index] == local_index + 1
                 {
                     scene_completed[scene_index] = true;
                     scene_completed_on[scene_index] = SystemTime::now()
@@ -718,6 +744,7 @@ impl QualityCheck {
         // The SSIMULACRA2, Butteraugli and CVVDP branches are the fallback for
         // the metrics libvship also implements: they are reached only when
         // `measure_vship` found no usable libvship, or its scoring failed.
+        let mut comparison_error = None;
         match &config.metric {
             // Handled by `measure_vmaf` before this graph is built: VMAF reads
             // decoded frames through libvmaf instead of a VapourSynth filter.
@@ -911,30 +938,57 @@ impl QualityCheck {
                     gpu_id: gpu_id.map(u32::from),
                     ..Default::default()
                 };
-                let node = plugin.invoke(
-                    core,
-                    &reference_node,
-                    &distorted_node,
-                    // Preserve source gaps; node indices became contiguous when spliced.
-                    scene_frame_indices.iter().flat_map(|(_, indices)| indices.iter().copied()),
-                )?;
-                CVVDP::collect_frame_values(&node, compare_progress_tx, on_frame, |frame| {
-                    CVVDP::PROPERTY_NAMES
-                        .iter()
-                        .find_map(|property_name| frame.props().get_float(property_name).ok())
-                        .ok_or_else(|| {
-                            CVVDP::new_error(format!(
-                                "Score not found on any of the following properties: {}",
-                                CVVDP::PROPERTY_NAMES.join(", ")
-                            ))
-                        })
-                })?
+                if temporal {
+                    match plugin.collect_scene_values(
+                        core,
+                        &reference_node,
+                        &distorted_node,
+                        &scenes,
+                        OutputIndexing::Aligned,
+                        compare_progress_tx,
+                        cancelled,
+                        on_frame,
+                    ) {
+                        Ok(values) => values,
+                        Err(error) => {
+                            comparison_error = Some(error);
+                            Vec::new()
+                        },
+                    }
+                } else {
+                    let node = plugin.invoke(
+                        core,
+                        &reference_node,
+                        &distorted_node,
+                        // Preserve source gaps; node indices became contiguous when spliced.
+                        scene_frame_indices.iter().flat_map(|(_, indices)| indices.iter().copied()),
+                    )?;
+                    CVVDP::collect_frame_values(&node, compare_progress_tx, on_frame, |frame| {
+                        CVVDP::PROPERTY_NAMES
+                            .iter()
+                            .find_map(|property_name| frame.props().get_float(property_name).ok())
+                            .ok_or_else(|| {
+                                CVVDP::new_error(format!(
+                                    "Score not found on any of the following properties: {}",
+                                    CVVDP::PROPERTY_NAMES.join(", ")
+                                ))
+                            })
+                    })?
+                }
             },
         };
+        if temporal {
+            compare_thread.join().expect("compare progress thread should join")?;
+        }
+        if let Some(error) = comparison_error {
+            return Err(error);
+        }
 
-        progress_tx.send(SequenceStatus::Whole(Status::Completed {
-            id: "Compare".to_owned(),
-        }))?;
+        if !temporal {
+            progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                id: "Compare".to_owned(),
+            }))?;
+        }
         drop(progress_tx);
 
         if cancelled.load(sync::atomic::Ordering::Relaxed) {

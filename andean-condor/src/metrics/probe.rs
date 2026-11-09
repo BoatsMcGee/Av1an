@@ -155,6 +155,23 @@ pub fn output_index(position: usize, source_index: usize, indexing: OutputIndexi
     }
 }
 
+/// Validate scene partitions without sorting or hiding source discontinuities.
+/// Empty scenes are allowed, but cannot create scoring sessions.
+pub(crate) fn validate_scene_selection(scenes: &[&[usize]]) -> Result<usize> {
+    let mut total = 0usize;
+    let mut previous = None;
+    for scene in scenes {
+        total = total.checked_add(scene.len()).context("selected frame count overflow")?;
+        for &index in *scene {
+            if index == usize::MAX || previous.is_some_and(|previous| previous >= index) {
+                bail!("scene source indices must be strictly increasing and below usize::MAX");
+            }
+            previous = Some(index);
+        }
+    }
+    Ok(total)
+}
+
 /// One side of the comparison, read by the cheapest method available for it.
 ///
 /// Each side picks its own reader, independently. In both call sites the
@@ -543,11 +560,33 @@ pub fn probe_selected_frames<T, R>(
     indexing: OutputIndexing,
     cancelled: Option<&AtomicBool>,
     validate: impl FnOnce(av_decoders::VideoDetails, av_decoders::VideoDetails) -> Result<()>,
+    submit: impl for<'r, 'd> FnMut(usize, PlaneSet<'r>, PlaneSet<'d>) -> Result<R>,
+) -> Result<Vec<R>> {
+    probe_selected_frames_from::<R>(
+        reference, distorted, selected, indexing, 0, 0, cancelled, validate, submit,
+    )
+}
+
+/// The same decode loop for a scene starting inside a compacted probe output.
+/// Validate the entire output range before metadata, opening sides or reads.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn probe_selected_frames_from<R>(
+    reference: &mut av_decoders::Decoder,
+    distorted: &mut av_decoders::Decoder,
+    selected: &[usize],
+    indexing: OutputIndexing,
+    output_start: usize,
+    reference_next: usize,
+    cancelled: Option<&AtomicBool>,
+    validate: impl FnOnce(av_decoders::VideoDetails, av_decoders::VideoDetails) -> Result<()>,
     mut submit: impl for<'r, 'd> FnMut(usize, PlaneSet<'r>, PlaneSet<'d>) -> Result<R>,
 ) -> Result<Vec<R>> {
     if selected.is_empty() {
         return Ok(Vec::new());
     }
+    let output_end = output_start
+        .checked_add(selected.len())
+        .context("compacted output index overflow")?;
 
     let reference_details = video_details(reference).context("reference metadata")?;
     let distorted_details = video_details(distorted).context("distorted metadata")?;
@@ -559,6 +598,28 @@ pub fn probe_selected_frames<T, R>(
     // reported up front rather than partway through a long pass.
     let mut reference_side = Side::open(reference, bit_depth)?;
     let mut distorted_side = Side::open(distorted, bit_depth)?;
+    // A fresh scorer must not rewind a sequential decoder's logical cursor.
+    // Seekable sides were actually rewound by open; only sequential sides need
+    // the preceding successful scene's known position restored.
+    if let Side::Native {
+        seekable: false,
+        next,
+        ..
+    } = &mut reference_side
+    {
+        *next = reference_next;
+    }
+    if let Side::Native {
+        seekable: false,
+        next,
+        ..
+    } = &mut distorted_side
+    {
+        *next = match indexing {
+            OutputIndexing::Compacted => output_start,
+            OutputIndexing::Aligned => reference_next,
+        };
+    }
 
     check_seekable_selection(&reference_side, &distorted_side, selected, indexing)?;
 
@@ -572,14 +633,20 @@ pub fn probe_selected_frames<T, R>(
             return Err(Cancelled.into());
         }
 
-        let output_index = output_index(position, source_index, indexing);
+        let output_index = match indexing {
+            OutputIndexing::Compacted => {
+                output_start.checked_add(position).context("compacted output index overflow")?
+            },
+            OutputIndexing::Aligned => source_index,
+        };
 
         reference_side.advance(source_index)?;
         distorted_side.advance(output_index).with_context(|| {
             // A compacted output holds exactly the selection; an aligned one
             // is the full-length encode.
             let output_frames = match indexing {
-                OutputIndexing::Compacted => Some(selected.len()),
+                OutputIndexing::Compacted if output_start == 0 => Some(output_end),
+                OutputIndexing::Compacted => distorted_details.total_frames,
                 OutputIndexing::Aligned => distorted_details.total_frames,
             };
             let output = output_frames.map_or_else(
@@ -694,6 +761,27 @@ pub fn check_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m27a_compacted_offset_overflow_rejects_before_metadata_or_reads() {
+        let script = "import vapoursynth as vs\nvs.core.std.BlankClip(width=32,height=32,length=1,format=vs.YUV420P8).set_output()";
+        let mut a =
+            av_decoders::Decoder::from_script(script, Default::default()).expect("reference");
+        let mut b =
+            av_decoders::Decoder::from_script(script, Default::default()).expect("distorted");
+        let result = probe_selected_frames_from::<()>(
+            &mut a,
+            &mut b,
+            &[0],
+            OutputIndexing::Compacted,
+            usize::MAX,
+            0,
+            None,
+            |_, _| panic!("overflow reached metadata validation"),
+            |_, _, _| panic!("overflow read a pair"),
+        );
+        assert!(result.expect_err("checked output range").to_string().contains("overflow"));
+    }
 
     #[test]
     fn m05_native_planes_carry_actual_u16_allocation_spans() {
