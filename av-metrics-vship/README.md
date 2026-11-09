@@ -136,9 +136,9 @@ computed. Consequences for callers:
 - **Do not average the per-frame values.** Averaging a sequence of prefix means
   over-weights the earliest frames. On a 756-frame clip the mean of the running
   means came out at 8.1455 where the final value is 9.0475.
-- **Take the last value.** `PoolMethod` has no `Last` variant, so read
-  `scores.last()` directly rather than reaching for `Max`, which is wrong for
-  every CVVDP clip whose score drifts upward.
+- **Take the last value.** `VshipScorer::pool` with `VshipMetric::Cvvdp` returns
+  the final cumulative value regardless of `PoolMethod`, without sorting the
+  prefixes. Missing final values are errors, not replaced by earlier prefixes.
 - **Use the source frame rate when known.** Omitting `with_fps` uses **60 fps**;
   explicit values must be finite and satisfy **0 < fps <= 100000**. Zero
   (including negative zero), negatives, NaN, infinities and larger rates return
@@ -155,7 +155,9 @@ build, per-frame CVVDP agrees exactly once `fps` is supplied.
 
 ### Pooling
 
-libvship reports a score per pair, so reducing a clip to one number is this crate's job. `VshipScorer::pool` picks the values the metric produces and applies a `PoolMethod`:
+`VshipScorer::pool` assumes cumulative CVVDP (the native default) and returns its
+last ordered value. Its static signature has no temporal-mode flag. For
+SSIMULACRA2 and Butteraugli it still applies the requested `PoolMethod`:
 
 | Method | Result |
 | --- | --- |
@@ -163,7 +165,22 @@ libvship reports a score per pair, so reducing a clip to one number is this crat
 | `PoolMethod::Min` | The lowest value. |
 | `PoolMethod::Max` | The highest value. |
 
-`Min` and `Max` are literal extremes rather than best and worst; which one is preferable follows `VshipMetric::higher_is_better`. Pooling a list with no values in it fails with `VshipError::InvalidConfiguration`. `Mean` is the right choice for SSIMULACRA2 and Butteraugli, and the wrong one for CVVDP, whose per-frame values are a running mean.
+`Min` and `Max` are literal extremes rather than best and worst; which one is preferable follows `VshipMetric::higher_is_better`. Pooling a list with no values in it fails with `VshipError::InvalidConfiguration`.
+
+For **independent CVVDP frames** (`with_disable_temporal(true)`), explicitly use
+the existing `PoolMethod::apply` path, not `VshipScorer::pool`:
+
+```rust
+# use av_metrics_vship::{FrameScore, PoolMethod, VshipMetric};
+# fn independent(scores: &[FrameScore]) -> Result<f64, av_metrics_vship::VshipError> {
+let values: Vec<f64> = scores.iter().filter_map(|s| s.value(VshipMetric::Cvvdp)).collect();
+PoolMethod::Mean.apply(&values) // Min and Max work here too.
+# }
+```
+
+Raw submissions and callbacks still return every prefix. Andean's scene-level
+consumers select the final value of each fresh temporal scene session; they do
+not combine those scene results into a clip-wide CVVDP score.
 
 ### Configuration
 

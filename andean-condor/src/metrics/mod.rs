@@ -133,13 +133,7 @@ pub(crate) fn score_scene_frames(
 
 /// Only enabled-temporal CVVDP needs independent scene sessions.
 pub(crate) const fn scene_temporal(metric: &QualityMetric) -> bool {
-    matches!(
-        metric,
-        QualityMetric::CVVDP {
-            disable_temporal: None | Some(false),
-            ..
-        }
-    )
+    metric.is_cumulative()
 }
 
 /// Which implementation produced a score.

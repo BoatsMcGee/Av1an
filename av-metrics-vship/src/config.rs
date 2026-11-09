@@ -42,8 +42,9 @@ pub enum VshipMetric {
     /// CVVDP: temporally pooled contrast sensitivity, higher is better.
     ///
     /// This metric accumulates over the frames a handler has seen, so its
-    /// scores form a running mean rather than independent per-frame values. It
-    /// also cannot be split across handlers; see [`Self::is_temporal`].
+    /// scores are cumulative prefixes rather than independent per-frame values.
+    /// Only the final prefix is the session result. With `disable_temporal`,
+    /// frames are independent instead. See [`Self::is_temporal`].
     Cvvdp,
 }
 
@@ -108,10 +109,10 @@ impl VshipMetric {
     }
 }
 
-/// How to pool a clip's per-frame scores into one value.
+/// How to pool independent per-frame scores into one value.
 ///
-/// libvship reports a score for every pair, so pooling is this crate's job
-/// rather than the library's.
+/// Cumulative CVVDP already pools the session natively; [`crate::VshipScorer::pool`]
+/// returns its final prefix without applying this method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PoolMethod {
     /// Arithmetic mean over frames.
@@ -124,7 +125,10 @@ pub enum PoolMethod {
 }
 
 impl PoolMethod {
-    /// Combine per-frame scores into a single value.
+    /// Combine independent per-frame scores into a single value.
+    ///
+    /// For CVVDP with `disable_temporal=true`, pass the values extracted via
+    /// [`crate::FrameScore::value`]. Do not apply this to cumulative prefixes.
     ///
     /// # Errors
     ///

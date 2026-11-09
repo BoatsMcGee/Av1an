@@ -49,6 +49,65 @@ pub fn path_str(p: &Path) -> &str {
     p.to_str().expect("path should be valid UTF-8")
 }
 
+/// Ordered cumulative prefixes for saved/live quality UI checks; no decoder or GPU.
+#[cfg(test)]
+pub fn quality_scene_fixture() -> (
+    andean_condor::core::input::clip_info::ClipInfo,
+    Vec<Scene<CliSequenceData>>,
+) {
+    use andean_condor::{
+        core::input::{clip_info::ClipInfo, pixel_format::PixelFormat},
+        models::sequence::target_quality::types::QualityPass,
+    };
+    let clip = ClipInfo {
+        num_frames: 9,
+        format_info: PixelFormat::VapourSynth { bit_depth: 8 },
+        frame_rate: av_format::rational::Rational64::new(24, 1),
+        resolution: (32, 32),
+        color_range: None,
+        color_primaries: None,
+        color_transfer_characteristic: None,
+        color_space: None,
+        chroma_location: None,
+        mastering_display: None,
+        content_light_level: None,
+    };
+    let scenes = [vec![2.0, 9.0, 4.0], vec![1.0, 8.0, 6.0], vec![]]
+        .into_iter()
+        .enumerate()
+        .map(|(i, scores)| {
+            let pass = QualityPass {
+                quantizer: 20.0,
+                scores,
+                bitrate: 123.0,
+                started_on: 100,
+                completed_on: 200,
+            };
+            let mut sequence_data = CliSequenceData::default();
+            sequence_data.quality_check.quality = pass.clone();
+            sequence_data.target_quality.passes = if pass.scores.is_empty() {
+                vec![]
+            } else {
+                vec![
+                    pass.clone(),
+                    QualityPass {
+                        quantizer: 30.0,
+                        ..pass
+                    },
+                ]
+            };
+            Scene {
+                start_frame: i * 3,
+                end_frame: (i + 1) * 3,
+                sub_scenes: None,
+                encoder: Encoder::default(),
+                sequence_data,
+            }
+        })
+        .collect();
+    (clip, scenes)
+}
+
 /// Cached test clip path, generated once per process.
 pub static TEST_CLIP: OnceLock<PathBuf> = OnceLock::new();
 

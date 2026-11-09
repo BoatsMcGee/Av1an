@@ -780,7 +780,13 @@ fn tui_screens() -> Vec<Screen> {
     {
         let scenes = mock_scenes();
         let passes = tq_passes(&scenes);
-        let mut app = TargetQualityApp::new(ci, scenes, encoder(), ProbeStatistic::Mean);
+        let mut app = TargetQualityApp::new(
+            ci,
+            scenes,
+            encoder(),
+            ProbeStatistic::Mean,
+            &Default::default(),
+        );
         app.on_snapshot(TargetQualityState {
             quality_passes: passes,
             current_pass: 2,
@@ -803,7 +809,13 @@ fn tui_screens() -> Vec<Screen> {
     {
         let scenes = mock_scenes();
         let passes = tq_passes(&scenes);
-        let mut app = TargetQualityApp::new(ci, scenes, encoder(), ProbeStatistic::Mean);
+        let mut app = TargetQualityApp::new(
+            ci,
+            scenes,
+            encoder(),
+            ProbeStatistic::Mean,
+            &Default::default(),
+        );
         app.on_snapshot(TargetQualityState {
             quality_passes: passes,
             current_pass: 2,

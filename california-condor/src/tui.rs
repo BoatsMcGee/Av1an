@@ -403,17 +403,18 @@ pub fn run_target_quality_tui(
         encoder.parameters_mut().extend(target_quality_encoder_options);
     }
     let initial_scenes = condor.scenes.clone();
-    let probe_statistic = condor
+    let target_quality_config = condor
         .sequence_config
         .target_quality
         .as_ref()
-        .expect("target_quality is required")
-        .probing
-        .statistic;
+        .expect("target_quality is required");
+    let probe_statistic = target_quality_config.probing.statistic;
+    let metric = target_quality_config.metric.clone();
     let ctrlc_cancelled = Arc::clone(&cancelled);
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
-        let mut tq_app = TargetQualityApp::new(clip_info, initial_scenes, encoder, probe_statistic);
+        let mut tq_app =
+            TargetQualityApp::new(clip_info, initial_scenes, encoder, probe_statistic, &metric);
         tq_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });

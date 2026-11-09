@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     metrics::{self, Engine, OutputIndexing},
-    models::sequence::target_quality::types::QualityMetric,
+    models::sequence::target_quality::types::{ProbeStatistic, QualityMetric},
 };
 
 fn metric(disabled: Option<bool>) -> QualityMetric {
@@ -71,6 +71,22 @@ fn m27a_native_scene_consumers() {
             } else {
                 native_failure(engine, &failure);
             }
+        },
+    );
+}
+
+#[test]
+fn m27_native_scene_final_reduction() {
+    native_children(
+        "core::sequence::m27a_tests::m27_native_scene_final_reduction",
+        &[("m27a-f-qc", ""), ("m27a-v-qc", ""), ("m27a-f-tq", ""), ("m27a-v-tq", "")],
+        || {
+            let engine = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+                Engine::Fmetrics
+            } else {
+                Engine::Vship
+            };
+            native_consumers(engine);
         },
     );
 }
@@ -802,6 +818,21 @@ fn native_consumers(engine: Engine) {
                     standalone.extend(values);
                 }
                 assert_eq!(values, standalone);
+                for (scene_index, scores) in values.as_chunks::<2>().0.iter().enumerate() {
+                    let final_score = expected[scene_index * 2 + 1];
+                    let mut model = metric(disabled);
+                    *model.target_range_mut() = (final_score - 0.5, final_score + 0.5);
+                    assert_eq!(
+                        model.calculate_score(ProbeStatistic::Mean, scores),
+                        final_score
+                    );
+                    assert!(
+                        model.score_within_target(
+                            model.calculate_score(ProbeStatistic::Mean, scores)
+                        )
+                    );
+                    assert!(!model.score_within_target(ProbeStatistic::Mean.calculate(scores)));
+                }
                 let progress: Vec<_> = rx.try_iter().collect();
                 if qc {
                     let events: Vec<_> = progress
@@ -982,6 +1013,14 @@ fn native_consumers(engine: Engine) {
     )
     .unwrap();
     assert_eq!(values, [31.0, 62.0, 155.0, 186.0]);
+    assert_eq!(
+        metric(Some(true)).calculate_score(ProbeStatistic::Mean, &values[..2]),
+        46.5
+    );
+    assert_eq!(
+        metric(Some(true)).calculate_score(ProbeStatistic::Mean, &values[2..]),
+        170.5
+    );
     assert_eq!(
         calls().lines().filter(|s| *s == format!("{prefix}c+")).count(),
         1

@@ -22,6 +22,18 @@ a fresh metric session for each scene. History and accumulated scores do not
 carry between scenes; ordered cumulative per-frame values are retained within
 each scene. Direct clip-wide scoring APIs still use one session per sequence.
 
+Scene decisions, quantizer history, live scene scores and saved-data displays use
+the **final ordered cumulative value**, regardless of the configured statistic.
+Prefixes remain available for progress and charts; their mean/minimum/maximum
+are not independent-frame quality statistics. The Quality Check report omits the
+Per-Frame row in this mode. Its Per-Scene statistics describe separate final scene
+results, not a clip-wide CVVDP score. Independent-frame CVVDP retains the configured
+per-frame statistics and report row.
+
+No saved-vector schema or provenance migration is performed. Applying this
+reduction does not establish that legacy jobs used fresh scene sessions; their
+resume compatibility remains a separate policy.
+
 Source gaps *within* a scene retain their backend restrictions: native Vship can
 clear history while retaining accumulation; fmetrics and the VapourSynth CVVDP
 plugin cannot. Use independent frames (`disable_temporal=true`) or native Vship

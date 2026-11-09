@@ -398,6 +398,35 @@ impl QualityCheck {
         });
     }
 
+    fn report_scene_score(
+        config: &QualityCheckConfig,
+        index: usize,
+        scores: &[f64],
+        completed: usize,
+        total: usize,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+    ) {
+        let _ = progress_tx.send(SequenceStatus::Subprocess {
+            parent: Status::Processing {
+                id: DETAILS.name.to_owned(),
+                completion: SequenceCompletion::Custom {
+                    name: DETAILS.name.to_owned(),
+                    completed: completed as f64,
+                    total: total as f64,
+                },
+            },
+            child: Status::Processing {
+                id: "Quality".to_owned(),
+                completion: SequenceCompletion::SceneQuality {
+                    index: index as u64,
+                    quantizer: 0.0,
+                    score: config.metric.calculate_score(config.statistic, scores),
+                    bitrate: 0.0,
+                },
+            },
+        });
+    }
+
     /// Group the per-frame scores back into scenes, recording when each span
     /// was measured so the UI can show per-scene progress.
     #[inline]
@@ -691,7 +720,7 @@ impl QualityCheck {
             let scene_end_local_index = scene_end_local_index.clone();
             let scene_indices =
                 scene_frame_indices.iter().map(|(index, _)| *index).collect::<Vec<_>>();
-            let statistic = config.statistic;
+            let config = config.clone();
             let scene_state_clone = Arc::clone(&scene_state);
 
             move |local_index: usize, score: &f64| -> Result<(), VapourSynthError> {
@@ -737,26 +766,14 @@ impl QualityCheck {
                         .duration_since(std::time::UNIX_EPOCH)
                         .expect("Time is valid")
                         .as_millis();
-                    let scene_score = statistic.calculate(&scene_scores[scene_index]);
-                    let _ = progress_tx.send(SequenceStatus::Subprocess {
-                        parent: Status::Processing {
-                            id: DETAILS.name.to_owned(),
-                            completion: SequenceCompletion::Custom {
-                                name: DETAILS.name.to_owned(),
-                                completed: (local_index + 1) as f64,
-                                total: total_frames as f64,
-                            },
-                        },
-                        child: Status::Processing {
-                            id: "Quality".to_owned(),
-                            completion: SequenceCompletion::SceneQuality {
-                                index: scene_indices[scene_index] as u64,
-                                quantizer: 0.0,
-                                score: scene_score,
-                                bitrate: 0.0,
-                            },
-                        },
-                    });
+                    Self::report_scene_score(
+                        &config,
+                        scene_indices[scene_index],
+                        &scene_scores[scene_index],
+                        local_index + 1,
+                        total_frames,
+                        &progress_tx,
+                    );
                 }
 
                 Ok(())
@@ -1061,6 +1078,62 @@ pub enum QualityCheckError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn m27_live_scene_quality_producer_uses_final_prefix() {
+        use super::*;
+        use crate::models::sequence::target_quality::types::{ProbeStatistic, QualityMetric};
+        for disabled in [None, Some(false), Some(true)] {
+            for (statistic, independent) in [
+                (ProbeStatistic::Mean, 5.0),
+                (ProbeStatistic::Minimum, 2.0),
+                (ProbeStatistic::Maximum, 9.0),
+            ] {
+                let config = QualityCheckConfig {
+                    metric: QualityMetric::CVVDP {
+                        target_range: (3.9, 4.1),
+                        resolution: None,
+                        display_model: None,
+                        resize_to_display: None,
+                        disable_temporal: disabled,
+                        gpu_id: None,
+                    },
+                    statistic,
+                    ..Default::default()
+                };
+                let (tx, rx) = sync::mpsc::channel();
+                QualityCheck::report_scene_score(&config, 7, &[2.0, 9.0, 4.0], 3, 6, &tx);
+                match rx.try_recv().expect("live scene event") {
+                    SequenceStatus::Subprocess {
+                        parent:
+                            Status::Processing {
+                                completion:
+                                    SequenceCompletion::Custom {
+                                        completed, total, ..
+                                    },
+                                ..
+                            },
+                        child:
+                            Status::Processing {
+                                completion: SequenceCompletion::SceneQuality { index, score, .. },
+                                ..
+                            },
+                    } => {
+                        assert_eq!((index, completed, total), (7, 3.0, 6.0));
+                        assert_eq!(
+                            score,
+                            if disabled == Some(true) {
+                                independent
+                            } else {
+                                4.0
+                            }
+                        );
+                    },
+                    other => panic!("unexpected event {other:?}"),
+                }
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

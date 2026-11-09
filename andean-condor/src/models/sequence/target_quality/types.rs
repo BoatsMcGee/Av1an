@@ -124,6 +124,29 @@ impl Default for QualityMetric {
 }
 
 impl QualityMetric {
+    /// Whether ordered scores are cumulative prefixes rather than independent frames.
+    #[inline]
+    pub const fn is_cumulative(&self) -> bool {
+        matches!(
+            self,
+            Self::CVVDP {
+                disable_temporal: None | Some(false),
+                ..
+            }
+        )
+    }
+
+    /// Reduce one ordered session: cumulative CVVDP uses its final prefix, all
+    /// other modes use the configured statistic. Empty cumulative input is NaN.
+    #[inline]
+    pub fn calculate_score(&self, statistic: ProbeStatistic, scores: &[f64]) -> f64 {
+        if self.is_cumulative() {
+            scores.last().copied().unwrap_or(f64::NAN)
+        } else {
+            statistic.calculate(scores)
+        }
+    }
+
     #[inline]
     pub fn score_within_target(&self, score: f64) -> bool {
         match self {
@@ -371,7 +394,46 @@ impl Default for QualityPass {
 
 #[cfg(test)]
 mod tests {
-    use super::QualityMetric;
+    use super::{ProbeStatistic, QualityMetric};
+
+    #[test]
+    fn m27_metric_reduction_keeps_prefix_order_and_independent_statistics() {
+        let scores = [2.0, 9.0, 4.0];
+        for disabled in [None, Some(false), Some(true)] {
+            let metric = QualityMetric::CVVDP {
+                target_range: (3.9, 4.1),
+                resolution: None,
+                display_model: None,
+                resize_to_display: None,
+                disable_temporal: disabled,
+                gpu_id: None,
+            };
+            for (statistic, independent) in [
+                (ProbeStatistic::Mean, 5.0),
+                (ProbeStatistic::Minimum, 2.0),
+                (ProbeStatistic::Maximum, 9.0),
+            ] {
+                let score = metric.calculate_score(statistic, &scores);
+                assert_eq!(
+                    score,
+                    if disabled == Some(true) {
+                        independent
+                    } else {
+                        4.0
+                    }
+                );
+                assert_eq!(metric.score_within_target(score), disabled != Some(true));
+                assert_eq!(
+                    QualityMetric::default().calculate_score(statistic, &scores),
+                    independent
+                );
+                if disabled != Some(true) {
+                    assert!(metric.calculate_score(statistic, &[]).is_nan());
+                }
+            }
+        }
+        assert_eq!(scores, [2.0, 9.0, 4.0]);
+    }
 
     /// A `condor.json` written before `gpu_id` existed must still load, or
     /// adding the field would invalidate every configuration in the wild.

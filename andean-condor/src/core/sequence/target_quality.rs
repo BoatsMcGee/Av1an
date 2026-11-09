@@ -261,21 +261,12 @@ where
                         .or_else(|| task.passes.last()) // Last pass
                         .is_some_and(|quality_pass| {
                             config.metric.score_within_target(
-                                config.probing.statistic.calculate(&quality_pass.scores),
+                                config.metric.calculate_score(config.probing.statistic, &quality_pass.scores),
                             )
                         })
                 })
                 .map(|mut task| {
-                    let quantizer_score_history = task
-                        .passes
-                        .iter()
-                        .map(|quality_pass| {
-                            (
-                                quality_pass.quantizer,
-                                config.probing.statistic.calculate(&quality_pass.scores),
-                            )
-                        })
-                        .collect::<Vec<_>>();
+                    let quantizer_score_history = Self::quantizer_score_history(&config, &task.passes);
                     let sorted_quantizer_score_history = quantizer_score_history
                         .iter()
                         .sorted_by(|(_, score1), (_, score2)| {
@@ -448,16 +439,8 @@ where
                     .passes = completed_task.passes.clone();
 
                 // Perform additional prediction
-                let quantizer_score_history = completed_task
-                    .passes
-                    .iter()
-                    .map(|quality_pass| {
-                        (
-                            quality_pass.quantizer,
-                            config.probing.statistic.calculate(&quality_pass.scores),
-                        )
-                    })
-                    .collect::<Vec<_>>();
+                let quantizer_score_history =
+                    Self::quantizer_score_history(&config, &completed_task.passes);
                 let sorted_quantizer_score_history = quantizer_score_history
                     .iter()
                     .sorted_by(|(_, score1), (_, score2)| {
@@ -521,12 +504,11 @@ where
                     },
                     child: Status::Processing {
                         id: "Quality".to_owned(),
-                        completion: SequenceCompletion::SceneQuality {
-                            index: completed_task.original_index as u64,
-                            quantizer: quality_pass.quantizer,
-                            score: config.probing.statistic.calculate(&quality_pass.scores),
-                            bitrate: quality_pass.bitrate,
-                        },
+                        completion: Self::quality_completion(
+                            &config,
+                            completed_task.original_index,
+                            quality_pass,
+                        ),
                     },
                 })?;
             }
@@ -552,6 +534,34 @@ where
 
 impl TargetQuality {
     pub const DETAILS: SequenceDetails = DETAILS;
+
+    fn quantizer_score_history(
+        config: &TargetQualityConfig,
+        passes: &[QualityPass],
+    ) -> Vec<(f64, f64)> {
+        passes
+            .iter()
+            .map(|pass| {
+                (
+                    pass.quantizer,
+                    config.metric.calculate_score(config.probing.statistic, &pass.scores),
+                )
+            })
+            .collect()
+    }
+
+    fn quality_completion(
+        config: &TargetQualityConfig,
+        index: usize,
+        pass: &QualityPass,
+    ) -> SequenceCompletion {
+        SequenceCompletion::SceneQuality {
+            index: index as u64,
+            quantizer: pass.quantizer,
+            score: config.metric.calculate_score(config.probing.statistic, &pass.scores),
+            bitrate: pass.bitrate,
+        }
+    }
 
     #[inline]
     pub fn new(input: Option<Input>, metric_input: Option<Input>) -> Self {
@@ -1587,6 +1597,67 @@ mod tests {
             sequence::target_quality::types::QualityMetric,
         },
     };
+
+    #[test]
+    fn m27_target_history_gateway_and_verified_quantizer_use_scene_finals() {
+        use crate::models::sequence::target_quality::{
+            TargetQualityConfig,
+            types::{ProbeStatistic, QualityPass},
+        };
+        let passes = [
+            QualityPass {
+                quantizer: 20.0,
+                scores: vec![2.0, 9.0, 4.0],
+                ..Default::default()
+            },
+            QualityPass {
+                quantizer: 30.0,
+                scores: vec![1.0, 8.0, 3.0],
+                ..Default::default()
+            },
+        ];
+        for disabled in [None, Some(false), Some(true)] {
+            let config = TargetQualityConfig {
+                metric: QualityMetric::CVVDP {
+                    target_range: (3.9, 4.1),
+                    resolution: None,
+                    display_model: None,
+                    resize_to_display: None,
+                    disable_temporal: disabled,
+                    gpu_id: None,
+                },
+                ..Default::default()
+            };
+            let history = TargetQuality::quantizer_score_history(&config, &passes);
+            match TargetQuality::quality_completion(&config, 7, &passes[0]) {
+                SequenceCompletion::SceneQuality {
+                    index,
+                    quantizer,
+                    score,
+                    bitrate,
+                } => {
+                    assert_eq!(
+                        (index, quantizer, score, bitrate),
+                        (7, 20.0, if disabled == Some(true) { 5.0 } else { 4.0 }, 0.0)
+                    );
+                },
+                other => panic!("unexpected completion {other:?}"),
+            }
+            assert_eq!(
+                history,
+                if disabled == Some(true) {
+                    vec![(20.0, 5.0), (30.0, 4.0)]
+                } else {
+                    vec![(20.0, 4.0), (30.0, 3.0)]
+                }
+            );
+            assert_eq!(
+                TargetQuality::verified_quantizer(&config.metric, &history),
+                Some(if disabled == Some(true) { 30.0 } else { 20.0 })
+            );
+            assert_eq!(config.probing.statistic, ProbeStatistic::Mean);
+        }
+    }
 
     #[test]
     fn m18_compare_submission_progress_declares_phase_once() {

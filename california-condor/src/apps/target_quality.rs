@@ -5,7 +5,11 @@ use andean_condor::{
         input::clip_info::ClipInfo,
         sequence::{SequenceCompletion, SequenceStatus, Status},
     },
-    models::{encoder::Encoder, scene::Scene, sequence::target_quality::types::ProbeStatistic},
+    models::{
+        encoder::Encoder,
+        scene::Scene,
+        sequence::target_quality::types::{ProbeStatistic, QualityMetric},
+    },
 };
 use ratatui::{
     Frame,
@@ -379,6 +383,7 @@ impl TargetQualityApp {
         scenes: Vec<Scene<CliSequenceData>>,
         encoder: Encoder,
         probe_statistic: ProbeStatistic,
+        metric: &QualityMetric,
     ) -> TargetQualityApp {
         let quality_passes: BTreeMap<u64, Vec<QualityPass>> = scenes
             .into_iter()
@@ -397,7 +402,7 @@ impl TargetQualityApp {
                             current_pass: (pass_index + 1) as u8,
                             total_passes: (pass_index + 1) as u8,
                             quantizer: pass.quantizer,
-                            score: probe_statistic.calculate(&pass.scores),
+                            score: metric.calculate_score(probe_statistic, &pass.scores),
                             bitrate: pass.bitrate,
                         })
                         .collect(),
@@ -457,6 +462,98 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{TargetQualityApp, TargetQualityState};
+
+    #[test]
+    fn m27_saved_tq_constructor_and_live_mapper_use_actual_metric() {
+        use crate::apps::TuiApp;
+        use andean_condor::{
+            core::sequence::{SequenceCompletion, SequenceStatus, Status},
+            models::sequence::target_quality::types::{ProbeStatistic, QualityMetric},
+        };
+        let (clip, scenes) = crate::test_helpers::quality_scene_fixture();
+        for disabled in [None, Some(false), Some(true)] {
+            let metric = QualityMetric::CVVDP {
+                target_range: (3.9, 4.1),
+                resolution: None,
+                display_model: None,
+                resize_to_display: None,
+                disable_temporal: disabled,
+                gpu_id: None,
+            };
+            for (statistic, independent) in [
+                (ProbeStatistic::Mean, [5.0, 5.0]),
+                (ProbeStatistic::Minimum, [2.0, 1.0]),
+                (ProbeStatistic::Maximum, [9.0, 8.0]),
+            ] {
+                let app = TargetQualityApp::new(
+                    clip,
+                    scenes.clone(),
+                    Default::default(),
+                    statistic,
+                    &metric,
+                );
+                let expected = if disabled == Some(true) {
+                    independent
+                } else {
+                    [4.0, 6.0]
+                };
+                let mut live =
+                    TargetQualityApp::new(clip, vec![], Default::default(), statistic, &metric)
+                        .cached_state;
+                for (index, score) in expected.into_iter().enumerate() {
+                    let passes = &app.cached_state.quality_passes[&(index as u64)];
+                    assert_eq!(
+                        passes
+                            .iter()
+                            .map(|p| (p.quantizer, p.score, p.bitrate))
+                            .collect::<Vec<_>>(),
+                        [(20.0, score, 123.0), (30.0, score, 123.0)]
+                    );
+                    assert!(TargetQualityApp::map_progress(
+                        SequenceStatus::Subprocess {
+                            parent: Status::Processing {
+                                id: "Target Quality".to_owned(),
+                                completion: SequenceCompletion::Passes {
+                                    completed: 2,
+                                    total: 4
+                                }
+                            },
+                            child: Status::Processing {
+                                id: "Quality".to_owned(),
+                                completion: SequenceCompletion::SceneQuality {
+                                    index: index as u64,
+                                    quantizer: 30.0,
+                                    score,
+                                    bitrate: 123.0
+                                }
+                            }
+                        },
+                        &mut live
+                    ));
+                    assert_eq!(
+                        live.quality_passes[&(index as u64)][0].score,
+                        passes[1].score
+                    );
+                }
+                assert!(app.cached_state.quality_passes[&2].is_empty());
+                let control = TargetQualityApp::new(
+                    clip,
+                    scenes.clone(),
+                    Default::default(),
+                    statistic,
+                    &QualityMetric::default(),
+                );
+                assert_eq!(
+                    control.cached_state.quality_passes[&0][0].score,
+                    independent[0]
+                );
+            }
+        }
+        assert_eq!(
+            scenes[0].sequence_data.target_quality.passes[0].scores,
+            [2.0, 9.0, 4.0]
+        );
+    }
 
     const TOTAL: u64 = 14386;
 

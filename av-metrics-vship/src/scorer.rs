@@ -497,7 +497,8 @@ pub type PlaneSet<'a> = [PlaneSource<'a>; 3];
 /// than a zero, since a zero would be indistinguishable from a real score.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct FrameScore {
-    /// SSIMULACRA2's value, or CVVDP's running mean. `None` for Butteraugli.
+    /// SSIMULACRA2's value, or CVVDP's cumulative prefix (independent when
+    /// temporal processing is disabled). `None` for Butteraugli.
     pub score: Option<f64>,
     /// Butteraugli's configured-norm value.
     pub norm_q: Option<f64>,
@@ -1190,17 +1191,31 @@ impl VshipScorer {
         Ok(scores)
     }
 
-    /// Pool a scorer's per-frame scores into a single value.
+    /// Reduce a scorer's ordered scores to one value.
+    ///
+    /// CVVDP is assumed cumulative (the native default): return the final
+    /// score regardless of `method`. For `disable_temporal=true`, extract
+    /// [`FrameScore::value`] for each frame and call [`PoolMethod::apply`].
+    /// Other metrics retain their configured per-frame pooling.
     ///
     /// # Errors
     ///
-    /// Returns [`VshipError::InvalidConfiguration`] if `scores` is empty.
+    /// Returns [`VshipError::InvalidConfiguration`] if no values are available,
+    /// or if the final cumulative CVVDP entry has no value. An earlier prefix
+    /// cannot stand in for the whole session.
     #[inline]
     pub fn pool(
         scores: &[FrameScore],
         metric: VshipMetric,
         method: PoolMethod,
     ) -> Result<f64, VshipError> {
+        if metric == VshipMetric::Cvvdp {
+            return scores.last().and_then(|score| score.value(metric)).ok_or_else(|| {
+                VshipError::InvalidConfiguration {
+                    reason: "final cumulative CVVDP score is missing".to_owned(),
+                }
+            });
+        }
         let values: Vec<f64> = scores.iter().filter_map(|score| score.value(metric)).collect();
 
         method.apply(&values)
@@ -1438,6 +1453,59 @@ fn availability(gpu_id: u32) -> Result<&'static str, VshipError> {
 )]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m27_cumulative_pool_uses_last_in_submission_order() {
+        let scores = [2.0, 9.0, 4.0].map(|value| FrameScore {
+            score: Some(value),
+            norm_q: Some(value * 2.0),
+            norm_inf: Some(value * 3.0),
+            ..Default::default()
+        });
+        for (method, independent) in
+            [(PoolMethod::Mean, 5.0), (PoolMethod::Min, 2.0), (PoolMethod::Max, 9.0)]
+        {
+            assert_eq!(
+                VshipScorer::pool(&scores, VshipMetric::Cvvdp, method).unwrap(),
+                4.0
+            );
+            // The explicit independent-frame route uses the same real FrameScores.
+            let values: Vec<_> =
+                scores.iter().map(|s| s.value(VshipMetric::Cvvdp).unwrap()).collect();
+            assert_eq!(method.apply(&values).unwrap(), independent);
+            assert_eq!(
+                VshipScorer::pool(&scores, VshipMetric::Ssimulacra2, method).unwrap(),
+                independent
+            );
+            assert_eq!(
+                VshipScorer::pool(&scores, VshipMetric::Butteraugli, method).unwrap(),
+                independent * 2.0
+            );
+            assert_eq!(
+                VshipScorer::pool_butteraugli(&scores, false, method).unwrap(),
+                independent * 3.0
+            );
+        }
+    }
+
+    #[test]
+    fn m27_cumulative_pool_requires_the_final_metric_value() {
+        for scores in [
+            vec![],
+            vec![
+                FrameScore {
+                    score: Some(2.0),
+                    ..Default::default()
+                },
+                FrameScore::default(),
+            ],
+        ] {
+            assert!(matches!(
+                VshipScorer::pool(&scores, VshipMetric::Cvvdp, PoolMethod::Mean),
+                Err(VshipError::InvalidConfiguration { .. })
+            ));
+        }
+    }
 
     #[test]
     fn m07_configured_storage_width_on_every_plane_and_side() {

@@ -113,6 +113,16 @@ compute the wrapper clears **both history and accumulated score**, matching
 Vship's VapourSynth `disableTemporal` behavior. Reset failures return errors, not
 successful scores.
 
+These ordered `FrameScore::cvvdp_jod` outputs are cumulative prefixes: the last
+JOD is the whole submitted session's result. Do not average, minimize or maximize
+the prefixes as though they were independent frame scores. `cvvdp_quality` stays
+a separate native field, not a substitute for JOD. This crate has no sequence
+quality-pooling API; callers reduce the returned scores. With temporal processing
+disabled, the returned frame values are independent and may use the caller's
+configured per-frame statistic. Andean's Quality Check/Target Quality consumers
+use the final prefix of each fresh scene session while retaining all prefixes
+for progress and saved vectors; direct clip-wide scoring still covers one session.
+
 `with_reset_on_discontinuity(true)` is a separate, default-on source-gap policy;
 neither builder changes the other. Selection owners know the actual source
 indices. fmetrics 0.1.0 has **no history-only reset**: public `reset_temporal()`

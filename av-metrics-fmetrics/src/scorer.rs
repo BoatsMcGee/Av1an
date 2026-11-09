@@ -8,6 +8,9 @@
 //! detects a discontinuity in the selection and calls
 //! [`FmetricsScorer::reset_temporal`]; whether a gap is a scene break is the
 //! caller's knowledge, not the scorer's.
+//! Its ordered JOD outputs are cumulative prefixes: the last is the whole
+//! session result, not the mean of the prefixes. With temporal processing
+//! disabled, outputs are independent and callers may aggregate per-frame values.
 //!
 //! # Sharing
 //!
@@ -38,7 +41,8 @@ pub struct FrameScore {
     pub ssimulacra2: Option<f64>,
     /// Butteraugli, a distance where lower is better.
     pub butteraugli: Option<f64>,
-    /// CVVDP's JOD, the headline measure, where higher is better.
+    /// CVVDP's JOD, the headline measure, where higher is better. Cumulative
+    /// prefix by default; independent with temporal processing disabled.
     pub cvvdp_jod: Option<f64>,
     /// CVVDP's quality score, which fmetrics reports alongside JOD.
     pub cvvdp_quality: Option<f64>,

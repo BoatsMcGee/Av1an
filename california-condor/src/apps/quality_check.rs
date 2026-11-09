@@ -302,7 +302,7 @@ impl QualityCheckApp {
                 if scores.is_empty() {
                     None
                 } else {
-                    Some((*index, statistic.calculate(scores)))
+                    Some((*index, metric.calculate_score(statistic, scores)))
                 }
             })
             .collect();
@@ -419,7 +419,11 @@ impl QualityCheckApp {
         let scene_scores: Vec<f64> = self.cached_state.scene_scores.values().copied().collect();
         let frame_scores = &self.cached_state.frame_scores;
         let scene_stats = Self::compute_stats(&scene_scores, is_inverse);
-        let frame_stats = Self::compute_stats(frame_scores, is_inverse);
+        let frame_stats = if self.metric.is_cumulative() {
+            None
+        } else {
+            Self::compute_stats(frame_scores, is_inverse)
+        };
 
         // Stats table: header + Per-Scene + Per-Frame rows
         println!(
@@ -429,6 +433,9 @@ impl QualityCheckApp {
         for (label, stats) in
             [("Per-Scene", scene_stats.as_ref()), ("Per-Frame", frame_stats.as_ref())]
         {
+            if label == "Per-Frame" && self.metric.is_cumulative() {
+                continue;
+            }
             if let Some(s) = stats {
                 println!(
                     "{:<14}{:>12.4}{:>12.4}{:>12.4}{:>12.4}{:>12.4}",
@@ -437,6 +444,11 @@ impl QualityCheckApp {
             } else {
                 println!("{label:<14}  (no data)");
             }
+        }
+        if self.metric.is_cumulative() {
+            println!(
+                "Per-Scene statistics describe independent scene results, not a clip-wide CVVDP score."
+            );
         }
         println!();
 
@@ -505,6 +517,118 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn m27_saved_qc_constructor_and_live_mapper_keep_scene_finals_and_prefixes() {
+        let (clip, scenes) = crate::test_helpers::quality_scene_fixture();
+        for disabled in [None, Some(false), Some(true)] {
+            let metric = QualityMetric::CVVDP {
+                target_range: (3.9, 4.1),
+                resolution: None,
+                display_model: None,
+                resize_to_display: None,
+                disable_temporal: disabled,
+                gpu_id: None,
+            };
+            for (statistic, independent) in [
+                (ProbeStatistic::Mean, [5.0, 5.0]),
+                (ProbeStatistic::Minimum, [2.0, 1.0]),
+                (ProbeStatistic::Maximum, [9.0, 8.0]),
+            ] {
+                let app = QualityCheckApp::new(clip, &scenes, metric.clone(), statistic);
+                let expected = if disabled == Some(true) {
+                    independent
+                } else {
+                    [4.0, 6.0]
+                };
+                assert_eq!(
+                    app.cached_state.scene_scores,
+                    BTreeMap::from([(0, expected[0]), (1, expected[1])])
+                );
+                assert_eq!(
+                    app.cached_state.frame_scores,
+                    [2.0, 9.0, 4.0, 1.0, 8.0, 6.0]
+                );
+                assert_eq!(
+                    (
+                        app.cached_state.frames_compared,
+                        app.cached_state.total_frames
+                    ),
+                    (6, 6)
+                );
+                let mut live =
+                    QualityCheckApp::new(clip, &[], metric.clone(), statistic).cached_state;
+                for (index, score) in expected.into_iter().enumerate() {
+                    assert!(QualityCheckApp::map_progress(
+                        SequenceStatus::Subprocess {
+                            parent: Status::Processing {
+                                id: "Quality Check".to_owned(),
+                                completion: SequenceCompletion::Custom {
+                                    name: "Quality Check".to_owned(),
+                                    completed: 6.0,
+                                    total: 6.0
+                                }
+                            },
+                            child: Status::Processing {
+                                id: "Quality".to_owned(),
+                                completion: SequenceCompletion::SceneQuality {
+                                    index: index as u64,
+                                    quantizer: 0.0,
+                                    score,
+                                    bitrate: 0.0
+                                }
+                            }
+                        },
+                        &mut live
+                    ));
+                }
+                assert_eq!(live.scene_scores, app.cached_state.scene_scores);
+                let control =
+                    QualityCheckApp::new(clip, &scenes, QualityMetric::default(), statistic);
+                assert_eq!(
+                    control.cached_state.scene_scores.values().copied().collect::<Vec<_>>(),
+                    independent
+                );
+            }
+        }
+        assert_eq!(
+            scenes[0].sequence_data.quality_check.quality.scores,
+            [2.0, 9.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn m27_report_does_not_summarize_prefixes_as_independent_frames() {
+        if let Ok(mode) = std::env::var("M27_QC_REPORT_CHILD") {
+            let (clip, scenes) = crate::test_helpers::quality_scene_fixture();
+            let metric = QualityMetric::CVVDP {
+                target_range: (3.9, 4.1),
+                resolution: None,
+                display_model: None,
+                resize_to_display: None,
+                disable_temporal: Some(mode == "independent"),
+                gpu_id: None,
+            };
+            QualityCheckApp::new(clip, &scenes, metric, ProbeStatistic::Mean).print_report();
+            return;
+        }
+        for mode in ["temporal", "independent"] {
+            let output = Command::new(std::env::current_exe().expect("test executable"))
+                .args(["--exact", "apps::quality_check::tests::m27_report_does_not_summarize_prefixes_as_independent_frames", "--nocapture"])
+                .env("M27_QC_REPORT_CHILD", mode).output().expect("report child");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(output.status.success(), "{stdout}");
+            assert!(
+                stdout.contains("Per-Scene") && stdout.contains("5.0000"),
+                "{stdout}"
+            );
+            assert_eq!(
+                stdout.contains("Per-Frame"),
+                mode == "independent",
+                "{stdout}"
+            );
+        }
+    }
 
     #[test]
     fn m18_submission_progress_reaches_ui_and_console() {
