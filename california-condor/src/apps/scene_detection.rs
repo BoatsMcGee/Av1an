@@ -26,7 +26,6 @@ pub struct SceneDetectionState {
 }
 
 pub struct SceneDetectionApp {
-    pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub started: std::time::Instant,
     pub clip_info: ClipInfo,
     initial_frames: u64,
@@ -38,10 +37,6 @@ pub struct SceneDetectionApp {
 
 impl TuiApp for SceneDetectionApp {
     type State = SceneDetectionState;
-
-    fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
-        &mut self.original_panic_hook
-    }
 
     fn shared_progress(&self) -> &SharedProgress<Self::State> {
         &self.shared_progress
@@ -153,7 +148,6 @@ impl SceneDetectionApp {
             scenes_len,
         };
         SceneDetectionApp {
-            original_panic_hook: None,
             started: std::time::Instant::now(),
             initial_frames,
             total_frames,

@@ -1,5 +1,6 @@
 """Run the cfg(test)-only TUI child on a real controlling Unix terminal."""
 
+import errno
 import fcntl
 import os
 import pty
@@ -12,7 +13,7 @@ import termios
 import time
 
 
-def check_stream(binary: str, stream: str) -> None:
+def check_stream(binary: str, stream: str, mode: str = "normal") -> None:
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 6, 80, 0, 0))
@@ -32,7 +33,11 @@ def check_stream(binary: str, stream: str) -> None:
                 [
                     binary,
                     "--exact",
-                    "apps::tests::t01_pty_child",
+                    {
+                        "normal": "apps::tests::t01_pty_child",
+                        "t03": "apps::tests::t03_pty_child",
+                        "matrix": "apps::tests::t03_ownership_child",
+                    }[mode],
                     "--ignored",
                     "--nocapture",
                     "--quiet",
@@ -60,8 +65,21 @@ def check_stream(binary: str, stream: str) -> None:
                     while answered_queries < queries:
                         os.write(master, b"\x1b[1;1R")
                         answered_queries += 1
-                while select.select([master], [], [], 0)[0]:
-                    terminal_output.extend(os.read(master, 65536))
+                # Close our slave after child exit so EOF, not a zero-time poll,
+                # marks the end of all terminal output.
+                restored_mode = termios.tcgetattr(slave)
+                os.close(slave)
+                slave = -1
+                while True:
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        break
+                    if not chunk:
+                        break
+                    terminal_output.extend(chunk)
             finally:
                 if child.poll() is None:
                     child.kill()
@@ -78,26 +96,49 @@ def check_stream(binary: str, stream: str) -> None:
             assert b"running 1 test" in harness_output, evidence
             assert b"1 passed; 0 failed" in harness_output, evidence
             assert b"\x1b" not in redirected_output, evidence
-            if stream == "stderr":
+            if mode == "matrix":
+                assert b"T03_MATRIX_PASSED" in harness_output, evidence
+                assert harness_output.count(b"T03_CASE_") == 15, evidence
+                assert restored_mode == original_mode, evidence
+                print(f"{stream}: 15 ownership cases passed; termios restored")
+                return
+            if mode == "t03":
+                assert b"T03_ERROR_RETURNED_CANCEL_TRUE" in harness_output, evidence
+            elif stream == "stderr":
                 payload = redirected_output.split(b"T01_BEGIN\n", 1)[1]
                 assert payload.split(b"T01_END\n", 1)[0] == b"payload\n", evidence
             enter = terminal_output.index(b"\x1b[?1049h")
             leave = terminal_output.index(b"\x1b[?1049l")
-            render = terminal_output.index(b"T01-final-render", leave)
-            show = terminal_output.index(b"\x1b[?25h", render)
-            assert enter < leave < render < show, evidence
-            assert terminal_output[leave + 8 :].startswith(b"\r\n" * 6), evidence
-            assert termios.tcgetattr(slave) == original_mode, evidence
+            show = terminal_output.index(b"\x1b[?25h", leave)
+            if mode == "t03":
+                assert enter < leave < show, evidence
+                for command in (b"\x1b[?1049h", b"\x1b[?1049l", b"\x1b[?25h"):
+                    assert terminal_output.count(command) == 1, evidence
+                assert b"\x1b[?25l" not in terminal_output[show:], evidence
+            else:
+                render = terminal_output.index(b"T01-final-render", leave)
+                assert enter < leave < render < show, evidence
+                assert terminal_output[leave + 8 :].startswith(b"\r\n" * 6), evidence
+            assert restored_mode == original_mode, evidence
+            actions = (
+                "error+cancel/enter/leave/show"
+                if mode == "t03"
+                else "enter/leave/final-render/show"
+            )
             print(
-                f"{stream}: 1 child passed; enter/leave/final-render/show on PTY; "
+                f"{stream}: 1 child passed; "
+                f"{actions} on PTY; "
                 f"redirected stream clean; {answered_queries} cursor queries; "
                 "terminal mode restored"
             )
     finally:
         os.close(master)
-        os.close(slave)
+        if slave >= 0:
+            os.close(slave)
 
 
 if __name__ == "__main__":
     for selected_stream in ("stderr", "stdout"):
-        check_stream(sys.argv[1], selected_stream)
+        check_stream(
+            sys.argv[1], selected_stream, sys.argv[2] if len(sys.argv) > 2 else "normal"
+        )

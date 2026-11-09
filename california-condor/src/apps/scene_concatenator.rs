@@ -27,7 +27,6 @@ pub struct SceneConcatenatorState {
 }
 
 pub struct SceneConcatenatorApp {
-    pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub started: std::time::Instant,
     pub clip_info: ClipInfo,
     pub method: ConcatMethod,
@@ -39,10 +38,6 @@ pub struct SceneConcatenatorApp {
 
 impl TuiApp for SceneConcatenatorApp {
     type State = SceneConcatenatorState;
-
-    fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
-        &mut self.original_panic_hook
-    }
 
     fn shared_progress(&self) -> &SharedProgress<Self::State> {
         &self.shared_progress
@@ -137,7 +132,6 @@ impl SceneConcatenatorApp {
     ) -> SceneConcatenatorApp {
         let state = SceneConcatenatorState { percent: 0.0 };
         SceneConcatenatorApp {
-            original_panic_hook: None,
             started: std::time::Instant::now(),
             clip_info,
             method,

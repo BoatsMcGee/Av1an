@@ -36,7 +36,6 @@ pub struct ParallelEncoderState {
 }
 
 pub struct ParallelEncoderApp {
-    pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub started: std::time::Instant,
     pub workers: u8,
     pub encoder: Encoder,
@@ -50,10 +49,6 @@ pub struct ParallelEncoderApp {
 
 impl TuiApp for ParallelEncoderApp {
     type State = ParallelEncoderState;
-
-    fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
-        &mut self.original_panic_hook
-    }
 
     fn shared_progress(&self) -> &SharedProgress<Self::State> {
         &self.shared_progress
@@ -275,7 +270,6 @@ impl ParallelEncoderApp {
         };
 
         ParallelEncoderApp {
-            original_panic_hook: None,
             started: std::time::Instant::now(),
             workers,
             encoder,

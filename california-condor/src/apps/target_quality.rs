@@ -35,7 +35,6 @@ pub struct TargetQualityState {
 }
 
 pub struct TargetQualityApp {
-    pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub encoder: Encoder,
     pub clip_info: ClipInfo,
     pub pass_started: std::time::Instant,
@@ -49,10 +48,6 @@ pub struct TargetQualityApp {
 
 impl TuiApp for TargetQualityApp {
     type State = TargetQualityState;
-
-    fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
-        &mut self.original_panic_hook
-    }
 
     fn shared_progress(&self) -> &SharedProgress<Self::State> {
         &self.shared_progress
@@ -417,7 +412,6 @@ impl TargetQualityApp {
             total_frames: 1,
         };
         TargetQualityApp {
-            original_panic_hook: None,
             encoder,
             clip_info,
             pass_started: std::time::Instant::now(),

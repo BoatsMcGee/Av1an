@@ -41,7 +41,6 @@ pub struct QualityCheckState {
 }
 
 pub struct QualityCheckApp {
-    pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub clip_info: ClipInfo,
     pub metric: QualityMetric,
     pub pass_started: std::time::Instant,
@@ -52,10 +51,6 @@ pub struct QualityCheckApp {
 
 impl TuiApp for QualityCheckApp {
     type State = QualityCheckState;
-
-    fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
-        &mut self.original_panic_hook
-    }
 
     fn shared_progress(&self) -> &SharedProgress<Self::State> {
         &self.shared_progress
@@ -330,7 +325,6 @@ impl QualityCheckApp {
             total_frames,
         };
         QualityCheckApp {
-            original_panic_hook: None,
             clip_info,
             metric,
             pass_started: std::time::Instant::now(),

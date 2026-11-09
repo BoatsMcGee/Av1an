@@ -29,7 +29,6 @@ pub struct NoiseDetectionState {
 }
 
 pub struct NoiseDetectionApp {
-    pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub started: std::time::Instant,
     pub total_frames: u64,
     pub clip_info: ClipInfo,
@@ -40,10 +39,6 @@ pub struct NoiseDetectionApp {
 
 impl TuiApp for NoiseDetectionApp {
     type State = NoiseDetectionState;
-
-    fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
-        &mut self.original_panic_hook
-    }
 
     fn shared_progress(&self) -> &SharedProgress<Self::State> {
         &self.shared_progress
@@ -231,7 +226,6 @@ impl NoiseDetectionApp {
             scene_noise,
         };
         NoiseDetectionApp {
-            original_panic_hook: None,
             started: std::time::Instant::now(),
             total_frames,
             clip_info,

@@ -27,7 +27,6 @@ pub struct BenchmarkerState {
 }
 
 pub struct BenchmarkerApp {
-    pub(crate) original_panic_hook: Option<super::PanicHook>,
     pub encoder: Encoder,
     pub clip_info: ClipInfo,
     attempted_cancel: bool,
@@ -37,10 +36,6 @@ pub struct BenchmarkerApp {
 
 impl TuiApp for BenchmarkerApp {
     type State = BenchmarkerState;
-
-    fn original_panic_hook(&mut self) -> &mut Option<super::PanicHook> {
-        &mut self.original_panic_hook
-    }
 
     fn shared_progress(&self) -> &SharedProgress<Self::State> {
         &self.shared_progress
@@ -223,7 +218,6 @@ impl BenchmarkerApp {
             results: BTreeMap::new(),
         };
         BenchmarkerApp {
-            original_panic_hook: None,
             encoder,
             clip_info,
             attempted_cancel: false,

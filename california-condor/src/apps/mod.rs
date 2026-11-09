@@ -32,7 +32,221 @@ pub mod scene_detection;
 pub mod target_quality;
 
 pub type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
-pub type StdOutOrErrTerminal = Terminal<CrosstermBackend<BufWriter<Box<dyn Write + Send>>>>;
+type OwnedTerminal = Terminal<CrosstermBackend<SelectedWriter>>;
+type TerminalBuffer = BufWriter<Box<dyn Write + Send>>;
+
+/// Owns terminal resources from before initialization through the last flush.
+pub struct StdOutOrErrTerminal {
+    terminal: OwnedTerminal,
+    owner: TerminalOwner,
+    restored: bool,
+}
+
+impl StdOutOrErrTerminal {
+    fn cleanup(&mut self) -> io::Result<()> {
+        if std::mem::replace(&mut self.restored, true) {
+            return Ok(());
+        }
+        // RATIONALE: ratatui's destructor can show the cursor again (and log on
+        // failure). Retire its backend before our sole, best-effort cleanup;
+        // only that destructor uses the inert sink, never real terminal I/O.
+        let _backend = std::mem::replace(
+            self.terminal.backend_mut(),
+            CrosstermBackend::new(SelectedWriter::new(
+                Box::new(io::sink()),
+                Arc::new(AtomicBool::new(false)),
+            )),
+        );
+        self.owner.cleanup()
+    }
+}
+
+impl Drop for StdOutOrErrTerminal {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+
+struct TerminalOwner {
+    writer: SelectedWriter,
+    cancelled: Arc<AtomicBool>,
+    raw: bool,
+    screen: bool,
+    cursor: bool,
+    hook: Option<PanicHook>,
+    // A concrete function pointer keeps OS failures injectable without a driver trait.
+    raw_mode: fn(bool) -> io::Result<()>,
+}
+
+fn set_raw_mode(enabled: bool) -> io::Result<()> {
+    if enabled {
+        enable_raw_mode()
+    } else {
+        disable_raw_mode()
+    }
+}
+
+impl TerminalOwner {
+    fn new(writer: Box<dyn Write + Send>, cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            writer: SelectedWriter::new(writer, Arc::clone(&cancelled)),
+            cancelled,
+            raw: false,
+            screen: false,
+            cursor: false,
+            hook: None,
+            raw_mode: set_raw_mode,
+        }
+    }
+
+    fn cancel_on_error<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        if result.is_err() {
+            self.cancelled.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+
+    fn disable_raw(&mut self) -> io::Result<()> {
+        let result = if std::mem::take(&mut self.raw) {
+            (self.raw_mode)(false)
+        } else {
+            Ok(())
+        };
+        self.cancel_on_error(result)
+    }
+
+    fn leave(&mut self, rows: u16) -> io::Result<()> {
+        let raw = self.disable_raw();
+        let screen = if std::mem::take(&mut self.screen) {
+            leave_alternate_screen(&mut self.writer, rows)
+        } else {
+            Ok(())
+        };
+        raw.and(screen)
+    }
+
+    fn cleanup(&mut self) -> io::Result<()> {
+        // BufWriter::drop retries buffered writes. Discard pending data so an
+        // unsuccessful Enter/Hide cannot be replayed after Leave/Show.
+        let Some(buffered) = self.writer.inner.lock().unwrap_or_else(|e| e.into_inner()).take()
+        else {
+            return Ok(());
+        };
+        let (mut writer, _) = buffered.into_parts();
+        let active = self.raw || self.screen || self.cursor || self.hook.is_some();
+        let mut result = self.disable_raw();
+        if std::mem::take(&mut self.screen) {
+            let leave = queue!(writer, LeaveAlternateScreen);
+            result = result.and(leave);
+        }
+        if std::mem::take(&mut self.cursor) {
+            let finish = finish_restore(&mut writer);
+            result = result.and(finish);
+        } else if active {
+            let flush = writer.flush();
+            result = result.and(flush);
+        }
+        if !thread::panicking()
+            && let Some(hook) = self.hook.take()
+        {
+            std::panic::set_hook(hook);
+        }
+        // HAZARD: std forbids global hook mutation during unwinding. T04 owns
+        // central hook recovery; terminal resources above still get released.
+        self.cancel_on_error(result)
+    }
+}
+
+#[derive(Clone)]
+struct SelectedWriter {
+    inner: Arc<Mutex<Option<TerminalBuffer>>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl SelectedWriter {
+    fn new(writer: Box<dyn Write + Send>, cancelled: Arc<AtomicBool>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Some(BufWriter::new(writer)))),
+            cancelled,
+        }
+    }
+    fn cancel_on_error<T>(&self, result: io::Result<T>) -> io::Result<T> {
+        if result.is_err() {
+            self.cancelled.store(true, Ordering::SeqCst);
+        }
+        result
+    }
+}
+
+impl Write for SelectedWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let result = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .ok_or_else(|| io::Error::other("terminal retired"))?
+            .write(bytes);
+        self.cancel_on_error(result)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        let result = self
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .ok_or_else(|| io::Error::other("terminal retired"))?
+            .flush();
+        self.cancel_on_error(result)
+    }
+}
+
+impl Drop for TerminalOwner {
+    fn drop(&mut self) {
+        let _ = self.cleanup();
+    }
+}
+
+fn init_terminal(
+    mut owner: TerminalOwner,
+    terminal_ops: bool,
+    use_stdout: bool,
+    construct: impl FnOnce(CrosstermBackend<SelectedWriter>) -> io::Result<OwnedTerminal>,
+) -> Result<StdOutOrErrTerminal> {
+    let cancelled = Arc::clone(&owner.cancelled);
+    let result = (|| {
+        if terminal_ops {
+            (owner.raw_mode)(true)?;
+            owner.raw = true;
+            // Even a failed write/flush may already have entered the screen.
+            owner.screen = true;
+            owner.cursor = true;
+            enter_alternate_screen(&mut owner.writer)?;
+            owner.hook = Some(std::panic::take_hook());
+            std::panic::set_hook(Box::new(move |panic_info| {
+                let _ = disable_raw_mode();
+                let mut w: Box<dyn Write + Send> = if use_stdout {
+                    Box::new(stdout())
+                } else {
+                    Box::new(stderr())
+                };
+                let _ = execute!(w, LeaveAlternateScreen);
+                let _ = execute!(w, crossterm::cursor::Show);
+                println!("{:?}", panic_info);
+            }));
+        }
+        let terminal = construct(CrosstermBackend::new(owner.writer.clone()))?;
+        Ok(StdOutOrErrTerminal {
+            terminal,
+            owner,
+            restored: false,
+        })
+    })();
+    if result.is_err() {
+        cancelled.store(true, Ordering::SeqCst);
+    }
+    result
+}
 
 /// When `CONDOR_TEST_MODE=1` is set (testing / automation), skip
 /// terminal-specific operations (raw mode, alternate screen, keyboard input)
@@ -53,6 +267,20 @@ fn run_headless(stdout_is_terminal: bool, stderr_is_terminal: bool, test_mode: b
     test_mode || !(stdout_is_terminal || stderr_is_terminal)
 }
 
+fn selected_writer(use_stdout: bool) -> Box<dyn Write + Send> {
+    #[cfg(test)]
+    if let Some(writer) = tests::TEST_WRITER.with_borrow_mut(Option::take) {
+        return writer;
+    }
+    if is_test_mode() {
+        Box::new(io::sink())
+    } else if use_stdout {
+        Box::new(stdout())
+    } else {
+        Box::new(stderr())
+    }
+}
+
 fn enter_alternate_screen(writer: &mut impl Write) -> io::Result<()> {
     execute!(writer, EnterAlternateScreen)
 }
@@ -66,8 +294,9 @@ fn leave_alternate_screen(writer: &mut impl Write, rows: u16) -> io::Result<()> 
 }
 
 fn finish_restore(writer: &mut impl Write) -> io::Result<()> {
-    queue!(writer, crossterm::cursor::Show)?;
-    writer.flush()
+    let show = queue!(writer, crossterm::cursor::Show);
+    let flush = writer.flush();
+    show.and(flush)
 }
 
 /// Thread-safe container for sharing mutable progress state between a
@@ -138,10 +367,6 @@ pub trait TuiApp: Send + Sync + 'static {
     /// The progress snapshot shared between the producer and consumer threads.
     type State: Clone + Send + 'static;
 
-    /// The struct must have a field to store original panic hook as
-    /// Option<PanicHook>
-    fn original_panic_hook(&mut self) -> &mut Option<PanicHook>;
-
     /// The shared progress container backing this app.
     fn shared_progress(&self) -> &SharedProgress<Self::State>;
 
@@ -179,72 +404,37 @@ pub trait TuiApp: Send + Sync + 'static {
     /// headless paths). Used for post-run reports. Defaults to a no-op.
     fn after_loop(&mut self) {}
 
-    fn init(&mut self) -> Result<StdOutOrErrTerminal> {
+    fn init(&mut self, cancelled: Arc<AtomicBool>) -> Result<StdOutOrErrTerminal> {
         let use_stdout = stdout().is_terminal();
-
-        if !is_test_mode() {
-            enable_raw_mode()?;
-        }
-
-        let writer: Box<dyn Write + Send> = if is_test_mode() {
-            Box::new(io::sink())
-        } else if use_stdout {
-            Box::new(stdout())
-        } else {
-            Box::new(stderr())
-        };
-        let mut writer = BufWriter::new(writer);
-
-        if !is_test_mode() {
-            enter_alternate_screen(&mut writer)?;
-        }
-
-        let original_hook = std::panic::take_hook();
-        *self.original_panic_hook() = Some(original_hook);
-        std::panic::set_hook(Box::new(move |panic_info| {
-            if !is_test_mode() {
-                let _ = disable_raw_mode();
-                let mut w: Box<dyn Write + Send> = if use_stdout {
-                    Box::new(stdout())
-                } else {
-                    Box::new(stderr())
-                };
-                let _ = execute!(w, LeaveAlternateScreen);
-                let _ = execute!(w, crossterm::cursor::Show);
-            }
-            println!("{:?}", panic_info);
-        }));
-
-        let backend = CrosstermBackend::new(writer);
-        Ok(Terminal::new(backend)?)
+        init_terminal(
+            TerminalOwner::new(selected_writer(use_stdout), cancelled),
+            !is_test_mode(),
+            use_stdout,
+            Terminal::new,
+        )
     }
 
-    fn restore(&mut self, mut terminal: StdOutOrErrTerminal) -> Result<()> {
-        // Guarding on the stored hook also makes a repeat restore a no-op: a
-        // second call would otherwise install this app's own hook as the
-        // "original", losing the process-wide one.
-        if self.original_panic_hook().is_none() {
+    fn restore(&mut self, terminal: &mut StdOutOrErrTerminal) -> Result<()> {
+        if terminal.restored {
             return Ok(());
         }
-
-        if !is_test_mode() {
-            disable_raw_mode()?;
-            let (_columns, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-            leave_alternate_screen(terminal.backend_mut(), rows)?;
-            // RATIONALE: clear() queries the cursor through crossterm's stdout,
-            // even with a stderr backend. Fullscreen resize clears and resets
-            // the render buffers without sending that query to piped stdout.
-            terminal.resize(terminal.size()?.into())?;
-            terminal.draw(|f| self.render(f))?;
-            finish_restore(terminal.backend_mut())?;
+        let result = (|| -> Result<()> {
+            if !is_test_mode() {
+                let (_columns, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+                terminal.owner.leave(rows)?;
+                // RATIONALE: clear() queries the cursor through crossterm's stdout,
+                // even with a stderr backend. Fullscreen resize clears and resets
+                // the render buffers without sending that query to piped stdout.
+                terminal.terminal.resize(terminal.terminal.size()?.into())?;
+                terminal.terminal.draw(|f| self.render(f))?;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            terminal.owner.cancelled.store(true, Ordering::SeqCst);
         }
-
-        let _ = std::panic::take_hook();
-        if let Some(original) = self.original_panic_hook().take() {
-            std::panic::set_hook(original);
-        }
-
-        Ok(())
+        let cleanup = terminal.cleanup().map_err(Into::into);
+        result.and(cleanup)
     }
 
     /// End the process after a force quit.
@@ -330,61 +520,69 @@ pub trait TuiApp: Send + Sync + 'static {
             return Ok(());
         }
 
-        let mut terminal = self.init()?;
+        let mut terminal = self.init(Arc::clone(&cancelled))?;
         let stdout_is_terminal = stdout().is_terminal();
-        loop {
-            // Keyboard input is read here, never on a helper thread:
-            // crossterm's event reader is process-wide, and teardown's
-            // cursor position query (restore -> terminal.clear) must acquire
-            // it, so no other thread may hold it. The drain also ends when
-            // input is exhausted or no terminal can be read (`Err`).
-            while matches!(event::poll(Duration::ZERO), Ok(true)) {
-                if let Ok(TermEvent::Key(key)) = event::read()
-                    && self.handle_ctrl_c(key, &cancelled, stdout_is_terminal)
-                {
-                    if let Some(snapshot) = self.shared_progress().read_if_dirty() {
-                        self.on_snapshot(snapshot);
+        let result = (|| -> Result<()> {
+            loop {
+                // Keyboard input is read here, never on a helper thread:
+                // crossterm's event reader is process-wide, so no other thread may
+                // hold it. Teardown uses fullscreen resize, not a cursor query.
+                // The drain also ends when
+                // input is exhausted or no terminal can be read (`Err`).
+                while matches!(event::poll(Duration::ZERO), Ok(true)) {
+                    if let Ok(TermEvent::Key(key)) = event::read()
+                        && self.handle_ctrl_c(key, &cancelled, stdout_is_terminal)
+                    {
+                        if let Some(snapshot) = self.shared_progress().read_if_dirty() {
+                            self.on_snapshot(snapshot);
+                        }
+                        terminal.terminal.draw(|f| self.render(f))?;
+                        self.restore(&mut terminal)?;
+                        Self::force_quit();
                     }
-                    terminal.draw(|f| self.render(f))?;
-                    self.restore(terminal)?;
-                    Self::force_quit();
+                }
+
+                if let Some(snapshot) = self.shared_progress().read_if_dirty() {
+                    self.on_snapshot(snapshot);
+                }
+
+                if quit.load(Ordering::Acquire) {
+                    let snapshot = self.shared_progress().read();
+                    self.on_snapshot(snapshot);
+                    terminal.terminal.draw(|f| self.render(f))?;
+                    self.restore(&mut terminal)?;
+                    break;
+                }
+
+                match event_rx.recv_timeout(Duration::from_millis(33)) {
+                    Ok(AppEvent::Quit) => {
+                        if let Some(snapshot) = self.shared_progress().read_if_dirty() {
+                            self.on_snapshot(snapshot);
+                        }
+                        terminal.terminal.draw(|f| self.render(f))?;
+                        self.restore(&mut terminal)?;
+                        break;
+                    },
+                    Err(RecvTimeoutError::Timeout) => {
+                        terminal.terminal.draw(|f| self.render(f))?;
+                    },
+                    Err(RecvTimeoutError::Disconnected) => {
+                        if let Some(snapshot) = self.shared_progress().read_if_dirty() {
+                            self.on_snapshot(snapshot);
+                        }
+                        terminal.terminal.draw(|f| self.render(f))?;
+                        self.restore(&mut terminal)?;
+                        break;
+                    },
                 }
             }
-
-            if let Some(snapshot) = self.shared_progress().read_if_dirty() {
-                self.on_snapshot(snapshot);
-            }
-
-            if quit.load(Ordering::Acquire) {
-                let snapshot = self.shared_progress().read();
-                self.on_snapshot(snapshot);
-                terminal.draw(|f| self.render(f))?;
-                self.restore(terminal)?;
-                break;
-            }
-
-            match event_rx.recv_timeout(Duration::from_millis(33)) {
-                Ok(AppEvent::Quit) => {
-                    if let Some(snapshot) = self.shared_progress().read_if_dirty() {
-                        self.on_snapshot(snapshot);
-                    }
-                    terminal.draw(|f| self.render(f))?;
-                    self.restore(terminal)?;
-                    break;
-                },
-                Err(RecvTimeoutError::Timeout) => {
-                    terminal.draw(|f| self.render(f))?;
-                },
-                Err(RecvTimeoutError::Disconnected) => {
-                    if let Some(snapshot) = self.shared_progress().read_if_dirty() {
-                        self.on_snapshot(snapshot);
-                    }
-                    terminal.draw(|f| self.render(f))?;
-                    self.restore(terminal)?;
-                    break;
-                },
-            }
+            Ok(())
+        })();
+        if result.is_err() {
+            cancelled.store(true, Ordering::SeqCst);
         }
+        let cleanup = terminal.cleanup().map_err(Into::into);
+        result.and(cleanup)?;
 
         self.after_loop();
         Ok(())
@@ -398,12 +596,48 @@ mod tests {
     use super::*;
     use ratatui::{TerminalOptions, Viewport, layout::Rect};
 
+    thread_local! {
+        pub(super) static TEST_WRITER: std::cell::RefCell<Option<Box<dyn Write + Send>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    struct RenderFailureWriter {
+        writer: Box<dyn Write + Send>,
+        armed: Arc<AtomicBool>,
+        failed: bool,
+    }
+
+    impl Write for RenderFailureWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.armed.swap(false, Ordering::SeqCst) {
+                self.failed = true;
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "T03 render failure",
+                ));
+            }
+            self.writer.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            if self.failed {
+                return Err(io::Error::other("T03 secondary cleanup failure"));
+            }
+            self.writer.flush()
+        }
+    }
+
     #[derive(Default)]
     struct Recording {
         bytes: Vec<u8>,
         flushes: Vec<usize>,
         fail_write: bool,
         fail_flush: bool,
+        writes: usize,
+        fail_write_at: Option<usize>,
+        fail_flush_at: Option<usize>,
+        fail_bytes: Option<Vec<u8>>,
+        attempts: Vec<Vec<u8>>,
+        fail_show_flush: bool,
+        last_operation: Option<&'static str>,
     }
 
     #[derive(Clone, Default)]
@@ -412,7 +646,18 @@ mod tests {
     impl Write for Recorder {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             let mut recording = self.0.lock().unwrap();
-            if recording.fail_write {
+            recording.last_operation = Some("write");
+            recording.writes += 1;
+            recording.attempts.push(bytes.to_vec());
+            let matches = recording
+                .fail_bytes
+                .as_ref()
+                .is_some_and(|needle| bytes.windows(needle.len()).any(|part| part == needle));
+            if matches {
+                recording.fail_bytes = None;
+            }
+            if matches || recording.fail_write || recording.fail_write_at == Some(recording.writes)
+            {
                 return Err(io::Error::other("selected writer write failure"));
             }
             recording.bytes.extend_from_slice(bytes);
@@ -421,9 +666,13 @@ mod tests {
 
         fn flush(&mut self) -> io::Result<()> {
             let mut recording = self.0.lock().unwrap();
+            recording.last_operation = Some("flush");
             let len = recording.bytes.len();
             recording.flushes.push(len);
-            if recording.fail_flush {
+            if recording.fail_flush
+                || recording.fail_flush_at == Some(recording.flushes.len())
+                || (recording.fail_show_flush && recording.bytes.ends_with(b"\x1b[?25h"))
+            {
                 return Err(io::Error::other("selected writer flush failure"));
             }
             Ok(())
@@ -431,19 +680,19 @@ mod tests {
     }
 
     struct TestApp {
-        hook: Option<PanicHook>,
         progress: SharedProgress<()>,
         state: (),
         cancelled: bool,
+        render_failure: Option<Arc<AtomicBool>>,
     }
 
     impl TestApp {
         fn new() -> Self {
             Self {
-                hook: None,
                 progress: SharedProgress::new(()),
                 state: (),
                 cancelled: false,
+                render_failure: None,
             }
         }
     }
@@ -451,9 +700,6 @@ mod tests {
     impl TuiApp for TestApp {
         type State = ();
 
-        fn original_panic_hook(&mut self) -> &mut Option<PanicHook> {
-            &mut self.hook
-        }
         fn shared_progress(&self) -> &SharedProgress<()> {
             &self.progress
         }
@@ -476,6 +722,9 @@ mod tests {
             false
         }
         fn render(&self, frame: &mut Frame) {
+            if let Some(armed) = &self.render_failure {
+                armed.store(true, Ordering::SeqCst);
+            }
             frame.render_widget("T01-final-render", frame.area());
         }
     }
@@ -565,16 +814,315 @@ mod tests {
     #[test]
     #[ignore = "runs in an isolated controlling PTY via t01_real_pty_restores_selected_stream"]
     fn t01_pty_child() -> Result<()> {
+        if std::env::var_os("T01_PTY_STREAM").is_none() {
+            return Ok(());
+        }
         assert!(std::env::var_os("CONDOR_TEST_MODE").is_none());
         let use_stdout = std::env::var("T01_PTY_STREAM")? == "stdout";
         assert_eq!(stdout().is_terminal(), use_stdout);
         assert_eq!(stderr().is_terminal(), !use_stdout);
         println!("T01_BEGIN\npayload");
         let mut app = TestApp::new();
-        let mut terminal = app.init()?;
-        terminal.draw(|frame| app.render(frame))?;
-        app.restore(terminal)?;
+        let mut terminal = app.init(Arc::new(AtomicBool::new(false)))?;
+        terminal.terminal.draw(|frame| app.render(frame))?;
+        app.restore(&mut terminal)?;
         println!("T01_END");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn t03_real_pty_render_failure_restores_and_cancels() {
+        let output = std::process::Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/apps/t01_pty.py"))
+            .arg(std::env::current_exe().unwrap())
+            .arg("t03")
+            .output()
+            .expect("python3 is required for the Unix PTY regression test");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn t03_partial_init_releases_acquired_resources() {
+        let output = std::process::Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/apps/t01_pty.py"))
+            .arg(std::env::current_exe().unwrap())
+            .arg("matrix")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "isolated PTY ownership matrix"]
+    fn t03_ownership_child() -> Result<()> {
+        if std::env::var_os("T01_PTY_STREAM").is_none() {
+            return Ok(());
+        }
+        use std::sync::atomic::AtomicUsize;
+        static RAW_ON: AtomicUsize = AtomicUsize::new(0);
+        static RAW_OFF: AtomicUsize = AtomicUsize::new(0);
+        static RAW_FAIL_ON: AtomicBool = AtomicBool::new(false);
+        static RAW_FAIL_OFF: AtomicBool = AtomicBool::new(false);
+        fn raw_mode(enabled: bool) -> io::Result<()> {
+            if enabled {
+                RAW_ON.fetch_add(1, Ordering::SeqCst);
+                if RAW_FAIL_ON.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("T03 raw enable failure"));
+                }
+                enable_raw_mode()
+            } else {
+                RAW_OFF.fetch_add(1, Ordering::SeqCst);
+                disable_raw_mode()?;
+                if RAW_FAIL_OFF.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("T03 raw disable failure"));
+                }
+                Ok(())
+            }
+        }
+        let previous = std::panic::take_hook();
+        let hook_calls = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::clone(&hook_calls);
+        std::panic::set_hook(Box::new(move |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+        }));
+        for case in [
+            "raw",
+            "enter_write",
+            "enter_flush",
+            "construct",
+            "resize",
+            "final_draw",
+            "raw_cleanup",
+            "leave_cleanup",
+            "show_cleanup",
+            "flush_cleanup",
+            "restore_flush",
+            "broken",
+            "normal",
+            "inactive",
+            "unwind",
+        ] {
+            let recorder = Recorder::default();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            RAW_ON.store(0, Ordering::SeqCst);
+            RAW_OFF.store(0, Ordering::SeqCst);
+            RAW_FAIL_ON.store(case == "raw", Ordering::SeqCst);
+            RAW_FAIL_OFF.store(case == "raw_cleanup", Ordering::SeqCst);
+            {
+                let mut recording = recorder.0.lock().unwrap();
+                if case == "enter_flush" {
+                    recording.fail_flush_at = Some(1);
+                }
+                if case == "enter_write" {
+                    recording.fail_write_at = Some(1);
+                }
+            }
+            let mut owner = TerminalOwner::new(Box::new(recorder.clone()), Arc::clone(&cancelled));
+            owner.raw_mode = raw_mode;
+            let initialized = init_terminal(
+                owner,
+                case != "inactive",
+                stdout().is_terminal(),
+                |backend| {
+                    if case == "construct" {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "T03 terminal size failure",
+                        ));
+                    }
+                    Terminal::new(backend)
+                },
+            );
+            let mut app = TestApp::new();
+            let result = match initialized {
+                Err(error) => Err(error),
+                Ok(mut terminal) => {
+                    {
+                        let mut recording = recorder.0.lock().unwrap();
+                        recording.fail_bytes = match case {
+                            "resize" => Some(b"\x1b[2J".to_vec()),
+                            "final_draw" => Some(b"T01-final-render".to_vec()),
+                            "leave_cleanup" => Some(b"\x1b[?1049l".to_vec()),
+                            "show_cleanup" => Some(b"\x1b[?25h".to_vec()),
+                            _ => None,
+                        };
+                        recording.fail_flush = case == "flush_cleanup";
+                        recording.fail_show_flush = case == "restore_flush";
+                        recording.fail_write = case == "broken";
+                    }
+                    if case == "unwind" {
+                        assert!(
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let _terminal = terminal;
+                                panic!("T03 unwind");
+                            }))
+                            .is_err()
+                        );
+                        // Recovery of the global hook during unwinding is T04.
+                        let calls = Arc::clone(&hook_calls);
+                        std::panic::set_hook(Box::new(move |_| {
+                            calls.fetch_add(1, Ordering::SeqCst);
+                        }));
+                        Ok(())
+                    } else {
+                        let result = if matches!(
+                            case,
+                            "resize" | "final_draw" | "raw_cleanup" | "restore_flush" | "normal"
+                        ) {
+                            app.restore(&mut terminal)
+                        } else {
+                            terminal.cleanup().map_err(Into::into)
+                        };
+                        let snapshot = {
+                            let r = recorder.0.lock().unwrap();
+                            (r.bytes.clone(), r.flushes.clone(), r.writes)
+                        };
+                        app.restore(&mut terminal)?;
+                        terminal.cleanup()?;
+                        drop(terminal);
+                        let r = recorder.0.lock().unwrap();
+                        assert_eq!(
+                            snapshot,
+                            (r.bytes.clone(), r.flushes.clone(), r.writes),
+                            "{case}: restore/Drop not idempotent"
+                        );
+                        result
+                    }
+                },
+            };
+            assert!(
+                !crossterm::terminal::is_raw_mode_enabled()?,
+                "{case}: raw leaked"
+            );
+            assert_eq!(
+                RAW_ON.load(Ordering::SeqCst),
+                usize::from(case != "inactive"),
+                "{case}"
+            );
+            assert_eq!(
+                RAW_OFF.load(Ordering::SeqCst),
+                usize::from(!matches!(case, "raw" | "inactive")),
+                "{case}"
+            );
+            let success = matches!(case, "normal" | "inactive" | "unwind");
+            assert_eq!(result.is_ok(), success, "{case}: {result:?}");
+            assert_eq!(
+                cancelled.load(Ordering::SeqCst),
+                !success,
+                "{case}: cancellation"
+            );
+            if let Err(error) = result {
+                let error = error.downcast_ref::<io::Error>().expect("typed I/O cause retained");
+                let (kind, message) = match case {
+                    "raw" => (io::ErrorKind::Other, "T03 raw enable failure"),
+                    "construct" => (io::ErrorKind::NotFound, "T03 terminal size failure"),
+                    "raw_cleanup" => (io::ErrorKind::Other, "T03 raw disable failure"),
+                    "enter_flush" | "flush_cleanup" | "restore_flush" => {
+                        (io::ErrorKind::Other, "selected writer flush failure")
+                    },
+                    _ => (io::ErrorKind::Other, "selected writer write failure"),
+                };
+                assert_eq!(
+                    (error.kind(), error.to_string()),
+                    (kind, message.to_string()),
+                    "{case}"
+                );
+            }
+            let recording = recorder.0.lock().unwrap();
+            let bytes = String::from_utf8_lossy(&recording.bytes);
+            if matches!(case, "raw" | "inactive") {
+                assert!(
+                    recording.attempts.is_empty() && recording.flushes.is_empty(),
+                    "{case}"
+                );
+            } else {
+                for command in [b"\x1b[?1049l".as_slice(), b"\x1b[?25h".as_slice()] {
+                    let attempts = recording
+                        .attempts
+                        .iter()
+                        .filter(|bytes| bytes.windows(command.len()).any(|part| part == command))
+                        .count();
+                    assert_eq!(attempts, 1, "{case}: {command:?}: {bytes:?}");
+                }
+                assert_eq!(
+                    recording.last_operation,
+                    Some("flush"),
+                    "{case}: cleanup flush skipped"
+                );
+                if case == "enter_flush" {
+                    assert_eq!(
+                        bytes.matches("\x1b[?1049h").count(),
+                        1,
+                        "failed entry replayed after cleanup: {bytes:?}"
+                    );
+                }
+            }
+            drop(recording);
+            let before = hook_calls.load(Ordering::SeqCst);
+            assert!(std::panic::catch_unwind(|| panic!("T03 hook sentinel")).is_err());
+            assert_eq!(
+                hook_calls.load(Ordering::SeqCst),
+                before + 1,
+                "{case}: hook not restored"
+            );
+            println!("T03_CASE_{case}_PASSED");
+        }
+        std::panic::set_hook(previous);
+        println!("T03_MATRIX_PASSED");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "runs in an isolated controlling PTY via t03_real_pty_render_failure_restores_and_cancels"]
+    fn t03_pty_child() -> Result<()> {
+        let Ok(stream) = std::env::var("T01_PTY_STREAM") else {
+            return Ok(());
+        };
+        assert!(std::env::var_os("CONDOR_TEST_MODE").is_none());
+        let use_stdout = stream == "stdout";
+        let armed = Arc::new(AtomicBool::new(false));
+        let writer: Box<dyn Write + Send> = if use_stdout {
+            Box::new(stdout())
+        } else {
+            Box::new(stderr())
+        };
+        TEST_WRITER.with_borrow_mut(|slot| {
+            *slot = Some(Box::new(RenderFailureWriter {
+                writer,
+                armed: Arc::clone(&armed),
+                failed: false,
+            }));
+        });
+        let mut app = TestApp::new();
+        app.render_failure = Some(armed);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let error = app.run(rx, Arc::clone(&cancelled)).expect_err("forced render must fail");
+        drop(tx);
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(error.to_string(), "T03 render failure");
+        assert!(
+            cancelled.load(Ordering::SeqCst),
+            "display failure must cancel before returning"
+        );
+        println!("T03_ERROR_RETURNED_CANCEL_TRUE");
         Ok(())
     }
 
