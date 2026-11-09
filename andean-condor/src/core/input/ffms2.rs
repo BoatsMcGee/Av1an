@@ -82,8 +82,9 @@ fn set_output_format(
     frame_feed::validate_metadata(frame, &expected, 0)
 }
 
-/// av-decoders erases endianness from VideoDetails. Normalize initial BE only;
-/// do not convert on every read and conceal genuine mid-stream format changes.
+/// av-decoders erases endianness from VideoDetails. Select LE once for initial
+/// BE; the native setter also fixes output geometry and may resize later source
+/// changes per frame. Rust does not request conversion again on each read.
 fn normalize_output(decoder: &mut Ffms2Decoder) -> Result<()> {
     let details = decoder.video_details;
     frame_feed::output_format_id(&details)?;
@@ -467,6 +468,52 @@ mod tests {
         assert!(validate_output_dimensions(i32::MAX as usize, i32::MAX as usize).is_ok());
     }
 
+    fn i02_check_native_result(
+        index: usize,
+        converted: (i32, i32),
+        result: Result<()>,
+        packed: &[u8],
+    ) -> bool {
+        if converted == (32, 1080) {
+            result.expect("unchanged converted output must pack");
+            assert_eq!(&packed[..6], b"FRAME\n");
+            assert_eq!(packed.len(), 6 + 32 * 1080 * 3 / 2);
+            false
+        } else {
+            let message =
+                result.expect_err("changed converted output must be rejected").to_string();
+            assert!(message.contains(&format!("frame {index}")), "{message}");
+            assert!(message.contains("expected 32x1080"), "{message}");
+            assert!(
+                message.contains(&format!("got {}x{}", converted.0, converted.1)),
+                "{message}"
+            );
+            assert!(packed.is_empty(), "reject before writing any planes");
+            true
+        }
+    }
+
+    // These exercise the native test's result oracle without a decoder or raw
+    // views. Never remove native validation to manufacture an over-reading RED.
+    #[test]
+    #[should_panic(expected = "changed converted output must be rejected")]
+    fn i02_native_oracle_rejects_false_success_on_changed_header() {
+        i02_check_native_result(1, (32, 800), Ok(()), &vec![0; 6 + 32 * 1080 * 3 / 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "unchanged converted output must pack")]
+    fn i02_native_oracle_rejects_unexercised_decode_error() {
+        i02_check_native_result(
+            0,
+            (32, 1080),
+            Err(anyhow::anyhow!(
+                "FFMS2 could not decode frame 0: unavailable"
+            )),
+            &[],
+        );
+    }
+
     #[test]
     fn i02_native_changing_resolution_capability() {
         let directory = tempfile::tempdir().expect("changing resolution fixture");
@@ -528,38 +575,103 @@ mod tests {
                 return;
             },
         };
-        assert_eq!(native.video_details.total_frames, Some(4));
+        let indexed = native.video_details.total_frames.expect("FFMS2 indexed frame count");
+        assert!(indexed > 0, "fixture must have a baseline frame");
+        assert_eq!(
+            (native.video_details.width, native.video_details.height),
+            (32, 1080)
+        );
         let mut decoder = Decoder::from_decoder_impl(av_decoders::DecoderImpl::Ffms2(native))
             .expect("native decoder");
-        let mut mismatches = 0;
-        for index in 0..4 {
-            let mut packed = Vec::new();
-            match pack_frame(&mut decoder, index, &mut packed) {
-                Ok(()) => assert_eq!(packed.len(), 6 + 32 * 1080 * 3 / 2),
-                Err(error) => {
-                    let message = error.to_string();
-                    assert!(message.contains(&format!("frame {index}")), "{message}");
-                    assert!(packed.is_empty(), "reject before writing any planes");
-                    if message.contains("expected 32x1080") {
-                        assert!(message.contains("got 32x800"), "{message}");
-                        mismatches += 1;
-                    } else {
-                        assert!(message.contains("could not decode"), "{message}");
-                    }
-                    eprintln!("I02 native capability: {message}");
-                },
-            }
-        }
-        eprintln!(
-            "I02 native capability: {mismatches} converted-size mismatches rejected (4 frames indexed)"
+        let mut baseline = Vec::new();
+        let result = pack_frame(&mut decoder, 0, &mut baseline);
+        i02_check_native_result(0, (32, 1080), result, &baseline);
+        assert!(
+            baseline[6..6 + 32 * 1080].iter().all(|&value| value == 16),
+            "black baseline luma"
         );
+        assert!(
+            baseline[6 + 32 * 1080..].iter().all(|&value| value == 128),
+            "neutral baseline chroma"
+        );
+        eprintln!(
+            "I02 native capability: baseline frame 0 packed correctly; {indexed} frames indexed"
+        );
+        let mut exposed = 0;
+        let mut mismatches = 0;
+        let mut decode_errors = 0;
+        let mut encoded_change = None;
+        for index in 1..indexed {
+            let native = decoder.get_ffms2_impl().expect("native source");
+            // SAFETY: source is live and exclusive. Copy header geometry only,
+            // then retire the header before the packer's next native read.
+            let header = match unsafe { frame_feed::ffms2_header_at(native.video_source, index) } {
+                Ok(header) => header,
+                Err(error) => {
+                    decode_errors += 1;
+                    eprintln!(
+                        "I02 native capability: header decode refused frame {index}: {error}"
+                    );
+                    continue;
+                },
+            };
+            let encoded = (header.EncodedWidth, header.EncodedHeight);
+            // Independent oracle: only the native no-scaler sentinel uses the
+            // encoded shape. An encoded-only change is not converted drift.
+            let converted = match (header.ScaledWidth, header.ScaledHeight) {
+                (-1, -1) => encoded,
+                shape => shape,
+            };
+            assert!(matches!(encoded, (32, 1080) | (32, 800)), "{encoded:?}");
+            assert!(matches!(converted, (32, 1080) | (32, 800)), "{converted:?}");
+            if encoded != (32, 1080) {
+                encoded_change.get_or_insert(index);
+            }
+            exposed += usize::from(converted != (32, 1080));
+            let mut packed = Vec::new();
+            let result = pack_frame(&mut decoder, index, &mut packed);
+            mismatches += usize::from(i02_check_native_result(index, converted, result, &packed));
+        }
+        if exposed > 0 {
+            assert!(
+                mismatches > 0,
+                "exposed converted changes must exercise rejection"
+            );
+            assert_eq!(
+                mismatches, exposed,
+                "every exposed converted change must reject"
+            );
+            eprintln!(
+                "I02 native capability: {mismatches}/{exposed} exposed converted changes rejected without bytes; {decode_errors} header decode errors"
+            );
+        } else {
+            eprintln!(
+                "I02 native capability: NO changing-frame rejection exercised; {indexed} indexed, {decode_errors} later header decode errors, changed encoded frame {encoded_change:?}; decoder refused changes or kept converted output fixed"
+            );
+        }
         // Explicit output conversion is allowed to keep output fixed even when
         // the encoded shape changes. This must not be rejected as source drift.
-        let native = decoder.get_ffms2_impl().expect("native source");
-        set_output_format(native, 32, 1080, 8, ChromaSubsampling::Yuv420).expect("fixed output");
-        let mut packed = Vec::new();
-        pack_frame(&mut decoder, 2, &mut packed).expect("FFMS2 resizes changed encoded shape");
-        assert_eq!(packed.len(), 6 + 32 * 1080 * 3 / 2);
+        if let Some(index) = encoded_change {
+            let native = decoder.get_ffms2_impl().expect("native source");
+            set_output_format(native, 32, 1080, 8, ChromaSubsampling::Yuv420)
+                .expect("fixed output");
+            // SAFETY: live exclusive source; inspect header only before packing.
+            let header = unsafe { frame_feed::ffms2_header_at(native.video_source, index) }
+                .expect("fixed output header");
+            assert_eq!((header.EncodedWidth, header.EncodedHeight), (32, 800));
+            assert_eq!((header.ScaledWidth, header.ScaledHeight), (32, 1080));
+            let mut packed = Vec::new();
+            pack_frame(&mut decoder, index, &mut packed)
+                .expect("FFMS2 resizes changed encoded shape");
+            assert_eq!(packed.len(), 6 + 32 * 1080 * 3 / 2);
+            eprintln!(
+                "I02 native capability: fixed output accepted actual changed encoded frame {index}"
+            );
+        } else {
+            eprintln!(
+                "I02 native capability: no decoded changed encoded frame available for fixed-output control"
+            );
+        }
     }
 
     /// A pixel type the Frame-era writer serialises. `Pixel` is sealed to

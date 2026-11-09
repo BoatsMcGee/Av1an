@@ -763,11 +763,19 @@ mod tests {
             // av-decoders 0.12 does not accept these as native decoder output.
             assert!(output_format_id(&i02_details(5, 3, depth)).is_err());
         }
-        let mut details = i02_details(0, 3, 8);
+        let details = i02_details(0, 3, 8);
         let frame = i02_header(&data, 0, 3, "yuv420p");
         assert!(preflight_planes(&frame, &details, 1).is_err());
-        details.width = i32::MAX as usize + 1;
-        assert!(preflight_planes(&frame, &details, 1).is_err());
+        let frame = i02_header(&data, 5, 3, "yuv420p");
+        let mut details = i02_details(5, 3, 8);
+        assert!(validate_metadata(&frame, &details, 1).is_ok());
+        // On 64-bit, unchecked i32/u32 narrowing aliases this positive width
+        // back to 5. Use metadata only: never attempt an oversized plane view.
+        details.width = usize::try_from((1_u64 << 32) + 5).unwrap_or(i32::MAX as usize + 1);
+        if usize::BITS > 32 {
+            assert_eq!(details.width as i32, 5);
+        }
+        assert!(validate_metadata(&frame, &details, 1).is_err());
     }
 
     #[test]
