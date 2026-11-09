@@ -481,4 +481,142 @@ mod tests {
         compare_writers::<u16>(64, 32, ChromaSubsampling::Yuv444);
         compare_writers::<u16>(96, 48, ChromaSubsampling::Yuv422);
     }
+
+    /// Hand-sized Y4M planes bypass the tile-only FrameBuilder restrictions.
+    /// Floor-rounded native chroma loses edge samples and misaligns frame two.
+    fn i01_native_roundtrip(
+        (width, height): (usize, usize),
+        (chroma_width, chroma_height): (usize, usize),
+        colorspace: &str,
+        bit_depth: usize,
+        payload: usize,
+    ) {
+        let bytes = if bit_depth == 8 { 1 } else { 2 };
+        let geometry =
+            [(width, height), (chroma_width, chroma_height), (chroma_width, chroma_height)];
+        let frames: Vec<[Vec<u8>; 3]> = (0..2)
+            .map(|index| {
+                std::array::from_fn(|plane| {
+                    let (w, h) = geometry[plane];
+                    let mut data = Vec::with_capacity(w * h * bytes);
+                    for row in 0..h {
+                        for col in 0..w {
+                            // Distinguish U/V, both frames, final column and final row;
+                            // high-depth samples also require a nonzero high byte.
+                            let value = 16
+                                + plane * 40
+                                + index * 9
+                                + row % 7
+                                + col % 11
+                                + usize::from(col == w - 1) * 31
+                                + usize::from(row == h - 1) * 67
+                                + usize::from(bytes == 2) * 256;
+                            data.extend_from_slice(&(value as u16).to_le_bytes()[..bytes]);
+                        }
+                    }
+                    data
+                })
+            })
+            .collect();
+        let header = format!("YUV4MPEG2 W{width} H{height} F24:1 Ip A1:1 C{colorspace}\n");
+        let mut source = header.as_bytes().to_vec();
+        for planes in &frames {
+            assert_eq!(planes.iter().map(Vec::len).sum::<usize>(), payload);
+            source.extend_from_slice(b"FRAME\n");
+            for plane in planes {
+                source.extend_from_slice(plane);
+            }
+        }
+        let directory = tempfile::tempdir().expect("native odd-size fixture");
+        let path = directory.path().join("input.y4m");
+        std::fs::write(&path, &source).expect("write valid two-frame Y4M");
+        // Force FFMS2 rather than Decoder's extension-based Y4M shortcut.
+        let native = Ffms2Decoder::new(&path, None).expect("real FFMS2 opens odd-size Y4M");
+        let mut decoder = Decoder::from_decoder_impl(av_decoders::DecoderImpl::Ffms2(native))
+            .expect("native decoder");
+        let mut packed = header.as_bytes().to_vec();
+        for (index, expected) in frames.iter().enumerate() {
+            let start = packed.len();
+            pack_frame(&mut decoder, index, &mut packed).expect("production native packer");
+            assert_eq!(packed.len() - start, payload + 6, "frame {index} payload");
+
+            let native = decoder.get_ffms2_impl().expect("forced FFMS2 backend");
+            // SAFETY: the decoder owns this live source; the view is consumed
+            // before any subsequent read, with unmodified native metadata.
+            let raw = unsafe {
+                frame_feed::ffms2_frame_at(native.video_source, &native.video_details, index)
+            }
+            .expect("native raw planes");
+            assert_eq!(raw.bit_depth, bit_depth);
+            let (u, v) = raw.chroma.as_ref().expect("subsampled chroma");
+            for ((plane, &(w, h)), expected) in
+                [&raw.luma, u, v].into_iter().zip(&geometry).zip(expected)
+            {
+                assert_eq!((plane.width(), plane.height()), (w, h));
+                assert_eq!(plane.bytes_per_sample(), bytes);
+                for row in 0..h {
+                    assert_eq!(
+                        plane.row(row),
+                        &expected[row * w * bytes..(row + 1) * w * bytes]
+                    );
+                }
+                let last = &expected[expected.len() - bytes..];
+                let last = if bytes == 1 {
+                    u32::from(last[0])
+                } else {
+                    u32::from(u16::from_le_bytes([last[0], last[1]]))
+                };
+                assert_eq!(plane.sample(h - 1, w - 1), last);
+            }
+        }
+        assert_eq!(packed.len(), header.len() + 2 * (payload + 6));
+        let mut y4m = av_decoders::Y4mDecoder::new(packed.as_slice()).expect("packed Y4M header");
+        assert_eq!((y4m.get_width(), y4m.get_height()), (width, height));
+        assert_eq!(
+            format!("{:?}", y4m.get_colorspace()),
+            format!("C{colorspace}")
+        );
+        assert_eq!(y4m.get_bit_depth(), bit_depth);
+        for expected in &frames {
+            let frame = y4m.read_frame().expect("aligned complete Y4M frame");
+            for (actual, expected) in
+                [frame.get_y_plane(), frame.get_u_plane(), frame.get_v_plane()]
+                    .into_iter()
+                    .zip(expected)
+            {
+                assert_eq!(actual, expected);
+            }
+        }
+        assert!(
+            y4m.read_frame().is_err(),
+            "exactly two frames, no trailing data"
+        );
+    }
+
+    // Literal geometry/counts: 853*479 + 2*427*240 = 613547;
+    // 853*480 + 2*427*240 = 614400; 853*479 + 2*427*479 = 817653.
+    #[test]
+    fn i01_native_853x480_420() {
+        i01_native_roundtrip((853, 480), (427, 240), "420", 8, 614400);
+    }
+
+    #[test]
+    fn i01_native_853x479_420() {
+        i01_native_roundtrip((853, 479), (427, 240), "420", 8, 613547);
+    }
+
+    #[test]
+    fn i01_native_853x479_422() {
+        i01_native_roundtrip((853, 479), (427, 479), "422", 8, 817653);
+    }
+
+    #[test]
+    fn i01_native_853x479_420_high_depth() {
+        i01_native_roundtrip((853, 479), (427, 240), "420p10", 10, 1227094);
+    }
+
+    #[test]
+    fn i01_native_even_420_control() {
+        i01_native_roundtrip((64, 32), (32, 16), "420", 8, 3072);
+    }
 }

@@ -253,11 +253,11 @@ unsafe fn planes_of<'a>(
             bit_depth: details.bit_depth,
         });
     };
-    // `FrameBuilder` only builds frames whose luma dimensions divide evenly, so
-    // this floor division is exact and matches what the tile conversion reads.
+    // Raw FFMS2 planes include partial chroma blocks at odd luma edges;
+    // FrameBuilder's tile divisibility restrictions do not apply here.
     let (chroma_width, chroma_height) = (
-        width / NonZeroUsize::from(sub_x),
-        height / NonZeroUsize::from(sub_y),
+        width.div_ceil(NonZeroUsize::from(sub_x).get()),
+        height.div_ceil(NonZeroUsize::from(sub_y).get()),
     );
     let cb = plane(frame, 1, chroma_width, chroma_height, bytes, index)?;
     let cr = plane(frame, 2, chroma_width, chroma_height, bytes, index)?;
