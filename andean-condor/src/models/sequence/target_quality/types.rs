@@ -254,7 +254,7 @@ impl ProbeStrategy {
                 let max_length = end - start;
                 let length = match length {
                     SubsetProbeLength::Percentage(percentage) => {
-                        (percentage * max_length as f64).round() as usize
+                        (percentage.clamp(0.0, 100.0) / 100.0 * max_length as f64).round() as usize
                     },
                     SubsetProbeLength::Frames(frames) => (*frames as usize).min(max_length),
                 };
@@ -319,6 +319,9 @@ impl ProbeStatistic {
     pub fn calculate(&self, scores: &[f64]) -> f64 {
         let mut scores = scores.to_vec();
         scores.sort_by(f64::total_cmp);
+        if scores.is_empty() {
+            return 0.0;
+        }
         match self {
             ProbeStatistic::Mean => {
                 scores.iter().fold(0.0, |acc, score| acc + score) / scores.len() as f64
@@ -335,9 +338,11 @@ impl ProbeStatistic {
                 let sum_reciprocals: f64 = scores.iter().map(|&x| 1.0 / x).sum();
                 scores.len() as f64 / sum_reciprocals
             },
-            ProbeStatistic::Percentile(index) => *scores
-                .get((*index / 100.0 * scores.len() as f64) as usize)
-                .unwrap_or(&scores[0]),
+            ProbeStatistic::Percentile(index) => {
+                let last = scores.len().saturating_sub(1);
+                let rank = (*index / 100.0 * last as f64).round() as usize;
+                scores.get(rank.min(last)).copied().unwrap_or(0.0)
+            },
             ProbeStatistic::StandardDeviationDistance {
                 sigma,
             } => {
@@ -409,7 +414,13 @@ impl Default for QualityPass {
 
 #[cfg(test)]
 mod tests {
-    use super::QualityMetric;
+    use super::{
+        ProbeStatistic,
+        ProbeStrategy,
+        QualityMetric,
+        SubsetProbeLength,
+        SubsetProbePosition,
+    };
 
     /// A `condor.json` written before `gpu_id` existed must still load, or
     /// adding the field would invalidate every configuration in the wild.
@@ -453,5 +464,64 @@ mod tests {
                 "the gpu_id must survive a round trip unchanged"
             );
         }
+    }
+
+    #[test]
+    fn percentile_100_selects_the_maximum() {
+        let scores = [10.0, 20.0, 30.0, 40.0];
+
+        assert_eq!(ProbeStatistic::Percentile(0.0).calculate(&scores), 10.0);
+        assert_eq!(ProbeStatistic::Percentile(100.0).calculate(&scores), 40.0);
+        // Nearest-rank over the four elements: 50% of the three gaps is 1.5,
+        // which rounds to the third element.
+        assert_eq!(ProbeStatistic::Percentile(50.0).calculate(&scores), 30.0);
+    }
+
+    #[test]
+    fn an_empty_score_set_yields_zero_for_every_statistic() {
+        let empty: [f64; 0] = [];
+
+        for statistic in [
+            ProbeStatistic::Mean,
+            ProbeStatistic::Median,
+            ProbeStatistic::Harmonic,
+            ProbeStatistic::Percentile(50.0),
+            ProbeStatistic::Mode,
+            ProbeStatistic::Minimum,
+            ProbeStatistic::Maximum,
+            ProbeStatistic::RootMeanSquare,
+        ] {
+            assert_eq!(statistic.calculate(&empty), 0.0, "{statistic:?}");
+        }
+    }
+
+    #[test]
+    fn a_subset_percentage_outside_0_to_100_still_selects_frames() {
+        let strategy = ProbeStrategy::Subset {
+            position: SubsetProbePosition::End,
+            length:   SubsetProbeLength::Percentage(150.0),
+        };
+
+        // Clamped to 100%, so the whole range is selected rather than an
+        // empty or reversed one.
+        assert_eq!(strategy.frame_indices(0, 10), (0..10).collect::<Vec<_>>());
+
+        let strategy = ProbeStrategy::Subset {
+            position: SubsetProbePosition::End,
+            length:   SubsetProbeLength::Percentage(-50.0),
+        };
+        assert!(strategy.frame_indices(0, 10).is_empty());
+    }
+
+    /// A percentage is a share of the range, not a multiple of it: 25% of 100
+    /// frames is 25, not 2500.
+    #[test]
+    fn a_subset_percentage_is_a_share_of_the_range() {
+        let strategy = ProbeStrategy::Subset {
+            position: SubsetProbePosition::Start,
+            length:   SubsetProbeLength::Percentage(25.0),
+        };
+
+        assert_eq!(strategy.frame_indices(0, 100), (0..25).collect::<Vec<_>>());
     }
 }

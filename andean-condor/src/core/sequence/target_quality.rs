@@ -212,6 +212,14 @@ where
                 break;
             }
 
+            let metric_input = if let Some(input) = self.metric_input.as_mut() {
+                Some(input)
+            } else if let Some(input_model) = &config.metric_input {
+                Some(&mut Input::from_data(input_model)?)
+            } else {
+                None
+            };
+
             progress_tx.send(SequenceStatus::Whole(Status::Processing {
                 id:         DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Passes {
@@ -470,7 +478,7 @@ where
                 target_quality_directory,
                 &config,
                 input,
-                self.metric_input.as_mut(),
+                metric_input,
                 workers,
                 &scene_concatenator_config.method,
                 tasks.as_slice(),
@@ -1399,7 +1407,7 @@ impl TargetQuality {
                 );
                 completed_task.passes.push(QualityPass {
                     quantizer: task.encoder.quantizer().expect("quantizer exists"),
-                    scores: scores.drain(0..task.frame_indices.len()).collect(),
+                    scores: scores.drain(0..task.frame_indices.len().min(scores.len())).collect(),
                     bitrate,
                     started_on: task.passes.last().map_or_else(
                         || {
