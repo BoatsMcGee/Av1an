@@ -8,6 +8,8 @@ use crate::models::encoder::{cli_parameter::CLIParameter, photon_noise::PhotonNo
 
 pub mod cli_parameter;
 pub mod photon_noise;
+mod settings;
+pub use settings::EncoderSettingsError;
 
 #[derive(
     Debug,
@@ -174,8 +176,9 @@ impl EncoderBase {
         &self,
         pass: (u8, u8),
         first_pass_file_name: &str,
-    ) -> HashMap<String, CLIParameter> {
-        match self {
+    ) -> Result<HashMap<String, CLIParameter>, EncoderSettingsError> {
+        self.validate_pass(pass)?;
+        Ok(match self {
             EncoderBase::AOM => {
                 let mut parameters = HashMap::new();
                 match pass {
@@ -485,7 +488,7 @@ impl EncoderBase {
                 }
             },
             EncoderBase::FFmpeg => HashMap::new(),
-        }
+        })
     }
 
     #[inline]

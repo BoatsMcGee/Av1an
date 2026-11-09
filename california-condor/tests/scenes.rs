@@ -301,6 +301,11 @@ mod tests {
             .args(["scenes", "4", "set", "photon-noise", "800", "--chroma-noise", "200"])
             .assert()
             .success();
+        condor_cmd(&temp).args(["scenes", "3", "set", "passes", "2"]).assert().failure();
+        condor_cmd(&temp)
+            .args(["scenes", "3", "set", "params", "--rc 1 --tbr 1000 --keyint 48"])
+            .assert()
+            .success();
         condor_cmd(&temp).args(["scenes", "3", "set", "passes", "2"]).assert().success();
         condor_cmd(&temp)
             .args(["scenes", "0", "set", "ffmpeg-filter", "hflip"])
@@ -357,7 +362,7 @@ mod tests {
                 "encoder",
                 "svt-av1",
                 "--passes",
-                "3",
+                "1",
                 "--params",
                 "crf=16",
                 "--iso",
@@ -373,16 +378,23 @@ mod tests {
         assert_eq!(encoder.base().to_string(), "svt-av1");
         assert_eq!(
             encoder.passes(),
-            andean_condor::models::encoder::EncoderPasses::All(3)
+            andean_condor::models::encoder::EncoderPasses::All(1)
         );
         let photon_noise = encoder.photon_noise().expect("Photon Noise was set");
         assert_eq!(photon_noise.iso, 1200);
         assert_eq!(photon_noise.chroma_iso, Some(300));
         assert_eq!(encoder.ffmpeg_filter(), Some("crop=iw-16:ih-16"));
 
-        // A whole selection takes the same change, and reports the array.
-        let all = condor_cmd(&temp)
+        // Unsupported totals fail for the whole selection without saving.
+        let before = std::fs::read(&config_path).expect("snapshot");
+        condor_cmd(&temp)
             .args(["scenes", "-1", "set", "passes", "4"])
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read(&config_path).expect("unchanged"), before);
+        // A supported whole-selection edit reports the array.
+        let all = condor_cmd(&temp)
+            .args(["scenes", "-1", "set", "passes", "1"])
             .assert()
             .success();
         let printed = String::from_utf8_lossy(&all.get_output().stdout).into_owned();
@@ -397,7 +409,7 @@ mod tests {
 
         // `--verbose` prints every addressed scene's new value.
         let all = condor_cmd(&temp)
-            .args(["--verbose", "scenes", "-1", "set", "passes", "4"])
+            .args(["--verbose", "scenes", "-1", "set", "passes", "1"])
             .assert()
             .success();
         let printed = String::from_utf8_lossy(&all.get_output().stdout).into_owned();
@@ -410,7 +422,7 @@ mod tests {
         );
         assert!(
             load(&config_path).condor.scenes.iter().all(|scene| scene.encoder.passes()
-                == andean_condor::models::encoder::EncoderPasses::All(4)),
+                == andean_condor::models::encoder::EncoderPasses::All(1)),
             "the whole list took the pass count"
         );
 
@@ -428,7 +440,7 @@ mod tests {
             .assert()
             .failure();
         assert!(
-            stderr(chroma.get_output()).contains("--chroma-iso needs --iso"),
+            stderr(chroma.get_output()).contains("chroma Photon Noise requires luma Photon Noise"),
             "a chroma ISO alone is rejected"
         );
         let outside = condor_cmd(&temp)

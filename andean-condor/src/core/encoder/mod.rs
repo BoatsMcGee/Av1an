@@ -41,6 +41,7 @@ const NULL_OUTPUT: &str = if cfg!(windows) { "nul" } else { "/dev/null" };
 impl Encoder {
     #[inline]
     pub fn validate(&self) -> Result<()> {
+        self.validate_settings()?;
         which::which(self.executable())?;
 
         Ok(())
@@ -97,21 +98,23 @@ impl Encoder {
         pass: (u8, u8),
         output: &PathBuf,
         clip_info: &ClipInfo,
-    ) -> Vec<String> {
+    ) -> Result<Vec<String>> {
+        self.validate_settings()?;
+        self.validate_pass_settings(pass)?;
         let output_path = output.to_str().expect("Output path should exist");
         let first_pass_file_name = output
             .file_stem()
             .expect("Output path is a file with an extension")
             .to_str()
             .expect("Output path is not empty");
-        let pass_parameters = self.base().pass_parameters(pass, first_pass_file_name);
+        let pass_parameters = self.base().pass_parameters(pass, first_pass_file_name)?;
         let color_parameters = if self.append_color_data() {
             color_data::color_parameters(self.base(), clip_info)
         } else {
             HashMap::new()
         };
 
-        match self {
+        Ok(match self {
             Encoder::AOM { options, .. } => {
                 let mut parameters = ["-".to_owned()].to_vec();
                 let mut params = pass_parameters;
@@ -417,7 +420,7 @@ impl Encoder {
                 parameters.push(output_path.to_owned());
                 parameters
             },
-        }
+        })
     }
 
     #[inline]
@@ -429,6 +432,7 @@ impl Encoder {
         end_frame: usize,
         progress_tx: mpsc::Sender<EncodeProgress>,
     ) -> Result<EncoderResult> {
+        self.validate_settings()?;
         match self.passes() {
             EncoderPasses::All(1) => Ok(self.encode_pass_with_input(
                 input,
@@ -450,7 +454,7 @@ impl Encoder {
                 let clip_info = input.clip_info()?;
                 let mut result = EncoderResult {
                     encoder: self.base(),
-                    parameters: self.parameters_with_output((1, total), output, &clip_info),
+                    parameters: self.parameters_with_output((1, total), output, &clip_info)?,
                     status: std::process::ExitStatus::default(),
                     stdout: StringOrBytes::from(Vec::new()),
                     stderr: StringOrBytes::from(Vec::new()),
@@ -482,6 +486,8 @@ impl Encoder {
         pass: (u8, u8),
         progress_tx: mpsc::Sender<EncodeProgress>,
     ) -> Result<EncoderResult> {
+        self.validate_settings()?;
+        self.validate_pass_settings(pass)?;
         // TODO:
         // - Report mapped errors
         // - Report CPU, memory, disk usage - Performance testing required
@@ -495,7 +501,7 @@ impl Encoder {
 
         let mut system = sysinfo::System::new();
         let mut encoder = Command::new(self.executable())
-            .args(self.parameters_with_output(pass, output, &clip_info))
+            .args(self.parameters_with_output(pass, output, &clip_info)?)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -613,7 +619,7 @@ impl Encoder {
 
         let encoder_result = EncoderResult {
             encoder: self.base(),
-            parameters: self.parameters_with_output(pass, output, &clip_info),
+            parameters: self.parameters_with_output(pass, output, &clip_info)?,
             status: encoder_output.status,
             stdout: StringOrBytes::from(encoder_output.stdout),
             stderr: stderr_output.lock().expect("mutex should acquire lock").clone().into(),
@@ -643,6 +649,7 @@ impl Encoder {
         progress_tx: mpsc::Sender<EncodeProgress>,
         clip_info: &ClipInfo,
     ) -> Result<EncoderResult> {
+        self.validate_settings()?;
         match self.passes() {
             EncoderPasses::All(1) => {
                 progress_tx.send(EncodeProgress {
@@ -684,7 +691,7 @@ impl Encoder {
                 }
                 let mut result = EncoderResult {
                     encoder: self.base(),
-                    parameters: self.parameters_with_output((1, total), output, clip_info),
+                    parameters: self.parameters_with_output((1, total), output, clip_info)?,
                     status: std::process::ExitStatus::default(),
                     stdout: StringOrBytes::from(Vec::new()),
                     stderr: StringOrBytes::from(Vec::new()),
@@ -727,6 +734,8 @@ impl Encoder {
         progress_tx: mpsc::Sender<EncodeProgress>,
         clip_info: &ClipInfo,
     ) -> Result<EncoderResult> {
+        self.validate_settings()?;
+        self.validate_pass_settings(pass)?;
         // TODO:
         // - Report mapped errors
         // - Report CPU, memory, disk usage - Done-ish
@@ -739,7 +748,7 @@ impl Encoder {
         // println!("Encoding with params: {:?}", self.parameters(pass,
         // output)); let mut system = sysinfo::System::new();
         let mut encoder = Command::new(self.executable())
-            .args(self.parameters_with_output(pass, output, clip_info))
+            .args(self.parameters_with_output(pass, output, clip_info)?)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -918,7 +927,7 @@ impl Encoder {
 
         let encoder_result = EncoderResult {
             encoder: self.base(),
-            parameters: self.parameters_with_output(pass, output, clip_info),
+            parameters: self.parameters_with_output(pass, output, clip_info)?,
             status: encoder_output.status,
             stdout: StringOrBytes::from(encoder_output.stdout),
             stderr: stderr_output.lock().expect("mutex should acquire lock").clone().into(),
@@ -954,6 +963,7 @@ impl Encoder {
         transfer_function: TransferFunction,
         color_range: Option<ColorRange>,
     ) -> Result<Option<(String, GrainTableSegment)>> {
+        self.validate_settings()?;
         let photon_noise = match self {
             Encoder::AOM { photon_noise, .. } => photon_noise.as_ref(),
             Encoder::RAV1E { photon_noise, .. } => photon_noise.as_ref(),
@@ -1001,21 +1011,12 @@ impl Encoder {
             params.scaling_points_cb = chroma_params.scaling_points_cb;
         }
         if let Some(cy) = &photon_noise.c_y {
-            if cy.len() > 24 {
-                anyhow::bail!("c_y must be at most 24 coefficients");
-            }
             params.ar_coeffs_y = arrayvec::ArrayVec::<i8, 24>::from_iter(cy.iter().copied());
         }
         if let Some(ccb) = &photon_noise.ccb {
-            if ccb.len() > 25 {
-                anyhow::bail!("ccb must be at most 25 coefficients");
-            }
             params.ar_coeffs_cb = arrayvec::ArrayVec::<i8, 25>::from_iter(ccb.iter().copied());
         }
         if let Some(ccr) = &photon_noise.ccr {
-            if ccr.len() > 25 {
-                anyhow::bail!("ccr must be at most 25 coefficients");
-            }
             params.ar_coeffs_cr = arrayvec::ArrayVec::<i8, 25>::from_iter(ccr.iter().copied());
         }
 
@@ -1490,6 +1491,100 @@ mod tests {
 
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn c04_public_preflight_before_spawn_or_receive() {
+        use std::{os::unix::fs::PermissionsExt, time::Duration};
+        let temp = tempfile::tempdir().expect("fixture");
+        let fake = temp.path().join("encoder");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf spawned > \"$C04_DIR/spawned\"\nexit 42\n",
+        )
+        .expect("fake");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+            .expect("executable");
+        std::fs::write(temp.path().join("blank.vpy"), "from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=64,height=64,length=1,format=YUV420P8).set_output()\n").expect("script");
+        for route in ["input", "input-pass", "stream", "stream-pass", "tuple-input", "tuple-stream"]
+        {
+            let mut child = Command::new(std::env::current_exe().expect("test binary"))
+                .args(["--exact", "core::encoder::tests::c04_preflight_child", "--nocapture"])
+                .env("C04_DIR", temp.path())
+                .env("C04_ROUTE", route)
+                .spawn()
+                .expect("watchdog child");
+            let start = Instant::now();
+            let status = loop {
+                if let Some(status) = child.try_wait().expect("wait") {
+                    break status;
+                }
+                if start.elapsed() > Duration::from_secs(5) {
+                    child.kill().expect("kill blocked child");
+                    child.wait().expect("reap blocked child");
+                    panic!("{route} blocked before validation");
+                }
+                thread::sleep(Duration::from_millis(10));
+            };
+            assert!(status.success(), "{route}: child failed");
+            assert!(
+                !temp.path().join("spawned").exists(),
+                "{route}: encoder spawned"
+            );
+            assert!(
+                !temp.path().join("out.ivf").exists(),
+                "{route}: output created"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c04_preflight_child() {
+        let Some(dir) = std::env::var_os("C04_DIR") else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        let route = std::env::var("C04_ROUTE").expect("route");
+        let mut encoder = Encoder::default_from_base(&EncoderBase::AOM, false);
+        encoder.set_executable(Some(dir.join("encoder")));
+        let pass = if route.starts_with("tuple") {
+            (3, 3)
+        } else {
+            (1, 1)
+        };
+        *encoder.passes_mut().expect("passes") =
+            EncoderPasses::All(if route.starts_with("tuple") { 1 } else { 0 });
+        let (tx, _rx) = mpsc::channel();
+        let output = dir.join("out.ivf");
+        let result = if route.contains("input") {
+            let model = crate::models::input::Input::VapourSynthScript {
+                source: crate::models::input::VapourSynthScriptSource::Path(dir.join("blank.vpy")),
+                variables: HashMap::new(),
+                index: 0,
+                filters: vec![],
+                stream_concurrently: false,
+            };
+            let mut input = Input::from_data(&model).expect("blank input");
+            if route == "input" {
+                encoder.encode_with_input(&mut input, &output, 0, 1, tx)
+            } else {
+                encoder.encode_pass_with_input(&mut input, &output, 0, 1, pass, tx)
+            }
+        } else {
+            let (_sender, receiver) = crossbeam_channel::unbounded();
+            // Keep the sender alive: a misplaced receive must trip the outer watchdog.
+            let result = if route == "stream" {
+                encoder.encode_with_stream(receiver, &output, tx, &clip_info())
+            } else {
+                encoder.encode_pass_with_stream(pass, receiver, &output, tx, &clip_info())
+            };
+            drop(_sender);
+            result
+        };
+        let error = result.expect_err("invalid settings must fail before encoding");
+        assert!(error.to_string().contains("pass"), "{error:#}");
+    }
+
     fn clip_info() -> ClipInfo {
         ClipInfo {
             num_frames: 24,
@@ -1509,7 +1604,9 @@ mod tests {
     }
 
     fn parameters(encoder: &Encoder) -> Vec<String> {
-        encoder.parameters_with_output((1, 1), &PathBuf::from("output.ivf"), &clip_info())
+        encoder
+            .parameters_with_output((1, 1), &PathBuf::from("output.ivf"), &clip_info())
+            .expect("valid settings")
     }
 
     /// The value of `flag` in an argv vector built with a separate-value
@@ -1580,8 +1677,9 @@ mod tests {
             ..clip_info()
         };
 
-        let parameters =
-            encoder.parameters_with_output((1, 1), &PathBuf::from("output.hevc"), &clip_info);
+        let parameters = encoder
+            .parameters_with_output((1, 1), &PathBuf::from("output.hevc"), &clip_info)
+            .expect("valid settings");
         assert_eq!(value_of(&parameters, "--max-cll"), Some("400,200"));
     }
 
@@ -1592,9 +1690,13 @@ mod tests {
             .passes_mut()
             .expect("svt-av1 takes passes")
             .clone_from(&EncoderPasses::All(2));
+        encoder
+            .parameters_mut()
+            .insert("rc".into(), CLIParameter::new_number("--", " ", 1.0));
 
-        let parameters =
-            encoder.parameters_with_output((1, 2), &PathBuf::from("output.ivf"), &clip_info());
+        let parameters = encoder
+            .parameters_with_output((1, 2), &PathBuf::from("output.ivf"), &clip_info())
+            .expect("VBR two-pass");
 
         // A two-pass SVT-AV1 command carries `--pass 1`; the colour data is
         // merged after it, and both are present.
@@ -1605,14 +1707,16 @@ mod tests {
     #[test]
     fn ffmpeg_colour_data_precedes_the_input() {
         let encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, true);
-        let parameters = encoder.parameters_with_output(
-            (1, 1),
-            &PathBuf::from("output.mkv"),
-            &ClipInfo {
-                chroma_location: Some(av_decoders::ChromaLocation::Left),
-                ..clip_info()
-            },
-        );
+        let parameters = encoder
+            .parameters_with_output(
+                (1, 1),
+                &PathBuf::from("output.mkv"),
+                &ClipInfo {
+                    chroma_location: Some(av_decoders::ChromaLocation::Left),
+                    ..clip_info()
+                },
+            )
+            .expect("valid settings");
         let input = parameters
             .iter()
             .position(|argument| argument == "-i")

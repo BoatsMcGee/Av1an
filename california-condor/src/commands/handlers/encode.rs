@@ -10,7 +10,6 @@ use andean_condor::{
 use anyhow::{Result, bail};
 use clap::{Subcommand, value_parser};
 use serde_json::{Value, json};
-use thiserror::Error;
 
 use crate::{
     commands::{
@@ -64,6 +63,7 @@ pub fn encode_handler(
         workers,
     )?;
 
+    configuration.validate_encoder_settings()?;
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))
@@ -140,37 +140,65 @@ pub fn configure_encoder(
     ffmpeg_filter: Option<&str>,
     append_color_data: Option<bool>,
 ) -> Result<()> {
-    if let Some(method) = method {
-        *encoder = Encoder::default_from_base(&method.as_encoder_base(), false);
-    }
-    if let Some(passes) = passes
-        && let Some(encoder_passes) = encoder.passes_mut()
-    {
+    let mut candidate = method.map_or_else(
+        || encoder.clone(),
+        |method| Encoder::default_from_base(&method.as_encoder_base(), false),
+    );
+    let base = candidate.base();
+    if let Some(passes) = passes {
+        let Some(encoder_passes) = candidate.passes_mut() else {
+            bail!(EncodeConfigError::PassesNotSupported(base));
+        };
         *encoder_passes = EncoderPasses::All(passes);
     }
     if let Some(params) = params {
         let parameters = EncoderParamsParser::parse_string(params)?;
-        encoder.parameters_mut().extend(parameters);
+        if base == EncoderBase::SVTAV1
+            && !parameters.contains_key("crf")
+            && (parameters.contains_key("cqp")
+                || parameters.get("rc").is_some_and(|p| {
+                    matches!(p.to_string_value().as_str(), "1" | "2" | "vbr" | "cbr")
+                }))
+            && candidate.parameters().get("crf") == base.default_parameters().get("crf")
+        {
+            // An explicit mode change replaces only the stock CRF, not custom quality settings.
+            candidate.parameters_mut().remove("crf");
+        }
+        candidate.parameters_mut().extend(parameters);
     }
-    if let Some(iso) = photon_noise {
-        // TODO: Support chroma noise only
-        encoder.set_photon_noise(Some(PhotonNoise {
-            iso,
-            chroma_iso: chroma_noise,
-            width: None,
-            height: None,
-            c_y: None,
-            ccb: None,
-            ccr: None,
-        }));
+    if photon_noise.is_some() || chroma_noise.is_some() {
+        if !base.supports_photon_noise() {
+            bail!(EncodeConfigError::PhotonNoiseNotSupported(base));
+        }
+        let mut noise = if let Some(iso) = photon_noise {
+            PhotonNoise {
+                iso,
+                chroma_iso: chroma_noise,
+                width: None,
+                height: None,
+                c_y: None,
+                ccb: None,
+                ccr: None,
+            }
+        } else {
+            candidate.photon_noise().cloned().ok_or(EncodeConfigError::ChromaWithoutLuma)?
+        };
+        if let Some(chroma) = chroma_noise {
+            noise.chroma_iso = Some(chroma);
+        }
+        candidate.set_photon_noise(Some(noise));
     }
     if let Some(ffmpeg_filter) = ffmpeg_filter {
-        encoder.set_ffmpeg_filter(Some(ffmpeg_filter.to_owned()));
+        if base == EncoderBase::FFmpeg {
+            bail!(EncodeConfigError::FfmpegFilterNotSupported(base));
+        }
+        candidate.set_ffmpeg_filter(Some(ffmpeg_filter.to_owned()));
     }
     if let Some(append_color_data) = append_color_data {
-        encoder.set_append_color_data(append_color_data);
+        candidate.set_append_color_data(append_color_data);
     }
-
+    candidate.validate_settings()?;
+    *encoder = candidate;
     Ok(())
 }
 
@@ -272,17 +300,7 @@ pub enum EncodeSet {
 pub type EncodeAction = ConfigAction<EncodeKey, EncodeSet>;
 
 /// Everything that can make a Parallel Encoder or Encoder setting unusable.
-#[derive(Debug, Error)]
-pub enum EncodeConfigError {
-    #[error("the {0} encoder is single-pass only and does not take a pass count")]
-    PassesNotSupported(EncoderBase),
-    #[error("the {0} encoder does not support Photon Noise")]
-    PhotonNoiseNotSupported(EncoderBase),
-    #[error(
-        "the {0} encoder does not take --ffmpeg-filter; pass `-vf` through its parameters instead"
-    )]
-    FfmpegFilterNotSupported(EncoderBase),
-}
+pub use andean_condor::models::encoder::EncoderSettingsError as EncodeConfigError;
 
 /// The `condor encode` configuration section.
 pub struct EncodeCrud;
@@ -394,11 +412,16 @@ impl ConfigCommand for EncodeCrud {
                 )
             },
             EncodeSet::Passes { value } => {
-                let base = configuration.condor.encoder.base();
-                let Some(passes) = configuration.condor.encoder.passes_mut() else {
-                    bail!(EncodeConfigError::PassesNotSupported(base));
-                };
-                *passes = EncoderPasses::All(*value);
+                configure_encoder(
+                    &mut configuration.condor.encoder,
+                    None,
+                    Some(*value),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )?;
                 PropertyChange::new("passes", configuration.condor.encoder.passes())
             },
             EncodeSet::Params { params } => {
@@ -415,10 +438,6 @@ impl ConfigCommand for EncodeCrud {
                 PropertyChange::new("params", configuration.condor.encoder.parameters())
             },
             EncodeSet::PhotonNoise { iso, chroma_noise } => {
-                let base = configuration.condor.encoder.base();
-                if !base.supports_photon_noise() {
-                    bail!(EncodeConfigError::PhotonNoiseNotSupported(base));
-                }
                 configure_encoder(
                     &mut configuration.condor.encoder,
                     None,
@@ -432,10 +451,6 @@ impl ConfigCommand for EncodeCrud {
                 PropertyChange::new("photon-noise", configuration.condor.encoder.photon_noise())
             },
             EncodeSet::FfmpegFilter { filter } => {
-                let base = configuration.condor.encoder.base();
-                if base == EncoderBase::FFmpeg {
-                    bail!(EncodeConfigError::FfmpegFilterNotSupported(base));
-                }
                 configure_encoder(
                     &mut configuration.condor.encoder,
                     None,
@@ -593,6 +608,118 @@ mod tests {
         test_helpers::{check_basic_config, check_input, default_config, get_test_video},
         utils::hash_path::hash_path,
     };
+
+    #[test]
+    fn c04_invalid_edits_are_atomic() {
+        for (method, passes, params, noise, chroma, filter) in [
+            (Some(EncoderMethod::X264), None, None, Some(100), None, None),
+            (Some(EncoderMethod::FFmpeg), Some(1), None, None, None, None),
+            (
+                Some(EncoderMethod::FFmpeg),
+                None,
+                None,
+                None,
+                None,
+                Some("hflip"),
+            ),
+            (None, None, None, None, Some(100), None),
+            (None, Some(3), None, None, None, None),
+            (None, None, Some("--crf NaN"), None, None, None),
+            (Some(EncoderMethod::SVTAV1), Some(2), None, None, None, None),
+            (
+                Some(EncoderMethod::SVTAV1),
+                None,
+                Some("--rc 1 --crf 25"),
+                None,
+                None,
+                None,
+            ),
+        ] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::AOM, false);
+            let before = encoder.clone();
+            let result = configure_encoder(
+                &mut encoder,
+                method.as_ref(),
+                passes,
+                params,
+                noise,
+                chroma,
+                filter,
+                Some(false),
+            );
+            assert!(
+                result.is_err(),
+                "accepted {method:?}/{passes:?}/{params:?}/{noise:?}/{chroma:?}/{filter:?}"
+            );
+            assert_eq!(encoder, before, "failed edit changed the original");
+        }
+    }
+
+    #[test]
+    fn c04_switch_retains_explicit_controls_and_chroma_updates_luma() {
+        let mut encoder = Encoder::default_from_base(&EncoderBase::X264, false);
+        configure_encoder(
+            &mut encoder,
+            Some(&EncoderMethod::RAV1E),
+            Some(2),
+            Some("--speed 10"),
+            Some(0),
+            Some(50),
+            Some("hflip"),
+            Some(false),
+        )
+        .expect("supported switch");
+        assert_eq!(encoder.base(), EncoderBase::RAV1E);
+        assert_eq!(encoder.passes(), EncoderPasses::All(2));
+        assert_eq!(encoder.speed().as_deref(), Some("10"));
+        assert_eq!(encoder.ffmpeg_filter(), Some("hflip"));
+        assert!(!encoder.append_color_data());
+        let mut noise = encoder.photon_noise().expect("luma").clone();
+        noise.c_y = Some(vec![1, 2]);
+        encoder.set_photon_noise(Some(noise.clone()));
+        configure_encoder(&mut encoder, None, None, None, None, Some(70), None, None)
+            .expect("chroma update");
+        noise.chroma_iso = Some(70);
+        assert_eq!(encoder.photon_noise(), Some(&noise));
+    }
+
+    #[test]
+    fn c04_explicit_svt_mode_change_replaces_only_stock_crf() {
+        for params in
+            ["--rc 1 --tbr 1000 --keyint 48", "--rc vbr --tbr 1M --keyint 2s", "--cqp 25.25"]
+        {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+            configure_encoder(
+                &mut encoder,
+                None,
+                None,
+                Some(params),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("supported explicit mode");
+            assert!(!encoder.parameters().contains_key("crf"));
+        }
+        for params in ["--rc 1 --crf 25", "--crf 25 --rc 1", "--rc 2 --cqp 25", "--crf 25 --cqp 25"]
+        {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+            let before = encoder.clone();
+            configure_encoder(
+                &mut encoder,
+                None,
+                None,
+                Some(params),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect_err("explicit conflict");
+            assert_eq!(encoder, before);
+        }
+    }
 
     #[test]
     fn encode_default_config() {

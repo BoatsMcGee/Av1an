@@ -179,6 +179,15 @@ impl Configuration {
         Ok(())
     }
 
+    /// Checks global and per-scene encoders before CLI edits are saved or workers start.
+    pub(crate) fn validate_encoder_settings(&self) -> Result<()> {
+        self.condor.encoder.validate_settings()?;
+        for scene in &self.condor.scenes {
+            scene.encoder.validate_settings()?;
+        }
+        Ok(())
+    }
+
     #[inline]
     pub fn save_data(data: &Configuration, path: &Path) -> Result<(), ConfigError> {
         let mut buffer = vec![];

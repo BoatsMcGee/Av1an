@@ -2,7 +2,7 @@
 //! encoder edits, resets, removals and insertions.
 
 use andean_condor::models::{
-    encoder::{Encoder, EncoderBase, EncoderPasses},
+    encoder::Encoder,
     scene::{Scene, SubScene},
     sequence::{
         parallel_encoder::ParallelEncoderData, quality_check::QualityCheckData,
@@ -20,10 +20,7 @@ use super::{
 use crate::{
     commands::{
         config::Toggle,
-        handlers::{
-            encode::{EncodeConfigError, configure_encoder},
-            warn_missing_path,
-        },
+        handlers::{encode::configure_encoder, warn_missing_path},
     },
     configuration::{CliSequenceData, Configuration},
     scenes::{
@@ -63,22 +60,6 @@ pub(super) fn apply_set(
             ffmpeg_filter,
             append_color_data,
         } => {
-            if chroma_iso.is_some() && iso.is_none() {
-                bail!(ScenesConfigError::ChromaIsoNeedsIso);
-            }
-            // Capability is checked against the encoder the scene is about to
-            // have, and before anything is written, so an unsupported flag
-            // never reaches the file.
-            let base = encoder.as_encoder_base();
-            if passes.is_some() && Encoder::default_from_base(&base, false).passes_mut().is_none() {
-                bail!(EncodeConfigError::PassesNotSupported(base));
-            }
-            if iso.is_some() && !base.supports_photon_noise() {
-                bail!(EncodeConfigError::PhotonNoiseNotSupported(base));
-            }
-            if ffmpeg_filter.is_some() && base == EncoderBase::FFmpeg {
-                bail!(EncodeConfigError::FfmpegFilterNotSupported(base));
-            }
             if let Some(path) = executable {
                 warn_missing_path("encoder executable", path);
             }
@@ -112,11 +93,16 @@ pub(super) fn apply_set(
         },
         ScenesSet::Passes { value } => {
             let scene = require_scene_mut(scenes, index)?;
-            let base = scene.encoder.base();
-            let Some(passes) = scene.encoder.passes_mut() else {
-                bail!(EncodeConfigError::PassesNotSupported(base));
-            };
-            *passes = EncoderPasses::All(*value);
+            configure_encoder(
+                &mut scene.encoder,
+                None,
+                Some(*value),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )?;
             ("passes", serde_json::to_value(scene.encoder.passes())?)
         },
         ScenesSet::Params { params } => {
@@ -135,10 +121,6 @@ pub(super) fn apply_set(
         },
         ScenesSet::PhotonNoise { iso, chroma_noise } => {
             let scene = require_scene_mut(scenes, index)?;
-            let base = scene.encoder.base();
-            if !base.supports_photon_noise() {
-                bail!(EncodeConfigError::PhotonNoiseNotSupported(base));
-            }
             configure_encoder(
                 &mut scene.encoder,
                 None,
@@ -156,10 +138,6 @@ pub(super) fn apply_set(
         },
         ScenesSet::FfmpegFilter { filter } => {
             let scene = require_scene_mut(scenes, index)?;
-            let base = scene.encoder.base();
-            if base == EncoderBase::FFmpeg {
-                bail!(EncodeConfigError::FfmpegFilterNotSupported(base));
-            }
             configure_encoder(
                 &mut scene.encoder,
                 None,

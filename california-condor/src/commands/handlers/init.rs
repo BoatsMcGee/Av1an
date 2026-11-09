@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use andean_condor::{
     core::sequence::target_quality::TargetQuality,
     models::{
-        encoder::Encoder,
+        encoder::{Encoder, EncoderBase},
         sequence::{
             scene_concatenator::SceneConcatenatorConfig, target_quality::TargetQualityConfig,
         },
@@ -69,17 +69,10 @@ pub fn init_handler(
         bail!(err);
     }
 
-    let mut configuration = Configuration::new(&input, &output, temp_path, vs_args, decoder)?;
-    // A video input never consumes script arguments; say so instead of
-    // dropping them silently.
-    warn_unused_vs_args(&configuration.condor.input, vs_args);
-
-    configure_temp(&mut configuration, temp_path)?;
-    if let Some(filters) = filters {
-        apply_input_filters(&mut configuration.condor.input, filters)?;
-    }
+    // Reject encoder flags before opening/indexing the source to build a new configuration.
+    let mut selected_encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
     configure_encoder(
-        &mut configuration.condor.encoder,
+        &mut selected_encoder,
         encoder,
         None,
         params,
@@ -88,6 +81,16 @@ pub fn init_handler(
         None,
         Some(append_color_data),
     )?;
+    let mut configuration = Configuration::new(&input, &output, temp_path, vs_args, decoder)?;
+    configuration.condor.encoder = selected_encoder;
+    // A video input never consumes script arguments; say so instead of
+    // dropping them silently.
+    warn_unused_vs_args(&configuration.condor.input, vs_args);
+
+    configure_temp(&mut configuration, temp_path)?;
+    if let Some(filters) = filters {
+        apply_input_filters(&mut configuration.condor.input, filters)?;
+    }
     configure_parallel_encoder(&mut configuration, None, None, None, None, workers)?;
     configure_target_quality(
         &mut configuration,
@@ -105,6 +108,7 @@ pub fn init_handler(
     configure_concatenate(&mut configuration, concatenator)?;
     apply_discard(&mut configuration, discard.unwrap_or_default())?;
 
+    configuration.validate_encoder_settings()?;
     configuration.save(&config_path)?;
 
     info!(

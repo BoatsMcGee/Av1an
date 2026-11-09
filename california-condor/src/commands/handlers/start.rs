@@ -1,7 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::{
-    models::input::Input as InputModel, vapoursynth::vapoursynth_filters::VapourSynthFilter,
+    models::{
+        encoder::{Encoder, EncoderBase},
+        input::Input as InputModel,
+    },
+    vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::{Result, bail};
 use tracing::{debug, error, trace, warn};
@@ -108,7 +112,21 @@ pub fn start_handler(
             let input = path_abs::PathAbs::new(input_path)?.as_path().to_path_buf();
             let output = path_abs::PathAbs::new(output_path)?.as_path().to_path_buf();
             debug!("TEMP: {temp:?}", temp = temp_path);
-            Configuration::new(&input, &output, temp_path, vs_args, decoder)?
+            let mut selected_encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+            configure_encoder(
+                &mut selected_encoder,
+                encoder,
+                passes,
+                params,
+                photon_noise,
+                chroma_noise,
+                ffmpeg_filter,
+                append_color_data,
+            )?;
+            let mut configuration =
+                Configuration::new(&input, &output, temp_path, vs_args, decoder)?;
+            configuration.condor.encoder = selected_encoder;
+            configuration
         }
     };
 
@@ -138,16 +156,19 @@ pub fn start_handler(
             );
         }
     }
-    configure_encoder(
-        &mut configuration.condor.encoder,
-        encoder,
-        passes,
-        params,
-        photon_noise,
-        chroma_noise,
-        ffmpeg_filter,
-        append_color_data,
-    )?;
+    if config_already_existed {
+        configure_encoder(
+            &mut configuration.condor.encoder,
+            encoder,
+            passes,
+            params,
+            photon_noise,
+            chroma_noise,
+            ffmpeg_filter,
+            append_color_data,
+        )?;
+    }
+    configuration.validate_encoder_settings()?;
     configure_scene_detector(
         &mut configuration,
         scd_input_path,
@@ -435,7 +456,7 @@ mod tests {
         };
         expected_config.condor.encoder = Encoder::X265 {
             executable: None,
-            pass: EncoderPasses::All(3),
+            pass: EncoderPasses::All(2),
             options: custom_encoder_parameters,
             ffmpeg_filter: None,
             append_color_data: true,
@@ -495,11 +516,11 @@ mod tests {
             None,
             Some(6),
             Some(&EncoderMethod::X265),
-            Some(3),
+            Some(2),
             Some("--preset slow --crf 18"),
             Some("--preset ultrafast"),
-            Some(404),
-            Some(404),
+            None,
+            None,
             None,
             None,
             Some(&QualityMetricBase::XPSNR),
@@ -641,7 +662,7 @@ mod tests {
         };
         expected_config.condor.encoder = Encoder::X265 {
             executable: None,
-            pass: EncoderPasses::All(3),
+            pass: EncoderPasses::All(2),
             options: custom_encoder_parameters,
             ffmpeg_filter: None,
             append_color_data: true,
@@ -701,11 +722,11 @@ mod tests {
             None,
             Some(6),
             Some(&EncoderMethod::X265),
-            Some(3),
+            Some(2),
             Some("--preset slow --crf 18"),
             Some("--preset ultrafast"),
-            Some(404),
-            Some(404),
+            None,
+            None,
             None,
             None,
             Some(&QualityMetricBase::XPSNR),

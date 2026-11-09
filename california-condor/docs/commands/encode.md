@@ -85,6 +85,11 @@ If not specified, `svt-av1` is used.
 
 Number of encoder passes.
 
+Only frontend-supported totals are accepted: `1` or `2`, with `avm` limited to
+`1`. `ffmpeg` uses one implicit pass and rejects this flag. SVT-AV1 two-pass
+settings require VBR (`--rc 1`) and preset `<= 9`; CRF/CQP and CBR are single-pass.
+See [settings validation](../configuration/condor/encoder.md#settings-validation).
+
 ### Default
 
 If not specified, `2` for `aom` and `vpx` encoders, otherwise `1`. `aom` and `vpx` benefit from two-pass mode even with constant quality mode.
@@ -105,6 +110,9 @@ Generate and apply a photon noise table using Film Grain Synthesis with the spec
 ## Chroma Noise `--chroma-noise`
 
 Apply chroma noise of the specified ISO strength to the photon noise table using Film Grain Synthesis. Only compatible with `aom`, `svt-av1`, `rav1e`, and `avm`. See [Photon Noise](../types/photon-noise.md).
+
+Requires `--photon-noise` or an existing luma table. With an existing table,
+changing only chroma noise keeps its luma strength and other settings.
 
 ## FFmpeg Filter `--ffmpeg-filter`
 
@@ -130,7 +138,7 @@ A picture-altering filter (`crop`, `hflip`, `negate`, ...) changes what gets enc
 - `set scenes-directory PATH` — the directory the encoded scenes are written to.
 - `set encoder ENCODER` — switches the encoder and starts from its defaults.
 - `set executable PATH` — pins a custom encoder binary path; `reset executable` restores PATH lookup.
-- `set passes N` — number of encoder passes (`≥ 1`); rejected for single-pass-only `ffmpeg`.
+- `set passes N` — a supported pass count, subject to the same backend/mode checks as `--passes`; rejected for `ffmpeg`.
 - `set params "--crf 16 --tune 0"` — merges encoder parameters into the current encoder's options; `reset params` restores the encoder's defaults.
 - `set photon-noise ISO [--chroma-noise ISO]` — sets the Photon Noise table; rejected for encoders that do not support Photon Noise; `reset photon-noise` clears it.
 - `set append-color-data [on|off]` — whether the input's colour and HDR metadata is appended to the encoder parameters; defaults to `on`, and `reset append-color-data` restores that.

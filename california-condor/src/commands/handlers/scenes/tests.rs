@@ -176,7 +176,7 @@ fn one_set_encoder_line_applies_every_flag() {
         &ScenesSet::Encoder {
             encoder: EncoderMethod::SVTAV1,
             executable: None,
-            passes: Some(2),
+            passes: Some(1),
             params: Some("crf=18".to_owned()),
             iso: Some(800),
             chroma_iso: Some(200),
@@ -190,7 +190,7 @@ fn one_set_encoder_line_applies_every_flag() {
     assert!(value.get("SVTAV1").is_some(), "the encoder object: {value}");
     let encoder = &configuration.condor.scenes[1].encoder;
     assert_eq!(encoder.base(), EncoderBase::SVTAV1);
-    assert_eq!(encoder.passes(), EncoderPasses::All(2));
+    assert_eq!(encoder.passes(), EncoderPasses::All(1));
     assert_eq!(
         encoder.parameters().get("crf"),
         Some(&CLIParameter::new_number("", "=", 18.0))
@@ -264,7 +264,7 @@ fn encoder_capability_rules_apply_to_the_new_encoder() {
     )
     .expect_err("chroma ISO needs a luma ISO");
     assert!(
-        chroma.to_string().contains("--chroma-iso needs --iso"),
+        chroma.to_string().contains("chroma Photon Noise requires luma Photon Noise"),
         "{chroma}"
     );
 }
@@ -274,7 +274,17 @@ fn the_standalone_overrides_keep_working() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());
 
-    apply_set(&mut configuration, 3, &ScenesSet::Passes { value: 2 }).expect("the passes change");
+    apply_set(&mut configuration, 3, &ScenesSet::Passes { value: 2 })
+        .expect_err("CRF cannot become two-pass");
+    apply_set(
+        &mut configuration,
+        3,
+        &ScenesSet::Params {
+            params: "--rc 1 --tbr 1000 --keyint 48".into(),
+        },
+    )
+    .expect("switch to VBR");
+    apply_set(&mut configuration, 3, &ScenesSet::Passes { value: 2 }).expect("VBR passes change");
     apply_set(
         &mut configuration,
         0,

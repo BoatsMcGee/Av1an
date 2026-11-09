@@ -81,6 +81,7 @@ pub fn edit<C: ConfigCommand>(
         ConfigAction::Set { setting } => {
             let (mut configuration, path) = load_configuration(config_path)?;
             let change = C::apply(&mut configuration, setting)?;
+            configuration.validate_encoder_settings()?;
             configuration.save(&path)?;
             warn_stale(C::subject());
             announce(C::subject(), &change, false);
@@ -90,6 +91,7 @@ pub fn edit<C: ConfigCommand>(
             let Some(change) = C::restore(&mut configuration, key.as_ref())? else {
                 return Ok(());
             };
+            configuration.validate_encoder_settings()?;
             configuration.save(&path)?;
             warn_stale(C::subject());
             announce(C::subject(), &change, true);

@@ -41,6 +41,38 @@ Externally-tagged enum keyed by encoder base. Exactly one key per object: `AOM`,
 | RAV1E, SVTAV1, AVM, X264, X265, VVenC | `{ "All": 1 }` |
 | FFmpeg | N/A (single pass) |
 
+## Settings validation
+
+Encoder edits are checked before saving; rejected edits leave the saved file
+unchanged. Switching encoders starts from the new backend's defaults, then
+applies the flags from the same command. Unknown custom options remain allowed.
+
+- Pass totals are `1` or `2`, except AVM (`1` only) and FFmpeg (implicit single
+  pass; an explicit `--passes` request is rejected). AOM's native third pass is
+  not implemented by this frontend. `Specific` requires `1 <= current <= total`.
+- SVT-AV1 CRF/CQP (`rc 0`) and CBR (`rc 2`) are single-pass. Two-pass settings
+  require VBR (`rc 1`), preset `<= 9` and random access (`pred-struct 2`). VBR
+  rejects an explicit nonpositive `keyint`; replace Condor's default zero with
+  a positive interval (for example, `--keyint 240`). CBR
+  requires low delay (`pred-struct 1`). Explicit CRF/CQP options conflict with
+  `rc 1`/`rc 2`; loaded configurations must remove the conflicting option.
+  A CLI mode change removes the stock CRF option if no CRF was explicitly given.
+- All numeric option values must be finite. Known quality, rate-control and
+  pass settings also have backend-specific type/range checks, including their
+  string forms. Other options are still checked by the native encoder.
+- Chroma Photon Noise needs a supplied or existing luma table. A chroma-only
+  update retains that table's other settings. Coefficient limits are 24 for
+  `c_y` and 25 each for `ccb`/`ccr`; ISO zero is allowed.
+- Photon Noise requests on unsupported backends and `--ffmpeg-filter` on the
+  FFmpeg encoder are errors, not ignored flags. Use FFmpeg's `-vf` in `options`.
+
+Library callers can use `Encoder::validate_settings()` without an installed
+encoder. Public input/stream encode entrypoints also check settings before
+spawning or receiving frames. `EncoderBase::pass_parameters()` and
+`Encoder::parameters_with_output()` now return a `Result`; explicit pass tuples
+are checked even if the encoder stores a different pass selection. Passing
+settings validation does not establish native binary/version compatibility.
+
 ## Default Quantizer Ranges (for `sequence_config.target_quality.quantizer_range`)
 
 | Encoder | Range |

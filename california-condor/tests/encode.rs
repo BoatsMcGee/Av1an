@@ -411,6 +411,11 @@ mod tests {
         let config_path = init_config(&temp);
 
         condor_cmd(&temp).args(["encode", "set", "workers", "4"]).assert().success();
+        condor_cmd(&temp).args(["encode", "set", "passes", "2"]).assert().failure();
+        condor_cmd(&temp)
+            .args(["encode", "set", "params", "--rc 1 --tbr 1000 --keyint 48"])
+            .assert()
+            .success();
         condor_cmd(&temp).args(["encode", "set", "passes", "2"]).assert().success();
         condor_cmd(&temp)
             .args(["encode", "set", "photon-noise", "800", "--chroma-noise", "200"])

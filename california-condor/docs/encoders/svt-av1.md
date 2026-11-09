@@ -22,7 +22,10 @@ The `--rc` option selects what rate control strategy you want to use.
 --rc 0 --crf
 ```
 
-Constant rate factor, a.k.a. constant quality. This is the most common way of determining video quality. You set --crf to be a number between 1-63, and the encoder will work out a bit-rate to keep constant quality. The lower the number, the less compression, the higher it is, the more compression will be used. Anything lower than 20 is considered "hi-fi", 30+ is for mini encodes.
+Constant rate factor, a.k.a. constant quality. SVT-AV1 4.2 accepts `--crf` up to
+70 in quarter steps (for example, `24.25`); its source validation also permits
+zero. Lower values retain more quality and use more bits. CRF/CQP only support
+one pass, despite a stale multi-pass CRF example in the 4.2 help output.
 
 **Example:**
 
@@ -38,10 +41,15 @@ condor encode --params "--rc 0 --crf 24 --preset 4 --input-depth 10 --tune 0"
 
 Variable bit-rate. Requires you to set target bit-rate `--tbr`.
 
+Two-pass VBR requires preset `<= 9` and random access (`--pred-struct 2`). Do not
+combine `--crf` or `--cqp` with `--rc 1`. When changing modes through CLI flags,
+Condor removes its stock CRF option; explicitly conflicting options are errors.
+VBR also needs a positive explicit `--keyint` instead of Condor's default zero.
+
 **Example:**
 
 ```
-condor encode --passes 2 --params "--rc 1 --tbr 2000 --preset 4 --input-depth 10 --tune 0"
+condor encode --passes 2 --params "--rc 1 --tbr 2000 --preset 4 --keyint 240 --input-depth 10 --tune 0"
 ```
 
 # Preset
