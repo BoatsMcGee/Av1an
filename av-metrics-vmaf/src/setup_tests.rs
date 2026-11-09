@@ -47,6 +47,9 @@ fn setup_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
     );
     // A real file satisfies path preflight; only the native parser is doubled.
     std::fs::write(directory.path().join("vmaf_v0.6.1.json"), b"{}").expect("model file");
+    std::fs::create_dir_all(directory.path().join("model")).expect("adjacent model directory");
+    std::fs::write(directory.path().join("model/vmaf_v0.6.1.json"), b"{}")
+        .expect("stock fallback file");
     (directory, library)
 }
 
@@ -57,7 +60,8 @@ fn run_child(
     library: &std::path::Path,
     directory: &std::path::Path,
 ) {
-    let mut child = Command::new(std::env::current_exe().expect("test executable"))
+    let mut command = Command::new(std::env::current_exe().expect("test executable"));
+    command
         .args(["--exact", exact, "--nocapture"])
         .env("M11_CHILD", "1")
         .env("M12_CHILD", if exact == EXACT { "0" } else { "1" })
@@ -67,9 +71,13 @@ fn run_child(
         .env("VMAF_LIB_DIR", directory)
         .env("VMAF_MODEL_PATH", directory)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("isolated M11 child");
+        .stderr(Stdio::piped());
+    // These cases exercise built-in failure followed by file fallback. A model
+    // directory override now intentionally bypasses that first loader entirely.
+    if matches!(stage, 14 | 16) {
+        command.env_remove("VMAF_MODEL_PATH");
+    }
+    let mut child = command.spawn().expect("isolated M11 child");
     let start = Instant::now();
     while child.try_wait().expect("child status").is_none() {
         if start.elapsed() > Duration::from_secs(30) {
@@ -116,7 +124,7 @@ fn check_attempt() {
         "cpu" => BackendPreference::CpuOnly,
         _ => unreachable!(),
     };
-    let model_path = std::path::PathBuf::from(std::env::var_os("VMAF_MODEL_PATH").expect("models"))
+    let model_path = std::path::PathBuf::from(std::env::var_os("VMAF_LIB_DIR").expect("fixture"))
         .join("vmaf_v0.6.1.json");
     let mut config = VmafConfig::new()
         .with_threads(2)
@@ -360,7 +368,7 @@ fn check_m12_attempt() {
         api.cuda.free_state = Some(unsafe { *library.get(b"m11_free\0").expect("free") });
         api
     });
-    let model = std::path::PathBuf::from(std::env::var_os("VMAF_MODEL_PATH").expect("models"))
+    let model = std::path::PathBuf::from(std::env::var_os("VMAF_LIB_DIR").expect("fixture"))
         .join("vmaf_v0.6.1.json");
     let mut config = VmafConfig::new().with_threads(2).with_backend(if auto {
         BackendPreference::Auto
@@ -418,7 +426,7 @@ fn check_m12_attempt() {
                 panic!("original model/file-fallback error: {error:?}");
             };
             if stage == 16 {
-                // Installed stock files can precede VMAF_MODEL_PATH in lookup.
+                // Installed stock files precede the fixture's adjacent fallback.
                 assert!(
                     std::path::Path::new(actual).is_file() && actual.ends_with("vmaf_v0.6.1.json"),
                     "file fallback reports the selected stock JSON: {actual}"

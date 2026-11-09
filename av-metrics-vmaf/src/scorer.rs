@@ -1,6 +1,6 @@
 //! Streaming per-frame VMAF scoring.
 
-use std::{ffi::CString, marker::PhantomData, mem::size_of};
+use std::{ffi::CString, marker::PhantomData, mem::size_of, path::PathBuf};
 
 use av_decoders::{Decoder, v_frame::pixel::Pixel};
 use v_frame::chroma::ChromaSubsampling;
@@ -392,6 +392,14 @@ pub struct VmafScorer {
     _not_sync: PhantomData<*mut ()>,
 }
 
+// Snapshot selection once: complete CUDA/CPU retries must not re-read the override.
+struct ModelSelection {
+    model: VmafModel,
+    spec: CString,
+    fallback: Option<PathBuf>,
+    searched: Vec<PathBuf>,
+}
+
 impl Drop for VmafScorer {
     #[inline]
     fn drop(&mut self) {
@@ -419,8 +427,10 @@ impl VmafScorer {
     ///
     /// Returns [`VmafError::LibraryLoadFailed`] if libvmaf could not be loaded,
     /// [`VmafError::UnsupportedFormat`] if the format is outside libvmaf's
-    /// supported set, and [`VmafError::CallFailed`] if no requested backend can
-    /// be initialised.
+    /// supported set, [`VmafError::ModelNotFound`] if an explicit stock-directory
+    /// override is missing or a model fails to load, and [`VmafError::CallFailed`]
+    /// if no requested backend can be initialised. A missing per-run file path
+    /// returns [`VmafError::ModelFileMissing`] before native setup.
     #[expect(
         clippy::missing_inline_in_public_items,
         reason = "inlining the scorer would duplicate the whole body at every call site"
@@ -443,7 +453,11 @@ impl VmafScorer {
 
         // Resolve the model first so a bad path fails before libvmaf is
         // touched.
-        let model_spec = config.model.as_libvmaf_model()?;
+        let selected_model = config
+            .model
+            .stock_model_override()?
+            .map_or_else(|| config.model.clone(), VmafModel::Path);
+        let model_spec = selected_model.as_libvmaf_model()?;
         let model_spec = CString::new(model_spec).map_err(|_| VmafError::InvalidConfiguration {
             reason: "model specification contains an interior null byte".to_owned(),
         })?;
@@ -464,6 +478,19 @@ impl VmafScorer {
             .collect();
 
         let api = load_api()?;
+        // Loaded-library inference is only available after discovery. Explicit
+        // selections never consult these fallback sources, even on native failure.
+        let searched = if selected_model.is_path() {
+            Vec::new()
+        } else {
+            VmafModel::fallback_model_search_paths()
+        };
+        let selection = ModelSelection {
+            fallback: selected_model.find_stock_model_file_in(&searched),
+            model: selected_model,
+            spec: model_spec,
+            searched,
+        };
 
         let configuration = VmafConfiguration {
             log_level: backend::LOG_LEVEL_NONE,
@@ -493,7 +520,7 @@ impl VmafScorer {
                 context,
                 config.clone(),
                 format,
-                model_spec.clone(),
+                &selection,
                 feature_names.clone(),
                 &extractor_names,
             )
@@ -504,7 +531,7 @@ impl VmafScorer {
         context: Context,
         config: VmafConfig,
         format: VideoFormat,
-        model_spec: CString,
+        selection: &ModelSelection,
         feature_names: Vec<CString>,
         extractor_names: &[CString],
     ) -> Result<Self, VmafError> {
@@ -517,7 +544,7 @@ impl VmafScorer {
             model: std::ptr::null_mut(),
             feature_names,
             pictures: None,
-            _model_spec: model_spec,
+            _model_spec: selection.spec.clone(),
             scored: 0,
             flushed: false,
             _not_sync: PhantomData,
@@ -535,7 +562,7 @@ impl VmafScorer {
         // say so.
         let mut model_config = VmafModelConfig::new();
 
-        let load_from_path = config.model.is_path();
+        let load_from_path = selection.model.is_path();
         let mut load_spec = scorer._model_spec.clone();
 
         // Unlike failed context init/fetch outputs, a nonnull JSON model output
@@ -558,8 +585,8 @@ impl VmafScorer {
         };
 
         if status != 0
-            && !config.model.is_path()
-            && let Some(path) = config.model.find_stock_model_file()
+            && !load_from_path
+            && let Some(path) = &selection.fallback
             && let Ok(spec) = CString::new(path.display().to_string())
         {
             tracing::info!(
@@ -586,7 +613,22 @@ impl VmafScorer {
         }
 
         if status != 0 {
-            let searched = VmafModel::model_search_paths()
+            if load_from_path {
+                return Err(VmafError::ModelNotFound {
+                    model: load_spec.to_string_lossy().into_owned(),
+                    reason: format!(
+                        "{} failed in vmaf_model_load_from_path with status {status}; no other \
+                         model will be tried",
+                        if config.model.is_path() {
+                            "explicit model path"
+                        } else {
+                            "VMAF_MODEL_PATH override"
+                        },
+                    ),
+                });
+            }
+            let searched = selection
+                .searched
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()

@@ -343,18 +343,27 @@ gates; Linux verification does not establish Windows ABI execution.
 `vmaf_model_load("vmaf_v0.6.1")` fails with `EINVAL` and no scoring is possible.
 Arch's `vmaf` package and MSYS2's `mingw-w64-*-vmaf` are both built this way.
 
-This crate handles that automatically: when a stock model fails to load from the
-library, it looks for the same model as a `<version>.json` file and retries. The
-search order is
+For stock models, a nonempty `VMAF_MODEL_PATH` selects exactly
+`<directory>/<version>.json`, **even if the library has built-in models**. It is
+one literal directory, not a model filename or a path list; spaces, Unicode and
+path-list separators are not split. An empty value is treated as unset. A missing
+directory/file or a native model-loading error fails with the selected path and
+override context; no built-in or fallback model is tried instead.
 
-1. `VMAF_MODEL_PATH`, if set — an explicit override, so it wins outright
+Without that override, the crate first tries the built-in stock model, then looks
+for the same `<version>.json` on disk if the built-in load fails. File search order:
+
+1. `VMAF_MODEL_PATH`, if nonempty — exclusive selection, not a fallback hint
 2. platform defaults: `/usr/share/model` (Arch), `/usr/share/vmaf/model`
    (Debian, Fedora), `/usr/local/share/model` and `/usr/local/share/vmaf/model`
    on Linux; `/opt/homebrew/share/vmaf/model` and `/usr/local/share/vmaf/model`
    on macOS; `%MSYS2_ROOT%\mingw64\share\vmaf\model` and the `ucrt64` equivalent
    on Windows
 3. `model/` beside the running executable — this is what a release layout uses
-4. `model/`, then `share/vmaf/model/`, beside the directory in `VMAF_LIB_DIR`
+4. Adjacent `model/` directories inferred from the loaded library or `VMAF_LIB_DIR`
+
+Library-prefix `share/vmaf/model/` directories rank with the system locations in
+step 2, ahead of every executable/library-adjacent `model/` directory.
 
 System paths are searched **before** the executable-adjacent ones, so a stray
 `vmaf_v0.6.1.json` in a shared or downloads-adjacent binary directory cannot
@@ -364,6 +373,7 @@ exception, since setting it is an explicit choice.
 So for a release that ships `condor.exe`, `libvmaf.dll` and `model/`, no
 configuration is needed. Otherwise point `VMAF_MODEL_PATH` at the directory holding
 `vmaf_v0.6.1.json`, or pass the file explicitly with `VmafConfig::with_model_path`.
+An explicit per-run file path takes precedence over `VMAF_MODEL_PATH`.
 
 The stock model is a single ~19 KB JSON file from the [libvmaf repository][models].
 A model only works if the libvmaf build has the matching feature extractors — see
@@ -371,8 +381,8 @@ A model only works if the libvmaf build has the matching feature extractors — 
 the MSYS2 build.
 
 > [!TIP]
-> If you hit `ModelNotFound`, the error lists every directory that was searched,
-> which makes a mistyped `VMAF_MODEL_PATH` obvious.
+> `ModelNotFound` names a failed explicit selection (and the native status when
+> loading fails). Without an override, it lists the fallback directories.
 
 > [!NOTE]
 > Identical clips do **not** score 100. libvmaf's motion and temporal extractors
@@ -435,21 +445,9 @@ let every_third: Vec<_> = pairs.iter().step_by(3).cloned().collect();
 let scores = scorer.score_frames(&every_third)?;
 ```
 
-Not every libvmaf build embeds the stock VMAF models. When yours does not, the model
-is looked up on disk in this order:
-
-1. **`VMAF_MODEL_PATH`** — an explicit override.
-2. System locations: `/usr/share/model` (Arch), `/usr/share/vmaf/model` (Debian,
-   Fedora), `/usr/local/share/model` and `/usr/local/share/vmaf/model` on Linux;
-   `/opt/homebrew/share/vmaf/model` and `/usr/local/share/vmaf/model` on macOS;
-   `%MSYS2_ROOT%\mingw64\share\vmaf\model` and the `ucrt64` equivalent on Windows.
-3. `model/` beside the running executable, which is the release layout.
-4. `model/` and `share/vmaf/model/` next to `VMAF_LIB_DIR`.
-
-System paths are searched before the executable-adjacent ones, so a stray
-`vmaf_v0.6.1.json` in a shared or downloads-adjacent binary directory cannot silently
-override the distribution's model. `VMAF_MODEL_PATH` is the deliberate exception,
-since setting it is an explicit choice.
+See [Models](#models) for stock-model discovery: a nonempty `VMAF_MODEL_PATH` is
+exclusive, while an unset/empty value allows built-in loading followed by
+system-before-adjacent fallback. `with_model_path` is independent of that override.
 
 Arch's `vmaf` package installs **all nine** models to `/usr/share/model`, which is
 what the Docker image relies on, so Linux needs no download at all.

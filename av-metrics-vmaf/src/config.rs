@@ -104,34 +104,66 @@ impl VmafModel {
     /// Distributions that do not embed the models install them under one of
     /// these prefixes instead.
     ///
-    /// System directories are returned before directories merely *near* the
+    /// A nonempty `VMAF_MODEL_PATH` is one literal directory, returned first.
+    /// An empty value is treated as unset. System directories precede those *near* the
     /// binary, so a stray `vmaf_v0.6.1.json` in a shared or downloads-adjacent
     /// directory cannot silently override the model the distribution intends.
     #[inline]
     #[must_use]
     pub fn model_search_paths() -> Vec<PathBuf> {
-        let paths = model_search_paths_for(ffi::loaded_library_directory());
-        let mut unique: Vec<PathBuf> = Vec::with_capacity(paths.len());
-        for path in paths {
-            if !unique.contains(&path) {
-                unique.push(path);
-            }
-        }
-        unique
+        model_search_paths_for(
+            ffi::loaded_library_directory(),
+            model_override_directory().as_deref(),
+        )
     }
 
     /// Locate a stock model file for this model, if one is installed on disk.
     ///
     /// Returns the filesystem path when a `<version>.json` exists in one of
-    /// [`Self::model_search_paths`].
+    /// [`Self::model_search_paths`]. With a nonempty `VMAF_MODEL_PATH`, only that
+    /// directory is eligible; a missing override returns `None`, not a fallback.
     #[inline]
     #[must_use]
     pub fn find_stock_model_file(&self) -> Option<PathBuf> {
+        self.stock_model_override()
+            .ok()?
+            .or_else(|| self.find_stock_model_file_in(&Self::fallback_model_search_paths()))
+    }
+
+    pub(crate) fn stock_model_override(&self) -> Result<Option<PathBuf>, VmafError> {
+        self.stock_model_override_for(model_override_directory().as_deref())
+    }
+
+    fn stock_model_override_for(
+        &self,
+        directory: Option<&Path>,
+    ) -> Result<Option<PathBuf>, VmafError> {
+        let (Some(version), Some(directory)) = (self.stock_version(), directory) else {
+            return Ok(None);
+        };
+        let path = directory.join(format!("{version}.json"));
+        if !path.is_file() {
+            return Err(VmafError::ModelNotFound {
+                model: path.display().to_string(),
+                reason:
+                    "VMAF_MODEL_PATH explicitly selected this file, but it is missing or not a \
+                         regular file; no other model will be tried"
+                        .to_owned(),
+            });
+        }
+        Ok(Some(path))
+    }
+
+    pub(crate) fn fallback_model_search_paths() -> Vec<PathBuf> {
+        model_search_paths_for(ffi::loaded_library_directory(), None)
+    }
+
+    pub(crate) fn find_stock_model_file_in(&self, directories: &[PathBuf]) -> Option<PathBuf> {
         let version = self.stock_version()?;
         let filename = format!("{version}.json");
 
-        Self::model_search_paths()
-            .into_iter()
+        directories
+            .iter()
             .map(|directory| directory.join(&filename))
             .find(|candidate| candidate.is_file())
     }
@@ -219,19 +251,17 @@ fn msys2_model_directories(_root: &Path) -> Vec<(PathBuf, bool)> {
     Vec::new()
 }
 
-/// Collect every candidate search path, given the directory the library loaded
-/// from.
-///
-/// The directory is a parameter so the loaded-library inference can be
-/// exercised without a real installation, which is what keeps its ordering
-/// covered on machines that have no libvmaf at all.
-fn model_search_paths_for(loaded_from: Option<&Path>) -> Vec<PathBuf> {
+fn model_override_directory() -> Option<PathBuf> {
+    std::env::var_os("VMAF_MODEL_PATH")
+        .filter(|directory| !directory.is_empty())
+        .map(PathBuf::from)
+}
+
+/// Collect candidates with explicit selection first, then system before adjacent.
+/// Injecting directories keeps ordering tests independent of native installations.
+fn model_search_paths_for(loaded_from: Option<&Path>, explicit: Option<&Path>) -> Vec<PathBuf> {
     let mut system = Vec::new();
     let mut adjacent = Vec::new();
-
-    if let Ok(directory) = std::env::var("VMAF_MODEL_PATH") {
-        adjacent.push(PathBuf::from(directory));
-    }
 
     // System-wide installs. These are the paths a package manager controls, so
     // a model found here is the one the distribution intends, and it takes
@@ -298,8 +328,12 @@ fn model_search_paths_for(loaded_from: Option<&Path>) -> Vec<PathBuf> {
     // "search these" hint in an error message longer. The two groups are joined
     // only here, so no source above can emit a system path behind an adjacent
     // one regardless of the order the sources are appended in.
-    let mut paths = system;
-    paths.extend(adjacent);
+    let mut paths = Vec::new();
+    for path in explicit.map(Path::to_path_buf).into_iter().chain(system).chain(adjacent) {
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
     paths
 }
 
@@ -487,7 +521,7 @@ impl VmafConfig {
         self
     }
 
-    /// Set the model from an explicit path.
+    /// Set the model from an explicit path, independent of `VMAF_MODEL_PATH`.
     #[inline]
     pub fn with_model_path(self, path: impl AsRef<Path>) -> Self {
         self.with_model(VmafModel::Path(path.as_ref().to_path_buf()))
@@ -618,6 +652,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn m25_explicit_selection_and_system_before_adjacent_fallback() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let explicit = root.join("explicit models 雪");
+        let system = root.join("share/vmaf/model");
+        let adjacent = root.join("model");
+        for (directory, marker) in
+            [(&explicit, "explicit"), (&system, "system"), (&adjacent, "adjacent")]
+        {
+            std::fs::create_dir_all(directory).unwrap();
+            std::fs::write(directory.join("vmaf_v0.6.1.json"), marker).unwrap();
+        }
+        let paths = model_search_paths_for(Some(&root.join("lib")), Some(&explicit));
+        assert_eq!(
+            paths.first(),
+            Some(&explicit),
+            "explicit precedes every system path"
+        );
+        assert!(
+            paths.iter().position(|path| path == &system).unwrap()
+                < paths.iter().position(|path| path == &adjacent).unwrap(),
+            "loaded-library system-shaped fallback precedes adjacent models"
+        );
+        assert_eq!(
+            VmafModel::Default.stock_model_override_for(Some(&explicit)).unwrap(),
+            Some(explicit.join("vmaf_v0.6.1.json")),
+            "distinct explicit and system fixtures select explicit"
+        );
+        assert_eq!(
+            VmafModel::Default.stock_model_override_for(None).unwrap(),
+            None,
+            "only no override permits ordinary fallback"
+        );
+        assert_eq!(
+            VmafModel::Default.find_stock_model_file_in(&[system.clone(), adjacent]),
+            Some(system.join("vmaf_v0.6.1.json")),
+            "deterministic fallback without host installation assumptions"
+        );
+        std::fs::remove_file(explicit.join("vmaf_v0.6.1.json")).unwrap();
+        assert!(
+            VmafModel::Default.stock_model_override_for(Some(&explicit)).is_err(),
+            "an invalid explicit selection must not fall through to the existing system fixture"
+        );
+    }
+
     /// The stock model must be findable on the platforms we ship for.
     ///
     /// Arch's `vmaf` package installs models to `/usr/share/model`, not the
@@ -682,15 +762,8 @@ mod tests {
     /// directory cannot silently override the distribution's model.
     #[test]
     fn system_model_paths_take_precedence_over_executable_adjacent_ones() {
-        // `VMAF_MODEL_PATH` is an explicit override and is deliberately
-        // searched first, so drop it before comparing orderings.
-        // Comparing by value rather than by position keeps this correct
-        // if it is unset, which is the case in CI.
-        let override_path = std::env::var("VMAF_MODEL_PATH").ok();
-
-        let paths: Vec<String> = VmafModel::model_search_paths()
+        let paths: Vec<String> = VmafModel::fallback_model_search_paths()
             .into_iter()
-            .filter(|path| Some(&path.display().to_string()) != override_path.as_ref())
             .map(|path| path.display().to_string())
             .collect();
 
@@ -718,7 +791,7 @@ mod tests {
     fn a_library_prefix_places_its_system_path_before_its_adjacent_ones() {
         let root = PathBuf::from("/vmaf-test-root");
         let loaded_from = root.join("mingw64").join("bin");
-        let paths: Vec<String> = model_search_paths_for(Some(&loaded_from))
+        let paths: Vec<String> = model_search_paths_for(Some(&loaded_from), None)
             .into_iter()
             .map(|path| path.display().to_string())
             .collect();
