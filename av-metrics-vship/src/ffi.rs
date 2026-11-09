@@ -1134,11 +1134,12 @@ unsafe fn load_library(candidate: &Path) -> std::io::Result<Library> {
 
 #[cfg(any(target_os = "windows", test))]
 fn windows_script_directory(script: &Path) -> std::io::Result<Option<PathBuf>> {
-    script
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .map(std::path::absolute)
-        .transpose()
+    script_parent(script).map(std::path::absolute).transpose()
+}
+
+fn script_parent(script: &Path) -> Option<&Path> {
+    // A bare filename selects no directory, not the media CWD's plugins.
+    script.parent().filter(|parent| !parent.as_os_str().is_empty())
 }
 
 #[cfg(test)]
@@ -1174,79 +1175,98 @@ fn m22_bare_vsscript_does_not_select_media_cwd() {
 #[inline]
 #[must_use]
 pub fn library_candidates() -> Vec<PathBuf> {
-    let names = library_names();
+    let directories = CandidateDirectories {
+        overrides: [env_directory("VSHIP_PLUGIN_PATH"), env_directory("VSHIP_LIB_DIR")],
+        runtime: std::env::var_os("VSSCRIPT_PATH").as_deref().and_then(script_runtime_directory),
+        extra: std::env::var_os("VAPOURSYNTH_EXTRA_PLUGIN_PATH")
+            .as_deref()
+            .map(extra_plugin_directories)
+            .unwrap_or_default(),
+        system: system_directories(),
+    };
+    library_candidates_from_directories(&directories)
+}
 
+/// Resolved at the environment/OS boundary; candidate ordering needs no ambient state.
+#[derive(Default)]
+struct CandidateDirectories {
+    overrides: [Option<PathBuf>; 2],
+    runtime: Option<PathBuf>,
+    extra: Vec<PathBuf>,
+    system: Vec<PathBuf>,
+}
+
+fn library_candidates_from_directories(directories: &CandidateDirectories) -> Vec<PathBuf> {
+    let names = library_names();
     let mut candidates = Vec::with_capacity(names.len() * 8);
 
     // 1. The user's explicit overrides.
-    for variable in ["VSHIP_PLUGIN_PATH", "VSHIP_LIB_DIR"] {
-        if let Some(directory) = env_directory(variable) {
-            candidates.extend(names.iter().map(|name| directory.join(name)));
-        }
+    for directory in directories.overrides.iter().flatten() {
+        candidates.extend(names.iter().map(|name| directory.join(name)));
     }
 
     // 2. The VapourSynth runtime that owns the plugin. `VSSCRIPT_PATH` names
     //    the script DLL, so the plugin directory is its sibling `plugins`.
-    #[cfg(target_os = "windows")]
-    if let Some(script) = std::env::var_os("VSSCRIPT_PATH") {
-        match windows_script_directory(Path::new(&script)) {
-            Ok(Some(runtime)) => {
-                candidates.extend(names.iter().map(|name| runtime.join("plugins").join(name)));
-                candidates.extend(names.iter().map(|name| runtime.join(name)));
-            },
-            Ok(None) => {},
-            Err(error) => tracing::warn!(%error, "ignoring invalid VSSCRIPT_PATH"),
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    if let Ok(script) = std::env::var("VSSCRIPT_PATH")
-        && !script.is_empty()
-        && let Some(runtime) = Path::new(&script).parent()
-    {
+    if let Some(runtime) = &directories.runtime {
         candidates.extend(names.iter().map(|name| runtime.join("plugins").join(name)));
         candidates.extend(names.iter().map(|name| runtime.join(name)));
     }
 
-    // 3. VapourSynth's own extra-plugin path list, which is `;`-separated on
-    //    Windows and `:`-separated elsewhere.
+    // 3. VapourSynth's own extra-plugin path list, in supplied order.
+    for directory in &directories.extra {
+        candidates.extend(names.iter().map(|name| directory.join(name)));
+    }
+
+    // 4. Platform system directories.
+    for directory in &directories.system {
+        candidates.extend(names.iter().map(|name| directory.join(name)));
+    }
+
+    // 5. Bare names let the platform loader search its own paths last.
+    candidates.extend(names.iter().map(PathBuf::from));
+    candidates
+}
+
+fn script_runtime_directory(script: &std::ffi::OsStr) -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
-    if let Some(extra) = std::env::var_os("VAPOURSYNTH_EXTRA_PLUGIN_PATH") {
-        for entry in std::env::split_paths(&extra).filter(|entry| !entry.as_os_str().is_empty()) {
+    match windows_script_directory(Path::new(script)) {
+        Ok(directory) => directory,
+        Err(error) => {
+            tracing::warn!(%error, "ignoring invalid VSSCRIPT_PATH");
+            None
+        },
+    }
+    #[cfg(not(target_os = "windows"))]
+    script
+        .to_str()
+        .filter(|script| !script.is_empty())
+        .and_then(|script| script_parent(Path::new(script)))
+        .map(Path::to_path_buf)
+}
+
+fn extra_plugin_directories(extra: &std::ffi::OsStr) -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut directories = Vec::new();
+        for entry in std::env::split_paths(extra).filter(|entry| !entry.as_os_str().is_empty()) {
             match windows_directory_override(entry.as_os_str()) {
-                Ok(Some(directory)) => {
-                    candidates.extend(names.iter().map(|name| directory.join(name)))
-                },
+                Ok(Some(directory)) => directories.push(directory),
                 Ok(None) => {},
                 Err(error) => {
                     tracing::warn!(%error, "ignoring invalid VAPOURSYNTH_EXTRA_PLUGIN_PATH entry")
                 },
             }
         }
+        directories
     }
     #[cfg(not(target_os = "windows"))]
-    if let Ok(extra) = std::env::var("VAPOURSYNTH_EXTRA_PLUGIN_PATH") {
-        let separator = if cfg!(target_os = "windows") {
-            ';'
-        } else {
-            ':'
-        };
-        for entry in extra.split(separator).filter(|path| !path.is_empty()) {
-            let directory = PathBuf::from(entry);
-            candidates.extend(names.iter().map(|name| directory.join(name)));
-        }
-    }
-
-    // 4. Platform system directories.
-    for directory in system_directories() {
-        candidates.extend(names.iter().map(|name| directory.join(name)));
-    }
-
-    // 5. Bare names, so the platform loader's own search path applies. A
-    //    parentless candidate is the signal that the loader, not this crate,
-    //    decides where the library is.
-    candidates.extend(names.iter().map(PathBuf::from));
-
-    candidates
+    extra
+        .to_str()
+        .into_iter()
+        .flat_map(|extra| extra.split(':'))
+        .filter(|entry| !entry.is_empty())
+        .map(PathBuf::from)
+        .collect()
 }
 
 /// Directories a system-wide install would use on this host.
@@ -1357,22 +1377,23 @@ fn library_names() -> &'static [&'static str] {
 #[inline]
 #[must_use]
 fn env_directory(variable: &str) -> Option<PathBuf> {
+    let value = std::env::var_os(variable)?;
+    match directory_override(&value) {
+        Ok(directory) => directory,
+        Err(error) => {
+            tracing::warn!(%error, variable, "ignoring invalid library directory");
+            None
+        },
+    }
+}
+
+fn directory_override(value: &std::ffi::OsStr) -> std::io::Result<Option<PathBuf>> {
     #[cfg(target_os = "windows")]
     {
-        let value = std::env::var_os(variable)?;
-        match windows_directory_override(&value) {
-            Ok(directory) => directory,
-            Err(error) => {
-                tracing::warn!(%error, variable, "ignoring invalid library directory");
-                None
-            },
-        }
+        windows_directory_override(value)
     }
     #[cfg(not(target_os = "windows"))]
-    std::env::var(variable)
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    Ok(value.to_str().filter(|value| !value.is_empty()).map(PathBuf::from))
 }
 
 /// The directory the loaded libvship module was mapped from.
@@ -1459,6 +1480,10 @@ fn windows_module_directory_from(address: *const c_void) -> Option<PathBuf> {
 fn windows_module_directory_from(_address: *const c_void) -> Option<PathBuf> {
     None
 }
+
+#[cfg(test)]
+#[path = "discovery_tests.rs"]
+mod discovery_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1819,41 +1844,6 @@ mod tests {
             Ok(api) => assert!(!api.version_string().is_empty()),
             Err(error) => assert!(!error.to_string().is_empty()),
         }
-    }
-
-    /// The VapourSynth plugin directory must precede the bare names, since a
-    /// working install puts libvship there and on no loader search path.
-    #[test]
-    fn vapoursynth_plugin_directory_precedes_the_bare_names() {
-        let candidates = library_candidates();
-        let first_bare = candidates
-            .iter()
-            .position(|path| path.parent().is_none_or(|parent| parent.as_os_str().is_empty()))
-            .expect("a bare name is always offered");
-
-        let Ok(script) = std::env::var("VSSCRIPT_PATH") else {
-            return;
-        };
-        let Some(runtime) = Path::new(&script).parent() else {
-            return;
-        };
-        let plugins = runtime.join("plugins");
-
-        let plugin_candidates = candidates
-            .iter()
-            .filter(|path| path.parent() == Some(plugins.as_path()))
-            .count();
-        if plugin_candidates == 0 {
-            return;
-        }
-
-        assert!(
-            candidates
-                .iter()
-                .take(first_bare)
-                .any(|path| path.parent() == Some(plugins.as_path())),
-            "plugin candidates must be offered before the bare names"
-        );
     }
 
     #[test]

@@ -350,7 +350,7 @@ as `./runtime/vsscript.dll` to discover its sibling plugins. Extra plugin paths
 are explicit directories separated by `;`; empty entries are ignored and invalid
 directories warn. No global DLL search settings change. Already-loaded modules,
 OS redirection, and other components' DLL policy are not isolated or attested.
-Linux loading is unchanged. See the [required native Windows regression gate](../test-support/README.md).
+Linux loader flags and normal search behavior are unchanged. See the [required native Windows regression gate](../test-support/README.md).
 
 Then confirm it works:
 
@@ -395,6 +395,12 @@ libvship is on no loader search path, so `dlopen` alone would never find it. Can
 
 Each directory is tried under both names, because an installation may use either. `build.rs` performs the same probe at compile time purely to record the `VSHIP_LIB_DIR` hint, and never fails the build. `ffi::library_candidates` returns the full list in this order, which is what the discovery tests assert against.
 
+On every platform, an absent, empty or bare-filename `VSSCRIPT_PATH` selects no
+directory: `vsscript.dll` does not add the current directory or `./plugins` to
+the candidates. To select local plugins, use a directory override or an explicitly
+qualified script path such as `./runtime/vsscript.dll`. Windows qualifies that
+directory to an absolute path; other platforms retain normal relative-path semantics.
+
 ## Availability
 
 `is_available()` needs more than a successful `dlopen`: `Vship_GetVersion` must answer and `Vship_GPUFullCheck` must pass on a device. Since libvship 5.1.2, a missing Vulkan driver is reported through the C API instead of aborting during load. Missing runtime libraries for other backends can still prevent loading. Any unavailable library or device returns `false`, so callers can use the VapourSynth plugin path instead.
@@ -407,7 +413,7 @@ The result is cached, so the call is cheap. `VshipScorer::backend()` reports whi
 cargo test -p av-metrics-vship
 ```
 
-Everything that does not need libvship always runs: struct-layout assertions against the `VshipAPI.h` and `VshipColor.h` declarations, colourspace-mapping unit tests, and discovery tests that manipulate the environment variables.
+Everything that does not need libvship always runs: struct-layout assertions against the `VshipAPI.h` and `VshipColor.h` declarations, colourspace-mapping unit tests, and exact discovery tables over explicit inputs. Discovery tests run distinct owned candidate inputs concurrently without changing the test runner's environment or working directory. Native ABI fixtures retain child-only environment settings to exercise the production loader.
 
 Tests that need libvship are **skipped cleanly** when `is_available()` is false. CI has no GPU and no libvship binary, so the skip is the expected outcome there rather than a failure.
 
