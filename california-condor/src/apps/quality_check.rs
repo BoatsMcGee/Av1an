@@ -85,6 +85,28 @@ impl TuiApp for QualityCheckApp {
         match status {
             SequenceStatus::Whole(status) => match status {
                 Status::Processing {
+                    completion:
+                        SequenceCompletion::Custom {
+                            completed, total, ..
+                        },
+                    ..
+                } => {
+                    // VMAF submits progress before its final scores are available.
+                    state.frames_compared = completed as u64;
+                    state.total_frames = total as u64;
+                    if !std::io::stdout().is_terminal() {
+                        let event = QualityCheckConsoleEvent::CompareProgress {
+                            current_frame: state.frames_compared,
+                            total_frames: state.total_frames,
+                        };
+                        println!(
+                            "[Quality Check][Compare] {}",
+                            serde_json::to_string(&event).unwrap()
+                        );
+                    }
+                    true
+                },
+                Status::Processing {
                     completion: SequenceCompletion::Frames { completed, total },
                     ..
                 } if !std::io::stdout().is_terminal() => {
@@ -473,4 +495,136 @@ pub enum QualityCheckConsoleEvent {
         current_frame: u64,
         total_frames: u64,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+
+    use super::*;
+
+    #[test]
+    fn m18_submission_progress_reaches_ui_and_console() {
+        if std::env::var_os("M18_QC_UI_CHILD").is_some() {
+            let mut state = QualityCheckState {
+                scene_scores: BTreeMap::new(),
+                frame_scores: Vec::new(),
+                scene_details: BTreeMap::new(),
+                frames_compared: 0,
+                total_frames: 0,
+            };
+            // Replay initialization, then the exact Whole/Custom submission shape.
+            for (completed, total) in [(0, 1), (1, 3), (2, 3), (3, 3)] {
+                let redraw = QualityCheckApp::map_progress(
+                    SequenceStatus::Whole(Status::Processing {
+                        id: "Quality Check".to_owned(),
+                        completion: SequenceCompletion::Custom {
+                            name: "Quality Check".to_owned(),
+                            completed: completed as f64,
+                            total: total as f64,
+                        },
+                    }),
+                    &mut state,
+                );
+                assert!(
+                    redraw,
+                    "submission {completed}/{total} must reach the real UI mapper"
+                );
+                assert_eq!(
+                    (state.frames_compared, state.total_frames),
+                    (completed, total)
+                );
+                assert!(
+                    state.frame_scores.is_empty() && state.scene_scores.is_empty(),
+                    "submission progress must not fabricate scores"
+                );
+            }
+            for (frame, score) in [(4, 90.0), (7, 91.0), (9, 92.0)] {
+                assert!(
+                    QualityCheckApp::map_progress(
+                        SequenceStatus::Subprocess {
+                            parent: Status::Processing {
+                                id: "Quality Check".to_owned(),
+                                completion: SequenceCompletion::Custom {
+                                    name: "Quality Check".to_owned(),
+                                    completed: 3.0,
+                                    total: 3.0,
+                                },
+                            },
+                            child: Status::Processing {
+                                id: "Quality".to_owned(),
+                                completion: SequenceCompletion::FrameScore { frame, score },
+                            },
+                        },
+                        &mut state,
+                    ),
+                    "final real scores still redraw"
+                );
+                assert_eq!(
+                    (state.frames_compared, state.total_frames),
+                    (3, 3),
+                    "final scores must not restart or double-count submission progress"
+                );
+            }
+            assert_eq!(state.frame_scores, [90.0, 91.0, 92.0]);
+            assert!(state.scene_scores.is_empty());
+            return;
+        }
+
+        // A piped child exercises actual console output without terminal setup or
+        // process-global stdout redirection in the parallel test runner.
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "apps::quality_check::tests::m18_submission_progress_reaches_ui_and_console",
+                "--nocapture",
+            ])
+            .env("M18_QC_UI_CHILD", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("mapper child");
+        let start = Instant::now();
+        while child.try_wait().expect("child status").is_none() {
+            if start.elapsed() > Duration::from_secs(30) {
+                child.kill().expect("kill timed out child");
+                child.wait().expect("reap timed out child");
+                panic!("mapper child exceeded 30s");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().expect("mapper output");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("M18 actual QC mapper/console:\n{stdout}\n{stderr}");
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert!(
+            stdout.contains("running 1 test") && stdout.contains("1 passed; 0 failed"),
+            "exact child filter must execute one test"
+        );
+        let events: Vec<serde_json::Value> = stdout
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("[Quality Check][Compare] ")
+                    .or_else(|| line.strip_prefix("[Quality Check][Frame] "))
+                    .map(|json| serde_json::from_str(json).expect("actual console JSON"))
+            })
+            .collect();
+        assert_eq!(
+            events,
+            [
+                serde_json::json!({"CompareProgress":{"current_frame":0,"total_frames":1}}),
+                serde_json::json!({"CompareProgress":{"current_frame":1,"total_frames":3}}),
+                serde_json::json!({"CompareProgress":{"current_frame":2,"total_frames":3}}),
+                serde_json::json!({"CompareProgress":{"current_frame":3,"total_frames":3}}),
+                serde_json::json!({"FrameScore":{"frame":4,"score":90.0}}),
+                serde_json::json!({"FrameScore":{"frame":7,"score":91.0}}),
+                serde_json::json!({"FrameScore":{"frame":9,"score":92.0}}),
+            ],
+            "accepted progress precedes real source-indexed final scores without extra progress events"
+        );
+    }
 }
