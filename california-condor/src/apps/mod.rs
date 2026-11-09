@@ -16,7 +16,7 @@ use ratatui::{
     crossterm::{
         self,
         event::{self, Event as TermEvent, KeyCode, KeyModifiers},
-        execute,
+        execute, queue,
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
     prelude::CrosstermBackend,
@@ -51,6 +51,23 @@ pub fn is_test_mode() -> bool {
 /// terminal to take over.
 fn run_headless(stdout_is_terminal: bool, stderr_is_terminal: bool, test_mode: bool) -> bool {
     test_mode || !(stdout_is_terminal || stderr_is_terminal)
+}
+
+fn enter_alternate_screen(writer: &mut impl Write) -> io::Result<()> {
+    execute!(writer, EnterAlternateScreen)
+}
+
+fn leave_alternate_screen(writer: &mut impl Write, rows: u16) -> io::Result<()> {
+    execute!(writer, LeaveAlternateScreen)?;
+    for _ in 0..rows {
+        writeln!(writer)?;
+    }
+    Ok(())
+}
+
+fn finish_restore(writer: &mut impl Write) -> io::Result<()> {
+    queue!(writer, crossterm::cursor::Show)?;
+    writer.flush()
 }
 
 /// Thread-safe container for sharing mutable progress state between a
@@ -179,7 +196,7 @@ pub trait TuiApp: Send + Sync + 'static {
         let mut writer = BufWriter::new(writer);
 
         if !is_test_mode() {
-            execute!(writer, EnterAlternateScreen)?;
+            enter_alternate_screen(&mut writer)?;
         }
 
         let original_hook = std::panic::take_hook();
@@ -212,17 +229,14 @@ pub trait TuiApp: Send + Sync + 'static {
 
         if !is_test_mode() {
             disable_raw_mode()?;
-            execute!(io::stdout(), LeaveAlternateScreen)
-                .or_else(|_| execute!(io::stderr(), LeaveAlternateScreen))?;
-
             let (_columns, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-            for _ in 0..rows {
-                println!();
-            }
-            terminal.clear()?;
+            leave_alternate_screen(terminal.backend_mut(), rows)?;
+            // RATIONALE: clear() queries the cursor through crossterm's stdout,
+            // even with a stderr backend. Fullscreen resize clears and resets
+            // the render buffers without sending that query to piped stdout.
+            terminal.resize(terminal.size()?.into())?;
             terminal.draw(|f| self.render(f))?;
-            execute!(io::stdout(), crossterm::cursor::Show)
-                .or_else(|_| execute!(io::stderr(), crossterm::cursor::Show))?;
+            finish_restore(terminal.backend_mut())?;
         }
 
         let _ = std::panic::take_hook();
@@ -381,7 +395,188 @@ pub trait TuiApp: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use super::run_headless;
+    use super::*;
+    use ratatui::{TerminalOptions, Viewport, layout::Rect};
+
+    #[derive(Default)]
+    struct Recording {
+        bytes: Vec<u8>,
+        flushes: Vec<usize>,
+        fail_write: bool,
+        fail_flush: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct Recorder(Arc<Mutex<Recording>>);
+
+    impl Write for Recorder {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            let mut recording = self.0.lock().unwrap();
+            if recording.fail_write {
+                return Err(io::Error::other("selected writer write failure"));
+            }
+            recording.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            let mut recording = self.0.lock().unwrap();
+            let len = recording.bytes.len();
+            recording.flushes.push(len);
+            if recording.fail_flush {
+                return Err(io::Error::other("selected writer flush failure"));
+            }
+            Ok(())
+        }
+    }
+
+    struct TestApp {
+        hook: Option<PanicHook>,
+        progress: SharedProgress<()>,
+        state: (),
+        cancelled: bool,
+    }
+
+    impl TestApp {
+        fn new() -> Self {
+            Self {
+                hook: None,
+                progress: SharedProgress::new(()),
+                state: (),
+                cancelled: false,
+            }
+        }
+    }
+
+    impl TuiApp for TestApp {
+        type State = ();
+
+        fn original_panic_hook(&mut self) -> &mut Option<PanicHook> {
+            &mut self.hook
+        }
+        fn shared_progress(&self) -> &SharedProgress<()> {
+            &self.progress
+        }
+        fn cached_state(&self) -> &() {
+            &self.state
+        }
+        fn cached_state_mut(&mut self) -> &mut () {
+            &mut self.state
+        }
+        fn attempted_cancel(&self) -> bool {
+            self.cancelled
+        }
+        fn attempted_cancel_mut(&mut self) -> &mut bool {
+            &mut self.cancelled
+        }
+        fn cancel_message(&self) -> &'static str {
+            "cancelled"
+        }
+        fn map_progress(_: SequenceStatus, _: &mut ()) -> bool {
+            false
+        }
+        fn render(&self, frame: &mut Frame) {
+            frame.render_widget("T01-final-render", frame.area());
+        }
+    }
+
+    #[test]
+    fn t01_selected_writer_receives_commands_render_and_flush() {
+        let recorder = Recorder::default();
+        let writer: Box<dyn Write + Send> = Box::new(recorder.clone());
+        let mut writer = BufWriter::new(writer);
+        enter_alternate_screen(&mut writer).unwrap();
+        {
+            let recording = recorder.0.lock().unwrap();
+            assert_eq!(recording.bytes, b"\x1b[?1049h");
+            assert_eq!(recording.flushes, [8]);
+        }
+        let mut terminal = Terminal::with_options(
+            CrosstermBackend::new(writer),
+            TerminalOptions {
+                viewport: Viewport::Fixed(Rect::new(0, 0, 80, 3)),
+            },
+        )
+        .unwrap();
+        leave_alternate_screen(terminal.backend_mut(), 3).unwrap();
+        terminal.draw(|frame| TestApp::new().render(frame)).unwrap();
+        finish_restore(terminal.backend_mut()).unwrap();
+
+        let (recorded_bytes, flushes) = {
+            let recording = recorder.0.lock().unwrap();
+            (recording.bytes.clone(), recording.flushes.clone())
+        };
+        let bytes = String::from_utf8_lossy(&recorded_bytes);
+        assert!(
+            bytes.starts_with("\x1b[?1049h\x1b[?1049l\n\n\n"),
+            "{bytes:?}"
+        );
+        assert!(bytes.contains("T01-final-render"), "{bytes:?}");
+        assert!(bytes.ends_with("\x1b[?25h"), "{bytes:?}");
+        assert_eq!(flushes.last(), Some(&recorded_bytes.len()));
+    }
+
+    #[test]
+    fn t01_selected_writer_errors_are_not_retried_on_another_stream() {
+        for finish in [false, true] {
+            for fail_flush in [false, true] {
+                let mut recorder = Recorder::default();
+                {
+                    let mut recording = recorder.0.lock().unwrap();
+                    recording.fail_write = !fail_flush;
+                    recording.fail_flush = fail_flush;
+                }
+                let result = if finish {
+                    finish_restore(&mut recorder)
+                } else {
+                    leave_alternate_screen(&mut recorder, 3)
+                };
+                let error = result.expect_err("must return the selected writer's error");
+                assert_eq!(error.kind(), io::ErrorKind::Other);
+                assert_eq!(
+                    error.to_string(),
+                    if fail_flush {
+                        "selected writer flush failure"
+                    } else {
+                        "selected writer write failure"
+                    }
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn t01_real_pty_restores_selected_stream() {
+        let output = std::process::Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/apps/t01_pty.py"))
+            .arg(std::env::current_exe().unwrap())
+            .output()
+            .expect("python3 is required for the Unix PTY regression test");
+        assert!(
+            output.status.success(),
+            "PTY regression failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "runs in an isolated controlling PTY via t01_real_pty_restores_selected_stream"]
+    fn t01_pty_child() -> Result<()> {
+        assert!(std::env::var_os("CONDOR_TEST_MODE").is_none());
+        let use_stdout = std::env::var("T01_PTY_STREAM")? == "stdout";
+        assert_eq!(stdout().is_terminal(), use_stdout);
+        assert_eq!(stderr().is_terminal(), !use_stdout);
+        println!("T01_BEGIN\npayload");
+        let mut app = TestApp::new();
+        let mut terminal = app.init()?;
+        terminal.draw(|frame| app.render(frame))?;
+        app.restore(terminal)?;
+        println!("T01_END");
+        Ok(())
+    }
 
     #[test]
     fn always_run_headless_in_test_mode() {
