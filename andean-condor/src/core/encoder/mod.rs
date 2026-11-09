@@ -1505,8 +1505,15 @@ mod tests {
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
             .expect("executable");
         std::fs::write(temp.path().join("blank.vpy"), "from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=64,height=64,length=1,format=YUV420P8).set_output()\n").expect("script");
-        for route in ["input", "input-pass", "stream", "stream-pass", "tuple-input", "tuple-stream"]
-        {
+        for route in [
+            "input",
+            "input-pass",
+            "stream",
+            "stream-pass",
+            "tuple-input",
+            "tuple-stream",
+            "vvenc-stream",
+        ] {
             let mut child = Command::new(std::env::current_exe().expect("test binary"))
                 .args(["--exact", "core::encoder::tests::c04_preflight_child", "--nocapture"])
                 .env("C04_DIR", temp.path())
@@ -1545,7 +1552,14 @@ mod tests {
         };
         let dir = PathBuf::from(dir);
         let route = std::env::var("C04_ROUTE").expect("route");
-        let mut encoder = Encoder::default_from_base(&EncoderBase::AOM, false);
+        let mut encoder = Encoder::default_from_base(
+            &if route == "vvenc-stream" {
+                EncoderBase::VVenC
+            } else {
+                EncoderBase::AOM
+            },
+            false,
+        );
         encoder.set_executable(Some(dir.join("encoder")));
         let pass = if route.starts_with("tuple") {
             (3, 3)
@@ -1554,6 +1568,14 @@ mod tests {
         };
         *encoder.passes_mut().expect("passes") =
             EncoderPasses::All(if route.starts_with("tuple") { 1 } else { 0 });
+        if route == "vvenc-stream" {
+            *encoder.passes_mut().expect("passes") = EncoderPasses::All(2);
+            encoder.parameters_mut().extend(CLIParameter::new_numbers(
+                "--",
+                " ",
+                &[("passes", 1.0), ("bitrate", 1000.0)],
+            ));
+        }
         let (tx, _rx) = mpsc::channel();
         let output = dir.join("out.ivf");
         let result = if route.contains("input") {
@@ -1573,7 +1595,7 @@ mod tests {
         } else {
             let (_sender, receiver) = crossbeam_channel::unbounded();
             // Keep the sender alive: a misplaced receive must trip the outer watchdog.
-            let result = if route == "stream" {
+            let result = if route == "stream" || route == "vvenc-stream" {
                 encoder.encode_with_stream(receiver, &output, tx, &clip_info())
             } else {
                 encoder.encode_pass_with_stream(pass, receiver, &output, tx, &clip_info())
@@ -1582,6 +1604,24 @@ mod tests {
             result
         };
         let error = result.expect_err("invalid settings must fail before encoding");
+        if route == "vvenc-stream" {
+            use crate::models::encoder::EncoderSettingsError;
+            assert!(
+                matches!(error.downcast_ref::<EncoderSettingsError>(), Some(EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, reason)) if reason.contains("frontend")),
+                "{error:#}"
+            );
+            let error = encoder
+                .parameters_with_output((1, 2), &output, &clip_info())
+                .expect_err("first-pass argv must reject the whole-job conflict");
+            assert!(
+                matches!(
+                    error.downcast_ref::<EncoderSettingsError>(),
+                    Some(EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, _))
+                ),
+                "{error:#}"
+            );
+            return;
+        }
         assert!(error.to_string().contains("pass"), "{error:#}");
     }
 

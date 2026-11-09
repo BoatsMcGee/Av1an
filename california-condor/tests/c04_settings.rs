@@ -211,6 +211,33 @@ mod tests {
             assert!(!temp.path().join("forbidden.ffindex").exists());
         }
         let new = temp.path().join("new.json");
+        for params in [
+            "--passes 1 --bitrate 1000",
+            "-p 1 --bitrate 1000",
+            "--pass 1 --bitrate 1000",
+            "--pass 2 --bitrate 1000",
+            "--bitrate 0Mbps",
+        ] {
+            let output = condor_cmd(&temp)
+                .args(["encode", "--encoder", "vvenc", "--passes", "2", "--params", params])
+                .timeout(std::time::Duration::from_secs(10))
+                .assert()
+                .failure()
+                .get_output()
+                .stderr
+                .clone();
+            let stderr = String::from_utf8_lossy(&output);
+            assert!(
+                stderr.contains("unsupported vvenc mode")
+                    && (stderr.contains("frontend") || stderr.contains("bitrate")),
+                "{params}: {stderr}"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("VVenC rejected candidate"),
+                before,
+                "{params}"
+            );
+        }
         for args in [
             vec![
                 "init",

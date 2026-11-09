@@ -241,9 +241,25 @@ impl Encoder {
         }
         if base == EncoderBase::VVenC {
             // Native options override the frontend's generated separate-pass arguments.
-            let native_pass = self
-                .numeric_setting("pass")?
-                .unwrap_or_else(|| if pass.1 > 1 { f64::from(pass.0) } else { -1.0 });
+            let explicit_pass = self.numeric_setting("pass")?;
+            if matches!(self.passes(), EncoderPasses::All(total) if total > 1)
+                && explicit_pass.is_some_and(|value| value > 0.0)
+            {
+                return Err(EncoderSettingsError::UnsupportedMode(
+                    base,
+                    "a fixed native pass overrides every frontend pass; remove --pass when running all frontend passes",
+                ));
+            }
+            if pass.1 > 1
+                && explicit_pass.is_some_and(|value| value > 0.0 && value != f64::from(pass.0))
+            {
+                return Err(EncoderSettingsError::UnsupportedMode(
+                    base,
+                    "native pass conflicts with the requested frontend pass",
+                ));
+            }
+            let native_pass =
+                explicit_pass.unwrap_or_else(|| if pass.1 > 1 { f64::from(pass.0) } else { -1.0 });
             let passes = self.numeric_setting("passes")?;
             let short_passes = self.numeric_setting("p")?;
             if passes.zip(short_passes).is_some_and(|(long, short)| long != short) {
@@ -255,20 +271,25 @@ impl Encoder {
             let native_passes = passes
                 .or(short_passes)
                 .unwrap_or_else(|| if pass.1 > 1 { f64::from(pass.1) } else { -1.0 });
-            let rate_control = ["bitrate", "b"]
-                .iter()
-                .filter_map(|name| self.parameters().get(*name))
-                .any(|value| {
-                    value
-                        .to_string_value()
-                        .trim_end_matches(|c: char| c.is_ascii_alphabetic())
-                        .parse::<f64>()
-                        != Ok(0.0)
-                });
+            if pass.1 > 1 && native_passes != -1.0 && native_passes != f64::from(pass.1) {
+                return Err(EncoderSettingsError::UnsupportedMode(
+                    base,
+                    "native pass count conflicts with the declared frontend total; use the matching count or -1",
+                ));
+            }
+            let bitrate = self.vvenc_bitrate("bitrate")?;
+            let short_bitrate = self.vvenc_bitrate("b")?;
+            if bitrate.zip(short_bitrate).is_some_and(|(long, short)| long != short) {
+                return Err(EncoderSettingsError::UnsupportedMode(
+                    base,
+                    "conflicting bitrate and b options; choose one bitrate",
+                ));
+            }
+            let bitrate = bitrate.or(short_bitrate).unwrap_or(0.0);
             // vvencapp resolves auto to two for a separate pass or nonzero bitrate;
             // the SDK's bitrate-independent default is not the CLI contract.
             let total = if native_passes == -1.0 {
-                if native_pass > 0.0 || rate_control {
+                if native_pass > 0.0 || bitrate > 0.0 {
                     2.0
                 } else {
                     1.0
@@ -288,6 +309,12 @@ impl Encoder {
                     "native pass exceeds its pass count; select compatible native passes/pass options",
                 ));
             }
+            if total > 1.0 && bitrate == 0.0 {
+                return Err(EncoderSettingsError::UnsupportedMode(
+                    base,
+                    "two-pass encoding requires a positive bitrate (--bitrate or -b) in actual bits per second",
+                ));
+            }
         }
         Ok(())
     }
@@ -298,6 +325,40 @@ impl Encoder {
             name: name.to_owned(),
             requirement,
         }
+    }
+
+    /// Resolve the CLI's signed-int bitrate after abbreviation scaling and rounding.
+    fn vvenc_bitrate(&self, name: &str) -> Result<Option<f64>, EncoderSettingsError> {
+        let Some(parameter) = self.parameters().get(name) else {
+            return Ok(None);
+        };
+        let invalid = || {
+            self.invalid_number(name, "a nonnegative finite signed-32-bit bitrate (integer bps, or decimal Mbps/M/kbps/k/bps)")
+        };
+        let text = parameter.to_string_value();
+        let abbreviation = [
+            ("Mbps", 1_000_000.0),
+            ("M", 1_000_000.0),
+            ("kbps", 1000.0),
+            ("k", 1000.0),
+            ("bps", 1.0),
+        ]
+        .into_iter()
+        .find_map(|(suffix, scale)| text.strip_suffix(suffix).map(|number| (number, scale)));
+        let value = if let Some((number, scale)) = abbreviation {
+            // IStreamToAbbr accepts decimal commas with units, not exponent notation.
+            if !number.chars().all(|c| c.is_ascii_digit() || matches!(c, '-' | '.' | ',')) {
+                return Err(invalid());
+            }
+            number.replace(',', ".").parse::<f64>().map_err(|_| invalid())? * scale
+        } else {
+            f64::from(text.parse::<i32>().map_err(|_| invalid())?)
+        };
+        // Native int conversion rounds to nearest; sub-half-bps values disable rate control.
+        if !value.is_finite() || value < 0.0 || value.round() > f64::from(i32::MAX) {
+            return Err(invalid());
+        }
+        Ok(Some(value.round()))
     }
 
     fn numeric_setting(&self, name: &str) -> Result<Option<f64>, EncoderSettingsError> {

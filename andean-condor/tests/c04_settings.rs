@@ -5,6 +5,137 @@ mod tests {
     };
 
     #[test]
+    fn c04_round2_vvenc_all_pass_overrides_fail_before_first_pass() {
+        use andean_condor::models::encoder::EncoderSettingsError;
+        for (name, value) in [("passes", 1.0), ("p", 1.0), ("pass", 1.0), ("pass", 2.0)] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+            *encoder.passes_mut().expect("passes") = EncoderPasses::All(2);
+            encoder.parameters_mut().extend(CLIParameter::new_numbers(
+                "--",
+                " ",
+                &[("bitrate", 1000.0), (name, value)],
+            ));
+            assert!(
+                matches!(encoder.validate_settings(), Err(EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, reason)) if reason.contains("frontend")),
+                "All(2), {name}={value}"
+            );
+        }
+        for (name, passes) in [("passes", "2"), ("passes", "-1"), ("p", "2"), ("p", "-1")] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+            *encoder.passes_mut().expect("passes") = EncoderPasses::All(2);
+            encoder
+                .parameters_mut()
+                .insert(name.into(), CLIParameter::new_string("--", " ", passes));
+            encoder.parameters_mut().insert(
+                "bitrate".into(),
+                CLIParameter::new_string("--", " ", "1.5Mbps"),
+            );
+            assert_eq!(encoder.validate_settings(), Ok(()));
+        }
+        for selection in [
+            EncoderPasses::All(1),
+            EncoderPasses::Specific(1, 2),
+            EncoderPasses::Specific(2, 2),
+        ] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+            *encoder.passes_mut().expect("passes") = selection;
+            let current = match selection {
+                EncoderPasses::Specific(current, _) => current,
+                _ => 2,
+            };
+            encoder.parameters_mut().extend(CLIParameter::new_numbers(
+                "--",
+                " ",
+                &[("passes", 2.0), ("pass", f64::from(current)), ("bitrate", 1000.0)],
+            ));
+            assert_eq!(encoder.validate_settings(), Ok(()), "manual {selection:?}");
+        }
+        let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+        *encoder.passes_mut().expect("passes") = EncoderPasses::Specific(2, 2);
+        encoder.parameters_mut().extend(CLIParameter::new_numbers(
+            "--",
+            " ",
+            &[("passes", 2.0), ("pass", 1.0), ("bitrate", 1000.0)],
+        ));
+        assert!(
+            matches!(encoder.validate_settings(), Err(EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, reason)) if reason.contains("frontend pass"))
+        );
+    }
+
+    #[test]
+    fn c04_round2_vvenc_bitrate_units_resolve_to_finite_positive_bits() {
+        use andean_condor::models::encoder::EncoderSettingsError;
+        let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+        *encoder.passes_mut().expect("passes") = EncoderPasses::All(2);
+        let error = encoder.validate_settings().expect_err("two-pass needs rate control");
+        assert!(
+            matches!(error, EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, reason) if reason.contains("bitrate"))
+        );
+        for value in ["0", "0k", "0Mbps", "0.0001k"] {
+            encoder
+                .parameters_mut()
+                .insert("bitrate".into(), CLIParameter::new_string("--", " ", value));
+            assert!(
+                matches!(encoder.validate_settings(), Err(EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, reason)) if reason.contains("bitrate")),
+                "zero actual bits: {value}"
+            );
+        }
+        for value in [
+            "1",
+            "1000",
+            "1.5M",
+            "1,5Mbps",
+            "1500k",
+            "1500kbps",
+            "1500000bps",
+            "0.0005k",
+            "0.0000005Mbps",
+        ] {
+            encoder
+                .parameters_mut()
+                .insert("bitrate".into(), CLIParameter::new_string("--", " ", value));
+            assert_eq!(encoder.validate_settings(), Ok(()), "native units {value}");
+        }
+        for value in [
+            "-1",
+            "-1M",
+            "NaN",
+            "inf",
+            "infMbps",
+            "1000junk",
+            "1.5",
+            "1e3M",
+            "2147483648",
+            "3000M",
+        ] {
+            encoder
+                .parameters_mut()
+                .insert("bitrate".into(), CLIParameter::new_string("--", " ", value));
+            assert!(
+                matches!(encoder.validate_settings(), Err(EncoderSettingsError::InvalidNumber { name, .. }) if name == "bitrate"),
+                "malformed bitrate {value}"
+            );
+        }
+        encoder.parameters_mut().clear();
+        encoder
+            .parameters_mut()
+            .insert("b".into(), CLIParameter::new_string("-", " ", "1.5Mbps"));
+        assert_eq!(encoder.validate_settings(), Ok(()), "short bitrate alias");
+        encoder.parameters_mut().insert(
+            "bitrate".into(),
+            CLIParameter::new_number("--", " ", 1500000.0),
+        );
+        assert_eq!(encoder.validate_settings(), Ok(()), "equivalent aliases");
+        encoder
+            .parameters_mut()
+            .insert("bitrate".into(), CLIParameter::new_number("--", " ", 0.0));
+        assert!(
+            matches!(encoder.validate_settings(), Err(EncoderSettingsError::UnsupportedMode(EncoderBase::VVenC, reason)) if reason.contains("bitrate")),
+            "conflicting aliases must not depend on order"
+        );
+    }
+
+    #[test]
     fn c04_library_rejects_invalid_settings() {
         for (base, passes, key, value) in [
             (EncoderBase::AOM, EncoderPasses::All(0), "cq-level", 30.0),
@@ -343,6 +474,12 @@ mod tests {
                     encoder
                         .parameters_mut()
                         .insert("keyint".into(), CLIParameter::new_number("--", " ", 48.0));
+                }
+                if base == EncoderBase::VVenC && pass.1 == 2 {
+                    encoder.parameters_mut().insert(
+                        "bitrate".into(),
+                        CLIParameter::new_number("--", " ", 1000.0),
+                    );
                 }
                 if let Some(passes) = encoder.passes_mut() {
                     *passes = EncoderPasses::Specific(pass.0, pass.1);

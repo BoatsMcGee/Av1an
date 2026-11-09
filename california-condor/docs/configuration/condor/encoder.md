@@ -70,6 +70,13 @@ encoder before opening/indexing the source or launching workers.
   positive bitrate or a separate native pass, otherwise one. Combined native
   two-pass calls cannot replay stdin: use frontend `--passes 2` and do not
   override its separate pass selection with native `--pass -1`.
+  With frontend `All(2)`, native `--passes`/`-p` must be `2` or `-1`; omit native
+  `--pass` so each frontend pass keeps its own index. A matching native `--pass`
+  is allowed with `Specific`, or for manual separate-pass calls under `All(1)`.
+  Two-pass encoding requires a positive bitrate after conversion to whole bits
+  per second. `--bitrate`/`-b` accepts integer bps or decimal values with `Mbps`,
+  `M`, `kbps`, `k`, or `bps` (for example, `1.5Mbps`); unit values round to the
+  nearest bit per second. Missing/zero bitrate is valid only for one pass.
 - All numeric option values must be finite. Known quality, rate-control and
   pass settings also have backend-specific type/range checks, including their
   string forms. Other options are still checked by the native encoder.
