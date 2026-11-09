@@ -15,12 +15,12 @@ use std::{
     sync::{Arc, Condvar, Mutex},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 use av_decoders::VideoDetails;
 use ffms2_sys::{FFMS_ErrorInfo, FFMS_Frame, FFMS_GetFrame, FFMS_VideoSource};
 use vapoursynth::{frame::FrameRef, node::Node};
 
-use super::{Input, vapoursynth::output_node};
+use super::{Input, ffms2_filter::ffms2_pixel_format, vapoursynth::output_node};
 
 /// VapourSynth frame requests in flight: one per core keeps the decode
 /// pipeline busy without letting resident frames grow without bound.
@@ -199,14 +199,32 @@ impl Ffms2Feed {
 ///
 /// # Safety
 ///
-/// `video_source` must outlive the returned frame, and no other
-/// `FFMS_GetFrame` may run on it while the return value is still in use:
-/// reading a frame invalidates the previous one's planes.
+/// `video_source` must be live and outlive the returned frame. No other read
+/// or input/output format change may run on it while the view is in use.
+/// FFMS2 must provide initialized plane allocations covering the validated
+/// spans; a raw header cannot establish allocation extents or ownership.
 pub(super) unsafe fn ffms2_frame_at<'a>(
     video_source: *mut FFMS_VideoSource,
     details: &VideoDetails,
     index: usize,
 ) -> Result<RawFrame<'a>> {
+    // SAFETY: the caller keeps the source and all returned buffers live and
+    // exclusive until this view is retired.
+    let frame = unsafe { ffms2_header_at(video_source, index)? };
+    // SAFETY: same source lifetime; all metadata/planes are preflighted before
+    // any slice is constructed.
+    unsafe { planes_of(frame, details, index) }
+}
+
+/// Reads only the native header, without borrowing any plane memory.
+///
+/// # Safety
+/// The source must be live and exclusively accessed; the returned header is
+/// invalidated by another read or any input/output format change.
+pub(super) unsafe fn ffms2_header_at<'a>(
+    video_source: *mut FFMS_VideoSource,
+    index: usize,
+) -> Result<&'a FFMS_Frame> {
     let mut error_buffer = [0 as c_char; 1024];
     let mut error = FFMS_ErrorInfo {
         ErrorType: 0,
@@ -229,29 +247,129 @@ pub(super) unsafe fn ffms2_frame_at<'a>(
     // SAFETY: the reference is non-null and stays valid until the next
     // `FFMS_GetFrame` on this source, which the safety contract forbids while
     // the returned frame is in use.
-    unsafe { planes_of(&*frame, details, index) }
+    Ok(unsafe { &*frame })
+}
+
+/// Runtime format IDs must come from the FFmpeg linked to FFMS2, not enums
+/// compiled against another version. av-decoders 0.12 supports 8/10/12 only.
+pub(super) fn output_format_id(details: &VideoDetails) -> Result<i32> {
+    let format =
+        ffms2_pixel_format(details.bit_depth, details.chroma_sampling).ok_or_else(|| {
+            anyhow::anyhow!(
+                "FFMS2 cannot output {}-bit {:?}",
+                details.bit_depth,
+                details.chroma_sampling
+            )
+        })?;
+    let name = std::ffi::CString::new(format.to_pix_fmt_string())?;
+    // SAFETY: `name` is a live NUL-terminated string; no frame memory is read.
+    let id = unsafe { ffms2_sys::FFMS_GetPixFmt(name.as_ptr()) };
+    ensure!(
+        id >= 0,
+        "FFMS2 does not support {}",
+        format.to_pix_fmt_string()
+    );
+    Ok(id)
+}
+
+/// Checks actual converted output, not the encoded source or cached details.
+pub(super) fn validate_metadata(
+    frame: &FFMS_Frame,
+    details: &VideoDetails,
+    index: usize,
+) -> Result<()> {
+    let expected_format = output_format_id(details)?;
+    // COMPAT: FFMS2 documents (-1, -1) when no scaler is configured. Only
+    // that sentinel uses Encoded*, which then describes the actual Data.
+    let (width, height) = match (frame.ScaledWidth, frame.ScaledHeight) {
+        (-1, -1) => (frame.EncodedWidth, frame.EncodedHeight),
+        dimensions => dimensions,
+    };
+    ensure!(
+        width > 0
+            && height > 0
+            && i32::try_from(details.width).ok() == Some(width)
+            && i32::try_from(details.height).ok() == Some(height)
+            && frame.ConvertedPixelFormat == expected_format,
+        "FFMS2 frame {index}: expected {}x{} {}-bit {:?} LE planar (format {expected_format}), got {width}x{height} format {} (scaled {}x{}, encoded {}x{})",
+        details.width,
+        details.height,
+        details.bit_depth,
+        details.chroma_sampling,
+        frame.ConvertedPixelFormat,
+        frame.ScaledWidth,
+        frame.ScaledHeight,
+        frame.EncodedWidth,
+        frame.EncodedHeight,
+    );
+    Ok(())
 }
 
 /// The planes of one decoded FFMS2 frame, addressed in place.
 ///
 /// # Safety
 ///
-/// `frame` must describe a live frame whose buffers stay valid until the next
-/// `FFMS_GetFrame` call on the same source.
+/// Every required non-null plane must point into one live, initialized
+/// allocation containing at least its validated span. Header checks cannot
+/// prove raw allocation extents. Buffers must remain immutable and live for
+/// the returned lifetime (no read or format change on the same source).
 unsafe fn planes_of<'a>(
     frame: &'a FFMS_Frame,
     details: &VideoDetails,
     index: usize,
 ) -> Result<RawFrame<'a>> {
+    let (luma, chroma) = preflight_planes(frame, details, index)?;
+    // SAFETY: ALL required headers/spans passed preflight, and the caller
+    // guarantees the underlying allocations and lifetime, not just metadata.
+    unsafe {
+        Ok(RawFrame {
+            luma: luma.view(),
+            chroma: chroma.map(|(cb, cr)| (cb.view(), cr.view())),
+            bit_depth: details.bit_depth,
+        })
+    }
+}
+
+struct PlaneLayout {
+    data: *const u8,
+    stride: usize,
+    width: usize,
+    height: usize,
+    bytes: usize,
+    len: usize,
+}
+
+impl PlaneLayout {
+    /// # Safety
+    /// `data` must be readable for `len` initialized bytes in one allocation,
+    /// immutable and live for `'a`. Preflight proves layout, not ownership.
+    unsafe fn view<'a>(self) -> RawPlane<'a> {
+        // SAFETY: the caller guarantees the allocation and lifetime; preflight
+        // checked non-null, positive geometry, stride and isize-bounded span.
+        let data = unsafe { std::slice::from_raw_parts(self.data, self.len) };
+        RawPlane {
+            data,
+            stride: self.stride,
+            width: self.width,
+            height: self.height,
+            bytes: self.bytes,
+        }
+    }
+}
+
+/// Pure header preflight: no pointer is dereferenced, even if a later plane
+/// fails. Keep this separate from `view` so validation cannot borrow early.
+fn preflight_planes(
+    frame: &FFMS_Frame,
+    details: &VideoDetails,
+    index: usize,
+) -> Result<(PlaneLayout, Option<(PlaneLayout, PlaneLayout)>)> {
+    validate_metadata(frame, details, index)?;
     let bytes = sample_bytes(details.bit_depth)?;
     let (width, height) = (details.width, details.height);
     let luma = plane(frame, 0, width, height, bytes, index)?;
     let Some((sub_x, sub_y)) = details.chroma_sampling.subsample_ratio() else {
-        return Ok(RawFrame {
-            luma,
-            chroma: None,
-            bit_depth: details.bit_depth,
-        });
+        return Ok((luma, None));
     };
     // Raw FFMS2 planes include partial chroma blocks at odd luma edges;
     // FrameBuilder's tile divisibility restrictions do not apply here.
@@ -261,34 +379,49 @@ unsafe fn planes_of<'a>(
     );
     let cb = plane(frame, 1, chroma_width, chroma_height, bytes, index)?;
     let cr = plane(frame, 2, chroma_width, chroma_height, bytes, index)?;
-    Ok(RawFrame {
-        luma,
-        chroma: Some((cb, cr)),
-        bit_depth: details.bit_depth,
-    })
+    Ok((luma, Some((cb, cr))))
 }
 
-/// Addresses one FFMS2 plane of `height` rows in place, without copying it.
-fn plane<'a>(
-    frame: &'a FFMS_Frame,
+/// Checks one plane header without reading its pointer.
+fn plane(
+    frame: &FFMS_Frame,
     plane: usize,
     width: usize,
     height: usize,
     bytes: usize,
     index: usize,
-) -> Result<RawPlane<'a>> {
+) -> Result<PlaneLayout> {
+    ensure!(
+        !frame.Data[plane].is_null(),
+        "FFMS2 frame {index} plane {plane}: null data pointer"
+    );
     let stride = usize::try_from(frame.Linesize[plane])
         .ok()
         .filter(|stride| *stride > 0)
-        .ok_or_else(|| anyhow::anyhow!("FFMS2 reported an unusable stride for frame {index}"))?;
-    let len = stride
-        .checked_mul(height)
-        .ok_or_else(|| anyhow::anyhow!("FFMS2 plane size overflows for frame {index}"))?;
-    // SAFETY: FFMS2 hands back `stride`-padded planes of `height` rows, which
-    // `planes_of` guarantees stay live until the next read.
-    let data = unsafe { std::slice::from_raw_parts(frame.Data[plane], len) };
-    RawPlane::new(data, stride, width, height, bytes)
-        .ok_or_else(|| anyhow::anyhow!("unsupported FFMS2 plane layout at frame {index}"))
+        .ok_or_else(|| anyhow::anyhow!("FFMS2 frame {index} plane {plane}: unusable stride"))?;
+    let len = plane_span(stride, width, height, bytes)
+        .ok_or_else(|| anyhow::anyhow!("FFMS2 frame {index} plane {plane}: invalid or overflowing span (stride {stride}, {width}x{height}, {bytes} bytes/sample)"))?;
+    Ok(PlaneLayout {
+        data: frame.Data[plane],
+        stride,
+        width,
+        height,
+        bytes,
+        len,
+    })
+}
+
+fn plane_span(stride: usize, width: usize, height: usize, bytes: usize) -> Option<usize> {
+    if width == 0 || height == 0 || !matches!(bytes, 1 | 2) {
+        return None;
+    }
+    let row = width.checked_mul(bytes)?;
+    if stride < row {
+        return None;
+    }
+    // Last-row padding need not be allocated; borrow only through its pixels.
+    let span = (height - 1).checked_mul(stride)?.checked_add(row)?;
+    isize::try_from(span).ok().map(|_| span)
 }
 
 /// Bytes per sample for a bit depth this reader can address.
@@ -450,7 +583,192 @@ fn vs_plane<'a>(frame: &FrameRef<'a>, plane: usize) -> Result<RawPlane<'a>> {
 
 #[cfg(test)]
 mod tests {
+    use av_decoders::v_frame::chroma::ChromaSubsampling;
+
     use super::*;
+
+    fn i02_details(width: usize, height: usize, bit_depth: usize) -> VideoDetails {
+        VideoDetails {
+            width,
+            height,
+            bit_depth,
+            chroma_sampling: ChromaSubsampling::Yuv420,
+            frame_rate: av_decoders::Rational32::new(24, 1),
+            total_frames: Some(1),
+            color_range: None,
+            color_primaries: None,
+            color_transfer_characteristic: None,
+            color_space: None,
+            chroma_location: None,
+            mastering_display: None,
+            content_light_level: None,
+        }
+    }
+
+    fn i02_header(data: &[u8], width: i32, height: i32, format: &str) -> FFMS_Frame {
+        // SAFETY: this C header contains only numeric fields and raw pointers;
+        // zero is valid for each field. Plane allocations remain caller-owned.
+        let mut frame: FFMS_Frame = unsafe { std::mem::zeroed() };
+        let format = std::ffi::CString::new(format).expect("pixel format name");
+        // SAFETY: the format name is a live C string; lookup reads no planes.
+        frame.ConvertedPixelFormat = unsafe { ffms2_sys::FFMS_GetPixFmt(format.as_ptr()) };
+        frame.ScaledWidth = width;
+        frame.ScaledHeight = height;
+        frame.EncodedWidth = width;
+        frame.EncodedHeight = height;
+        frame.Data = [data.as_ptr(); 4];
+        frame.Linesize = [32; 4];
+        frame
+    }
+
+    #[test]
+    fn i02_converted_metadata_mismatch_rejected() {
+        let details = i02_details(16, 1080, 8);
+        // Overallocate every plane for the OLD configured-height read as well
+        // as every claimed format. RED must never rely on invalid memory.
+        let data = vec![0; 32 * 1080];
+        for (width, height, format) in [
+            (16, 800, "yuv420p"),
+            (15, 1080, "yuv420p"),
+            (16, 1080, "yuv444p"),
+            (16, 1080, "yuv420p10le"),
+            (16, 1080, "yuv420p10be"),
+        ] {
+            let frame = i02_header(&data, width, height, format);
+            // SAFETY: all planes have 1080 fully allocated 32-byte rows, live
+            // through the call, including when baseline ignores the metadata.
+            let result = unsafe { planes_of(&frame, &details, 42) };
+            assert!(result.is_err(), "accepted {width}x{height} {format}");
+            let message = result.err().expect("metadata error").to_string();
+            assert!(message.contains("frame 42"), "{message}");
+            assert!(message.contains("16x1080"), "{message}");
+            assert!(message.contains(&format!("{width}x{height}")), "{message}");
+        }
+    }
+
+    #[test]
+    fn i02_metadata_precedes_all_plane_headers() {
+        let details = i02_details(16, 1080, 10);
+        let mut frame = i02_header(&[], 16, 800, "yuv420p10le");
+        frame.Data = [std::ptr::null(); 4];
+        for (width, height, format) in [
+            (16, 800, "yuv420p10le"),
+            (0, 1080, "yuv420p10le"),
+            (-2, 1080, "yuv420p10le"),
+            (16, 0, "yuv420p10le"),
+            (16, -2, "yuv420p10le"),
+            (-1, 1080, "yuv420p10le"),
+            (16, 1080, "yuv444p10le"),
+            (16, 1080, "yuv420p12le"),
+            (16, 1080, "yuv420p10be"),
+            (16, 1080, "no-such-format"),
+        ] {
+            frame.ScaledWidth = width;
+            frame.ScaledHeight = height;
+            let name = std::ffi::CString::new(format).expect("format name");
+            // SAFETY: lookup only, no plane read.
+            frame.ConvertedPixelFormat = unsafe { ffms2_sys::FFMS_GetPixFmt(name.as_ptr()) };
+            let error = preflight_planes(&frame, &details, 7)
+                .err()
+                .expect("reject metadata")
+                .to_string();
+            assert!(error.contains("expected 16x1080"), "{error}");
+            assert!(error.contains("frame 7"), "{error}");
+            assert!(error.contains("format"), "{error}");
+            assert!(
+                !error.contains("null data"),
+                "metadata must precede planes: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn i02_all_planes_preflight_without_views() {
+        let details = i02_details(16, 8, 8);
+        // These deliberately have NO readable plane allocation. Only the
+        // production pure preflight is called, never `planes_of`/`view`.
+        let mut frame = i02_header(&[], 16, 8, "yuv420p");
+        frame.Data = [std::ptr::dangling(); 4];
+        for plane in 0..3 {
+            frame.Data[plane] = std::ptr::null();
+            let error =
+                preflight_planes(&frame, &details, 9).err().expect("null plane").to_string();
+            assert!(
+                error.contains(&format!("frame 9 plane {plane}: null")),
+                "{error}"
+            );
+            frame.Data[plane] = std::ptr::dangling();
+            for stride in [-1, 0, if plane == 0 { 15 } else { 7 }] {
+                frame.Linesize[plane] = stride;
+                assert!(preflight_planes(&frame, &details, 9).is_err());
+            }
+            frame.Linesize[plane] = 32;
+        }
+        // In particular an invalid V is discovered with unreadable Y and U:
+        // the safe function has no view callback or unsafe operation at all.
+        assert!(preflight_planes(&frame, &details, 9).is_ok());
+    }
+
+    #[test]
+    fn i02_spans_checked_and_last_row_padding_not_required() {
+        for (stride, width, height, bytes) in [
+            (1, 0, 1, 1),
+            (1, 1, 0, 1),
+            (1, 1, 1, 0),
+            (1, 1, 1, 4),
+            (1, 2, 1, 1),
+            (usize::MAX, usize::MAX, 1, 2),
+            (usize::MAX, 1, 3, 1),
+            (isize::MAX as usize, 1, 2, 1),
+            (usize::MAX, 1, 2, 1),
+        ] {
+            assert_eq!(plane_span(stride, width, height, bytes), None);
+        }
+        assert_eq!(plane_span(isize::MAX as usize, 1, 1, 1), Some(1));
+        let mut details = i02_details(2, 2, 10);
+        details.chroma_sampling = ChromaSubsampling::Monochrome;
+        let data = [0x23, 0x01, 0x45, 0x02, 99, 99, 0x67, 0x03, 0x89, 0x01];
+        let mut frame = i02_header(&data, 2, 2, "gray10le");
+        frame.Data[1..].fill(std::ptr::null());
+        frame.Linesize = [6, -1, -1, -1];
+        // SAFETY: exactly (2-1)*6+4 = 10 bytes, with no final-row padding.
+        let raw = unsafe { planes_of(&frame, &details, 0) }.expect("minimal allocation");
+        assert_eq!(raw.luma.data.len(), 10);
+        assert_eq!(raw.luma.sample(1, 0), 0x0367);
+        assert_eq!(raw.luma.sample(1, 1), 0x0189);
+        assert!(raw.chroma.is_none());
+    }
+
+    #[test]
+    fn i02_valid_layouts_and_documented_unscaled_sentinel() {
+        let data = vec![0x01; 32 * 8];
+        for (depth, format) in [(8, "yuv420p"), (10, "yuv420p10le"), (12, "yuv420p12le")] {
+            let details = i02_details(5, 3, depth);
+            let mut frame = i02_header(&data, 5, 3, format);
+            // Encoded geometry is irrelevant when actual converted size is set.
+            frame.EncodedWidth = 100;
+            frame.EncodedHeight = 800;
+            // SAFETY: all three 32*8 allocations cover the visible spans.
+            let raw = unsafe { planes_of(&frame, &details, 0) }.expect("valid output");
+            let (u, v) = raw.chroma.expect("420 chroma");
+            assert_eq!((u.width(), u.height(), v.width(), v.height()), (3, 2, 3, 2));
+            frame.ScaledWidth = -1;
+            frame.ScaledHeight = -1;
+            assert!(preflight_planes(&frame, &details, 1).is_err());
+            frame.EncodedWidth = 5;
+            frame.EncodedHeight = 3;
+            assert!(preflight_planes(&frame, &details, 1).is_ok());
+        }
+        for depth in [9, 16] {
+            // av-decoders 0.12 does not accept these as native decoder output.
+            assert!(output_format_id(&i02_details(5, 3, depth)).is_err());
+        }
+        let mut details = i02_details(0, 3, 8);
+        let frame = i02_header(&data, 0, 3, "yuv420p");
+        assert!(preflight_planes(&frame, &details, 1).is_err());
+        details.width = i32::MAX as usize + 1;
+        assert!(preflight_planes(&frame, &details, 1).is_err());
+    }
 
     #[test]
     fn only_supported_sample_widths_read() {

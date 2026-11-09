@@ -44,20 +44,69 @@ fn apply_filters(decoder: &mut Ffms2Decoder, filters: &[Ffms2Filter]) -> Result<
         let chroma = chroma.map_or(current.chroma_sampling, |chroma| {
             chroma.to_chroma_subsampling()
         });
-        let width = width.map_or(current.width, |width| {
-            usize::try_from(width).unwrap_or(current.width)
-        });
-        let height = height.map_or(current.height, |height| {
-            usize::try_from(height).unwrap_or(current.height)
-        });
+        let width = width.map(usize::try_from).transpose()?.unwrap_or(current.width);
+        let height = height.map(usize::try_from).transpose()?.unwrap_or(current.height);
 
-        // Rejected up front: FFMS2 would otherwise substitute a format.
-        ffms2_pixel_format(bit_depth, chroma)
-            .ok_or_else(|| anyhow::anyhow!("FFMS2 cannot output {bit_depth}-bit {chroma:?}"))?;
-
-        decoder.set_output_format(width, height, bit_depth as u8, chroma)?;
+        set_output_format(decoder, width, height, bit_depth, chroma)?;
     }
     Ok(())
+}
+
+fn validate_output_dimensions(width: usize, height: usize) -> Result<()> {
+    anyhow::ensure!(
+        width > 0 && height > 0 && i32::try_from(width).is_ok() && i32::try_from(height).is_ok(),
+        "FFMS2 output dimensions {width}x{height} must be positive and fit i32"
+    );
+    Ok(())
+}
+
+/// Guard the dependency's narrowing casts and verify what FFMS2 actually chose.
+fn set_output_format(
+    decoder: &mut Ffms2Decoder,
+    width: usize,
+    height: usize,
+    bit_depth: usize,
+    chroma: av_decoders::v_frame::chroma::ChromaSubsampling,
+) -> Result<()> {
+    validate_output_dimensions(width, height)?;
+    let mut expected = decoder.video_details;
+    expected.width = width;
+    expected.height = height;
+    expected.bit_depth = bit_depth;
+    expected.chroma_sampling = chroma;
+    frame_feed::output_format_id(&expected)?;
+    decoder.set_output_format(width, height, u8::try_from(bit_depth)?, chroma)?;
+    // SAFETY: the decoder exclusively owns the source; validation reads only
+    // the header, never planes, and the expected configuration is a snapshot.
+    let frame = unsafe { frame_feed::ffms2_header_at(decoder.video_source, 0)? };
+    frame_feed::validate_metadata(frame, &expected, 0)
+}
+
+/// av-decoders erases endianness from VideoDetails. Normalize initial BE only;
+/// do not convert on every read and conceal genuine mid-stream format changes.
+fn normalize_output(decoder: &mut Ffms2Decoder) -> Result<()> {
+    let details = decoder.video_details;
+    frame_feed::output_format_id(&details)?;
+    // SAFETY: the decoder owns a live, exclusive source. Only the header is read.
+    let frame = unsafe { frame_feed::ffms2_header_at(decoder.video_source, 0)? };
+    if details.bit_depth > 8 {
+        let name = ffms2_pixel_format(details.bit_depth, details.chroma_sampling)
+            .expect("output format checked above")
+            .to_pix_fmt_string();
+        let be_name = std::ffi::CString::new(format!("{}be", name.trim_end_matches("le")))?;
+        // SAFETY: valid C string; lookup does not access source or planes.
+        let be_format = unsafe { ffms2_sys::FFMS_GetPixFmt(be_name.as_ptr()) };
+        if be_format >= 0 && frame.ConvertedPixelFormat == be_format {
+            return set_output_format(
+                decoder,
+                details.width,
+                details.height,
+                details.bit_depth,
+                details.chroma_sampling,
+            );
+        }
+    }
+    frame_feed::validate_metadata(frame, &details, 0)
 }
 
 /// Validates that a native input path names an existing, non-script video file.
@@ -104,6 +153,7 @@ pub fn from_video(data: &InputModel) -> Result<Input> {
             let source_details = ffms2_decoder.video_details;
 
             apply_filters(&mut ffms2_decoder, filters)?;
+            normalize_output(&mut ffms2_decoder)?;
 
             let decoder =
                 Decoder::from_decoder_impl(av_decoders::DecoderImpl::Ffms2(ffms2_decoder))?;
@@ -253,6 +303,264 @@ mod tests {
     };
 
     use super::*;
+
+    fn i02_run(command: &mut std::process::Command) -> Vec<u8> {
+        // Spool both streams so a full pipe cannot deadlock the watchdog.
+        let stdout = tempfile::NamedTempFile::new().expect("child stdout");
+        let stderr = tempfile::NamedTempFile::new().expect("child stderr");
+        let mut child = command
+            .stdin(std::process::Stdio::null())
+            .stdout(stdout.reopen().expect("stdout handle"))
+            .stderr(stderr.reopen().expect("stderr handle"))
+            .spawn()
+            .expect("ffmpeg/ffprobe required for native I02 fixtures");
+        let start = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("child status") {
+                break status;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(30) {
+                child.kill().expect("kill timed out child");
+                child.wait().expect("reap timed out child");
+                panic!("I02 native fixture command timed out: {command:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(
+            status.success(),
+            "{command:?}: {}",
+            std::fs::read_to_string(stderr.path()).expect("child diagnostic")
+        );
+        std::fs::read(stdout.path()).expect("child output")
+    }
+
+    fn i02_ffmpeg(args: &[&str]) -> Vec<u8> {
+        i02_run(
+            std::process::Command::new("ffmpeg")
+                .args(["-nostdin", "-v", "error", "-y"])
+                .args(args),
+        )
+    }
+
+    #[test]
+    fn i02_initial_big_endian_source_normalizes_to_le() {
+        let directory = tempfile::tempdir().expect("BE fixture");
+        let raw_path = directory.path().join("source.raw");
+        let samples: Vec<u16> = (0..512).map(|i| 0x0123 + i % 113).collect();
+        let bytes: Vec<u8> = samples.iter().flat_map(|value| value.to_be_bytes()).collect();
+        std::fs::write(&raw_path, bytes).expect("BE raw samples");
+        let nut = i02_ffmpeg(&[
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "gray10be",
+            "-video_size",
+            "16x16",
+            "-framerate",
+            "24",
+            "-i",
+            raw_path.to_str().expect("fixture path"),
+            "-frames:v",
+            "2",
+            "-c:v",
+            "copy",
+            "-f",
+            "nut",
+            "pipe:1",
+        ]);
+        let path = directory.path().join("source.nut");
+        std::fs::write(&path, nut).expect("genuine BE NUT");
+        let native = Ffms2Decoder::new(&path, None).expect("FFMS2 supports BE gray10 NUT");
+        // SAFETY: source is live and exclusive; only header metadata is read.
+        let header =
+            unsafe { frame_feed::ffms2_header_at(native.video_source, 0) }.expect("BE header");
+        // SAFETY: constant format name; no plane access.
+        let be = unsafe { ffms2_sys::FFMS_GetPixFmt(c"gray10be".as_ptr()) };
+        assert_eq!(
+            header.EncodedPixelFormat, be,
+            "file really stores BE, not FFV1's native endian"
+        );
+        assert_eq!(header.ConvertedPixelFormat, be, "initial FFMS output is BE");
+        drop(native);
+        let mut input = from_video(&InputModel::Video {
+            path,
+            import_method: ImportMethod::FFMS2 {
+                index: None,
+                cache_path: None,
+            },
+            filters: vec![],
+        })
+        .expect("normalizes initial BE source");
+        let Input::Video {
+            decoder,
+            source_details,
+            ..
+        } = &mut input
+        else {
+            unreachable!()
+        };
+        assert_eq!(source_details.bit_depth, 10);
+        for index in 0..2 {
+            let mut packed = Vec::new();
+            pack_frame(decoder, index, &mut packed).expect("LE native packer");
+            let expected: Vec<u8> = samples[index * 256..(index + 1) * 256]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            assert_eq!(&packed[..6], b"FRAME\n");
+            assert_eq!(packed[6..], expected);
+        }
+        let native = decoder.get_ffms2_impl().expect("native source");
+        // SAFETY: valid exclusive source and a terminated list of runtime IDs.
+        // Passing null ErrorInfo is supported; the return code is checked.
+        let status = unsafe {
+            ffms2_sys::FFMS_SetOutputFormatV2(
+                native.video_source,
+                [be, -1].as_ptr(),
+                16,
+                16,
+                ffms2_sys::FFMS_Resizers::FFMS_RESIZER_BICUBIC as i32,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, 0, "force unexpected BE after construction");
+        let mut packed = vec![77];
+        let error = pack_frame(decoder, 1, &mut packed).expect_err("never read unexpected BE");
+        assert!(error.to_string().contains("frame 1"));
+        assert_eq!(packed, [77], "failed preflight emits no partial frame");
+
+        // Intentional scaling uses converted dimensions, not Encoded*, and
+        // does not rewrite the original source details retained for filters.
+        let native = decoder.get_ffms2_impl().expect("native source");
+        set_output_format(native, 8, 8, 12, ChromaSubsampling::Monochrome)
+            .expect("intentional resize");
+        // SAFETY: live exclusive source, header-only read.
+        let header =
+            unsafe { frame_feed::ffms2_header_at(native.video_source, 0) }.expect("scaled header");
+        assert_eq!((header.EncodedWidth, header.EncodedHeight), (16, 16));
+        assert_eq!((header.ScaledWidth, header.ScaledHeight), (8, 8));
+        assert_eq!(
+            (
+                source_details.width,
+                source_details.height,
+                source_details.bit_depth
+            ),
+            (16, 16, 10)
+        );
+        let mut packed = Vec::new();
+        pack_frame(decoder, 0, &mut packed).expect("converted shape accepted");
+        assert_eq!(packed.len(), 6 + 8 * 8 * 2);
+    }
+
+    #[test]
+    fn i02_filter_dimensions_reject_before_native_narrowing() {
+        for (width, height) in [
+            (0, 16),
+            (16, 0),
+            (i32::MAX as usize + 1, 16),
+            (16, u32::MAX as usize),
+            (usize::MAX, 16),
+        ] {
+            assert!(validate_output_dimensions(width, height).is_err());
+        }
+        assert!(validate_output_dimensions(1, 1).is_ok());
+        assert!(validate_output_dimensions(i32::MAX as usize, i32::MAX as usize).is_ok());
+    }
+
+    #[test]
+    fn i02_native_changing_resolution_capability() {
+        let directory = tempfile::tempdir().expect("changing resolution fixture");
+        let mut encoded = Vec::new();
+        for source in ["color=c=black:s=32x1080:r=24", "color=c=white:s=32x800:r=24"] {
+            encoded.extend(i02_ffmpeg(&[
+                "-f",
+                "lavfi",
+                "-i",
+                source,
+                "-frames:v",
+                "2",
+                "-c:v",
+                "mpeg2video",
+                "-threads",
+                "1",
+                "-g",
+                "1",
+                "-bf",
+                "0",
+                "-f",
+                "mpeg2video",
+                "pipe:1",
+            ]));
+        }
+        let path = directory.path().join("changing.m2v");
+        std::fs::write(&path, encoded).expect("concatenated encoded segments");
+        let probe = i02_run(
+            std::process::Command::new("ffprobe")
+                .args(["-v", "error", "-show_entries", "frame=width,height", "-of", "json"])
+                .arg(&path),
+        );
+        let probe: serde_json::Value = serde_json::from_slice(&probe).expect("probe frames");
+        let shapes: Vec<_> = probe["frames"]
+            .as_array()
+            .expect("decoded frames")
+            .iter()
+            .map(|frame| {
+                (
+                    frame["width"].as_u64().expect("width"),
+                    frame["height"].as_u64().expect("height"),
+                )
+            })
+            .collect();
+        // MPEG2 decoders may discard the first segment's delayed final frame
+        // at a new sequence header; either way both actual shapes must decode.
+        assert!(
+            shapes == [(32, 1080), (32, 800), (32, 800)]
+                || shapes == [(32, 1080), (32, 1080), (32, 800), (32, 800)],
+            "genuine changing bitstream: {shapes:?}"
+        );
+        eprintln!("I02 native capability: ffprobe decoded {shapes:?}");
+        let native = match Ffms2Decoder::new(&path, None) {
+            Ok(native) => native,
+            Err(error) => {
+                eprintln!(
+                    "I02 native capability: FFMS2 refused changing MPEG2 index/source: {error}"
+                );
+                return;
+            },
+        };
+        assert_eq!(native.video_details.total_frames, Some(4));
+        let mut decoder = Decoder::from_decoder_impl(av_decoders::DecoderImpl::Ffms2(native))
+            .expect("native decoder");
+        let mut mismatches = 0;
+        for index in 0..4 {
+            let mut packed = Vec::new();
+            match pack_frame(&mut decoder, index, &mut packed) {
+                Ok(()) => assert_eq!(packed.len(), 6 + 32 * 1080 * 3 / 2),
+                Err(error) => {
+                    let message = error.to_string();
+                    assert!(message.contains(&format!("frame {index}")), "{message}");
+                    assert!(packed.is_empty(), "reject before writing any planes");
+                    if message.contains("expected 32x1080") {
+                        assert!(message.contains("got 32x800"), "{message}");
+                        mismatches += 1;
+                    } else {
+                        assert!(message.contains("could not decode"), "{message}");
+                    }
+                    eprintln!("I02 native capability: {message}");
+                },
+            }
+        }
+        eprintln!(
+            "I02 native capability: {mismatches} converted-size mismatches rejected (4 frames indexed)"
+        );
+        // Explicit output conversion is allowed to keep output fixed even when
+        // the encoded shape changes. This must not be rejected as source drift.
+        let native = decoder.get_ffms2_impl().expect("native source");
+        set_output_format(native, 32, 1080, 8, ChromaSubsampling::Yuv420).expect("fixed output");
+        let mut packed = Vec::new();
+        pack_frame(&mut decoder, 2, &mut packed).expect("FFMS2 resizes changed encoded shape");
+        assert_eq!(packed.len(), 6 + 32 * 1080 * 3 / 2);
+    }
 
     /// A pixel type the Frame-era writer serialises. `Pixel` is sealed to
     /// `u8` and `u16`, so these cover every frame the native decoder produced.
