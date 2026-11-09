@@ -18,7 +18,7 @@ use crate::{
         plugins::{Plugin, PluginFunction},
         script_builder::{
             NodeVariableName, VapourSynthPluginScript,
-            script::{Imports, Line},
+            script::{Imports, Line, python_string_literal},
         },
     },
 };
@@ -451,8 +451,10 @@ impl VapourSynthPluginScript for DGSource {
             let mut line = String::new();
             write!(
                 &mut line,
-                "core.dgdecodenv.DGSource(source = r\"{}\"",
-                self.indexing_path.as_ref().unwrap_or(&self.source).display()
+                "core.dgdecodenv.DGSource(source = {}",
+                python_string_literal(
+                    &self.indexing_path.as_ref().unwrap_or(&self.source).to_string_lossy()
+                )
             )?;
             write!(&mut line, ")")?;
             line

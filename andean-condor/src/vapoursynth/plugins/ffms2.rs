@@ -12,7 +12,7 @@ use crate::vapoursynth::{
     plugins::{Plugin, PluginFunction},
     script_builder::{
         NodeVariableName, VapourSynthPluginScript,
-        script::{Imports, Line},
+        script::{Imports, Line, python_string_literal},
     },
 };
 
@@ -265,11 +265,15 @@ impl VapourSynthPluginScript for Source {
             let mut line = String::new();
             write!(
                 &mut line,
-                "core.ffms2.Source(source = r\"{}\"",
-                self.source.display()
+                "core.ffms2.Source(source = {}",
+                python_string_literal(&self.source.to_string_lossy())
             )?;
             if let Some(cache) = &self.cachefile {
-                write!(&mut line, ", cachefile = r\"{}\"", cache.display())?;
+                write!(
+                    &mut line,
+                    ", cachefile = {}",
+                    python_string_literal(&cache.to_string_lossy())
+                )?;
             }
             if let Some(track) = self.track {
                 write!(&mut line, ", track = {track}")?;

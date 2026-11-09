@@ -26,7 +26,7 @@ use crate::vapoursynth::{
     },
     script_builder::{
         NodeVariableName, VapourSynthPluginScript,
-        script::{Imports, Line},
+        script::{Imports, Line, python_string_literal},
     },
 };
 
@@ -484,7 +484,11 @@ impl VapourSynthPluginScript for CVVDP {
                 write!(&mut line, ", model_name = {}", model_name)?;
             }
             if let Some(model_config_json) = &self.model_config_json {
-                write!(&mut line, ", model_config_json = {}", model_config_json)?;
+                write!(
+                    &mut line,
+                    ", model_config_json = {}",
+                    python_string_literal(model_config_json)
+                )?;
             }
             if let Some(resize_to_display) = self.resize_to_display {
                 write!(

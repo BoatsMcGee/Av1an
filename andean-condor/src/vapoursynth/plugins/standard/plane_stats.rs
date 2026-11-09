@@ -11,7 +11,7 @@ use crate::vapoursynth::{
     },
     script_builder::{
         NodeVariableName, VapourSynthPluginScript,
-        script::{Imports, Line},
+        script::{Imports, Line, python_string_literal},
     },
 };
 
@@ -109,7 +109,7 @@ impl VapourSynthPluginScript for PlaneStats {
                 write!(&mut line, ", plane = {}", plane)?;
             }
             if let Some(prop) = &self.prop {
-                write!(&mut line, ", prop = {}", prop)?;
+                write!(&mut line, ", prop = {}", python_string_literal(prop))?;
             }
             write!(&mut line, ")")?;
             line

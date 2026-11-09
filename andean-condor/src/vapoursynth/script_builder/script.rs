@@ -1,5 +1,10 @@
 use std::{collections::BTreeMap, fmt::Write};
 
+// SECURITY: Quote external strings as data literals so Python cannot interpret them as code.
+pub(crate) fn python_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a string cannot fail")
+}
+
 pub type ModuleName = String;
 pub type PackageName = String;
 pub type ModuleAlias = Option<String>;

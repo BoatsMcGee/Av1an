@@ -14,7 +14,7 @@ use crate::vapoursynth::{
     },
     script_builder::{
         NodeVariableName, VapourSynthPluginScript,
-        script::{Imports, Line},
+        script::{Imports, Line, python_string_literal},
     },
 };
 
@@ -171,7 +171,7 @@ impl VapourSynthPluginScript for Bob {
                 write!(&mut line, ", dither_type = {}", dither_type)?;
             }
             if let Some(filter) = self.filter.as_ref() {
-                write!(&mut line, ", filter = {}", filter)?;
+                write!(&mut line, ", filter = {}", python_string_literal(filter))?;
             }
             if let Some(tff) = self.tff {
                 write!(&mut line, ", tff = {}", tff as i64)?;

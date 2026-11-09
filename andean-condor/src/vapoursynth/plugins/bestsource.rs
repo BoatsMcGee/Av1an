@@ -12,7 +12,7 @@ use crate::vapoursynth::{
     plugins::{Plugin, PluginFunction},
     script_builder::{
         NodeVariableName, VapourSynthPluginScript,
-        script::{Imports, Line},
+        script::{Imports, Line, python_string_literal},
     },
 };
 
@@ -320,11 +320,15 @@ impl VapourSynthPluginScript for VideoSource {
             let mut line = String::new();
             write!(
                 &mut line,
-                "core.bs.VideoSource(source = r\"{}\"",
-                self.source.display()
+                "core.bs.VideoSource(source = {}",
+                python_string_literal(&self.source.to_string_lossy())
             )?;
             if let Some(cache) = &self.cachepath {
-                write!(&mut line, ", cachepath = r\"{}\"", cache.display())?;
+                write!(
+                    &mut line,
+                    ", cachepath = {}",
+                    python_string_literal(&cache.to_string_lossy())
+                )?;
             }
             if let Some(track) = self.track {
                 write!(&mut line, ", track = {track}")?;

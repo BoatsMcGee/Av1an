@@ -34,10 +34,14 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_source_name("two tracks.mkv")
+    }
+
+    fn with_source_name(name: &str) -> Self {
         let directory = tempfile::tempdir().expect("I05 fixture");
         let parent = directory.path().join("read only 映像");
         fs::create_dir_all(&parent).expect("source directory");
-        let source = parent.join("two tracks.mkv");
+        let source = parent.join(name);
         run(Command::new("timeout")
             .args(["30s", "ffmpeg", "-nostdin", "-v", "error", "-y"])
             .args(["-f", "lavfi", "-i", "nullsrc=s=32x16:r=24,geq=lum=37:cb=83:cr=201"])
@@ -385,4 +389,342 @@ fn i05_dg_production_routes_plan_existing_index_as_source_without_indexer() {
             "additional nodes must not receive an invented cache keyword"
         );
     }
+}
+
+const I08_STRINGS: &[&str] = &[
+    "",
+    "single' and double\" quotes",
+    "back\\slash",
+    "literal\\n\\t\\u1234\\x41",
+    "line\ncarriage\rtab\t",
+    "trailing\\",
+    "映像🦀 e\u{301}\u{2028}\u{2029}",
+    "\0\u{1}\u{8}\u{c}\u{1f}",
+    "\"+str(marker.append('executed'))+\"",
+    "str(marker.append('executed'))",
+];
+
+fn i08_case(
+    plugin: &dyn VapourSynthPluginScript,
+    function: &str,
+    kwargs: &serde_json::Value,
+) -> serde_json::Value {
+    let (imports, lines) = plugin.generate_script("clip".to_owned()).expect("generator");
+    let mut script = VapourSynthScript::default();
+    if let Some(imports) = imports {
+        script.add_imports(imports);
+    }
+    script.add_lines(lines);
+    script.outputs.insert(0, "clip".to_owned());
+    serde_json::json!({"script": script.to_string(), "expected": [{"function": function, "kwargs": kwargs}]})
+}
+
+fn i08_check_cases(cases: &[serde_json::Value]) {
+    let input = tempfile::NamedTempFile::new().expect("I08 cases");
+    fs::write(input.path(), serde_json::to_vec(cases).expect("cases JSON")).expect("write cases");
+    let output = run(Command::new("timeout")
+        .args([
+            "10s",
+            "python3",
+            "-c",
+            r#"
+import json
+import sys
+import types
+
+class Clip:
+    def set_output(self, **kwargs):
+        pass
+
+calls = []
+def recorder(function):
+    def record(**kwargs):
+        calls.append({"function": function, "kwargs": kwargs})
+        return Clip()
+    return record
+
+functions = {
+    "ffms2": ["Source"], "bs": ["VideoSource"],
+    "lsmas": ["LWLibavSource"], "dgdecodenv": ["DGSource"],
+    "mvu": ["Super", "Analyse", "AnalyseMany", "Recalculate", "Degrain"],
+    "std": ["PlaneStats"], "resize": ["Bob"], "vship": ["CVVDP"],
+}
+core = types.SimpleNamespace(**{
+    ns: types.SimpleNamespace(**{f: recorder(f"{ns}.{f}") for f in names})
+    for ns, names in functions.items()
+})
+sys.modules["vapoursynth"] = types.SimpleNamespace(core=core)
+failures = []
+with open(sys.argv[1], encoding="utf-8") as handle:
+    cases = json.load(handle)
+for case in cases:
+    calls.clear()
+    marker = []
+    environment = {"clip": Clip(), "marker": marker}
+    try:
+        exec(compile(case["script"], "<I08 generated>", "exec"), environment)
+        actual = json.loads(json.dumps(calls, default=lambda node: "node"))
+        assert marker == [], f"embedded expression executed: {marker!r}"
+        assert actual == case["expected"], (actual, case["expected"])
+    except (SyntaxError, ValueError, NameError, TypeError, AssertionError) as error:
+        failures.append(f"{case['expected']!r}: {type(error).__name__}: {error}")
+assert not failures, "\n".join(failures)
+print(f"I08 compiled/executed {len(cases)} generated scripts; exact kwargs, marker untouched")
+"#,
+        ])
+        .arg(input.path()));
+    eprint!("{}", String::from_utf8(output).expect("Python summary"));
+}
+
+#[test]
+fn i08_literal_encoder_roundtrips_in_python() {
+    use crate::vapoursynth::script_builder::script::python_string_literal;
+    let cases: Vec<_> =
+        I08_STRINGS.iter().map(|value| (python_string_literal(value), value)).collect();
+    let input = tempfile::NamedTempFile::new().expect("literal cases");
+    fs::write(
+        input.path(),
+        serde_json::to_vec(&cases).expect("cases JSON"),
+    )
+    .expect("write cases");
+    run(Command::new("timeout")
+        .args([
+            "10s",
+            "python3",
+            "-c",
+            r#"
+import ast
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    cases = json.load(handle)
+for literal, expected in cases:
+    compile(literal, "<I08 literal>", "eval")
+    assert ast.literal_eval(literal) == expected
+"#,
+        ])
+        .arg(input.path()));
+}
+
+#[test]
+fn i08_source_and_cache_literals_preserve_data_without_execution() {
+    let mut cases = Vec::new();
+    for &value in I08_STRINGS {
+        // Isolate each input so a broken source literal cannot hide a broken cache literal.
+        for cache_only in [false, true] {
+            let source = if cache_only { "source.mkv" } else { value };
+            let cache = if cache_only { value } else { "cache" };
+            let mut ffms = Source::new(Path::new(source));
+            ffms.cachefile = Some(cache.into());
+            let mut best = VideoSource::new(Path::new(source));
+            best.cachepath = Some(cache.into());
+            let mut lsmash = LWLibavSource::new(Path::new(source));
+            lsmash.cachefile = Some(cache.into());
+            for (plugin, function, cache_key) in [
+                (
+                    &ffms as &dyn VapourSynthPluginScript,
+                    "ffms2.Source",
+                    "cachefile",
+                ),
+                (&best, "bs.VideoSource", "cachepath"),
+                (&lsmash, "lsmas.LWLibavSource", "cachefile"),
+            ] {
+                cases.push(i08_case(
+                    plugin,
+                    function,
+                    &serde_json::json!({"source": source, cache_key: cache}),
+                ));
+            }
+        }
+        for alias in [false, true] {
+            let mut dg = DGSource::new(Path::new(if alias { "original.mkv" } else { value }));
+            if alias {
+                dg.indexing_path = Some(value.into());
+            }
+            cases.push(i08_case(
+                &dg,
+                "dgdecodenv.DGSource",
+                &serde_json::json!({"source": value}),
+            ));
+        }
+    }
+    i08_check_cases(&cases);
+}
+
+#[test]
+fn i08_prefix_literals_preserve_data_without_execution() {
+    use crate::vapoursynth::plugins::mvutensils::{
+        analyse::Analyse, analyse_many::AnalyseMany, degrain::Degrain, mvu_super::MVUSuper,
+        recalculate::Recalculate,
+    };
+    let mut cases = Vec::new();
+    for &value in I08_STRINGS {
+        let super_filter = MVUSuper {
+            prefix: Some(value.into()),
+            ..Default::default()
+        };
+        let analyse = Analyse {
+            prefix: Some(value.into()),
+            ..Default::default()
+        };
+        let many = AnalyseMany {
+            prefix: Some(value.into()),
+            ..Default::default()
+        };
+        let recalculate = Recalculate {
+            prefix: Some(value.into()),
+            ..Default::default()
+        };
+        let degrain = Degrain {
+            prefix: Some(value.into()),
+            ..Default::default()
+        };
+        for (plugin, function, kwargs) in [
+            (
+                &super_filter as &dyn VapourSynthPluginScript,
+                "mvu.Super",
+                serde_json::json!({"clip": "node", "blksize": [8], "overlap": [4], "prefix": value}),
+            ),
+            (
+                &analyse,
+                "mvu.Analyse",
+                serde_json::json!({"super": "node", "prefix": value}),
+            ),
+            (
+                &many,
+                "mvu.AnalyseMany",
+                serde_json::json!({"super": "node", "prefix": value}),
+            ),
+            (
+                &recalculate,
+                "mvu.Recalculate",
+                serde_json::json!({"super": "node", "vectors": "node", "prefix": value}),
+            ),
+            (
+                &degrain,
+                "mvu.Degrain",
+                serde_json::json!({"clip": "node", "super": "node", "vectors": "node", "prefix": value}),
+            ),
+        ] {
+            cases.push(i08_case(plugin, function, &kwargs));
+        }
+    }
+    i08_check_cases(&cases);
+}
+
+#[test]
+fn i08_other_string_filters_preserve_data_without_execution() {
+    use crate::vapoursynth::plugins::{
+        resize::bob::Bob, standard::plane_stats::PlaneStats, vship::cvvdp::CVVDP,
+    };
+    let mut cases = Vec::new();
+    for &value in I08_STRINGS {
+        let stats = PlaneStats {
+            clip_b_name: None,
+            plane: None,
+            prop: Some(value.into()),
+        };
+        let bob = Bob {
+            filter: Some(value.into()),
+            ..Default::default()
+        };
+        let cvvdp = CVVDP {
+            reference_node_name: "clip".into(),
+            distorted_node_name: "clip".into(),
+            model_config_json: Some(value.into()),
+            ..Default::default()
+        };
+        cases.push(i08_case(
+            &stats,
+            "std.PlaneStats",
+            &serde_json::json!({"clip": "node", "prop": value}),
+        ));
+        cases.push(i08_case(
+            &bob,
+            "resize.Bob",
+            &serde_json::json!({"clip": "node", "filter": value}),
+        ));
+        cases.push(i08_case(&cvvdp, "vship.CVVDP", &serde_json::json!({"reference": "node", "distorted": "node", "model_config_json": value})));
+    }
+    i08_check_cases(&cases);
+}
+
+#[cfg(unix)]
+fn i08_special_filename_routes(method: &VapourSynthImportMethod) {
+    let fixture =
+        Fixture::with_source_name("both'\"\\\n映像🦀\"+str(marker.append('executed'))+\".mkv");
+    for scripted in [false, true] {
+        let cache = fixture
+            .cache(&format!("special-{scripted}"))
+            .with_file_name("cache'\"\\\n索引🦀");
+        let data = InputModel::VapourSynth {
+            path: fixture.source.clone(),
+            import_method: method.clone(),
+            cache_path: Some(cache.clone()),
+            filters: Vec::new(),
+        };
+        let mut input = if scripted {
+            Input::from_vapoursynth_scripted(&data)
+        } else {
+            Input::from_data(&data)
+        }
+        .expect("real plugin must open special filename and explicit cache");
+        assert_eq!(
+            input.y4m_frame(0).expect("frame").into_inner(),
+            expected_frame(Some(1), 32)
+        );
+        assert_eq!(input.clip_info().expect("metadata").num_frames, 100);
+        drop(input);
+        let caches = files(cache.parent().expect("cache parent"));
+        assert!(!caches.is_empty(), "explicit special cache created");
+        if matches!(method, VapourSynthImportMethod::BestSource { .. }) {
+            assert!(caches.iter().all(|path| path.starts_with(&cache)));
+        } else {
+            assert_eq!(caches, [cache]);
+        }
+        eprintln!("I08 {method:?} scripted={scripted}: {caches:?}; 100 frames, YUV=219/41/159");
+        fixture.unchanged();
+    }
+    if matches!(method, VapourSynthImportMethod::FFMS2 { .. }) {
+        let cache = fixture.cache("native gateway").with_file_name("native'\"\\\n索引🦀");
+        let mut native = Input::from_data(&InputModel::Video {
+            path: fixture.source.clone(),
+            import_method: ImportMethod::FFMS2 {
+                index: Some(1),
+                cache_path: Some(cache.clone()),
+            },
+            filters: Vec::new(),
+        })
+        .expect("native special filename");
+        let expected = native.y4m_frame(0).expect("native frame").into_inner();
+        assert_eq!(expected, expected_frame(Some(1), 32));
+        let original_index = fs::read(&cache).expect("native cache");
+        let mut reference = native.as_vapoursynth_script().expect("VS gateway").expect("VS input");
+        assert_eq!(
+            reference.y4m_frame(0).expect("VS frame").into_inner(),
+            expected
+        );
+        assert_eq!(reference.clip_info().expect("metadata").num_frames, 100);
+        assert_eq!(fs::read(&cache).expect("shared cache"), original_index);
+        fixture.unchanged();
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn i08_ffms2_special_filename_native_and_scripted() {
+    i08_special_filename_routes(&VapourSynthImportMethod::FFMS2 { index: Some(1) });
+}
+
+#[test]
+#[cfg(unix)]
+fn i08_bestsource_special_filename_direct_and_scripted() {
+    i08_special_filename_routes(&VapourSynthImportMethod::BestSource { index: Some(1) });
+}
+
+#[test]
+#[cfg(unix)]
+fn i08_lsmash_special_filename_direct_and_scripted() {
+    i08_special_filename_routes(&VapourSynthImportMethod::LSMASHWorks { index: Some(1) });
 }
