@@ -323,7 +323,7 @@ impl Input {
             clip_info.resolution.1,
             clip_info.frame_rate.numer(),
             clip_info.frame_rate.denom(),
-            frames.map_or_else(String::new, |frames| format!(" XLENGTH {frames}"))
+            frames.map_or_else(String::new, |frames| format!(" XLENGTH={frames}"))
         ))
     }
 
@@ -620,6 +620,46 @@ mod tests {
             for (bit_depth, tag) in [8, 10, 12, 16].into_iter().zip(tags) {
                 assert_eq!(Input::y4m_chroma_tag(bit_depth, chroma), tag);
             }
+        }
+    }
+
+    #[test]
+    fn i10_y4m_header_length_is_one_extension_token() {
+        let mut input = Input::from_data(&InputModel::VapourSynthScript {
+            source: VapourSynthScriptSource::Text(
+                "import vapoursynth as vs\n\
+                 vs.core.std.BlankClip(width=18, height=8, length=1, format=vs.YUV420P10, \
+                 fpsnum=30000, fpsden=1001).set_output()"
+                    .to_owned(),
+            ),
+            variables: HashMap::new(),
+            index: 0,
+            filters: Vec::new(),
+            stream_concurrently: true,
+        })
+        .expect("I10 requires the installed native VapourSynth runtime");
+
+        for (frames, extension) in [
+            (None, None),
+            (Some(0), Some("XLENGTH=0")),
+            (Some(42), Some("XLENGTH=42")),
+            (Some(4_294_967_295), Some("XLENGTH=4294967295")),
+        ] {
+            let header = input.y4m_header(frames).expect("actual decoder header");
+            let tokens: Vec<_> = header.split_ascii_whitespace().collect();
+            let mut expected =
+                vec!["YUV4MPEG2", "C420p10", "W18", "H8", "F30000:1001", "Ip", "A0:0"];
+            if let Some(extension) = extension {
+                expected.push(extension);
+            }
+            assert_eq!(tokens, expected, "frames={frames:?}, header={header:?}");
+            assert_eq!(
+                tokens.iter().filter(|token| token.starts_with("XLENGTH")).count(),
+                usize::from(frames.is_some()),
+                "exactly one length extension when supplied"
+            );
+            assert!(header.ends_with('\n'));
+            assert_eq!(header.lines().count(), 1);
         }
     }
 
