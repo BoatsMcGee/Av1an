@@ -271,6 +271,9 @@ impl VapourSynthPluginScript for Source {
             if let Some(cache) = &self.cachefile {
                 write!(&mut line, ", cachefile = r\"{}\"", cache.display())?;
             }
+            if let Some(track) = self.track {
+                write!(&mut line, ", track = {track}")?;
+            }
             write!(&mut line, ")")?;
             line
         };

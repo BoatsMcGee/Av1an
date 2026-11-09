@@ -327,6 +327,9 @@ impl VapourSynthPluginScript for LWLibavSource {
             if let Some(cache) = &self.cachefile {
                 write!(&mut line, ", cachefile = r\"{}\"", cache.display())?;
             }
+            if let Some(index) = self.stream_index {
+                write!(&mut line, ", stream_index = {index}")?;
+            }
             write!(&mut line, ")")?;
             line
         };

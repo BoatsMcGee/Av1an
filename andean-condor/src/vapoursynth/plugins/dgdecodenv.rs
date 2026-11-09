@@ -23,6 +23,26 @@ use crate::{
     },
 };
 
+/// Opens a DGIndexNV `.dgi` project as `source`, not the original media file.
+///
+/// This portable source-only contract follows the [pinned upstream consumer],
+/// not a verified signature for every DGDecNV release. `indexing_path` remains
+/// a compatibility alias for the project path; no cache keyword is emitted.
+///
+/// # Native acceptance (manual)
+///
+/// On a host with the licensed DGDecNV plugin and supported NVIDIA decoding,
+/// set `SOURCE` to a supported video and `INDEX` to a writable `.dgi` path:
+///
+/// ```sh
+/// dgindexnv -h -i "$SOURCE" -o "$INDEX"
+/// python3 -c 'import sys, vapoursynth as vs; print([(f.name, f.signature) for f in vs.core.dgdecodenv.functions() if f.name == "DGSource"]); c = vs.core.dgdecodenv.DGSource(source=sys.argv[1]); c.get_frame(0); c.get_frame(c.num_frames - 1); print(c.width, c.height, c.num_frames)' "$INDEX"
+/// ```
+///
+/// Record the installed signature and require both frame reads to succeed.
+/// CPU argument-planning tests do not replace this native gate.
+///
+/// [pinned upstream consumer]: https://github.com/rust-av/Av1an/blob/def0a97eca67a4635fcc7e42d4c1a48381b8cd5b/av1an-core/src/loadscript.vpy#L38-L40
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct DGSource {
     pub source: PathBuf,
@@ -40,6 +60,8 @@ pub struct DGSource {
     pub fieldop: Option<i32>,
     pub show: Option<i32>,
     pub show2: Option<String>,
+    /// Compatibility alias for the `.dgi` source path, overriding `source`.
+    /// This is resolved here, not passed as an unverified native plugin option.
     pub indexing_path: Option<PathBuf>,
     pub h2s_enable: Option<i32>,
     pub h2s_white: Option<i32>,
@@ -176,23 +198,12 @@ impl DGSource {
     #[inline]
     pub fn invoke(self, core: CoreRef) -> Result<Node, VapourSynthError> {
         let mut arguments = Self::arguments()?;
-        let absolute_source_path =
-            absolute(self.source).map_err(|_| VapourSynthError::PluginFunctionError {
+        let absolute_source_path = absolute(self.indexing_path.as_ref().unwrap_or(&self.source))
+            .map_err(|_| VapourSynthError::PluginFunctionError {
                 plugin: Self::PLUGIN_NAME.to_owned(),
                 function: Self::FUNCTION_NAME.to_owned(),
                 message: "Failed to get absolute path".to_owned(),
             })?;
-        let absolute_indexing_path = if let Some(indexing_path) = self.indexing_path {
-            let absolute_indexing_path =
-                absolute(indexing_path).map_err(|_| VapourSynthError::PluginFunctionError {
-                    plugin: Self::PLUGIN_NAME.to_owned(),
-                    function: Self::FUNCTION_NAME.to_owned(),
-                    message: "Failed to get absolute path".to_owned(),
-                })?;
-            Some(absolute_indexing_path)
-        } else {
-            None
-        };
 
         Self::arguments_set(
             &mut arguments,
@@ -202,10 +213,6 @@ impl DGSource {
                     Some(absolute_source_path.display().to_string().as_bytes()),
                 ),
                 ("show2", self.show2.map(|s| s.into_bytes()).as_deref()),
-                (
-                    "indexing_path",
-                    absolute_indexing_path.map(|p| p.display().to_string().into_bytes()).as_deref(),
-                ),
                 ("h2s_mode", self.h2s_mode.map(|s| s.into_bytes()).as_deref()),
                 (
                     "dn_quality",
@@ -445,11 +452,8 @@ impl VapourSynthPluginScript for DGSource {
             write!(
                 &mut line,
                 "core.dgdecodenv.DGSource(source = r\"{}\"",
-                self.source.display()
+                self.indexing_path.as_ref().unwrap_or(&self.source).display()
             )?;
-            if let Some(cache) = &self.indexing_path {
-                write!(&mut line, ", cachepath = r\"{}\"", cache.display())?;
-            }
             write!(&mut line, ")")?;
             line
         };

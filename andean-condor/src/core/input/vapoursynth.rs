@@ -19,7 +19,9 @@ use vapoursynth::{
 
 use crate::{
     core::input::{Input, InputError, OpenProgress, clip_info::ClipInfo},
-    models::input::{Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource},
+    models::input::{
+        ImportMethod, Input as InputModel, VapourSynthImportMethod, VapourSynthScriptSource,
+    },
     vapoursynth::{
         get_api, get_clip_info, get_core,
         plugins::{
@@ -87,7 +89,7 @@ fn filters_of(data: &InputModel) -> Vec<VapourSynthFilter> {
 pub(super) struct SourceCall {
     namespace: &'static str,
     function: &'static str,
-    cache_argument: &'static str,
+    cache_argument: Option<&'static str>,
     track_argument: Option<&'static str>,
     track: Option<u8>,
     /// How many concurrent readers one instance serves without seeking back
@@ -102,7 +104,7 @@ impl SourceCall {
             VapourSynthImportMethod::LSMASHWorks { index } => Self {
                 namespace: "lsmas",
                 function: "LWLibavSource",
-                cache_argument: "cachefile",
+                cache_argument: Some("cachefile"),
                 track_argument: Some("stream_index"),
                 track: *index,
                 readers_per_instance: 1,
@@ -110,7 +112,7 @@ impl SourceCall {
             VapourSynthImportMethod::FFMS2 { index } => Self {
                 namespace: "ffms2",
                 function: "Source",
-                cache_argument: "cachefile",
+                cache_argument: Some("cachefile"),
                 track_argument: Some("track"),
                 track: *index,
                 readers_per_instance: 1,
@@ -118,7 +120,7 @@ impl SourceCall {
             VapourSynthImportMethod::BestSource { index } => Self {
                 namespace: "bs",
                 function: "VideoSource",
-                cache_argument: "cachepath",
+                cache_argument: Some("cachepath"),
                 track_argument: Some("track"),
                 track: *index,
                 // BestSource keeps up to 4 decoders (`maxdecoders`)
@@ -127,12 +129,41 @@ impl SourceCall {
             VapourSynthImportMethod::DGDecNV { .. } => Self {
                 namespace: "dgdecodenv",
                 function: "DGSource",
-                cache_argument: "indexing_path",
+                // DGSource opens the generated .dgi itself, not the media plus a cache kwarg.
+                cache_argument: None,
                 track_argument: None,
                 track: None,
                 readers_per_instance: 1,
             },
         }
+    }
+
+    /// Keep paths and options as script variables rather than interpreting them as code.
+    fn script(
+        &self,
+        source: &std::path::Path,
+        cache_path: Option<&std::path::Path>,
+    ) -> Result<(String, HashMap<String, String>)> {
+        let mut script = String::from("from vapoursynth import core\nkwargs = {}\n");
+        let mut variables =
+            HashMap::from([("condor_source".to_owned(), source.display().to_string())]);
+        if let (Some(argument), Some(cache_path)) = (self.cache_argument, cache_path) {
+            writeln!(script, "kwargs[\"{argument}\"] = condor_cache")?;
+            variables.insert(
+                "condor_cache".to_owned(),
+                std::path::absolute(cache_path)?.display().to_string(),
+            );
+        }
+        if let (Some(track_argument), Some(track)) = (self.track_argument, self.track) {
+            writeln!(script, "kwargs[\"{track_argument}\"] = int(condor_track)")?;
+            variables.insert("condor_track".to_owned(), track.to_string());
+        }
+        writeln!(
+            script,
+            "core.{}.{}(source=condor_source, **kwargs).set_output(0)",
+            self.namespace, self.function
+        )?;
+        Ok((script, variables))
     }
 
     /// Creates a new instance of the source with the VapourSynth API.
@@ -148,8 +179,8 @@ impl SourceCall {
         };
         let mut arguments = OwnedMap::new(get_api()?);
         arguments.set_data("source", source.as_bytes())?;
-        if let Some(cache) = cache {
-            arguments.set_data(self.cache_argument, cache.as_bytes())?;
+        if let (Some(argument), Some(cache)) = (self.cache_argument, cache) {
+            arguments.set_data(argument, cache.as_bytes())?;
         }
         if let (Some(track_argument), Some(track)) = (self.track_argument, self.track) {
             arguments.set_int(track_argument, i64::from(track))?;
@@ -159,6 +190,59 @@ impl SourceCall {
             bail!("{}.{} failed: {error}", self.namespace, self.function);
         }
         Ok(result.get_video_node("clip")?)
+    }
+}
+
+/// DGSource consumes its index as `source`; the other plugins consume the media.
+fn source_path(
+    path: &std::path::Path,
+    import_method: &VapourSynthImportMethod,
+    cache_path: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf> {
+    match import_method {
+        VapourSynthImportMethod::DGDecNV {
+            dgindexnv_executable,
+        } => DGSource::index_video(
+            path,
+            cache_path,
+            dgindexnv_executable.as_deref(),
+            None,
+            None,
+        ),
+        _ => Ok(std::path::absolute(path)?),
+    }
+}
+
+/// Translate the input's explicit source options, leaving absent options to the plugin.
+fn source_script(
+    path: &std::path::Path,
+    import_method: &VapourSynthImportMethod,
+    cache_path: Option<&std::path::Path>,
+) -> Result<(Option<Imports>, Vec<Line>)> {
+    let source = source_path(path, import_method, cache_path)?;
+    let cache = cache_path.map(std::path::absolute).transpose()?;
+    match import_method {
+        VapourSynthImportMethod::FFMS2 { index } => Source {
+            track: index.map(i32::from),
+            cachefile: cache,
+            ..Source::new(&source)
+        }
+        .generate_script(SCRIPT_NODE_NAME.to_owned()),
+        VapourSynthImportMethod::BestSource { index } => VideoSource {
+            track: index.map(i32::from),
+            cachepath: cache,
+            ..VideoSource::new(&source)
+        }
+        .generate_script(SCRIPT_NODE_NAME.to_owned()),
+        VapourSynthImportMethod::LSMASHWorks { index } => LWLibavSource {
+            stream_index: index.map(i32::from),
+            cachefile: cache,
+            ..LWLibavSource::new(&source)
+        }
+        .generate_script(SCRIPT_NODE_NAME.to_owned()),
+        VapourSynthImportMethod::DGDecNV { .. } => {
+            DGSource::new(&source).generate_script(SCRIPT_NODE_NAME.to_owned())
+        },
     }
 }
 
@@ -282,47 +366,13 @@ pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> R
             cache_path,
             ..
         } => {
-            if let VapourSynthImportMethod::DGDecNV {
-                dgindexnv_executable,
-            } = import_method
-            {
-                DGSource::index_video(
-                    path,
-                    cache_path.as_deref(),
-                    dgindexnv_executable.as_deref(),
-                    None,
-                    None,
-                )
-                .map_err(|_| DecoderError::UnsupportedDecoder)?;
-            }
+            let source = source_path(path, import_method, cache_path.as_deref())?;
             let call = SourceCall::new(import_method);
 
             // Created once, in a fixed script: a `ModifyNode` runs again for
             // every frame, so building the source inside one would
-            // reopen the file and reload its index each time. Paths
-            // and options are script variables, so they are never
-            // interpreted as code.
-            let mut script = String::from("from vapoursynth import core\nkwargs = {}\n");
-            let mut variables = HashMap::from([(
-                "condor_source".to_owned(),
-                std::path::absolute(path)?.display().to_string(),
-            )]);
-            if let Some(cache_path) = cache_path {
-                writeln!(script, "kwargs[\"{}\"] = condor_cache", call.cache_argument)?;
-                variables.insert(
-                    "condor_cache".to_owned(),
-                    std::path::absolute(cache_path)?.display().to_string(),
-                );
-            }
-            if let (Some(track_argument), Some(track)) = (call.track_argument, call.track) {
-                writeln!(script, "kwargs[\"{track_argument}\"] = int(condor_track)")?;
-                variables.insert("condor_track".to_owned(), track.to_string());
-            }
-            writeln!(
-                script,
-                "core.{}.{}(source=condor_source, **kwargs).set_output(0)",
-                call.namespace, call.function
-            )?;
+            // reopen the file and reload its index each time.
+            let (script, variables) = call.script(&source, cache_path.as_deref())?;
 
             Ok(Input::VapourSynth {
                 path: path.clone(),
@@ -409,24 +459,13 @@ pub fn from_vapoursynth_scripted(data: &InputModel) -> Result<Input> {
         InputModel::VapourSynth {
             path,
             import_method,
+            cache_path,
             filters,
             ..
         } => {
             let mut script = VapourSynthScript::default();
-            let (source_imports, source_lines) = match import_method {
-                VapourSynthImportMethod::LSMASHWorks { .. } => {
-                    LWLibavSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?
-                },
-                VapourSynthImportMethod::DGDecNV { .. } => {
-                    DGSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?
-                },
-                VapourSynthImportMethod::FFMS2 { .. } => {
-                    Source::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?
-                },
-                VapourSynthImportMethod::BestSource { .. } => {
-                    VideoSource::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?
-                },
-            };
+            let (source_imports, source_lines) =
+                source_script(path, import_method, cache_path.as_deref())?;
             add_source_and_filters(&mut script, source_imports, source_lines, filters.iter())?;
             script.outputs.insert(SCRIPT_OUTPUT_INDEX, SCRIPT_NODE_NAME.to_owned());
 
@@ -468,6 +507,7 @@ pub fn as_vapoursynth_script(input: &mut Input) -> Result<Option<Input>> {
 
     let Input::Video {
         path,
+        import_method,
         filters,
         source_details,
         ..
@@ -478,8 +518,12 @@ pub fn as_vapoursynth_script(input: &mut Input) -> Result<Option<Input>> {
 
     // Filters resolve against the decoded format, not the filtered one.
     let baseline = *source_details;
-    let (source_imports, source_lines) =
-        Source::new(path).generate_script(SCRIPT_NODE_NAME.to_owned())?;
+    let ImportMethod::FFMS2 { index, cache_path } = import_method;
+    let (source_imports, source_lines) = source_script(
+        path,
+        &VapourSynthImportMethod::FFMS2 { index: *index },
+        cache_path.as_deref(),
+    )?;
     let translated = filters
         .iter()
         .flat_map(|filter| filter.to_vapoursynth_filters(&baseline))
@@ -534,7 +578,7 @@ pub fn frame_sources<'core>(
     let call = SourceCall::new(import_method);
     let vs = decoder.get_vapoursynth_impl().expect("Decoder is VapourSynth");
     let core = get_core(&vs.env)?;
-    let source = std::path::absolute(path)?.display().to_string();
+    let source = source_path(path, import_method, cache_path)?.display().to_string();
     let cache = cache_path
         .map(std::path::absolute)
         .transpose()?
@@ -663,6 +707,10 @@ pub fn y4m_frames(
     );
     result
 }
+
+#[cfg(test)]
+#[path = "vapoursynth_i05_tests.rs"]
+mod i05_tests;
 
 #[cfg(test)]
 mod tests {

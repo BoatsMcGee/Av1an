@@ -326,6 +326,9 @@ impl VapourSynthPluginScript for VideoSource {
             if let Some(cache) = &self.cachepath {
                 write!(&mut line, ", cachepath = r\"{}\"", cache.display())?;
             }
+            if let Some(track) = self.track {
+                write!(&mut line, ", track = {track}")?;
+            }
             write!(&mut line, ")")?;
             line
         };
