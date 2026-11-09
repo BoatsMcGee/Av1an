@@ -10,10 +10,10 @@ use vapoursynth::format::PresetFormat;
 pub enum FFPixelFormat {
     GBRP,
     GBRP10LE,
-    GBRP12L,
+    #[serde(alias = "GBRP12L")]
     GBRP12LE,
     GRAY10LE,
-    GRAY12L,
+    #[serde(alias = "GRAY12L")]
     GRAY12LE,
     GRAY8,
     NV12,
@@ -45,10 +45,8 @@ impl FFPixelFormat {
         match self {
             FFPixelFormat::GBRP => "gbrp",
             FFPixelFormat::GBRP10LE => "gbrp10le",
-            FFPixelFormat::GBRP12L => "gbrp12l",
             FFPixelFormat::GBRP12LE => "gbrp12le",
             FFPixelFormat::GRAY10LE => "gray10le",
-            FFPixelFormat::GRAY12L => "gray12l",
             FFPixelFormat::GRAY12LE => "gray12le",
             FFPixelFormat::GRAY8 => "gray",
             FFPixelFormat::NV12 => "nv12",
@@ -78,7 +76,7 @@ impl FFPixelFormat {
     pub fn to_vapoursynth_format(&self) -> anyhow::Result<PresetFormat> {
         Ok(match self {
             FFPixelFormat::GRAY10LE => PresetFormat::Gray10,
-            FFPixelFormat::GRAY12L | FFPixelFormat::GRAY12LE => PresetFormat::Gray12,
+            FFPixelFormat::GRAY12LE => PresetFormat::Gray12,
             FFPixelFormat::GRAY8 => PresetFormat::Gray8,
             FFPixelFormat::YUV420P => PresetFormat::YUV420P8,
             FFPixelFormat::YUV420P10LE => PresetFormat::YUV420P10,
@@ -109,11 +107,9 @@ impl FromStr for FFPixelFormat {
         Ok(match s {
             "gbrp" => FFPixelFormat::GBRP,
             "gbrp10le" => FFPixelFormat::GBRP10LE,
-            "gbrp12l" => FFPixelFormat::GBRP12L,
-            "gbrp12le" => FFPixelFormat::GBRP12LE,
+            "gbrp12l" | "gbrp12le" => FFPixelFormat::GBRP12LE,
             "gray10le" => FFPixelFormat::GRAY10LE,
-            "gray12l" => FFPixelFormat::GRAY12L,
-            "gray12le" => FFPixelFormat::GRAY12LE,
+            "gray12l" | "gray12le" => FFPixelFormat::GRAY12LE,
             "gray" => FFPixelFormat::GRAY8,
             "nv12" => FFPixelFormat::NV12,
             "nv16" => FFPixelFormat::NV16,
@@ -137,5 +133,101 @@ impl FromStr for FFPixelFormat {
             "yuvj444p" => FFPixelFormat::YUVJ444P,
             s => bail!("Unsupported pixel format string: {s}"),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::*;
+    use crate::core::input::pixel_format::PixelFormat;
+
+    #[test]
+    fn i11_12bit_spellings_parse_and_emit_canonical_formats() {
+        for (input, canonical, expected) in [
+            ("gbrp12l", "gbrp12le", FFPixelFormat::GBRP12LE),
+            ("gbrp12le", "gbrp12le", FFPixelFormat::GBRP12LE),
+            ("gray12l", "gray12le", FFPixelFormat::GRAY12LE),
+            ("gray12le", "gray12le", FFPixelFormat::GRAY12LE),
+        ] {
+            let format = FFPixelFormat::from_str(input).expect("12-bit format");
+            assert_eq!(format.to_pix_fmt_string(), canonical, "{input}");
+            assert_eq!(format, expected, "{input}");
+            assert_eq!(
+                FFPixelFormat::from_str(canonical).expect("canonical format"),
+                format
+            );
+            assert_eq!(
+                PixelFormat::FFmpeg { format }.as_bit_depth().expect("depth"),
+                12
+            );
+        }
+    }
+
+    #[test]
+    fn i11_12bit_serde_reads_legacy_names_and_writes_canonical_names() {
+        for (input, canonical, expected) in [
+            ("GBRP12L", "GBRP12LE", FFPixelFormat::GBRP12LE),
+            ("GBRP12LE", "GBRP12LE", FFPixelFormat::GBRP12LE),
+            ("GRAY12L", "GRAY12LE", FFPixelFormat::GRAY12LE),
+            ("GRAY12LE", "GRAY12LE", FFPixelFormat::GRAY12LE),
+        ] {
+            let format: FFPixelFormat =
+                serde_json::from_str(&format!("\"{input}\"")).expect("saved enum name");
+            assert_eq!(format, expected, "{input}");
+            assert_eq!(
+                serde_json::to_string(&format).expect("serialize"),
+                format!("\"{canonical}\"")
+            );
+        }
+    }
+
+    #[test]
+    fn i11_ffmpeg_converts_legacy_and_canonical_12bit_outputs() {
+        let directory = tempfile::tempdir().expect("12-bit output fixture");
+        for (spellings, source, plane_samples, byte_count) in [
+            (
+                ["gbrp12l", "gbrp12le"],
+                "nullsrc=size=2x2:rate=1:duration=2,format=gbrp16le,geq=r=0:g=65535:b=65535",
+                &[4095_u16, 4095, 0][..],
+                48,
+            ),
+            (
+                ["gray12l", "gray12le"],
+                "nullsrc=size=2x2:rate=1:duration=2,format=gray16le,geq=lum=65535",
+                &[4095_u16][..],
+                16,
+            ),
+        ] {
+            // Endpoints avoid quantization dithering; planar RGB is ordered G, B, R.
+            let expected_frame: Vec<u8> =
+                plane_samples.iter().flat_map(|sample| sample.to_le_bytes().repeat(4)).collect();
+            for spelling in spellings {
+                let format = FFPixelFormat::from_str(spelling).expect("output format");
+                let path = directory.path().join(format!("{spelling}.raw"));
+                let output = Command::new("ffmpeg")
+                    .args(["-nostdin", "-v", "error", "-f", "lavfi", "-i", source])
+                    // '+' disables auto-conversion; scale explicitly converts the 16-bit source.
+                    .args(["-frames:v", "2", "-vf", "scale", "-c:v", "rawvideo", "-pix_fmt"])
+                    .arg(format!("+{}", format.to_pix_fmt_string()))
+                    .args(["-threads", "1", "-f", "rawvideo"])
+                    .arg(&path)
+                    .output()
+                    .expect("ffmpeg is required for the 12-bit regression");
+                assert!(
+                    output.status.success(),
+                    "{spelling}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let bytes = std::fs::read(&path).expect("raw output");
+                assert_eq!(bytes.len(), byte_count, "two 2x2 frames: {spelling}");
+                assert_eq!(
+                    bytes,
+                    expected_frame.repeat(2),
+                    "12-bit LE samples: {spelling}"
+                );
+            }
+        }
     }
 }

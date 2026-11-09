@@ -35,9 +35,7 @@ impl PixelFormat {
                 | FFPixelFormat::YUV440P10LE
                 | FFPixelFormat::YUV444P10LE => Ok(10),
                 FFPixelFormat::YUV420P12LE
-                | FFPixelFormat::GRAY12L
                 | FFPixelFormat::GRAY12LE
-                | FFPixelFormat::GBRP12L
                 | FFPixelFormat::GBRP12LE
                 | FFPixelFormat::YUV422P12LE
                 | FFPixelFormat::YUV440P12LE

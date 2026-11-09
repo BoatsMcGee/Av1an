@@ -658,6 +658,45 @@ mod tests {
     }
 
     #[test]
+    fn i11_gray12_spellings_preserve_native_and_vapoursynth_intent() {
+        for spelling in ["gray12l", "gray12le"] {
+            let format = FFPixelFormat::from_str(spelling).expect("gray format");
+            assert_eq!(
+                format.to_vapoursynth_format().expect("gray preset"),
+                vapoursynth::format::PresetFormat::Gray12
+            );
+            let filter = VapourSynthFilter::Resize {
+                scaler: None,
+                width: None,
+                height: None,
+                format: Some(format),
+            };
+            assert_eq!(
+                Ffms2Filter::from_vapoursynth_filter(&filter).expect("native gray resize"),
+                Some(Ffms2Filter::OutputFormat {
+                    bit_depth: Some(12),
+                    chroma: Some(ChromaSampling::Monochrome),
+                    width: None,
+                    height: None,
+                }),
+                "{spelling}"
+            );
+        }
+        for spelling in ["gbrp12l", "gbrp12le"] {
+            let filter = VapourSynthFilter::Resize {
+                scaler: None,
+                width: None,
+                height: None,
+                format: Some(FFPixelFormat::from_str(spelling).expect("RGB format")),
+            };
+            assert!(
+                Ffms2Filter::from_vapoursynth_filter(&filter).is_err(),
+                "{spelling}"
+            );
+        }
+    }
+
+    #[test]
     fn i06_invalid_resize_dimensions_are_errors() {
         for width in [0, i32::MAX as usize + 1, usize::MAX] {
             let filter = VapourSynthFilter::Resize {
