@@ -191,10 +191,10 @@ pub struct CvvdpParams {
     /// True by default. A scene cut is a discontinuity in the motion the
     /// temporal filter tracks, so carrying history across one would fold two
     /// unrelated sequences into a single score.
-    ///
-    /// This is the inverse of libvship's own `disableTemporal` plugin argument,
-    /// which is why it is named for the behaviour rather than the argument.
     pub reset_on_discontinuity: bool,
+    /// Score each frame independently, clearing history AND accumulated score
+    /// after each successful compute, like the VapourSynth plugin.
+    pub disable_temporal: bool,
 }
 
 impl Default for CvvdpParams {
@@ -206,6 +206,7 @@ impl Default for CvvdpParams {
             resize_to_display: false,
             fps: 0.0,
             reset_on_discontinuity: true,
+            disable_temporal: false,
         }
     }
 }
@@ -357,9 +358,6 @@ impl VshipConfig {
     /// The default, `true`, resets the temporal filter at an index
     /// discontinuity, which stops a cut being scored as a motion event. Setting
     /// it to `false` keeps the history, so one score spans scenes.
-    ///
-    /// This is the inverse of libvship's `disableTemporal` plugin argument:
-    /// [`Self::with_disable_temporal`] converts from that spelling.
     #[inline]
     #[must_use]
     pub const fn with_reset_on_discontinuity(mut self, reset_on_discontinuity: bool) -> Self {
@@ -367,25 +365,13 @@ impl VshipConfig {
         self
     }
 
-    /// Whether temporal history is carried across a discontinuity, in the
-    /// spelling the VapourSynth plugin uses for the opposite behaviour.
-    ///
-    /// Upstream, `disableTemporal` disables the temporal filter *and* score
-    /// accumulation, so each frame scores on its own. The C API has no field
-    /// for that: `Vship_InitCVVDP_1` cannot express it. What it can express
-    /// is whether history is *cleared* at a cut, which is what
-    /// [`Self::with_reset_on_discontinuity`] sets, so that is what this maps
-    /// onto.
-    ///
-    /// The practical difference matters when pooling: with `false` here the
-    /// score is a running mean over the whole clip, whereas the plugin's
-    /// `disableTemporal` would give one value per frame. Callers wanting
-    /// per-frame scores should read each pair as it is returned instead of
-    /// pooling, rather than relying on this option.
+    /// Score each CVVDP frame independently, resetting history then accumulated
+    /// score after each compute. Does not change the source-gap policy.
     #[inline]
     #[must_use]
-    pub const fn with_disable_temporal(self, disable_temporal: bool) -> Self {
-        self.with_reset_on_discontinuity(!disable_temporal)
+    pub const fn with_disable_temporal(mut self, disable_temporal: bool) -> Self {
+        self.cvvdp.disable_temporal = disable_temporal;
+        self
     }
 
     /// The configured metric.
@@ -943,6 +929,7 @@ mod tests {
         assert_eq!(config.cvvdp().display_model, "standard_fhd");
         assert!(!config.cvvdp().resize_to_display);
         assert!(config.cvvdp().reset_on_discontinuity);
+        assert!(!config.cvvdp().disable_temporal);
         assert!(config.validate().is_ok());
     }
 
@@ -965,32 +952,21 @@ mod tests {
         assert_eq!(config.butteraugli().intensity_multiplier, 400.0);
         assert!(config.cvvdp().resize_to_display);
         assert_eq!(config.cvvdp().fps, 60.0);
-        assert!(!config.cvvdp().reset_on_discontinuity);
+        assert!(config.cvvdp().reset_on_discontinuity);
+        assert!(config.cvvdp().disable_temporal);
     }
 
-    /// libvship's `disableTemporal` is the inverse of clearing history at a
-    /// cut, so the two spellings must not be confused for one another.
     #[test]
-    fn disable_temporal_is_the_inverse_of_resetting_at_a_discontinuity() {
-        let disabled = VshipConfig::new().with_disable_temporal(true);
-        assert!(
-            !disabled.cvvdp().reset_on_discontinuity,
-            "disabling the temporal model must not be read as keeping history"
-        );
-
-        let kept = VshipConfig::new().with_disable_temporal(false);
-        assert!(
-            kept.cvvdp().reset_on_discontinuity,
-            "leaving the temporal model enabled keeps the reset"
-        );
-
-        assert!(
-            !VshipConfig::new()
-                .with_reset_on_discontinuity(false)
-                .cvvdp()
-                .reset_on_discontinuity,
-            "the builder must store what it is given"
-        );
+    fn m15_temporal_and_gap_policy_are_independent() {
+        for disabled in [false, true] {
+            for gap in [false, true] {
+                let config = VshipConfig::new()
+                    .with_disable_temporal(disabled)
+                    .with_reset_on_discontinuity(gap);
+                assert_eq!(config.cvvdp().disable_temporal, disabled);
+                assert_eq!(config.cvvdp().reset_on_discontinuity, gap);
+            }
+        }
     }
 
     #[test]

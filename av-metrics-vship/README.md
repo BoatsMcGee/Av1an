@@ -178,8 +178,21 @@ libvship reports a score per pair, so reducing a clip to one number is this crat
 | `with_display_model_json` | empty | Path to a JSON display-configuration override, or empty for none. Passed to libvship verbatim. |
 | `with_resize_to_display` | `false` | Whether CVVDP scales both inputs to the model's display resolution. |
 | `with_fps` | `0.0` | Frame rate handed to CVVDP's temporal model. **Set this for CVVDP**: it is not a neutral default, and a zero rate accumulates error over the clip (see [CVVDP](#cvvdp-is-accumulated-not-per-frame)). Negative is rejected. |
-| `with_reset_on_discontinuity` | `true` | Whether CVVDP clears its temporal history at a discontinuity in frame index. |
-| `with_disable_temporal` | `false` | The inverse of the above, in the VapourSynth plugin's spelling. Note that upstream `disableTemporal` also disables score accumulation, which `Vship_InitCVVDP_1` has no field for; this only controls whether history is cleared at a cut. For per-frame scores, read each pair rather than pooling. |
+| `with_reset_on_discontinuity` | `true` | Separate source-gap policy: the selection owner requests a history-only reset before the post-gap frame, preserving accumulated score. |
+| `with_disable_temporal` | `false` | Independent CVVDP frames: after each successful compute, clear history then accumulated score, matching the VapourSynth plugin. Reset errors propagate before returning the captured score. Does not change the gap policy. |
+
+Source indices belong to the selection owner, not the scorer's submission count.
+Andean classifies actual selected-index gaps with checked arithmetic; disabled
+mode needs no extra gap reset. Direct raw callers can request a history-only
+reset using `submit_pair_raw_with_reset`, which preflights both inputs first.
+Native CVVDP values are returned unchanged; perceptual pooling is separate work.
+
+The `m15_` stateful C ABI checks prove reset ordering and ownership, not CVVDP
+accuracy. Real native-vs-VapourSynth parity is compiled in Andean's
+`m15_native_vs_plugin` test. Run it on a supported GPU/plugin host with
+`AV_METRICS_REQUIRE_CVVDP_PARITY=1 cargo +stable test --profile ci -p andean-condor m15_native_vs_plugin -- --nocapture`.
+That required gate fails if the runtime/plugin is missing; ordinary suites report
+it UNEXECUTED. Its provisional tolerance is not evidence of measured accuracy.
 
 The defaults match what libvship's own CLI does for an ordinary encode. The default handler count is [`DEFAULT_HANDLER_THREADS`], which is 4 — the same as the VapourSynth plugin's own default, so the two paths agree when nothing is configured. A `threads` setting maps directly onto `with_handler_threads`.
 

@@ -563,11 +563,14 @@ impl FmetricsScorer {
     }
 
     /// Score one pair with a temporal metric, which must see frames in order.
+    /// With `disable_temporal`, clear history and score after computing each
+    /// pair; return its captured result only if that reset succeeds.
     ///
     /// # Errors
     ///
     /// Returns an error if the frames cannot be converted, or if fmetrics
-    /// rejects the pair.
+    /// rejects the pair or its post-compute reset. A native failure may leave
+    /// the context's progress invalid; callers must not treat it as a score.
     #[inline]
     pub fn submit_pair_temporal(
         &mut self,
@@ -751,6 +754,14 @@ impl FmetricsScorer {
         };
         ffi::check(status, "fmetrics_cvvdp_process_frame")?;
 
+        if self.config.disable_temporal {
+            // COMPAT: fcvvdp's reset clears both history and accumulated score,
+            // matching the plugin's post-compute disableTemporal resets.
+            // SAFETY: the context remains live through this synchronous reset.
+            let status = unsafe { (api.cvvdp_reset)(*context) };
+            ffi::check(status, "fmetrics_cvvdp_reset")?;
+        }
+
         let mut score = FrameScore::empty();
         score.cvvdp_jod = Some(result.jod);
         score.cvvdp_quality = Some(result.quality);
@@ -805,7 +816,10 @@ impl FmetricsScorer {
         Ok(())
     }
 
-    /// Clear the temporal history, for a scene break.
+    /// Clear CVVDP's temporal history AND accumulated score.
+    ///
+    /// fmetrics 0.1.0 has no history-only reset. This is not equivalent to
+    /// Vship's history-only scene-break reset when scores must accumulate.
     ///
     /// A per-pair metric has no history to clear, so this succeeds without
     /// calling the library.

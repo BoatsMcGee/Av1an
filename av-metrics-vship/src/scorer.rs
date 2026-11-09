@@ -914,9 +914,7 @@ struct Pool {
     handlers: Vec<MetricHandler>,
     /// The next handler to use, for a non-temporal metric.
     next: usize,
-    /// The index the pool last saw, or `None` before the first pair.
-    last_index: Option<u32>,
-    /// How many pairs have been submitted, and so the next sequential index.
+    /// How many pairs have been submitted (not a source-frame index).
     submitted: u32,
 }
 
@@ -1040,7 +1038,6 @@ impl VshipScorer {
             handlers: Mutex::new(Pool {
                 handlers,
                 next: 0,
-                last_index: None,
                 submitted: 0,
             }),
             _not_sync: PhantomData,
@@ -1253,15 +1250,17 @@ impl VshipScorer {
     /// which is what makes memory use independent of clip length: only the
     /// pool and the one pair in flight are live.
     ///
-    /// Pairs must be submitted in index order starting at zero. For a temporal
-    /// metric an index discontinuity resets the handler's history, since the
-    /// skipped frames are ones it never saw.
+    /// Temporal pairs must be submitted in order. Source indices belong to the
+    /// selection owner; this scorer cannot infer gaps from submission counts.
+    /// With `disable_temporal`, clear history and score after computing each
+    /// pair; return its captured result only if both resets succeed.
     ///
     /// # Errors
     ///
     /// Returns [`VshipError::InputMismatch`] for configured geometry/storage
     /// mismatches, [`VshipError::MalformedFrame`] for invalid upload layouts,
-    /// and [`VshipError::CallFailed`] if libvship rejects the pair.
+    /// and [`VshipError::CallFailed`] if libvship rejects the pair or a required
+    /// reset. A native failure may invalidate the handler's progress.
     #[expect(
         clippy::missing_inline_in_public_items,
         reason = "the pool dispatch and temporal bookkeeping belong in one body"
@@ -1370,16 +1369,13 @@ impl VshipScorer {
     /// Returns [`VshipError::CallFailed`] if libvship rejects the reset.
     #[inline]
     pub fn reset_temporal(&self) -> Result<(), VshipError> {
-        let Ok(mut pool) = self.handlers.lock() else {
+        let Ok(pool) = self.handlers.lock() else {
             return Err(poisoned());
         };
 
         for handler in &pool.handlers {
             handler.reset(self.api)?;
         }
-        // Clearing the recorded index means the next submission starts a fresh
-        // sequence rather than being read as a jump.
-        pool.last_index = None;
         Ok(())
     }
 
@@ -1419,19 +1415,7 @@ impl VshipScorer {
             validate_planes(&reference, &handler.src_colorspace, "reference")?;
         let distorted_arguments =
             validate_planes(&distorted, &handler.dis_colorspace, "distorted")?;
-        let index = pool.submitted;
-
-        // A temporal handler must see every frame in order, so a jump in the
-        // index means frames it never saw would otherwise follow frames
-        // it has. That is exactly what a scene break looks like from
-        // its point of view, and clearing the history is far cheaper
-        // than recreating the handler.
-        let discontinuous = pool.last_index.is_some_and(|last| last != index.wrapping_sub(1));
-        if reset_temporal
-            || (discontinuous
-                && self.metric.is_temporal()
-                && self.config.cvvdp().reset_on_discontinuity)
-        {
+        if reset_temporal {
             for handler in &pool.handlers {
                 handler.reset(self.api)?;
             }
@@ -1448,15 +1432,21 @@ impl VshipScorer {
             slot
         };
 
-        pool.last_index = Some(index);
-        pool.submitted = index.wrapping_add(1);
+        pool.submitted = pool.submitted.wrapping_add(1);
 
-        pool.handlers[slot].compute(
+        let score = pool.handlers[slot].compute(
             self.api,
             self.metric,
             &reference_arguments,
             &distorted_arguments,
-        )
+        )?;
+        if self.metric.is_temporal() && self.config.cvvdp().disable_temporal {
+            // COMPAT: the plugin captures the value, then clears history and
+            // accumulated score in this order before exposing that value.
+            pool.handlers[slot].reset(self.api)?;
+            pool.handlers[slot].reset_score(self.api)?;
+        }
+        Ok(score)
     }
 }
 

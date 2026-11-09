@@ -24,9 +24,8 @@
 //!
 //! CVVDP accumulates across the frames a handler has seen, so
 //! [`VshipScorer`] builds it exactly one handler and sees every frame in order.
-//! The scorer resets that history on an index discontinuity -- which is what a
-//! scene break is, from the temporal filter's point of view -- which this
-//! module drives through the probe driver's `reset_temporal`.
+//! This selection owner requests history-only resets at actual source gaps.
+//! Disabled-temporal mode instead resets history and score after every frame.
 
 use std::{sync::atomic::AtomicBool, time::Instant};
 
@@ -287,11 +286,9 @@ pub fn score_probed_frames(
     // calibrated against whichever the plugin reported.
     let butteraugli_uses_q_norm = butteraugli_uses_q_norm(config);
 
-    // The driver resets temporal history at a discontinuity itself, so the
-    // configured `disable_temporal` has to gate that reset. Left ungated, the
-    // option would be set on the config and then overridden by the very pass
-    // that is supposed to honour it.
-    let reset_on_discontinuity = vship_config.cvvdp().reset_on_discontinuity;
+    // Independent frames already clear both history and score after compute.
+    let reset_on_discontinuity =
+        vship_config.cvvdp().reset_on_discontinuity && !vship_config.cvvdp().disable_temporal;
 
     let reference_format = VideoFormat::from_details(&reference_details);
     let distorted_format = VideoFormat::from_details(&distorted_details);
@@ -693,12 +690,8 @@ mod tests {
         assert_eq!(config.cvvdp().display_model, "standard_fhd");
         assert!(config.cvvdp().resize_to_display);
 
-        // The plugin's `disableTemporal` is the inverse of clearing history at
-        // a cut, so `true` there must leave the reset off here.
-        assert!(
-            !config.cvvdp().reset_on_discontinuity,
-            "disableTemporal = true must not be read as keeping history"
-        );
+        assert!(config.cvvdp().disable_temporal);
+        assert!(config.cvvdp().reset_on_discontinuity);
     }
 
     /// CVVDP's temporal filter is parameterised by the frame rate, so an unset

@@ -100,9 +100,6 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<Fmetrics
             if let Some(display_model) = display_model {
                 config = config.with_display_model(display_model_for(*display_model));
             }
-            // The C API has no `disableTemporal` argument, only a reset, so
-            // this maps onto the inverse: disabling the temporal
-            // model keeps history.
             if let Some(disable_temporal) = *disable_temporal {
                 config = config.with_disable_temporal(disable_temporal);
             }
@@ -142,9 +139,10 @@ const fn display_model_for(model: DisplayModel) -> FmetricsCvvdpDisplayModel {
 ///
 /// `indexing` states each side's index space; see `probe::output_index`.
 ///
-/// A temporal metric's history is cleared at a discontinuity in `selected`, so
-/// it never carries across frames it never saw. `on_score` is called per pair
-/// as the pairs are visited.
+/// Disabled-temporal CVVDP frames are independent. Enabled CVVDP with source
+/// gaps is rejected before scoring: fmetrics cannot clear history while keeping
+/// accumulated scores, so the caller must use its existing backend fallback.
+/// `on_score` is called per successfully scored pair.
 ///
 /// # Errors
 ///
@@ -176,6 +174,17 @@ pub fn score_probed_frames(
     let fmetrics_config = scorer_config(config, frame_rate)?;
     let metric = fmetrics_config.metric();
 
+    if metric.is_temporal()
+        && !fmetrics_config.disable_temporal
+        && fmetrics_config.reset_on_discontinuity
+        && selected.windows(2).any(|pair| pair[0].checked_add(1) != Some(pair[1]))
+    {
+        bail!(
+            "fmetrics 0.1.0 cannot perform history-only CVVDP resets at selected source gaps; \
+             use disable_temporal=true for independent frames or another backend"
+        );
+    }
+
     // Which Butteraugli norm is the headline depends on the configuration, not
     // the metric, and `target_range` is calibrated against the plugin's
     // choice.
@@ -187,8 +196,6 @@ pub fn score_probed_frames(
     let distorted_color =
         ColorInfo::from_details(&distorted_details).context("distorted color metadata")?;
 
-    let reset_on_discontinuity = fmetrics_config.reset_on_discontinuity;
-
     let mut scorer =
         FmetricsScorer::new_with_colors(fmetrics_config, reference_color, distorted_color)
             .map_err(describe_error)?;
@@ -196,8 +203,6 @@ pub fn score_probed_frames(
 
     let total = selected.len();
     let mut scores = Vec::with_capacity(total);
-    // The source index the temporal context last saw.
-    let mut previous: Option<usize> = None;
 
     let pass = Instant::now();
     probe::probe_selected_frames::<(), _>(
@@ -208,16 +213,6 @@ pub fn score_probed_frames(
         cancelled,
         probe::check_geometry,
         |position, reference_planes, distorted_planes| {
-            let source_index = selected[position];
-
-            // The reset is gated on the configured value: left ungated it would
-            // override the very option meant to honour it.
-            if reset_on_discontinuity
-                && previous.is_some_and(|previous| previous.checked_add(1) != Some(source_index))
-            {
-                scorer.reset_temporal().map_err(describe_error)?;
-            }
-
             let reference_planes = metric_planes(reference_planes)?;
             let distorted_planes = metric_planes(distorted_planes)?;
 
@@ -234,7 +229,6 @@ pub fn score_probed_frames(
                 anyhow::anyhow!("fmetrics returned no score for {}", metric.as_str())
             })?;
 
-            previous = Some(source_index);
             on_score(position, value);
             scores.push(value);
             Ok(())
@@ -643,27 +637,12 @@ mod tests {
     }
 
     #[test]
-    fn disable_temporal_inverts_the_discontinuity_reset() {
-        // Upstream `disableTemporal` clears the context, so the two are
-        // opposites. Reading it the wrong way round would silently give
-        // the opposite behaviour.
-        let disabled = cvvdp_with(Some(true));
-        assert!(
-            !scorer_config(&disabled, 24.0).unwrap().reset_on_discontinuity,
-            "disabling the temporal model must not be read as keeping history"
-        );
-
-        let kept = cvvdp_with(Some(false));
-        assert!(
-            scorer_config(&kept, 24.0).unwrap().reset_on_discontinuity,
-            "leaving the temporal model enabled keeps the reset"
-        );
-
-        // Unset takes the crate default, not `false`.
-        assert!(
-            scorer_config(&cvvdp_with(None), 24.0).unwrap().reset_on_discontinuity,
-            "an unset flag must not silently disable the reset"
-        );
+    fn m15_disable_temporal_maps_directly_without_changing_gap_policy() {
+        for flag in [None, Some(false), Some(true)] {
+            let config = scorer_config(&cvvdp_with(flag), 24.0).unwrap();
+            assert_eq!(config.disable_temporal, flag.unwrap_or(false));
+            assert!(config.reset_on_discontinuity);
+        }
     }
 
     #[test]

@@ -328,14 +328,15 @@ pub struct FmetricsConfig {
     pub butteraugli_pnorm: Option<i32>,
     /// Butteraugli intensity target.
     pub intensity_target: f32,
-    /// Whether a temporal context's history is cleared at a discontinuity.
+    /// Whether the selection owner requests history-only resets at source gaps.
     ///
-    /// The C API has no `disableTemporal` argument, only
-    /// `fmetrics_cvvdp_reset`, so this is the closest it can express. Not a
-    /// substitute for disabling the temporal filter: a caller wanting each
-    /// frame scored independently reads each pair as it is returned rather
-    /// than pooling.
+    /// fmetrics 0.1.0 cannot reset history without clearing accumulated scores.
+    /// Callers must reject noncontiguous, temporal-enabled CVVDP selections
+    /// with this policy before scoring, or choose another backend.
     pub reset_on_discontinuity: bool,
+    /// Score CVVDP frames independently, clearing history AND accumulated score
+    /// after each successful frame, like the VapourSynth plugin.
+    pub disable_temporal: bool,
 }
 
 impl FmetricsConfig {
@@ -351,10 +352,12 @@ impl FmetricsConfig {
             butteraugli_pnorm: None,
             intensity_target: 203.0,
             reset_on_discontinuity: true,
+            disable_temporal: false,
         }
     }
 
-    /// Set whether a temporal context's history is cleared at a discontinuity.
+    /// Request history-only resets at source gaps (unsupported by fmetrics 0.1.0
+    /// for temporal-enabled CVVDP; selection owners must preflight this policy).
     #[inline]
     #[must_use]
     pub const fn with_reset_on_discontinuity(mut self, reset_on_discontinuity: bool) -> Self {
@@ -362,16 +365,13 @@ impl FmetricsConfig {
         self
     }
 
-    /// Whether temporal history is carried across a discontinuity, in the
-    /// spelling a VapourSynth plugin uses for the opposite behaviour.
-    ///
-    /// The inverse of [`Self::with_reset_on_discontinuity`]: upstream
-    /// `disableTemporal` clears the context, so setting it means *not*
-    /// resetting.
+    /// Score each CVVDP frame independently, resetting history and accumulated
+    /// score after each compute. Does not change the source-gap policy.
     #[inline]
     #[must_use]
-    pub const fn with_disable_temporal(self, disable_temporal: bool) -> Self {
-        self.with_reset_on_discontinuity(!disable_temporal)
+    pub const fn with_disable_temporal(mut self, disable_temporal: bool) -> Self {
+        self.disable_temporal = disable_temporal;
+        self
     }
 
     /// Set the Butteraugli intensity target. The default of 203 is the

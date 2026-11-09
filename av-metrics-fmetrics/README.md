@@ -62,7 +62,7 @@ println!("SSIMULACRA2: {}", score.require(FmetricsMetric::Ssimulacra2)?);
 `FmetricsMetric::prefers_lower_is_better()` states the direction, so pooling does
 not have to be re-derived at each call site.
 
-### CVVDP is accumulated, not per-frame
+### CVVDP temporal modes
 
 CVVDP's temporal filter is parameterised by the frame rate, and a rate of zero
 accumulates error *silently* rather than failing. A rate is therefore required
@@ -73,10 +73,27 @@ and rejected up front:
 let config = FmetricsConfig::new(FmetricsMetric::Cvvdp).with_frame_rate(24.0);
 ```
 
-One context is kept for the whole run and sees every frame in order. On a scene
-break — or any gap in the selection — call `reset_temporal()` before submitting
-the next pair. Whether a gap is a scene break is the caller's knowledge, so the
-scorer does not decide it.
+By default (`disable_temporal=false`), one context sees every submitted frame in
+order and returns native accumulated JOD/quality values unchanged. Use
+`with_disable_temporal(true)` for independent frames: after each successful
+compute the wrapper clears **both history and accumulated score**, matching
+Vship's VapourSynth `disableTemporal` behavior. Reset failures return errors, not
+successful scores.
+
+`with_reset_on_discontinuity(true)` is a separate, default-on source-gap policy;
+neither builder changes the other. Selection owners know the actual source
+indices. fmetrics 0.1.0 has **no history-only reset**: public `reset_temporal()`
+clears accumulation too. Andean therefore rejects enabled-temporal CVVDP with
+noncontiguous selections before context creation, scoring or callbacks, allowing
+its existing backend fallback. Contiguous or disabled-temporal CVVDP still works.
+Low-level callers may explicitly choose `with_reset_on_discontinuity(false)` and
+intentionally carry history across selected source gaps; the scorer itself has
+no source indices. Do not use the combined reset as a history-only substitute.
+
+Stateful `m15_` C ABI tests prove wrapper/reset/driver behavior, not CVVDP numeric
+accuracy. Real Vship-vs-plugin parity requires a supported GPU and plugin; run
+`AV_METRICS_REQUIRE_CVVDP_PARITY=1 cargo +stable test --profile ci -p andean-condor m15_native_vs_plugin -- --nocapture` on that host. Missing runtime/plugin fails
+that required gate; ordinary suites report it UNEXECUTED.
 
 ### Colour
 

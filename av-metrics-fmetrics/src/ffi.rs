@@ -462,7 +462,7 @@ pub type CvvdpProcessFrame = unsafe extern "C" fn(
     result: *mut FmetricsCvvdpResult,
 ) -> FmetricsErr;
 
-/// Clears a CVVDP context's accumulated history, for a scene break.
+/// Clears CVVDP temporal history AND accumulated score (no history-only API).
 pub type CvvdpReset = unsafe extern "C" fn(context: FmetricsCvvdpCtx) -> FmetricsErr;
 
 /// Scores one pair with CVVDP in a single call.
@@ -520,7 +520,7 @@ pub struct FmetricsApi {
     pub cvvdp_destroy: CvvdpDestroy,
     /// Scores one frame pair through a CVVDP context.
     pub cvvdp_process_frame: CvvdpProcessFrame,
-    /// Clears a CVVDP context's history.
+    /// Clears a CVVDP context's temporal history AND accumulated score.
     pub cvvdp_reset: CvvdpReset,
     /// Scores one pair with CVVDP in a single call.
     pub cvvdp_cmp: CvvdpCmp,
