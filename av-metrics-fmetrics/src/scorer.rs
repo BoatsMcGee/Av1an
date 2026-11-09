@@ -292,7 +292,7 @@ impl FmetricsScorer {
     ///
     /// Returns an error if fmetrics is unavailable, if the bit depth has no
     /// peak sample value, or if CVVDP is configured without a usable frame
-    /// rate.
+    /// rate, or if Butteraugli's finite exponent is not positive.
     #[inline]
     pub fn new(config: FmetricsConfig, color: ColorInfo) -> Result<Self, FmetricsError> {
         Self::new_with_colors(config, color, color)
@@ -303,7 +303,8 @@ impl FmetricsScorer {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid sample depths/frame rate or an unavailable library.
+    /// Returns an error for invalid sample depths/frame rate/Butteraugli exponent
+    /// or an unavailable library.
     #[inline]
     pub fn new_with_colors(
         config: FmetricsConfig,
@@ -315,6 +316,14 @@ impl FmetricsScorer {
 
         if config.is_temporal() {
             Self::validate_frame_rate(&config)?;
+        }
+        if config.metric == FmetricsMetric::Butteraugli && config.butteraugli_options().pnorm <= 0 {
+            return Err(FmetricsError::InvalidConfiguration {
+                reason: format!(
+                    "Butteraugli finite norm must be positive, got {}",
+                    config.butteraugli_options().pnorm
+                ),
+            });
         }
         let api = FmetricsApi::load()?;
 
@@ -698,6 +707,13 @@ impl FmetricsScorer {
         };
 
         ffi::check(status, function)?;
+        // Native power reduction may overflow yet return OK, especially for large p.
+        if metric == FmetricsMetric::Butteraugli && !value.is_finite() {
+            return Err(FmetricsError::NonFiniteButteraugli {
+                value,
+                pnorm: self.config.butteraugli_options().pnorm,
+            });
+        }
         Ok(FrameScore::with(metric, value))
     }
 
@@ -902,6 +918,21 @@ mod tests {
 
     fn color(bit_depth: usize) -> ColorInfo {
         ColorInfo::from_details(&details(bit_depth)).unwrap()
+    }
+
+    #[test]
+    fn m17_nonpositive_butteraugli_norm_rejects_before_library_loading() {
+        for pnorm in [0, -1, i32::MIN] {
+            let config = FmetricsConfig::new(FmetricsMetric::Butteraugli)
+                .with_threads(1)
+                .with_pnorm(pnorm);
+            let error = FmetricsScorer::new(config, color(8)).unwrap_err();
+            assert!(
+                matches!(error, FmetricsError::InvalidConfiguration { .. }),
+                "{error}"
+            );
+            assert!(error.to_string().contains("positive"), "{error}");
+        }
     }
 
     #[test]

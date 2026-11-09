@@ -12,8 +12,8 @@ use crate::error::FmetricsError;
 /// handlers so the two agree when `threads` is unset.
 pub const DEFAULT_THREADS: u32 = 4;
 
-/// The p-norm Butteraugli reduces by when none is configured: the L3 norm the
-/// metric is defined against, and also what the library reads `pnorm <= 0` as.
+/// The finite Butteraugli exponent used when none is configured at this low level.
+/// This is not the application's/plugin's default infinity norm.
 pub const DEFAULT_PNORM: i32 = 3;
 
 /// A metric fmetrics can compute.
@@ -326,6 +326,7 @@ pub struct FmetricsConfig {
     /// Explicit zero is invalid; other metrics ignore this field.
     pub frame_rate: f32,
     /// Butteraugli p-norm exponent.
+    /// `None` means finite p=3, not infinity. Explicit exponents must be positive.
     pub butteraugli_pnorm: Option<i32>,
     /// Butteraugli intensity target.
     pub intensity_target: f32,
@@ -412,7 +413,8 @@ impl FmetricsConfig {
         self
     }
 
-    /// Set the Butteraugli p-norm exponent.
+    /// Set the finite Butteraugli exponent. The scorer rejects nonpositive values;
+    /// large positive exponents may produce a checked nonfinite-result error.
     #[inline]
     #[must_use]
     pub const fn with_pnorm(mut self, pnorm: i32) -> Self {
@@ -468,12 +470,13 @@ impl FmetricsConfig {
 
     /// The Butteraugli options this configuration implies.
     ///
-    /// A configured p-norm passes through; an absent one becomes
-    /// [`DEFAULT_PNORM`], which is also what the library reads `pnorm <= 0` as.
+    /// A configured p-norm passes through; an absent one becomes finite
+    /// [`DEFAULT_PNORM`]. The scorer rejects explicit nonpositive exponents before
+    /// loading the library rather than letting native code silently default them.
     ///
     /// There is no infinity-norm sentinel: the library computes `pow(d,
-    /// pnorm)`, so a large exponent overflows and returns non-finite
-    /// scores.
+    /// pnorm)`, so a large exponent may overflow. The scorer rejects nonfinite
+    /// Butteraugli results even when the native status is OK.
     #[inline]
     #[must_use]
     pub const fn butteraugli_options(&self) -> crate::ffi::FmetricsButteraugliOptions {

@@ -26,7 +26,10 @@
 //! | FFMS2 | vship → fmetrics → plugin | there is no graph, and building one purely to run a metric costs more than the metric |
 //!
 //! fmetrics also does not honour a configured `resolution` -- it scores at the
-//! source size.
+//! source size. These orders apply only to equivalent metric configurations:
+//! Butteraugli's default `norm: None` requests infinity, which fmetrics 0.1.0
+//! cannot compute. Only explicit finite norms may use fmetrics; without libvship,
+//! the existing plugin branch must run or return its missing-runtime/plugin error.
 
 pub mod availability;
 pub mod fmetrics;
@@ -190,6 +193,80 @@ mod tests {
             norm: None,
             gpu_id: None,
         }
+    }
+
+    #[test]
+    fn m17_butteraugli_norm_capability_over_all_availability_and_inputs() {
+        // Rows: vship, fmetrics, plugin, infinity VS/FFMS2, finite VS/FFMS2.
+        let cases = [
+            (false, false, false, [None, None], [None, None]),
+            (false, false, true, [None, None], [None, None]),
+            (
+                false,
+                true,
+                false,
+                [None, None],
+                [Some(Engine::Fmetrics); 2],
+            ),
+            (
+                false,
+                true,
+                true,
+                [None, None],
+                [None, Some(Engine::Fmetrics)],
+            ),
+            (
+                true,
+                false,
+                false,
+                [Some(Engine::Vship); 2],
+                [Some(Engine::Vship); 2],
+            ),
+            (
+                true,
+                false,
+                true,
+                [Some(Engine::Vship); 2],
+                [Some(Engine::Vship); 2],
+            ),
+            (
+                true,
+                true,
+                false,
+                [Some(Engine::Vship); 2],
+                [Some(Engine::Vship); 2],
+            ),
+            (
+                true,
+                true,
+                true,
+                [Some(Engine::Vship); 2],
+                [Some(Engine::Vship); 2],
+            ),
+        ];
+        let mut checked = 0;
+        for (vship, fmetrics, vapoursynth, infinity, finite) in cases {
+            let available = Availability {
+                vship,
+                fmetrics,
+                vapoursynth,
+            };
+            for (norm, expected) in [(None, infinity), (Some(3), finite)] {
+                let mut metric = butteraugli();
+                if let QualityMetric::BUTTERAUGLI { norm: value, .. } = &mut metric {
+                    *value = norm;
+                }
+                for (input_is_vs, want) in [true, false].into_iter().zip(expected) {
+                    assert_eq!(
+                        engine_order(&metric, input_is_vs, available),
+                        want,
+                        "{available:?}, VS={input_is_vs}, norm={norm:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 32);
     }
 
     #[test]

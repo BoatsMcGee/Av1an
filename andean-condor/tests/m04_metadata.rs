@@ -21,6 +21,7 @@ mod tests {
             "tests::m04_native_driver_metadata_transport",
             "M04_NATIVE_CHILD",
             false,
+            "/tests/fixtures/m04_native.c",
         );
     }
 
@@ -34,10 +35,25 @@ mod tests {
             "tests::m07_native_upload_storage_boundary",
             "M07_NATIVE_CHILD",
             true,
+            "/tests/fixtures/m04_native.c",
         );
     }
 
-    fn run_sink(test: &str, marker: &str, upload: bool) {
+    #[test]
+    fn m17_butteraugli_production_entry_rejects_infinity_and_nonfinite_results() {
+        if std::env::var_os("M17_NATIVE_CHILD").is_some() {
+            check_butteraugli();
+            return;
+        }
+        run_sink(
+            "tests::m17_butteraugli_production_entry_rejects_infinity_and_nonfinite_results",
+            "M17_NATIVE_CHILD",
+            false,
+            "/../av-metrics-fmetrics/tests/m14_boundary.c",
+        );
+    }
+
+    fn run_sink(test: &str, marker: &str, upload: bool, source: &str) {
         let directory = tempfile::tempdir().expect("temporary native ABI sink");
         let library = directory.path().join(if cfg!(target_os = "macos") {
             "libfmetrics.dylib"
@@ -47,10 +63,7 @@ mod tests {
         let output = Command::new("cc")
             .args(["-shared", "-fPIC", "-o"])
             .arg(&library)
-            .arg(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/m04_native.c"
-            ))
+            .arg(format!("{}{source}", env!("CARGO_MANIFEST_DIR")))
             .output()
             .expect("M04 ABI transport check requires a C compiler (cc)");
         assert!(
@@ -71,6 +84,13 @@ mod tests {
         if upload {
             child.env("M07_ABI_LOG", directory.path().join("uploads.log"));
         }
+        if marker == "M17_NATIVE_CHILD" {
+            child
+                .env("M17_ABI_LOG", directory.path().join("calls.log"))
+                .env("M17_RESULT_FILE", directory.path().join("result"))
+                .env("M14_VERSION", "0.1.0")
+                .env("M14_STATUS", "0");
+        }
         let output = child
             .args(["--exact", test, "--nocapture"])
             .env(marker, "1")
@@ -84,6 +104,10 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+        if marker == "M17_NATIVE_CHILD" {
+            eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        }
     }
 
     #[expect(clippy::unwrap_used, reason = "fixture assertions should fail loudly")]
@@ -307,6 +331,80 @@ mod tests {
         av_decoders::Decoder::from_script(&format!(
         "import vapoursynth as vs\nvs.core.std.BlankClip(width=32, height=32, length=1, format=vs.YUV420P8, color=[100,140,160]).std.SetFrameProps({properties}).set_output()"
     ), Default::default()).expect("open color-tagged fixture")
+    }
+
+    fn check_butteraugli() {
+        let log = std::env::var_os("M17_ABI_LOG").expect("ABI log");
+        let result_file = std::env::var_os("M17_RESULT_FILE").expect("ABI result");
+        let calls = || std::fs::read_to_string(&log).unwrap_or_default();
+        let mut metric = QualityMetric::BUTTERAUGLI {
+            target_range: (1.0, 3.0),
+            resolution: None,
+            threads: Some(2),
+            intensity_multiplier: Some(150.0),
+            norm: None,
+            gpu_id: None,
+        };
+        // Fresh native-file decoders exercise the CPU path without a plugin graph.
+        let fixture = tempfile::Builder::new().suffix(".y4m").tempfile().expect("Y4M");
+        let mut bytes = b"YUV4MPEG2 W32 H32 F24:1 Ip A1:1 C420jpeg\nFRAME\n".to_vec();
+        bytes.extend_from_slice(&[100; 32 * 32]);
+        bytes.extend_from_slice(&[128; 2 * 16 * 16]);
+        std::fs::write(fixture.path(), bytes).expect("write fixture");
+        let mut callbacks = Vec::new();
+        let mut score = |metric: &QualityMetric| {
+            let mut a = av_decoders::Decoder::from_file(fixture.path()).expect("fresh reference");
+            let mut b = av_decoders::Decoder::from_file(fixture.path()).expect("fresh distorted");
+            fmetrics::score_probed_frames(
+                &mut a,
+                &mut b,
+                metric,
+                &[0],
+                OutputIndexing::Aligned,
+                None,
+                |position, value| callbacks.push((position, value)),
+            )
+        };
+        std::fs::write(&result_file, "42").expect("finite result");
+        let error = score(&metric).expect_err("infinity cannot be substituted by p3").to_string();
+        assert!(
+            error.contains("infinity") && error.contains("finite") && error.contains("plugin"),
+            "{error}"
+        );
+        assert_eq!(calls(), "", "reject before workspace/scoring");
+        assert!(!fmetrics::native_supported(&metric));
+        if let QualityMetric::BUTTERAUGLI { norm, .. } = &mut metric {
+            *norm = Some(3);
+        }
+        assert!(
+            fmetrics::native_supported(&metric),
+            "injected pinned library is usable"
+        );
+        assert_eq!(score(&metric).expect("explicit finite norm"), [42.0]);
+        assert_eq!(calls(), "create\ncreate\nscore 3 150\ndestroy\ndestroy\n");
+        if let QualityMetric::BUTTERAUGLI { norm, .. } = &mut metric {
+            *norm = Some(u8::MAX);
+        }
+        for value in ["nan", "inf", "-inf"] {
+            std::fs::write(&result_file, value).expect("injected nonfinite result");
+            let error = score(&metric).expect_err("nonfinite must not reach callback").to_string();
+            assert!(error.contains("non-finite"), "{error}");
+        }
+        std::fs::write(&result_file, "42").expect("finite recovery");
+        assert_eq!(score(&metric).expect("valid followup"), [42.0]);
+        assert_eq!(
+            callbacks,
+            [(0, 42.0), (0, 42.0)],
+            "only successful finite results reach callback"
+        );
+        let log = calls();
+        assert_eq!(log.lines().filter(|s| *s == "create").count(), 10);
+        assert_eq!(log.lines().filter(|s| *s == "destroy").count(), 10);
+        assert_eq!(log.lines().filter(|s| s.starts_with("score ")).count(), 5);
+        assert_eq!(log.lines().filter(|s| *s == "score 255 150").count(), 4);
+        eprintln!(
+            "M17 driver: infinity allocations/calls/callbacks=0; finite callbacks=2; nonfinite rejects=3; workspaces=10/10 calls=5"
+        );
     }
 
     fn check_drivers() {

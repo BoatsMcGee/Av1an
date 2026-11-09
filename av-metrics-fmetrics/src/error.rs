@@ -43,6 +43,18 @@ pub enum FmetricsError {
         reason: String,
     },
 
+    /// Native Butteraugli returned success but its power reduction was nonfinite.
+    #[error(
+        "fmetrics Butteraugli returned a non-finite score {value} for finite norm {pnorm}; \
+         try a smaller positive norm"
+    )]
+    NonFiniteButteraugli {
+        /// The rejected numeric result, never exposed as a successful frame score.
+        value: f64,
+        /// The finite exponent sent to the native reduction.
+        pnorm: i32,
+    },
+
     /// The requested metric is not exposed through this crate.
     #[error("Metric `{metric}` is unavailable: {reason}")]
     MetricUnavailable {

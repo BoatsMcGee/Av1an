@@ -68,6 +68,164 @@ fn m14_native_status_and_version_contract() {
     }
 }
 
+#[test]
+#[cfg(unix)]
+fn m17_finite_options_checked_results_and_returned_leases() {
+    if std::env::var_os("M17_CHILD").is_some() {
+        m17_child();
+        return;
+    }
+    let dir = tempfile::tempdir().expect("fixture directory");
+    let library = dir.path().join(if cfg!(target_os = "macos") {
+        "libfmetrics.dylib"
+    } else {
+        "libfmetrics.so"
+    });
+    compile(&library, false, &[]);
+    let out = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "m17_finite_options_checked_results_and_returned_leases",
+            "--nocapture",
+        ])
+        .env("M17_CHILD", "1")
+        .env("M14_VERSION", "0.1.0")
+        .env("M14_STATUS", "0")
+        .env("FMETRICS_LIB_PATH", dir.path())
+        .env("M14_LIBRARY", &library)
+        .env("M17_RESULT_FILE", dir.path().join("result"))
+        .env("M17_ABI_LOG", dir.path().join("calls"))
+        .output()
+        .expect("isolated norm boundary");
+    assert!(
+        out.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed; 0 failed"));
+    eprint!("{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[cfg(unix)]
+fn m17_child() {
+    // SAFETY: exact fixture counter signature; mapping outlives every call.
+    let lib =
+        unsafe { libloading::Library::new(std::env::var_os("M14_LIBRARY").expect("library")) }
+            .expect("mapping");
+    // SAFETY: fixture exports this C signature and accepts indices 0..=3.
+    let counter =
+        unsafe { lib.get::<unsafe extern "C" fn(u32) -> u32>(b"m14_count\0") }.expect("counter");
+    // SAFETY: all indices below are defined, and the library remains mapped.
+    let count = |i| unsafe { counter(i) };
+    let color = ColorInfo {
+        matrix: av_metrics_fmetrics::YuvMatrix::Bt709,
+        range: av_metrics_fmetrics::SampleRange::Limited,
+        bit_depth: 8,
+        transfer: av_decoders::TransferCharacteristic::IEC61966_2_1,
+        colorspace: FmetricsColorspace::Srgb,
+        hdr: false,
+    };
+    let result_file = std::env::var_os("M17_RESULT_FILE").expect("result file");
+    let log = std::env::var_os("M17_ABI_LOG").expect("log");
+    std::fs::write(&result_file, "42").expect("valid result");
+    let config = FmetricsConfig::new(FmetricsMetric::Butteraugli).with_threads(1);
+    for p in [0, -1, i32::MIN] {
+        for direct in [false, true] {
+            let mut invalid = config.clone();
+            if direct {
+                invalid.butteraugli_pnorm = Some(p);
+            } else {
+                invalid = invalid.with_pnorm(p);
+            }
+            let error = FmetricsScorer::new(invalid, color).expect_err("nonpositive exponent");
+            assert!(
+                matches!(error, FmetricsError::InvalidConfiguration { .. }),
+                "{error}"
+            );
+            assert_eq!(
+                (count(0), count(2), count(3)),
+                (0, 0, 0),
+                "reject before library probe/allocation/scoring"
+            );
+        }
+    }
+    let bytes = [128u8; 32 * 32 * 3];
+    let image = RgbView::new(&bytes, 32, 32, false).expect("RGB");
+    for p in [None, Some(3), Some(7), Some(i32::MAX)] {
+        let mut config = config.clone().with_intensity_target(150.0);
+        config.butteraugli_pnorm = p;
+        let scorer = FmetricsScorer::new(config, color).expect("positive norm");
+        assert_eq!(
+            scorer.submit_rgb(&image, &image).expect("finite marker").butteraugli,
+            Some(42.0),
+            "finite exponent {p:?} must retain the native marker"
+        );
+        let log = std::fs::read_to_string(&log).expect("calls");
+        assert!(
+            log.ends_with(&format!("score {} 150\n", p.unwrap_or(3))),
+            "{log}"
+        );
+    }
+    let scorer =
+        FmetricsScorer::new(config.with_pnorm(i32::MAX), color).expect("large finite norm");
+    for value in ["nan", "inf", "-inf"] {
+        std::fs::write(&result_file, value).expect("nonfinite ABI result");
+        let before = count(2);
+        let error = scorer.submit_rgb(&image, &image).expect_err("nonfinite is not a score");
+        assert!(
+            matches!(
+                error,
+                FmetricsError::NonFiniteButteraugli {
+                    pnorm: i32::MAX,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("non-finite"), "{error}");
+        assert_eq!(
+            count(2),
+            before + 1,
+            "nonfinite {value} must reach native scoring exactly once"
+        );
+        std::fs::write(&result_file, "42").expect("valid ABI result");
+        assert_eq!(
+            scorer.submit_rgb(&image, &image).expect("lease returned on error").butteraugli,
+            Some(42.0),
+            "the sole workspace must be reusable after {value}"
+        );
+    }
+    for raw in [1, 777, -123] {
+        std::fs::write(&result_file, format!("nan {raw}")).expect("raw native failure");
+        let error = scorer
+            .submit_rgb(&image, &image)
+            .expect_err("status error precedes result validation");
+        assert!(
+            matches!(error, FmetricsError::CallFailed { code, .. } if code == raw),
+            "{error}"
+        );
+        std::fs::write(&result_file, "42").expect("valid ABI result");
+        assert_eq!(
+            scorer
+                .submit_rgb(&image, &image)
+                .expect("lease returned on native failure")
+                .butteraugli,
+            Some(42.0),
+            "the sole workspace must be reusable after native status {raw}"
+        );
+    }
+    drop(scorer);
+    assert_eq!(
+        (count(0), count(1), count(2)),
+        (5, 5, 16),
+        "every workspace destroyed and every success/error path reached"
+    );
+    eprintln!(
+        "M17 low-level: 6 invalid preprobe rejects, 4 finite options, 3 nonfinite + 3 raw-status errors, 6 lease recoveries; workspaces=5/5 calls=16"
+    );
+}
+
 #[cfg(unix)]
 fn child() {
     // SAFETY: isolated fixture mapping stays alive through all counter calls.

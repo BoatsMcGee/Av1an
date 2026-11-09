@@ -1,7 +1,9 @@
 //! Native CPU scoring for SSIMULACRA2, Butteraugli and CVVDP via fmetrics.
 //!
 //! fmetrics is the CPU implementation of the three metrics libvship runs on a
-//! GPU, so it is the fallback for a machine with no usable device. It does not
+//! GPU, so it can be the fallback for a machine with no usable device. Butteraugli
+//! requires an explicit finite norm: the application's default infinity norm has
+//! no fmetrics equivalent. It does not
 //! agree with libvship to the last digit, so a score records which engine
 //! produced it -- see [`super::Engine`].
 //!
@@ -27,15 +29,17 @@ use crate::{
 /// The fmetrics metric a configured [`QualityMetric`] maps to, or `None` when
 /// the metric has no fmetrics equivalent.
 ///
-/// VMAF and XPSNR have no fmetrics implementation.
+/// VMAF, XPSNR and Butteraugli's default infinity norm have no fmetrics equivalent.
 #[inline]
 #[must_use]
 pub const fn fmetrics_metric_for(metric: &QualityMetric) -> Option<FmetricsMetric> {
     match metric {
         QualityMetric::SSIMULACRA2 { .. } => Some(FmetricsMetric::Ssimulacra2),
-        QualityMetric::BUTTERAUGLI { .. } => Some(FmetricsMetric::Butteraugli),
+        QualityMetric::BUTTERAUGLI { norm: Some(_), .. } => Some(FmetricsMetric::Butteraugli),
         QualityMetric::CVVDP { .. } => Some(FmetricsMetric::Cvvdp),
-        QualityMetric::VMAF { .. } | QualityMetric::XPSNR { .. } => None,
+        QualityMetric::BUTTERAUGLI { norm: None, .. }
+        | QualityMetric::VMAF { .. }
+        | QualityMetric::XPSNR { .. } => None,
     }
 }
 
@@ -77,11 +81,15 @@ pub fn scorer_config(metric: &QualityMetric, frame_rate: f32) -> Result<Fmetrics
             norm,
             ..
         } => {
+            let Some(norm) = *norm else {
+                bail!(
+                    "Butteraugli infinity norm unavailable in fmetrics 0.1.0; use libvship/VS plugin \
+                     or explicitly request a finite norm"
+                );
+            };
             let mut config = FmetricsConfig::new(FmetricsMetric::Butteraugli)
-                .with_threads(worker_threads(*threads));
-            if let Some(norm) = *norm {
-                config = config.with_pnorm(i32::from(norm));
-            }
+                .with_threads(worker_threads(*threads))
+                .with_pnorm(i32::from(norm));
             if let Some(intensity_multiplier) = *intensity_multiplier {
                 config = config.with_intensity_target(intensity_multiplier as f32);
             }
@@ -293,6 +301,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn m17_infinity_has_no_fmetrics_mapping_or_native_support() {
+        let metric = QualityMetric::BUTTERAUGLI {
+            target_range: (1.0, 3.0),
+            resolution: None,
+            threads: Some(2),
+            intensity_multiplier: Some(150.0),
+            norm: None,
+            gpu_id: None,
+        };
+        assert!(fmetrics_metric_for(&metric).is_none());
+        assert!(!native_supported(&metric));
+    }
+
+    #[test]
+    fn m17_direct_config_rejects_infinity_actionably() {
+        let metric = QualityMetric::BUTTERAUGLI {
+            target_range: (1.0, 3.0),
+            resolution: None,
+            threads: Some(2),
+            intensity_multiplier: Some(150.0),
+            norm: None,
+            gpu_id: None,
+        };
+        let error = scorer_config(&metric, 24.0).unwrap_err().to_string();
+        assert!(
+            error.contains("infinity")
+                && error.contains("fmetrics 0.1.0")
+                && error.contains("finite")
+                && error.contains("plugin"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn m17_explicit_finite_config_preserves_threads_intensity_and_exponent() {
+        for norm in [3, 7, u8::MAX] {
+            let metric = QualityMetric::BUTTERAUGLI {
+                target_range: (1.0, 3.0),
+                resolution: None,
+                threads: Some(2),
+                intensity_multiplier: Some(150.0),
+                norm: Some(norm),
+                gpu_id: None,
+            };
+            assert_eq!(
+                fmetrics_metric_for(&metric),
+                Some(FmetricsMetric::Butteraugli)
+            );
+            let config = scorer_config(&metric, 24.0).unwrap();
+            assert_eq!(config.threads(), 2);
+            assert_eq!(config.butteraugli_options().pnorm, i32::from(norm));
+            assert_eq!(config.butteraugli_options().intensity_target, 150.0);
+        }
+    }
+
+    #[test]
     fn m04_driver_rejects_hdr_on_either_side_before_native_scoring() {
         for hdr_side in [0, 1] {
             let mut decoders: Vec<_> = (0..2).map(|side| {
@@ -417,7 +481,7 @@ mod tests {
             resolution: None,
             threads: None,
             intensity_multiplier: None,
-            norm: None,
+            norm: Some(3),
             gpu_id: None,
         };
 
@@ -481,7 +545,7 @@ mod tests {
             resolution: None,
             threads: None,
             intensity_multiplier: None,
-            norm: None,
+            norm: Some(3),
             gpu_id: None,
         };
         let distances = score_pair(&butteraugli, 30).expect("Butteraugli scores");
@@ -520,7 +584,7 @@ mod tests {
                 resolution: None,
                 threads: None,
                 intensity_multiplier: None,
-                norm: None,
+                norm: Some(3),
                 gpu_id: None,
             }),
             Some(FmetricsMetric::Butteraugli)

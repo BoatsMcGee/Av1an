@@ -248,23 +248,17 @@ impl FmetricsImg {
 pub struct FmetricsButteraugliOptions {
     /// Target intensity, in unspecified units.
     pub intensity_target: f32,
-    /// The p-norm exponent.
+    /// The finite p-norm exponent. No value represents infinity.
     pub pnorm: c_int,
 }
 
 impl Default for FmetricsButteraugliOptions {
-    /// The Butteraugli plugin's default: the infinity norm at a 203 intensity
-    /// target.
-    ///
-    /// The p-norm is an `int`, so infinity cannot be represented. `i32::MAX` is
-    /// the convention for "the infinity norm"; casting `f32::INFINITY` to
-    /// `c_int` would saturate to the same value but silently, which reads
-    /// as an accidental overflow rather than a deliberate encoding.
+    /// Finite p=3 at intensity 203, not the application's/plugin's infinity norm.
     #[inline]
     fn default() -> Self {
         Self {
             intensity_target: 203.0,
-            pnorm: i32::MAX,
+            pnorm: crate::config::DEFAULT_PNORM,
         }
     }
 }
@@ -1020,12 +1014,14 @@ mod tests {
     }
 
     #[test]
-    fn butteraugli_defaults_to_the_infinity_norm() {
-        // The p-norm is an int, so "infinity" is encoded as i32::MAX rather
-        // than reached by casting an infinite float.
+    fn m17_raw_and_config_defaults_are_finite_three() {
         let options = FmetricsButteraugliOptions::default();
-        assert_eq!(options.pnorm, i32::MAX);
+        assert_eq!(options.pnorm, 3);
         assert!((options.intensity_target - 203.0).abs() < f32::EPSILON);
+        let configured =
+            crate::FmetricsConfig::new(crate::FmetricsMetric::Butteraugli).butteraugli_options();
+        assert_eq!(configured.pnorm, 3);
+        assert!((configured.intensity_target - 203.0).abs() < f32::EPSILON);
     }
 
     #[test]

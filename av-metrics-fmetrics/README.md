@@ -62,6 +62,28 @@ println!("SSIMULACRA2: {}", score.require(FmetricsMetric::Ssimulacra2)?);
 `FmetricsMetric::prefers_lower_is_better()` states the direction, so pooling does
 not have to be re-derived at each call site.
 
+### Butteraugli norms
+
+Low-level `FmetricsConfig` with no `butteraugli_pnorm` and raw
+`FmetricsButteraugliOptions::default()` both use **finite p=3**, intensity 203.
+This differs from Andean's `QualityMetric::BUTTERAUGLI { norm: None, .. }`, which
+requests the plugin's **infinity norm**. fmetrics 0.1.0 has no infinity mode or
+sentinel: `i32::MAX` is just a large finite exponent, not an approximation we use.
+Andean excludes fmetrics for infinity and rejects direct fmetrics driver calls
+with that request. Use libvship/the VS plugin, or explicitly select a finite norm;
+without an infinity-capable runtime the job must fail, not substitute p=3.
+
+Use `with_pnorm(3)` (or another positive `i32`) for a finite request. Both builder
+and public-field configurations reject explicit zero/negative exponents before
+library loading/workspace allocation. The pinned native reduction computes powers
+at p, 2p and 4p; no smaller upstream maximum is specified. Large positive exponents
+can overflow: a native OK with NaN or either infinity returns
+`FmetricsError::NonFiniteButteraugli`, never a successful `FrameScore` or Andean
+score callback. The workspace lease is returned on this error.
+
+The `m17_` routing matrix and real-C ABI sinks check these contracts, not native
+Butteraugli numerical accuracy or GPU/plugin equivalence.
+
 ### CVVDP temporal modes
 
 CVVDP defaults to **60 fps** when `with_frame_rate` is not called. Supply the

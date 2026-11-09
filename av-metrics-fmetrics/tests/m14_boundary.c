@@ -4,10 +4,15 @@
 #include <stdio.h>
 #include <string.h>
 
-static unsigned workspaces, destroyed;
+static unsigned workspaces, destroyed, butteraugli_calls, version_probes;
 static int status(void) { const char *s = getenv("M14_STATUS"); return s ? atoi(s) : 0; }
-unsigned m14_count(unsigned i) { return i ? destroyed : workspaces; }
+unsigned m14_count(unsigned i) { return i == 3 ? version_probes : i == 2 ? butteraugli_calls : i ? destroyed : workspaces; }
+static void m17_log(const char *event) {
+    const char *path = getenv("M17_ABI_LOG");
+    if (path) { FILE *f = fopen(path, "a"); if (!f) abort(); fputs(event, f); fclose(f); }
+}
 const char *fmetrics_version_str(void) {
+    version_probes++;
     const char *s = getenv("M14_VERSION");
     if (!s) return "0.1.0";
     if (!strcmp(s, "null")) return NULL;
@@ -19,8 +24,8 @@ const char *fmetrics_error_str(FmetricsErr err) {
     if ((unsigned)err > 6) abort(); /* Rust must not interpret unknown via C. */
     return "known fmetrics status";
 }
-FmetricsWorkspace *fmetrics_workspace_create(void) { workspaces++; return (FmetricsWorkspace *)malloc(1); }
-void fmetrics_workspace_destroy(FmetricsWorkspace *w) { destroyed++; free(w); }
+FmetricsWorkspace *fmetrics_workspace_create(void) { workspaces++; m17_log("create\n"); return (FmetricsWorkspace *)malloc(1); }
+void fmetrics_workspace_destroy(FmetricsWorkspace *w) { destroyed++; m17_log("destroy\n"); free(w); }
 FmetricsErr fmetrics_ssimu2_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, double *s) {
     if (!w || !a->data || !b->data || a->format != FMETRICS_PIX_FMT_RGB_UINT8) abort();
     *s = 42;
@@ -29,7 +34,22 @@ FmetricsErr fmetrics_ssimu2_cmp(FmetricsWorkspace *w, const FmetricsImg *a, cons
 FmetricsErr fmetrics_iwssim_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, double *s) { return fmetrics_ssimu2_cmp(w,a,b,s); }
 FmetricsErr fmetrics_msssim_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, double *s) { return fmetrics_ssimu2_cmp(w,a,b,s); }
 FmetricsErr fmetrics_ssimu2_cmp_map(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, double *s, uint32_t *m) { (void)m; return fmetrics_ssimu2_cmp(w,a,b,s); }
-FmetricsErr fmetrics_butteraugli_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, const FmetricsButteraugliOptions *o, double *s) { (void)o; return fmetrics_ssimu2_cmp(w,a,b,s); }
+FmetricsErr fmetrics_butteraugli_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, const FmetricsButteraugliOptions *o, double *s) {
+    FmetricsErr result = fmetrics_ssimu2_cmp(w,a,b,s);
+    if (!o) abort();
+    butteraugli_calls++;
+    char event[128];
+    snprintf(event, sizeof(event), "score %d %.0f\n", o->pnorm, (double)o->intensity_target);
+    m17_log(event);
+    const char *path = getenv("M17_RESULT_FILE");
+    if (path) {
+        FILE *f = fopen(path, "r"); if (!f || fscanf(f, "%lf", s) != 1) abort();
+        int raw_status;
+        if (fscanf(f, "%d", &raw_status) == 1) result = (FmetricsErr)raw_status;
+        fclose(f);
+    }
+    return result;
+}
 FmetricsErr fmetrics_butteraugli_cmp_map(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, const FmetricsButteraugliOptions *o, double *s, uint32_t *m) { (void)m; return fmetrics_butteraugli_cmp(w,a,b,o,s); }
 FmetricsErr fmetrics_cvvdp_create(int w, int h, float fps, FmetricsCvvdpDisplayModel m, unsigned t, const FmetricsCvvdpDisplayParams *p, FmetricsCvvdpCtx **out) {
     (void)w; (void)h; (void)fps; (void)m; (void)t; (void)p;
