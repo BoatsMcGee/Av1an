@@ -188,6 +188,191 @@ fn child() {
         assert_eq!(count(1), count(2), "all handlers freed");
     }
 }
+#[test]
+#[cfg(unix)]
+fn m19_public_resets() {
+    if std::env::var_os("M19_CHILD").is_some() {
+        m19_child();
+        return;
+    }
+    let dir = tempfile::tempdir().expect("reset fixture directory");
+    let library = dir.path().join(if cfg!(target_os = "macos") {
+        "libvship.dylib"
+    } else {
+        "libvship.so"
+    });
+    compile(&library, false, &[]);
+    let mut errors = Vec::new();
+    for (metric, handlers, status) in [
+        ("SSIMULACRA2", 1, 777),
+        ("SSIMULACRA2", 3, 777),
+        ("Butteraugli", 1, 777),
+        ("Butteraugli", 3, 777),
+        ("CVVDP", 1, 0),
+        ("CVVDP", 1, 17),
+        ("CVVDP", 1, 777),
+        ("CVVDP", 1, -123),
+    ] {
+        let mut child = Command::new(std::env::current_exe().expect("executable"))
+            .args(["--exact", "m19_public_resets", "--nocapture"])
+            .env("M19_CHILD", "1")
+            .env("M19_METRIC", metric)
+            .env("M19_HANDLERS", handlers.to_string())
+            .env("M19_RESET_STATUS", status.to_string())
+            .env("M14_LIBRARY", &library)
+            .env("M14_BACKEND", "3")
+            .env("M14_PATCH", "2")
+            .env("M14_PROBE_STATUS", "0")
+            .env("M14_COMPUTE_STATUS", "0")
+            .env_remove("M14_TAG")
+            .env("VSHIP_PLUGIN_PATH", dir.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("reset child");
+        let start = Instant::now();
+        while child.try_wait().expect("status").is_none() {
+            if start.elapsed() > Duration::from_secs(30) {
+                child.kill().expect("kill");
+                child.wait().expect("reap");
+                panic!("M19 timed out: {metric}/{handlers}/{status}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let out = child.wait_with_output().expect("output");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        if !out.status.success() || !stdout.contains("1 passed; 0 failed") {
+            errors.push(format!(
+                "{metric}/{handlers}/{status}: {stdout}\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        } else {
+            print!("{stdout}");
+        }
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+#[cfg(unix)]
+fn m19_child() {
+    const PROBE: u32 = 0;
+    const INIT: u32 = 1;
+    const FREE: u32 = 2;
+    const COMPUTE: u32 = 3;
+    const RESET: u32 = 4;
+    const RESET_SCORE: u32 = 5;
+    let metric = VshipMetric::from_name(&std::env::var("M19_METRIC").expect("metric"))
+        .expect("known metric");
+    let handlers = std::env::var("M19_HANDLERS")
+        .expect("handlers")
+        .parse::<u32>()
+        .expect("integer");
+    let status = std::env::var("M19_RESET_STATUS")
+        .expect("status")
+        .parse::<i32>()
+        .expect("integer");
+    // SAFETY: the isolated real-header fixture owns every handle; the mapping
+    // stays live through scorer destruction and all counter reads.
+    let lib =
+        unsafe { libloading::Library::new(std::env::var_os("M14_LIBRARY").expect("library")) }
+            .expect("mapping");
+    // SAFETY: exact fixture signature; only the six defined indices are used.
+    let counter =
+        unsafe { lib.get::<unsafe extern "C" fn(u32) -> u32>(b"m14_count\0") }.expect("counter");
+    // SAFETY: callers use the named indices above while the fixture is mapped.
+    let count = |index| unsafe { counter(index) };
+    let frame = FrameBuilder::new(32, 32, ChromaSubsampling::Yuv420, 8)
+        .build::<u8>()
+        .expect("frame");
+    let format = VideoFormat {
+        width: 32,
+        height: 32,
+        bit_depth: 8,
+        chroma_sampling: ChromaSubsampling::Yuv420,
+        color_range: None,
+        color_primaries: None,
+        color_transfer_characteristic: None,
+        color_space: None,
+        chroma_location: None,
+    };
+    let mut scorer = VshipScorer::new(
+        VshipConfig::new().with_metric(metric).with_handler_threads(handlers),
+        format,
+        format,
+        None,
+    )
+    .expect("real public scorer");
+    let score = scorer.submit_pair(&frame, &frame).expect("score before resets");
+    let expected_score = match metric {
+        VshipMetric::Butteraugli => (None, Some(42.0), Some(43.0), Some(44.0)),
+        _ => (Some(42.0), None, None, None),
+    };
+    assert_eq!(
+        (score.score, score.norm_q, score.norm_3, score.norm_inf),
+        expected_score,
+        "known metric score before resets"
+    );
+    let temporal = scorer.reset_temporal();
+    let accumulated = scorer.reset_score();
+    let resets = (count(RESET), count(RESET_SCORE));
+    println!(
+        "M19 {metric:?}/{handlers}/{status}: reset/reset_score={resets:?}; results={temporal:?}/{accumulated:?}"
+    );
+    assert_eq!(
+        resets,
+        if metric == VshipMetric::Cvvdp {
+            (1, 1)
+        } else {
+            (0, 0)
+        },
+        "stateless resets must not cross the native boundary"
+    );
+    for (result, function) in [(temporal, "Vship_Reset"), (accumulated, "Vship_ResetScore")] {
+        if metric == VshipMetric::Cvvdp && status != 0 {
+            assert!(
+                matches!(result, Err(VshipError::CallFailed { function: f, status: s, .. }) if f == function && s == status),
+                "retain native error function/raw status: {function}/{status}"
+            );
+        } else {
+            result.expect("reset succeeds");
+        }
+    }
+    assert_eq!(
+        scorer.submitted().expect("submitted"),
+        1,
+        "resets do not submit"
+    );
+    assert_eq!(
+        (count(PROBE), count(INIT), count(FREE), count(COMPUTE)),
+        (1, handlers, 0, 1),
+        "resets do not allocate, free, probe or compute"
+    );
+    for _ in 0..handlers {
+        let score = scorer.submit_pair(&frame, &frame).expect("score after resets");
+        assert_eq!(
+            (score.score, score.norm_q, score.norm_3, score.norm_inf),
+            expected_score,
+            "scores survive resets across every native handler"
+        );
+    }
+    assert_eq!(
+        scorer.submitted().expect("submitted"),
+        1 + handlers,
+        "submissions retained"
+    );
+    drop(scorer);
+    assert_eq!(
+        (count(INIT), count(FREE)),
+        (handlers, handlers),
+        "balanced native cleanup"
+    );
+    println!(
+        "M19 {metric:?}: init/free={handlers}/{handlers}; submitted/compute={}/{}; scores unchanged",
+        1 + handlers,
+        count(COMPUTE)
+    );
+}
+
 fn compile(path: &std::path::Path, probe: bool, flags: &[&str]) {
     let mut cmd = Command::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
     cmd.args(["-std=c11", "-Wall", "-Wextra", "-Werror"]);

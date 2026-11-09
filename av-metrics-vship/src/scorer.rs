@@ -1369,6 +1369,9 @@ impl VshipScorer {
     /// Returns [`VshipError::CallFailed`] if libvship rejects the reset.
     #[inline]
     pub fn reset_temporal(&self) -> Result<(), VshipError> {
+        if !self.metric.is_temporal() {
+            return Ok(());
+        }
         let Ok(pool) = self.handlers.lock() else {
             return Err(poisoned());
         };
@@ -1382,11 +1385,16 @@ impl VshipScorer {
     /// Clear the temporal handler's accumulated score, leaving its frame
     /// history.
     ///
+    /// For non-temporal metrics this is a no-op rather than an error.
+    ///
     /// # Errors
     ///
     /// Returns [`VshipError::CallFailed`] if libvship rejects the reset.
     #[inline]
     pub fn reset_score(&self) -> Result<(), VshipError> {
+        if !self.metric.is_temporal() {
+            return Ok(());
+        }
         let Ok(pool) = self.handlers.lock() else {
             return Err(poisoned());
         };

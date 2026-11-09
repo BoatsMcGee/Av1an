@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static unsigned counts[4]; /* probe, init, free, compute */
+static unsigned counts[6]; /* probe, init, free, compute, reset, reset_score */
 static int setting(const char *key, int fallback) { const char *s=getenv(key); return s ? atoi(s) : fallback; }
 unsigned m14_count(unsigned i) { return counts[i]; }
 Vship_Version Vship_GetVersion(void) { return (Vship_Version){5,1,setting("M14_PATCH",2),(Vship_Backend)setting("M14_BACKEND",3)}; }
@@ -31,8 +31,8 @@ Vship_Exception Vship_ComputeHandler(Vship_Handle h, void *out, const uint8_t *a
     *(Vship_StructType*)out=(Vship_StructType)setting("M14_TAG",type+3);
     return (Vship_Exception)setting("M14_COMPUTE_STATUS",0);
 }
-Vship_Exception Vship_Reset(Vship_Handle h) { (void)h; return Vship_NoError; }
-Vship_Exception Vship_ResetScore(Vship_Handle h) { (void)h; return Vship_NoError; }
+Vship_Exception Vship_Reset(Vship_Handle h) { (void)h; counts[4]++; return (Vship_Exception)setting("M19_RESET_STATUS",0); }
+Vship_Exception Vship_ResetScore(Vship_Handle h) { (void)h; counts[5]++; return (Vship_Exception)setting("M19_RESET_STATUS",0); }
 Vship_Exception Vship_PinnedMalloc2(void **p, uint64_t size, int gpu) { (void)gpu; *p=malloc((size_t)size); return Vship_NoError; }
 Vship_Exception Vship_PinnedFree2(void *p, int gpu) { (void)gpu; free(p); return Vship_NoError; }
 
