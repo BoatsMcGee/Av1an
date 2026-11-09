@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use anyhow::{Ok, Result};
+use anyhow::{Ok, Result, bail};
 use av_scenechange::{DetectionOptions, ScenecutResult, detect_scene_changes};
 use thiserror::Error;
 use tracing::{debug, trace};
@@ -25,8 +25,8 @@ use crate::{
             SequenceConfigHandler,
             SequenceDataHandler,
             scene_detector::{
-                DEFAULT_MAX_SCENE_LENGTH_SECONDS,
                 SceneDetectionMethod,
+                SceneDetectorConfigError,
                 SceneDetectorData,
                 SceneDetectorDataHandler,
                 ScenecutMethod,
@@ -68,6 +68,13 @@ where
             Input::validate(&input.as_data())?;
         }
 
+        if self.method.minimum_length() == 0 {
+            bail!(SceneDetectorConfigError::MinimumLengthNotPositive);
+        }
+        if self.method.maximum_length() == 0 {
+            bail!(SceneDetectorConfigError::MaximumLengthNotPositive);
+        }
+
         Ok(((), vec![]))
     }
 
@@ -102,6 +109,21 @@ where
                 )));
             }
         }
+
+        // Framerate is available so the default maximum length can be resolved
+        if self.method.is_default_maximum_length() {
+            let fps = {
+                let rate = self
+                    .input
+                    .as_mut()
+                    .map_or(&mut condor.input, |input| input)
+                    .clip_info()?
+                    .frame_rate;
+                *rate.numer() as f64 / *rate.denom() as f64
+            };
+            self.method.resolve_defaults(fps);
+        }
+        self.method.validate_lengths()?;
 
         Ok(((), warnings))
     }
@@ -382,10 +404,11 @@ impl SceneDetector {
 
         // Set maximum scene length in frames based on input framerate
         if !method_was_given && let Some(input) = &mut sd.input {
-            let fps_ratio: av_format::rational::Ratio<i64> = input.clip_info()?.frame_rate;
-            let fps = *fps_ratio.numer() as f64 / *fps_ratio.denom() as f64;
-            let max_scene_length_frames =
-                (fps * DEFAULT_MAX_SCENE_LENGTH_SECONDS as f64).round() as u64;
+            let fps = {
+                let rate = input.clip_info()?.frame_rate;
+                *rate.numer() as f64 / *rate.denom() as f64
+            };
+            let max_scene_length_frames = SceneDetectionMethod::maximum_length_for_fps(fps);
 
             if let SceneDetectionMethod::AVSceneChange {
                 minimum_length,
@@ -396,7 +419,7 @@ impl SceneDetector {
             {
                 sd.method = SceneDetectionMethod::AVSceneChange {
                     minimum_length,
-                    maximum_length: max_scene_length_frames as usize,
+                    maximum_length: max_scene_length_frames,
                     method,
                     save_scores,
                 };
@@ -628,5 +651,14 @@ mod tests {
         assert_eq!(ranges.first().map(|range| range.0), Some(200));
         assert_eq!(ranges.last().map(|range| range.1), Some(1000));
         assert!(ranges.windows(2).all(|pair| pair[0].1 == pair[1].0));
+    }
+
+    /// `validate` cannot resolve the frame-rate default, so it must not reject
+    /// the sentinel range that `initialize` will replace.
+    #[test]
+    fn the_sentinel_range_survives_validation_before_the_default_is_resolved() {
+        let method = SceneDetectionMethod::default();
+        assert!(method.is_default_maximum_length());
+        assert!(method.validate_lengths().is_ok());
     }
 }
