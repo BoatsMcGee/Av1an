@@ -11,6 +11,43 @@ use super::*;
 const EXACT: &str = "metrics::vmaf::m18_tests::m18_driver_events";
 
 #[test]
+fn m25_driver_invalid_override_preserves_error_before_callbacks() {
+    if std::env::var_os("M25_DRIVER_CHILD").is_some() {
+        driver_child("m25_override");
+        return;
+    }
+    let directory = tempfile::tempdir().expect("M25 driver fixture");
+    let mut child = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "metrics::vmaf::m18_tests::m25_driver_invalid_override_preserves_error_before_callbacks",
+            "--nocapture",
+        ])
+        .env("M25_DRIVER_CHILD", "1")
+        .env("VMAF_MODEL_PATH", directory.path().join("missing models 雪"))
+        .env("M18_EVENTS", directory.path().join("events"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("isolated M25 driver child");
+    let start = Instant::now();
+    while child.try_wait().expect("status").is_none() {
+        if start.elapsed() > Duration::from_secs(30) {
+            child.kill().expect("kill");
+            child.wait().expect("reap");
+            panic!("M25 driver timeout");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().expect("output");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    eprintln!("M25 driver: {stdout}\n{stderr}");
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(stdout.contains("running 1 test") && stdout.contains("1 passed; 0 failed"));
+}
+
+#[test]
 fn m18_driver_events() {
     if let Ok(scenario) = std::env::var("M18_DRIVER_CHILD") {
         driver_child(&scenario);
@@ -147,6 +184,31 @@ fn driver_child(scenario: &str) {
         },
     );
     match scenario {
+        "m25_override" => {
+            let error = scores.expect_err("invalid explicit directory must fail");
+            let message = error.to_string();
+            eprintln!("M25 driver submitted={submitted:?}, reported={reported:?}, error={message}");
+            assert!(
+                submitted.is_empty() && reported.is_empty() && events().is_empty(),
+                "invalid override must fail before either progress or score callbacks"
+            );
+            let expected =
+                std::path::PathBuf::from(std::env::var_os("VMAF_MODEL_PATH").expect("override"))
+                    .join("vmaf_v0.6.1.json");
+            assert!(
+                message.contains("VMAF_MODEL_PATH")
+                    && message.contains(&*expected.to_string_lossy())
+                    && message.contains("missing"),
+                "production driver must retain the missing override diagnostic: {message}"
+            );
+            assert!(
+                matches!(
+                    error.downcast_ref::<VmafError>(),
+                    Some(VmafError::ModelNotFound { .. })
+                ),
+                "production driver must preserve the typed native cause: {error:?}"
+            );
+        },
         "aligned" | "compacted" => {
             assert_eq!(scores.expect("all scores"), [90.0, 91.0, 92.0]);
             assert_eq!(submitted, [0, 1, 2]);

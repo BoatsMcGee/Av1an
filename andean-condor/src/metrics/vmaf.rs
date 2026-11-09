@@ -309,10 +309,6 @@ fn describe_error(error: VmafError) -> anyhow::Error {
             "libvmaf is not installed. Install it, or set VMAF_LIB_DIR to the directory \
              containing it. See the av-metrics-vmaf README for per-distro instructions."
         ),
-        VmafError::ModelNotFound { model, .. } => anyhow::anyhow!(
-            "libvmaf could not load the VMAF model `{model}`. Some libvmaf builds ship without \
-             the built-in models compiled in; pass an explicit model path instead."
-        ),
         other => anyhow::anyhow!(other),
     }
 }
@@ -325,6 +321,34 @@ mod m18_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn m25_model_errors_preserve_diagnostics_and_typed_cause() {
+        let model = "/explicit models 雪/vmaf_v0.6.1.json";
+        for reason in [
+            "VMAF_MODEL_PATH explicitly selected this file, but it is missing",
+            "VMAF_MODEL_PATH override failed in vmaf_model_load_from_path with status -87",
+        ] {
+            let error = describe_error(VmafError::ModelNotFound {
+                model: model.to_owned(),
+                reason: reason.to_owned(),
+            });
+            let message = error.to_string();
+            eprintln!("M25 application model error: {message}");
+            assert!(
+                message.contains(model) && message.contains(reason),
+                "retain selected file and full missing/corrupt override diagnostic: {message}"
+            );
+            assert!(
+                !message.contains("pass an explicit model path instead"),
+                "do not replace an intentional override failure with built-in advice: {message}"
+            );
+            assert!(
+                matches!(error.downcast_ref::<VmafError>(), Some(VmafError::ModelNotFound { model: actual_model, reason: actual_reason }) if actual_model == model && actual_reason == reason),
+                "retain the original typed model error: {error:?}"
+            );
+        }
+    }
 
     #[test]
     fn m06_probe_adapter_retains_real_spans_and_submits_to_cpu_vmaf() {
