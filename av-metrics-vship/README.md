@@ -187,6 +187,12 @@ mode needs no extra gap reset. Direct raw callers can request a history-only
 reset using `submit_pair_raw_with_reset`, which preflights both inputs first.
 Native CVVDP values are returned unchanged; perceptual pooling is separate work.
 
+Andean's CVVDP plugin fallback also receives the original selected source indices.
+With temporal processing enabled, it rejects gaps before plugin lookup/scoring:
+the plugin cannot reset history alone while preserving accumulation. Use native
+Vship for that gap policy, a contiguous selection, or independent frames with
+`disable_temporal=true`. Native Vship's supported gap handling is unchanged.
+
 The `m15_` stateful C ABI checks prove reset ordering and ownership, not CVVDP
 accuracy. Real native-vs-VapourSynth parity is compiled in Andean's
 `m15_native_vs_plugin` test. Run it on a supported GPU/plugin host with

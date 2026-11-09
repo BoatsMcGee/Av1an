@@ -371,9 +371,8 @@ impl QualityCheck {
     ///
     /// Returns `Ok(None)` when the caller should use its VapourSynth branch:
     /// the metric has no native engine, no engine's library is usable, or
-    /// scoring failed. Every such case is logged rather than propagated,
-    /// because the plugin branches are a complete implementation of these
-    /// metrics.
+    /// scoring failed. Such failures are logged; the plugin fallback checks its
+    /// own capabilities and can reject unsupported enabled-temporal CVVDP gaps.
     fn measure_native(
         input: &mut Input,
         output_path: &std::path::Path,
@@ -873,7 +872,13 @@ impl QualityCheck {
                     gpu_id: gpu_id.map(u32::from),
                     ..Default::default()
                 };
-                let node = plugin.invoke(core, &reference_node, &distorted_node)?;
+                let node = plugin.invoke(
+                    core,
+                    &reference_node,
+                    &distorted_node,
+                    // Preserve source gaps; node indices became contiguous when spliced.
+                    scene_frame_indices.iter().flat_map(|(_, indices)| indices.iter().copied()),
+                )?;
                 CVVDP::collect_frame_values(&node, compare_progress_tx, on_frame, |frame| {
                     CVVDP::PROPERTY_NAMES
                         .iter()

@@ -11,8 +11,12 @@ mod tests {
     };
 
     // Fresh three-frame, nonuniform SDR fixtures with deliberately different errors.
-    // Both native and plugin consume identical YUV444P8, BT.709/sRGB limited data,
-    // 24 fps, standard_fhd, no resize, GPU 0 and the same temporal flag.
+    // The pinned plugin forces BT.709 transfer/primaries and limited input range,
+    // ignoring frame props. At this short height it also forces a BT.601 matrix:
+    // neutral chroma makes that matrix difference irrelevant for this fixture.
+    // Native input must use BT.709 transfer too (not piecewise sRGB). Both paths
+    // use 24 fps, standard_fhd, no resize, GPU 0 and the same temporal flag.
+    // _Range=0 and deprecated _ColorRange=1 both mean limited, not the same code.
     const INPUT: &str = "import vapoursynth as vs
 core = vs.core
 def tile(y):
@@ -21,8 +25,8 @@ def picture(n, shift):
     ys = [40+n*8, 180-n*9, 90+n*13, 140-n*7]
     t = [tile(y+shift) for y in ys]
     return core.std.StackVertical([core.std.StackHorizontal(t[:2]),core.std.StackHorizontal(t[2:])])
-r = core.std.Splice([picture(n,0) for n in range(3)]).std.SetFrameProps(_Matrix=1, _Transfer=13, _Primaries=1, _Range=1, _ColorRange=1)
-d = core.std.Splice([picture(n,s) for n,s in enumerate([1,30,7])]).std.SetFrameProps(_Matrix=1, _Transfer=13, _Primaries=1, _Range=1, _ColorRange=1)
+r = core.std.Splice([picture(n,0) for n in range(3)]).std.SetFrameProps(_Matrix=1, _Transfer=1, _Primaries=1, _Range=0, _ColorRange=1)
+d = core.std.Splice([picture(n,s) for n,s in enumerate([1,30,7])]).std.SetFrameProps(_Matrix=1, _Transfer=1, _Primaries=1, _Range=0, _ColorRange=1)
 ";
 
     fn decoder(output: &str) -> anyhow::Result<av_decoders::Decoder> {
@@ -30,6 +34,120 @@ d = core.std.Splice([picture(n,s) for n,s in enumerate([1,30,7])]).std.SetFrameP
             &format!("{INPUT}{output}"),
             Default::default(),
         )?)
+    }
+
+    #[test]
+    fn m15_parity_fixture_decoder_inputs_match_plugin_assumptions() {
+        // Fixture setup only: no metric/plugin/GPU is invoked by this check.
+        for (output, shifts) in [("r", [0, 0, 0]), ("d", [1, 30, 7])] {
+            let mut decoder = decoder(&format!("{output}.set_output()")).expect("real fixture");
+            let details = decoder
+                .get_vapoursynth_impl()
+                .expect("VS decoder")
+                .get_extended_video_details()
+                .expect("decoded metadata");
+            assert_eq!(
+                details.color_transfer_characteristic,
+                Some(av_decoders::TransferCharacteristic::BT709)
+            );
+            assert_eq!(
+                (details.width, details.height, details.bit_depth),
+                (256, 256, 8)
+            );
+            assert_eq!(details.frame_rate, av_decoders::Rational32::new(24, 1));
+            assert_eq!(
+                details.chroma_sampling,
+                av_decoders::v_frame::chroma::ChromaSubsampling::Yuv444
+            );
+            let color = av_metrics_vship::colorspace_from_details(&details, None)
+                .expect("native input tags");
+            assert_eq!(
+                color.transfer_function,
+                av_metrics_vship::VshipTransferFunction::Bt709
+            );
+            assert_eq!(color.range, av_metrics_vship::VshipRange::Limited);
+            for (n, shift) in shifts.into_iter().enumerate() {
+                let frame = decoder.read_video_frame::<u8>().expect("actual decoded pixels");
+                let geometry = frame.y_plane.geometry();
+                let ys = [40 + n * 8, 180 - n * 9, 90 + n * 13, 140 - n * 7];
+                for (tile, (x, y)) in
+                    [(0, 0), (128, 0), (0, 128), (128, 128)].into_iter().enumerate()
+                {
+                    assert_eq!(
+                        frame.y_plane.data()[geometry.data_origin() + y * geometry.stride() + x],
+                        (ys[tile] + shift) as u8
+                    );
+                }
+                for plane in [frame.u_plane.as_ref(), frame.v_plane.as_ref()] {
+                    let plane = plane.expect("YUV444 chroma");
+                    let g = plane.geometry();
+                    for row in 0..g.height() {
+                        let start = g.data_origin() + row * g.stride();
+                        assert!(
+                            plane.data()[start..start + g.width()]
+                                .iter()
+                                .all(|&sample| sample == 128),
+                            "neutral chroma is required: plugin ignores the short-height BT.709 matrix tag"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn m15_plugin_gateway_rejects_source_gaps_before_plugin_invocation() {
+        use andean_condor::vapoursynth::plugins::PluginFunction;
+
+        let mut decoder =
+            decoder("r.set_output(0)\nd.set_output(1)").expect("real compacted nodes");
+        let vs = decoder.get_vapoursynth_impl().expect("VS fixture");
+        let core = get_core(&vs.env).expect("real core");
+        let reference = vs.get_output(0, vs.get_node_modifier()).expect("reference");
+        let distorted = vs.get_output(1, vs.get_node_modifier()).expect("distorted");
+        // No plugin/device is needed: original indices must reject before invoke,
+        // even though the spliced nodes themselves have contiguous indices 0..3.
+        for flag in [None, Some(false)] {
+            let error = CVVDP {
+                disable_temporal: flag,
+                ..Default::default()
+            }
+            .invoke(core, &reference, &distorted, [0, 1, 10])
+            .expect_err("plugin cannot preserve accumulation while resetting gap history");
+            assert!(
+                matches!(&error, VapourSynthError::PluginFunctionError { .. }),
+                "{error}"
+            );
+            let message = error.to_string();
+            assert!(
+                message.contains("history-only")
+                    && message.contains("disable_temporal=true")
+                    && message.contains("native Vship"),
+                "{message}"
+            );
+        }
+        // When absent, supported cases must reach the real missing-plugin error
+        // rather than the gap rejection. Never initialize a real GPU in this test.
+        if !CVVDP::plugin_is_installed(core) {
+            for (flag, indices) in
+                [(None, [10, 11, 12]), (Some(false), [0, 1, 2]), (Some(true), [0, 1, 10])]
+            {
+                let error = CVVDP {
+                    disable_temporal: flag,
+                    ..Default::default()
+                }
+                .invoke(core, &reference, &distorted, indices)
+                .expect_err("plugin absent");
+                assert!(
+                    matches!(
+                        error,
+                        VapourSynthError::PluginNotFound { .. }
+                            | VapourSynthError::PluginLoadError { .. }
+                    ),
+                    "{error}"
+                );
+            }
+        }
     }
 
     fn native(disabled: bool, selected: &[usize]) -> anyhow::Result<Vec<f64>> {
@@ -68,7 +186,7 @@ d = core.std.Splice([picture(n,s) for n,s in enumerate([1,30,7])]).std.SetFrameP
             distmap: Some(false),
             ..Default::default()
         }
-        .invoke(core, &reference, &distorted)?;
+        .invoke(core, &reference, &distorted, [0, 1, 2])?;
         (0..3)
             .map(|index| Ok(node.get_frame(index)?.props().get_float("_CVVDP")?))
             .collect()

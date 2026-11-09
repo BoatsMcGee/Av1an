@@ -1293,7 +1293,13 @@ impl TargetQuality {
                         gpu_id: gpu_id.map(u32::from),
                         ..Default::default()
                     };
-                    let node = plugin.invoke(core, &reference_node, &distorted_node)?;
+                    let node = plugin.invoke(
+                        core,
+                        &reference_node,
+                        &distorted_node,
+                        // The compacted encode/node indices cannot describe source gaps.
+                        tasks.iter().flat_map(|task| task.frame_indices.iter().copied()),
+                    )?;
                     CVVDP::get_scores(&node, None, compare_progress_tx)?
                 },
             }

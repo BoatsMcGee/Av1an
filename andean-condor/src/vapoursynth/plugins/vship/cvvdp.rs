@@ -55,13 +55,34 @@ impl PluginFunction for CVVDP {
 }
 
 impl CVVDP {
+    /// Invoke CVVDP on nodes compacted from the original `source_indices`.
+    ///
+    /// Enabled-temporal plugin scoring cannot reset history alone at source
+    /// gaps: the plugin sees only contiguous node indices and exposes no such
+    /// reset. Reject that selection before plugin lookup/scoring; native Vship
+    /// can handle it, or `disable_temporal=true` can score independent frames.
+    /// Full-sequence callers must also supply their actual source indices.
     #[inline]
     pub fn invoke<'core>(
         self,
         core: CoreRef<'core>,
         reference: &Node<'core>,
         distorted: &Node<'core>,
+        source_indices: impl IntoIterator<Item = usize>,
     ) -> Result<Node<'core>, VapourSynthError> {
+        if !self.disable_temporal.unwrap_or(false) {
+            let mut previous: Option<usize> = None;
+            for index in source_indices {
+                if previous.is_some_and(|previous| previous.checked_add(1) != Some(index)) {
+                    return Err(Self::new_error(
+                        "VapourSynth CVVDP cannot perform history-only resets at selected source \
+                         gaps; use disable_temporal=true for independent frames or native Vship"
+                            .to_owned(),
+                    ));
+                }
+                previous = Some(index);
+            }
+        }
         let mut arguments = Self::arguments()?;
         arguments.set_node("reference", reference).map_err(|e| {
             VapourSynthError::PluginArgumentsError {

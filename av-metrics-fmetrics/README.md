@@ -86,6 +86,9 @@ indices. fmetrics 0.1.0 has **no history-only reset**: public `reset_temporal()`
 clears accumulation too. Andean therefore rejects enabled-temporal CVVDP with
 noncontiguous selections before context creation, scoring or callbacks, allowing
 its existing backend fallback. Contiguous or disabled-temporal CVVDP still works.
+The CVVDP plugin fallback cannot perform history-only gap resets either and
+rejects that selection too; native Vship supports it. Neither fallback silently
+changes the requested temporal semantics.
 Low-level callers may explicitly choose `with_reset_on_discontinuity(false)` and
 intentionally carry history across selected source gaps; the scorer itself has
 no source indices. Do not use the combined reset as a history-only substitute.
