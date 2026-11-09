@@ -77,11 +77,8 @@ impl FFPixelFormat {
     #[inline]
     pub fn to_vapoursynth_format(&self) -> anyhow::Result<PresetFormat> {
         Ok(match self {
-            // Vapoursynth doesn't have a Gray10/Gray12 so use the next best thing.
-            // No quality loss from 10/12->16 but might be slightly slower.
-            FFPixelFormat::GRAY10LE => PresetFormat::Gray16,
-            FFPixelFormat::GRAY12L => PresetFormat::Gray16,
-            FFPixelFormat::GRAY12LE => PresetFormat::Gray16,
+            FFPixelFormat::GRAY10LE => PresetFormat::Gray10,
+            FFPixelFormat::GRAY12L | FFPixelFormat::GRAY12LE => PresetFormat::Gray12,
             FFPixelFormat::GRAY8 => PresetFormat::Gray8,
             FFPixelFormat::YUV420P => PresetFormat::YUV420P8,
             FFPixelFormat::YUV420P10LE => PresetFormat::YUV420P10,

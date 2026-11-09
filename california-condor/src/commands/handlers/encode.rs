@@ -82,27 +82,35 @@ pub fn configure_parallel_encoder(
     // own override, so it always applies to the main input. Applying it
     // first lets an override built below inherit the filters via
     // `adopt_filters`.
+    let mut main_input = configuration.condor.input.clone();
     if let Some(filters) = filters {
-        apply_input_filters(&mut configuration.condor.input, filters);
+        apply_input_filters(&mut main_input, filters)?;
     }
 
-    if input_path.is_some() || decoder.is_some() || vs_args.is_some() {
+    let override_input = if input_path.is_some() || decoder.is_some() || vs_args.is_some() {
         let existing_input = configuration
             .condor
             .sequence_config
             .parallel_encoder
             .input
-            .clone()
-            .unwrap_or_else(|| configuration.condor.input.clone());
-        let input = configure_input(
+            .as_ref()
+            .unwrap_or(&main_input);
+        Some(configure_input(
             configuration,
-            &existing_input,
+            existing_input,
             input_path,
             decoder,
             vs_args,
             None,
             None,
-        )?;
+        )?)
+    } else {
+        None
+    };
+
+    // Both conversions must succeed before either input's filters are replaced.
+    configuration.condor.input = main_input;
+    if let Some(input) = override_input {
         configuration.condor.sequence_config.parallel_encoder.input = Some(input);
     }
 

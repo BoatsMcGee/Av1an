@@ -509,15 +509,12 @@ pub fn as_vapoursynth_script(input: &mut Input) -> Result<Option<Input>> {
         path,
         import_method,
         filters,
-        source_details,
         ..
     } = input
     else {
         return Ok(None);
     };
 
-    // Filters resolve against the decoded format, not the filtered one.
-    let baseline = *source_details;
     let ImportMethod::FFMS2 { index, cache_path } = import_method;
     let (source_imports, source_lines) = source_script(
         path,
@@ -526,7 +523,8 @@ pub fn as_vapoursynth_script(input: &mut Input) -> Result<Option<Input>> {
     )?;
     let translated = filters
         .iter()
-        .flat_map(|filter| filter.to_vapoursynth_filters(&baseline))
+        // Each deferred filter sees the preceding node's format, not the initial source.
+        .flat_map(crate::core::input::Ffms2Filter::to_vapoursynth)
         .collect::<Vec<_>>();
 
     let mut script = VapourSynthScript::default();
@@ -711,6 +709,10 @@ pub fn y4m_frames(
 #[cfg(test)]
 #[path = "vapoursynth_i05_tests.rs"]
 mod i05_tests;
+
+#[cfg(test)]
+#[path = "vapoursynth_i06_tests.rs"]
+mod i06_tests;
 
 #[cfg(test)]
 mod tests {

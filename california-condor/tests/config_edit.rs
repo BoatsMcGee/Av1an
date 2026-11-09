@@ -17,6 +17,107 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn i06_cli_format_errors_leave_saved_config_unchanged_without_indexing() {
+        use andean_condor::models::input::{Ffms2Filter, ImportMethod};
+        use california_condor::configuration::Configuration;
+        let temp = tempfile::tempdir().expect("CLI format fixture");
+        let script = temp.path().join("blank.vpy");
+        std::fs::write(&script, "from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=32, height=16, format=YUV420P8).set_output()\n").expect("blank script");
+        let mut config = Configuration::new(
+            &script,
+            &temp.path().join("out.mkv"),
+            Some(temp.path()),
+            None,
+            None,
+        )
+        .expect("seed config");
+        let source = temp.path().join("configuration-only.mkv");
+        std::fs::write(&source, b"must not be decoded or indexed").expect("existing source path");
+        config.condor.input = Input::Video {
+            path: source,
+            import_method: ImportMethod::FFMS2 {
+                index: Some(0),
+                cache_path: Some(temp.path().join("must-not-exist.ffindex")),
+            },
+            filters: vec![Ffms2Filter::OutputFormat {
+                bit_depth: Some(10),
+                chroma: None,
+                width: None,
+                height: None,
+            }],
+        };
+        let path = temp.path().join("condor.json");
+        config.save(&path).expect("save native config");
+        let native = std::fs::read(&path).expect("native snapshot");
+        condor_cmd(&temp)
+            .args(["init", "set", "input", "--decoder", "vs-ffms2"])
+            .assert()
+            .success();
+        assert!(matches!(
+            load(&path).condor.input.vapoursynth_filters(),
+            [
+                andean_condor::vapoursynth::vapoursynth_filters::VapourSynthFilter::OutputFormat {
+                    bit_depth: Some(10),
+                    chroma: None,
+                    ..
+                }
+            ]
+        ));
+        let deferred = std::fs::read(&path).expect("deferred snapshot");
+        for format in ["nv12", "gbrp", "yuv440p"] {
+            std::fs::write(&path, &native).expect("restore native fixture");
+            let filter = format!("resize:format={format};width=16;");
+            let output = condor_cmd(&temp)
+                .args(["init", "set", "input", "--filters", &filter])
+                .assert()
+                .failure()
+                .get_output()
+                .stderr
+                .clone();
+            assert!(
+                String::from_utf8_lossy(&output).contains(format),
+                "{output:?}"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("native config after error"),
+                native
+            );
+            std::fs::write(&path, &deferred).expect("restore VS fixture");
+            condor_cmd(&temp)
+                .args(["init", "set", "input", "--filters", &filter])
+                .assert()
+                .success();
+            let explicit = std::fs::read(&path).expect("explicit VS format");
+            let output = condor_cmd(&temp)
+                .args(["init", "set", "input", "--decoder", "ffms2"])
+                .assert()
+                .failure()
+                .get_output()
+                .stderr
+                .clone();
+            assert!(
+                String::from_utf8_lossy(&output).contains(format),
+                "{output:?}"
+            );
+            assert_eq!(
+                std::fs::read(&path).expect("VS config after error"),
+                explicit
+            );
+        }
+        assert!(!temp.path().join("must-not-exist.ffindex").exists());
+        let mut entries = std::fs::read_dir(temp.path())
+            .expect("source directory")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(
+            entries,
+            ["blank.vpy", "condor.json", "configuration-only.mkv", "logs"],
+            "CLI logs are expected, source indexes are not"
+        );
+    }
+
     /// The noise scaler defaults stay consistent when nothing is configured
     /// yet, so `info` never fails on a fresh configuration.
     #[serial]

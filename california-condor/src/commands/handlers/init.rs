@@ -76,7 +76,7 @@ pub fn init_handler(
 
     configure_temp(&mut configuration, temp_path)?;
     if let Some(filters) = filters {
-        apply_input_filters(&mut configuration.condor.input, filters);
+        apply_input_filters(&mut configuration.condor.input, filters)?;
     }
     configure_encoder(
         &mut configuration.condor.encoder,
@@ -275,7 +275,7 @@ impl InitCrud {
             None,
         )?;
         if let Some(filters) = args.filters.as_deref() {
-            apply_input_filters(&mut input, filters);
+            apply_input_filters(&mut input, filters)?;
         }
         apply_stream_concurrently(&mut input, args.stream_concurrently);
         configuration.condor.input = input;

@@ -257,10 +257,13 @@ impl Ffms2Filter {
     /// `baseline` supplies the values the FFMS2 filter would have inherited
     /// from the decoded stream, so an unset field keeps the current value
     /// instead of being dropped. Returns an empty list for a filter that
-    /// changes nothing.
+    /// changes nothing. Returns an error for unsupported formats or dimensions.
     #[inline]
-    #[must_use]
-    pub fn to_vapoursynth_filters(&self, baseline: &VideoDetails) -> Vec<VapourSynthFilter> {
+    pub fn to_vapoursynth_filters(
+        &self,
+        baseline: &VideoDetails,
+    ) -> Result<Vec<VapourSynthFilter>> {
+        self.validate()?;
         let Ffms2Filter::OutputFormat {
             bit_depth,
             chroma,
@@ -274,33 +277,29 @@ impl Ffms2Filter {
         });
         let width = width.map_or(baseline.width, |width| width as usize);
         let height = height.map_or(baseline.height, |height| height as usize);
+        let format = ffms2_pixel_format(bit_depth, chroma).ok_or_else(|| {
+            anyhow::anyhow!("Unsupported FFMS2 output format: {bit_depth}-bit {chroma:?}")
+        })?;
 
         if (bit_depth, chroma) == (baseline.bit_depth, baseline.chroma_sampling)
             && (width, height) == (baseline.width, baseline.height)
         {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let changes_format = bit_depth != baseline.bit_depth || chroma != baseline.chroma_sampling;
-        vec![VapourSynthFilter::Resize {
+        Ok(vec![VapourSynthFilter::Resize {
             scaler: Some(Scaler::Bicubic),
             width: (width != baseline.width).then_some(width),
             height: (height != baseline.height).then_some(height),
-            format: changes_format.then(|| ffms2_pixel_format(bit_depth, chroma)).flatten(),
-        }]
+            format: changes_format.then_some(format),
+        }])
     }
 
     /// The equivalent VapourSynth filter, with unset fields left unset.
     ///
-    /// Unlike [`Self::to_vapoursynth_filters`], this needs no baseline: a field
-    /// the filter does not set stays `None`, so the VapourSynth resize keeps
-    /// whatever the source already has. Use it when converting a native filter
-    /// without knowing the source format.
-    ///
-    /// A bit depth on its own cannot name a pixel format, since the format also
-    /// carries the chroma layout. When only a depth is given the corresponding
-    /// format for the source's own layout is used, which requires the baseline;
-    /// without one, `YUV420` is assumed, the only layout every codec has.
+    /// No source is opened here. The deferred filter resolves omitted fields
+    /// against its actual input node, including the output of a preceding filter.
     #[inline]
     #[must_use]
     pub fn to_vapoursynth(&self) -> Vec<VapourSynthFilter> {
@@ -311,31 +310,65 @@ impl Ffms2Filter {
             height,
         } = self;
 
-        let format = bit_depth
-            .and_then(|bit_depth| {
-                let chroma = chroma.unwrap_or(ChromaSampling::Yuv420);
-                ffms2_pixel_format(usize::from(bit_depth), chroma.to_chroma_subsampling())
-            })
-            .or_else(|| {
-                (*chroma).and_then(|chroma| ffms2_pixel_format(8, chroma.to_chroma_subsampling()))
-            });
-
-        vec![VapourSynthFilter::Resize {
-            scaler: Some(Scaler::Bicubic),
-            width: (*width).map(|width| width as usize),
-            height: (*height).map(|height| height as usize),
-            format,
+        vec![VapourSynthFilter::OutputFormat {
+            bit_depth: *bit_depth,
+            chroma: *chroma,
+            width: *width,
+            height: *height,
         }]
+    }
+
+    /// Validate native/deferred fields before narrowing or invoking a plugin.
+    pub(crate) fn validate(&self) -> Result<()> {
+        let Self::OutputFormat {
+            bit_depth,
+            width,
+            height,
+            ..
+        } = self;
+        if let Some(depth) = bit_depth {
+            anyhow::ensure!(
+                matches!(depth, 8 | 10 | 12),
+                "Unsupported bit depth: {depth} (expected 8, 10 or 12)"
+            );
+        }
+        for (name, dimension) in [("width", width), ("height", height)] {
+            if let Some(value) = dimension {
+                anyhow::ensure!(
+                    *value > 0 && i32::try_from(*value).is_ok(),
+                    "FFMS2 output {name} {value} must be positive and fit i32"
+                );
+            }
+        }
+        Ok(())
     }
 
     /// The native equivalent of a VapourSynth filter, if FFMS2 supports it.
     ///
-    /// Only `Resize` maps, because a target format and resolution is FFMS2's
+    /// Only `Resize` and deferred `OutputFormat` map, because format and resolution are FFMS2's
     /// only output modification. The scaler is not preserved: FFMS2 always uses
-    /// bicubic. Returns `None` for any other filter.
+    /// bicubic. Returns `Ok(None)` for any other filter.
+    ///
+    /// # Errors
+    /// Returns an error naming an unsupported explicit format, or invalid dimensions.
     #[inline]
-    #[must_use]
-    pub fn from_vapoursynth_filter(filter: &VapourSynthFilter) -> Option<Self> {
+    pub fn from_vapoursynth_filter(filter: &VapourSynthFilter) -> Result<Option<Self>> {
+        if let VapourSynthFilter::OutputFormat {
+            bit_depth,
+            chroma,
+            width,
+            height,
+        } = filter
+        {
+            let native = Self::OutputFormat {
+                bit_depth: *bit_depth,
+                chroma: *chroma,
+                width: *width,
+                height: *height,
+            };
+            native.validate()?;
+            return Ok(Some(native));
+        }
         let VapourSynthFilter::Resize {
             width,
             height,
@@ -343,12 +376,12 @@ impl Ffms2Filter {
             ..
         } = filter
         else {
-            return None;
+            return Ok(None);
         };
 
         // A pixel format names both the depth and the chroma layout, so one
         // field yields both.
-        let (bit_depth, chroma) = format.map_or((None, None), |format| {
+        let (bit_depth, chroma) = if let Some(format) = format {
             let chroma = match format {
                 FFPixelFormat::YUV420P
                 | FFPixelFormat::YUV420P10LE
@@ -362,7 +395,10 @@ impl Ffms2Filter {
                 FFPixelFormat::GRAY8 | FFPixelFormat::GRAY10LE | FFPixelFormat::GRAY12LE => {
                     Some(ChromaSampling::Monochrome)
                 },
-                _ => None,
+                _ => bail!(
+                    "Unsupported FFMS2 output format: {}",
+                    format.to_pix_fmt_string()
+                ),
             };
             let bit_depth = match format {
                 FFPixelFormat::YUV420P10LE
@@ -373,19 +409,21 @@ impl Ffms2Filter {
                 | FFPixelFormat::YUV422P12LE
                 | FFPixelFormat::YUV444P12LE
                 | FFPixelFormat::GRAY12LE => Some(12),
-                // 8-bit, or a layout FFMS2 cannot produce: leave the depth unset
-                // so the source's own is kept.
-                _ => None,
+                _ => Some(8),
             };
             (bit_depth, chroma)
-        });
+        } else {
+            (None, None)
+        };
 
-        Some(Ffms2Filter::OutputFormat {
+        let native = Ffms2Filter::OutputFormat {
             bit_depth,
             chroma,
-            width: width.map(|width| width as u32),
-            height: height.map(|height| height as u32),
-        })
+            width: width.map(u32::try_from).transpose()?,
+            height: height.map(u32::try_from).transpose()?,
+        };
+        native.validate()?;
+        Ok(Some(native))
     }
 }
 
@@ -522,7 +560,7 @@ mod tests {
             format: Some(FFPixelFormat::YUV420P10LE),
         };
         assert_eq!(
-            Ffms2Filter::from_vapoursynth_filter(&ten_bit),
+            Ffms2Filter::from_vapoursynth_filter(&ten_bit).expect("conversion"),
             Some(Ffms2Filter::OutputFormat {
                 bit_depth: Some(10),
                 chroma: Some(ChromaSampling::Yuv420),
@@ -538,7 +576,7 @@ mod tests {
             format: None,
         };
         assert_eq!(
-            Ffms2Filter::from_vapoursynth_filter(&downscale),
+            Ffms2Filter::from_vapoursynth_filter(&downscale).expect("conversion"),
             Some(Ffms2Filter::OutputFormat {
                 bit_depth: None,
                 chroma: None,
@@ -548,9 +586,8 @@ mod tests {
         );
     }
 
-    /// 8-bit needs no depth change, so it is left unset to keep the source's.
     #[test]
-    fn eight_bit_resize_leaves_depth_unset() {
+    fn i06_eight_bit_resize_keeps_explicit_depth() {
         let eight_bit = VapourSynthFilter::Resize {
             scaler: None,
             width: None,
@@ -558,14 +595,82 @@ mod tests {
             format: Some(FFPixelFormat::YUV420P),
         };
         assert_eq!(
-            Ffms2Filter::from_vapoursynth_filter(&eight_bit),
+            Ffms2Filter::from_vapoursynth_filter(&eight_bit).expect("conversion"),
             Some(Ffms2Filter::OutputFormat {
-                bit_depth: None,
+                bit_depth: Some(8),
                 chroma: Some(ChromaSampling::Yuv420),
                 width: None,
                 height: None,
             })
         );
+    }
+
+    #[test]
+    fn i06_unsupported_explicit_formats_are_not_native_resizes() {
+        for format in [FFPixelFormat::NV12, FFPixelFormat::GBRP, FFPixelFormat::YUV440P] {
+            let filter = VapourSynthFilter::Resize {
+                scaler: None,
+                width: Some(16),
+                height: None,
+                format: Some(format),
+            };
+            let error = Ffms2Filter::from_vapoursynth_filter(&filter)
+                .expect_err("unsupported explicit format");
+            assert!(
+                error.to_string().contains(format.to_pix_fmt_string()),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn i06_explicit_formats_preserve_depth_and_chroma() {
+        for (format, depth, chroma) in [
+            (FFPixelFormat::YUV420P, 8, ChromaSampling::Yuv420),
+            (FFPixelFormat::YUV422P, 8, ChromaSampling::Yuv422),
+            (FFPixelFormat::YUV444P, 8, ChromaSampling::Yuv444),
+            (FFPixelFormat::GRAY8, 8, ChromaSampling::Monochrome),
+            (FFPixelFormat::YUV420P10LE, 10, ChromaSampling::Yuv420),
+            (FFPixelFormat::YUV422P10LE, 10, ChromaSampling::Yuv422),
+            (FFPixelFormat::YUV444P10LE, 10, ChromaSampling::Yuv444),
+            (FFPixelFormat::GRAY10LE, 10, ChromaSampling::Monochrome),
+            (FFPixelFormat::YUV420P12LE, 12, ChromaSampling::Yuv420),
+            (FFPixelFormat::YUV422P12LE, 12, ChromaSampling::Yuv422),
+            (FFPixelFormat::YUV444P12LE, 12, ChromaSampling::Yuv444),
+            (FFPixelFormat::GRAY12LE, 12, ChromaSampling::Monochrome),
+        ] {
+            let filter = VapourSynthFilter::Resize {
+                scaler: None,
+                width: Some(16),
+                height: None,
+                format: Some(format),
+            };
+            assert_eq!(
+                Ffms2Filter::from_vapoursynth_filter(&filter).expect("supported format"),
+                Some(Ffms2Filter::OutputFormat {
+                    bit_depth: Some(depth),
+                    chroma: Some(chroma),
+                    width: Some(16),
+                    height: None
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn i06_invalid_resize_dimensions_are_errors() {
+        for width in [0, i32::MAX as usize + 1, usize::MAX] {
+            let filter = VapourSynthFilter::Resize {
+                scaler: None,
+                width: Some(width),
+                height: None,
+                format: None,
+            };
+            assert!(
+                Ffms2Filter::from_vapoursynth_filter(&filter).is_err(),
+                "{width}"
+            );
+        }
     }
 
     #[test]
@@ -576,6 +681,9 @@ mod tests {
             left: None,
             right: None,
         };
-        assert_eq!(Ffms2Filter::from_vapoursynth_filter(&crop), None);
+        assert_eq!(
+            Ffms2Filter::from_vapoursynth_filter(&crop).expect("conversion"),
+            None
+        );
     }
 }

@@ -130,7 +130,7 @@ pub fn start_handler(
     )?;
     if let Some(filters) = filters {
         let unsupported = InputModel::unsupported_filters(filters);
-        configuration.condor.input.set_filters(filters.to_vec());
+        configuration.condor.input.set_filters(filters.to_vec())?;
         for filter in unsupported {
             warn!(
                 "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \

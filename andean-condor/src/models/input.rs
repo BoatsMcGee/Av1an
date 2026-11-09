@@ -75,8 +75,11 @@ impl Input {
     /// native input keeps only the filters FFMS2 can express, and switching to
     /// VapourSynth keeps the native ones unchanged, since every native filter
     /// has a VapourSynth equivalent.
+    ///
+    /// # Errors
+    /// Unsupported explicit formats and invalid native dimensions leave this input unchanged.
     #[inline]
-    pub fn adopt_filters(&mut self, other: &Input) {
+    pub fn adopt_filters(&mut self, other: &Input) -> anyhow::Result<()> {
         match (self, other) {
             (
                 Input::Video { filters, .. },
@@ -85,7 +88,11 @@ impl Input {
             ) => {
                 // The source format is not known here, so an unset field in the
                 // native filter means "unchanged" and the decoder resolves it.
-                *filters = from.iter().filter_map(Ffms2Filter::from_vapoursynth_filter).collect();
+                let converted = from
+                    .iter()
+                    .map(Ffms2Filter::from_vapoursynth_filter)
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                *filters = converted.into_iter().flatten().collect();
             },
             (Input::Video { filters, .. }, Input::Video { filters: from, .. }) => {
                 *filters = from.clone();
@@ -104,6 +111,7 @@ impl Input {
                 | Input::VapourSynthScript { filters: from, .. },
             ) => *filters = from.clone(),
         }
+        Ok(())
     }
 
     /// Replaces this input's filters, converting as needed for its decoder.
@@ -112,8 +120,11 @@ impl Input {
     /// VapourSynth filters it cannot run are converted where possible (a
     /// `Resize`) and otherwise dropped. [`Input::unsupported_filters`] reports
     /// what was dropped so callers can warn.
+    ///
+    /// # Errors
+    /// Unsupported explicit formats and invalid native dimensions leave the filters unchanged.
     #[inline]
-    pub fn set_filters(&mut self, new: Vec<VapourSynthFilter>) {
+    pub fn set_filters(&mut self, new: Vec<VapourSynthFilter>) -> anyhow::Result<()> {
         match self {
             Input::VapourSynth { filters, .. } | Input::VapourSynthScript { filters, .. } => {
                 *filters = new;
@@ -121,20 +132,26 @@ impl Input {
             Input::Video {
                 filters: native, ..
             } => {
-                *native = new.iter().filter_map(Ffms2Filter::from_vapoursynth_filter).collect();
+                let converted = new
+                    .iter()
+                    .map(Ffms2Filter::from_vapoursynth_filter)
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                *native = converted.into_iter().flatten().collect();
             },
         }
+        Ok(())
     }
 
     /// The filters in `new` this input's decoder cannot run.
     ///
     /// Always empty for a VapourSynth input; for a native input it is every
-    /// filter but `Resize`.
+    /// filter but `Resize` and `OutputFormat`. Invalid conversions are errors,
+    /// not filters that can be silently dropped.
     #[inline]
     #[must_use]
     pub fn unsupported_filters(new: &[VapourSynthFilter]) -> Vec<&VapourSynthFilter> {
         new.iter()
-            .filter(|filter| Ffms2Filter::from_vapoursynth_filter(filter).is_none())
+            .filter(|filter| matches!(Ffms2Filter::from_vapoursynth_filter(filter), Ok(None)))
             .collect()
     }
 
@@ -197,7 +214,7 @@ impl Input {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ffmpeg::FFPixelFormat, vapoursynth::plugins::resize::Scaler};
+    use crate::ffmpeg::FFPixelFormat;
 
     fn vapoursynth_input(filters: Vec<VapourSynthFilter>) -> Input {
         Input::VapourSynth {
@@ -249,6 +266,119 @@ mod tests {
             start: Some(24),
             end: None,
         }
+    }
+
+    #[test]
+    fn i06_failed_filter_conversion_does_not_replace_existing_filters() {
+        for format in [FFPixelFormat::NV12, FFPixelFormat::GBRP, FFPixelFormat::YUV440P] {
+            let original = vec![Ffms2Filter::OutputFormat {
+                bit_depth: Some(12),
+                chroma: None,
+                width: None,
+                height: None,
+            }];
+            let invalid = vec![
+                resize(),
+                VapourSynthFilter::Resize {
+                    scaler: None,
+                    width: Some(16),
+                    height: None,
+                    format: Some(format),
+                },
+            ];
+            let mut target = video_input(original.clone());
+            let error = target.set_filters(invalid.clone()).expect_err("unsupported format");
+            assert!(error.to_string().contains(format.to_pix_fmt_string()));
+            assert_eq!(native_filters(&target), original);
+            let error = target
+                .adopt_filters(&vapoursynth_input(invalid))
+                .expect_err("unsupported format");
+            assert!(error.to_string().contains(format.to_pix_fmt_string()));
+            assert_eq!(native_filters(&target), original);
+        }
+    }
+
+    #[test]
+    fn i06_deferred_filters_roundtrip_without_opening_a_source() {
+        let directory = tempfile::tempdir().expect("absent source fixture");
+        let path = directory.path().join("must-not-exist.mkv");
+        let original = vec![
+            Ffms2Filter::OutputFormat {
+                bit_depth: Some(10),
+                chroma: None,
+                width: None,
+                height: None,
+            },
+            Ffms2Filter::OutputFormat {
+                bit_depth: None,
+                chroma: Some(ChromaSampling::Yuv444),
+                width: Some(16),
+                height: None,
+            },
+        ];
+        let mut native = video_input(original.clone());
+        let Input::Video {
+            path: native_path, ..
+        } = &mut native
+        else {
+            unreachable!()
+        };
+        *native_path = path.clone();
+        let mut vs = vapoursynth_input(vec![]);
+        let Input::VapourSynth { path: vs_path, .. } = &mut vs else {
+            unreachable!()
+        };
+        *vs_path = path;
+        vs.adopt_filters(&native).expect("model-only copy");
+        let encoded = serde_json::to_string(&vs).expect("deferred JSON");
+        let restored: Input = serde_json::from_str(&encoded).expect("deferred JSON roundtrip");
+        assert_eq!(
+            restored.vapoursynth_filters(),
+            &[
+                VapourSynthFilter::OutputFormat {
+                    bit_depth: Some(10),
+                    chroma: None,
+                    width: None,
+                    height: None
+                },
+                VapourSynthFilter::OutputFormat {
+                    bit_depth: None,
+                    chroma: Some(ChromaSampling::Yuv444),
+                    width: Some(16),
+                    height: None
+                }
+            ]
+        );
+        for filter in restored.vapoursynth_filters() {
+            assert_eq!(
+                filter
+                    .to_string()
+                    .parse::<VapourSynthFilter>()
+                    .expect("deferred display roundtrip"),
+                *filter
+            );
+        }
+        native.adopt_filters(&restored).expect("deferred to native");
+        assert_eq!(native_filters(&native), original);
+        let legacy: VapourSynthFilter = serde_json::from_str(
+            r#"{"Resize":{"scaler":"Bicubic","width":null,"height":null,"format":"YUV422P"}}"#,
+        )
+        .expect("legacy Resize config");
+        native.set_filters(vec![legacy]).expect("legacy concrete resize");
+        assert_eq!(
+            native_filters(&native),
+            &[Ffms2Filter::OutputFormat {
+                bit_depth: Some(8),
+                chroma: Some(ChromaSampling::Yuv422),
+                width: None,
+                height: None
+            }]
+        );
+        assert_eq!(
+            std::fs::read_dir(directory.path()).expect("directory listing").count(),
+            0,
+            "no decoder/index/config I/O"
+        );
     }
 
     /// Reports what a native input cannot run. A VapourSynth input runs
@@ -304,14 +434,15 @@ mod tests {
     #[test]
     fn a_resize_survives_a_round_trip_through_the_native_form() {
         let native = Ffms2Filter::from_vapoursynth_filter(&resize())
+            .expect("valid native conversion")
             .expect("a resize maps to a native filter");
         assert_eq!(
             native.to_vapoursynth().as_slice(),
-            &[VapourSynthFilter::Resize {
-                scaler: Some(Scaler::Bicubic),
+            &[VapourSynthFilter::OutputFormat {
+                bit_depth: None,
+                chroma: None,
                 width: Some(1280),
                 height: Some(720),
-                format: None,
             }]
         );
     }
@@ -327,14 +458,14 @@ mod tests {
             height: None,
         };
         let mut target = vapoursynth_input(Vec::new());
-        target.adopt_filters(&video_input(vec![ten_bit]));
+        target.adopt_filters(&video_input(vec![ten_bit])).expect("native copy");
         assert_eq!(
             target.vapoursynth_filters(),
-            &[VapourSynthFilter::Resize {
-                scaler: Some(Scaler::Bicubic),
+            &[VapourSynthFilter::OutputFormat {
+                bit_depth: Some(10),
+                chroma: None,
                 width: None,
                 height: None,
-                format: Some(FFPixelFormat::YUV420P10LE),
             }]
         );
     }
@@ -346,7 +477,9 @@ mod tests {
     #[test]
     fn adopting_into_a_native_input_drops_what_ffms2_cannot_run() {
         let mut native = video_input(Vec::new());
-        native.adopt_filters(&vapoursynth_input(vec![crop(), resize()]));
+        native
+            .adopt_filters(&vapoursynth_input(vec![crop(), resize()]))
+            .expect("supported subset");
 
         assert_eq!(
             native_filters(&native),
@@ -363,7 +496,9 @@ mod tests {
     #[test]
     fn adopting_within_the_same_kind_keeps_the_filters_verbatim() {
         let mut target = vapoursynth_input(Vec::new());
-        target.adopt_filters(&vapoursynth_input(vec![crop(), resize()]));
+        target
+            .adopt_filters(&vapoursynth_input(vec![crop(), resize()]))
+            .expect("VS copy");
         assert_eq!(target.vapoursynth_filters(), &[crop(), resize()]);
     }
 
@@ -377,7 +512,7 @@ mod tests {
             width: None,
             height: None,
         }]);
-        native.set_filters(vec![resize()]);
+        native.set_filters(vec![resize()]).expect("native resize");
         assert_eq!(
             native_filters(&native),
             &[Ffms2Filter::OutputFormat {
@@ -389,7 +524,7 @@ mod tests {
         );
 
         let mut target = vapoursynth_input(vec![crop()]);
-        target.set_filters(vec![trim()]);
+        target.set_filters(vec![trim()]).expect("VS trim");
         assert_eq!(target.vapoursynth_filters(), &[trim()]);
     }
 

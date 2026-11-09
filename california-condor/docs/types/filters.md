@@ -111,6 +111,23 @@ A `--filters resize:...` string given to a native input is translated to this wh
 (a resize to a different bit depth, chroma or resolution), and dropped with a warning where
 it does not (a crop, a trim, or any denoiser). Use `--decoder vs-ffms2` to run those.
 
+An explicit format includes its bit depth: `resize:format=yuv420p;` requests 8-bit output
+even from a 10-bit source. Native FFMS2 rejects unsupported explicit formats such as
+`nv12`, `gbrp`, or `yuv440p`; a failed edit leaves the saved configuration unchanged.
+
+Switching a native input to VapourSynth saves the same `OutputFormat` fields on the
+VapourSynth input. Missing depth/chroma are resolved when decoding, from each filter's
+actual input node, not guessed as 8-bit or 4:2:0. Configuration edits do not open or index
+the source. For example, this keeps a 4:4:4 source at 4:4:4 while converting it to 10-bit:
+
+```json
+{ "OutputFormat": { "bit_depth": 10, "chroma": null, "width": null, "height": null } }
+```
+
+Both direct decoding and generated scripts resolve filters in order, so a chroma-only
+conversion followed by a depth-only conversion retains the new chroma. Existing concrete
+`Resize` configurations remain supported.
+
 ## Defaults
 
 | Flag                  | Default                               |

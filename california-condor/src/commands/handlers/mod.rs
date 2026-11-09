@@ -92,6 +92,8 @@ pub fn configure_temp(configuration: &mut Configuration, temp_path: Option<&Path
     Ok(())
 }
 
+/// Rebuilds an input model without opening or indexing its source.
+/// Invalid native format conversions return an error without modifying the original.
 pub fn configure_input(
     configuration: &Configuration,
     existing_input: &InputModel,
@@ -176,7 +178,7 @@ pub fn configure_input(
     warn_unused_vs_args(&input, vs_args);
     // The input is rebuilt from its path and decoder, which drops its filters,
     // so carry them over.
-    input.adopt_filters(existing_input);
+    input.adopt_filters(existing_input)?;
     if let Some(stream_concurrently) = existing_stream_concurrently
         && let InputModel::VapourSynthScript {
             stream_concurrently: rebuilt,
@@ -290,22 +292,26 @@ pub fn apply_input_override(
         None,
     )?;
     if let Some(filters) = args.filters.as_deref() {
-        apply_input_filters(&mut input, filters);
+        apply_input_filters(&mut input, filters)?;
     }
     apply_stream_concurrently(&mut input, args.stream_concurrently);
     Ok(input)
 }
 
 /// Replaces `input`'s filters, warning about any its decoder cannot run.
-pub fn apply_input_filters(input: &mut InputModel, filters: &[VapourSynthFilter]) {
+///
+/// # Errors
+/// An unsupported explicit native format or invalid dimension leaves the input unchanged.
+pub fn apply_input_filters(input: &mut InputModel, filters: &[VapourSynthFilter]) -> Result<()> {
     let unsupported = InputModel::unsupported_filters(filters);
-    input.set_filters(filters.to_vec());
+    input.set_filters(filters.to_vec())?;
     for filter in unsupported {
         warn!(
             "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only convert \
              bit depth, chroma and resolution"
         );
     }
+    Ok(())
 }
 
 /// Builds a sequence's override input, or `None` when no override flag is set.
@@ -335,7 +341,7 @@ pub fn configure_override_input(
         None,
     )?;
     if let Some(filters) = filters {
-        apply_input_filters(&mut input, filters);
+        apply_input_filters(&mut input, filters)?;
     }
 
     Ok(Some(input))
@@ -366,6 +372,108 @@ mod tests {
             panic!("expected a VapourSynthScript input");
         };
         *stream_concurrently
+    }
+
+    #[test]
+    fn i06_configure_and_apply_filters_are_atomic_without_source_indexing() {
+        use andean_condor::{ffmpeg::FFPixelFormat, models::input::Ffms2Filter};
+        let temp = tempfile::tempdir().expect("CLI fixture");
+        let script = temp.path().join("blank.vpy");
+        std::fs::write(&script, "from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=32, height=16, format=YUV420P8).set_output()\n").expect("blank script");
+        let mut configuration = Configuration::new(
+            &script,
+            &temp.path().join("out.mkv"),
+            Some(temp.path()),
+            None,
+            None,
+        )
+        .expect("configuration");
+        let media = temp.path().join("not-a-decodable-source.mkv");
+        std::fs::write(
+            &media,
+            b"configuration edits must not decode/index this file",
+        )
+        .expect("existing path");
+        configuration.condor.input = InputModel::Video {
+            path: media,
+            import_method: ImportMethod::FFMS2 {
+                index: Some(0),
+                cache_path: Some(temp.path().join("must-not-exist.ffindex")),
+            },
+            filters: vec![Ffms2Filter::OutputFormat {
+                bit_depth: Some(10),
+                chroma: None,
+                width: None,
+                height: None,
+            }],
+        };
+        let disk = temp.path().join("config.json");
+        let before = serde_json::to_vec(&configuration).expect("configuration JSON");
+        std::fs::write(&disk, &before).expect("saved configuration");
+        let converted = configure_input(
+            &configuration,
+            &configuration.condor.input,
+            None,
+            Some(&DecoderMethod::VSFFMS2),
+            None,
+            None,
+            None,
+        )
+        .expect("model-only copy, no decoder/index");
+        for format in [FFPixelFormat::NV12, FFPixelFormat::GBRP, FFPixelFormat::YUV440P] {
+            let invalid = VapourSynthFilter::Resize {
+                scaler: None,
+                width: Some(16),
+                height: None,
+                format: Some(format),
+            };
+            let mut override_config = configuration.clone();
+            override_config.condor.input = converted.clone();
+            let override_before = serde_json::to_vec(&override_config).expect("VS config snapshot");
+            let error = encode::configure_parallel_encoder(
+                &mut override_config,
+                None,
+                Some(&DecoderMethod::FFMS2),
+                Some(std::slice::from_ref(&invalid)),
+                None,
+                Some(2),
+            )
+            .expect_err("native override cannot represent explicit format");
+            assert!(error.to_string().contains(format.to_pix_fmt_string()));
+            assert_eq!(
+                serde_json::to_vec(&override_config).expect("unchanged override config"),
+                override_before
+            );
+            let mut vs = converted.clone();
+            vs.set_filters(vec![invalid.clone()]).expect("VS retains resize intent");
+            assert!(
+                configure_input(
+                    &configuration,
+                    &vs,
+                    None,
+                    Some(&DecoderMethod::FFMS2),
+                    None,
+                    None,
+                    None
+                )
+                .is_err(),
+                "{format:?}"
+            );
+            let error = apply_input_filters(&mut configuration.condor.input, &[invalid])
+                .expect_err("unsupported explicit format");
+            assert!(error.to_string().contains(format.to_pix_fmt_string()));
+            assert_eq!(
+                serde_json::to_vec(&configuration).expect("unchanged model"),
+                before
+            );
+            assert_eq!(std::fs::read(&disk).expect("saved config"), before);
+        }
+        assert!(!temp.path().join("must-not-exist.ffindex").exists());
+        assert_eq!(
+            std::fs::read_dir(temp.path()).expect("fixture listing").count(),
+            3,
+            "only script, media and config; no index or temp output"
+        );
     }
 
     /// Rebuilding the input for a CLI override must not silently re-enable

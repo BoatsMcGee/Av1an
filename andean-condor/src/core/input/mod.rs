@@ -700,6 +700,21 @@ mod tests {
         assert!(ffms2_pixel_format(10, ChromaSubsampling::Yuv420).is_some());
     }
 
+    #[test]
+    fn i06_baseline_conversion_reports_unsupported_format() {
+        let baseline = video_details(32, 16, 16, ChromaSubsampling::Yuv422);
+        let filter = Ffms2Filter::OutputFormat {
+            bit_depth: None,
+            chroma: None,
+            width: Some(16),
+            height: None,
+        };
+        let error = filter
+            .to_vapoursynth_filters(&baseline)
+            .expect_err("unsupported native depth cannot become format=None");
+        assert!(error.to_string().contains("16-bit"));
+    }
+
     /// A native filter must become a VapourSynth resize, so a VS-only path sees
     /// the same converted clip the native path does.
     #[test]
@@ -713,7 +728,7 @@ mod tests {
             height: None,
         };
         assert_eq!(
-            ten_bit.to_vapoursynth_filters(&baseline),
+            ten_bit.to_vapoursynth_filters(&baseline).expect("format conversion"),
             vec![VapourSynthFilter::Resize {
                 scaler: Some(Scaler::Bicubic),
                 width: None,
@@ -729,7 +744,7 @@ mod tests {
             height: Some(720),
         };
         assert_eq!(
-            downscale.to_vapoursynth_filters(&baseline),
+            downscale.to_vapoursynth_filters(&baseline).expect("format conversion"),
             vec![VapourSynthFilter::Resize {
                 scaler: Some(Scaler::Bicubic),
                 width: Some(1280),
@@ -750,7 +765,7 @@ mod tests {
             width: Some(1920),
             height: Some(1080),
         };
-        assert!(noop.to_vapoursynth_filters(&baseline).is_empty());
+        assert!(noop.to_vapoursynth_filters(&baseline).expect("format conversion").is_empty());
 
         let empty = Ffms2Filter::OutputFormat {
             bit_depth: None,
@@ -758,7 +773,7 @@ mod tests {
             width: None,
             height: None,
         };
-        assert!(empty.to_vapoursynth_filters(&baseline).is_empty());
+        assert!(empty.to_vapoursynth_filters(&baseline).expect("format conversion").is_empty());
     }
 
     /// `set_output_format` rewrites the decoder's details, so the filtered
@@ -820,7 +835,7 @@ mod tests {
         // Against the filtered format every filter looks like a no-op...
         for filter in &filters {
             assert!(
-                filter.to_vapoursynth_filters(&current).is_empty(),
+                filter.to_vapoursynth_filters(&current).expect("format conversion").is_empty(),
                 "a filter should not be dropped just because the decoder already applied it"
             );
         }
@@ -828,7 +843,7 @@ mod tests {
         // ...whereas against the source it resolves to a real conversion.
         let converted = filters
             .iter()
-            .flat_map(|filter| filter.to_vapoursynth_filters(&source))
+            .flat_map(|filter| filter.to_vapoursynth_filters(&source).expect("format conversion"))
             .collect::<Vec<_>>();
         assert_eq!(
             converted,

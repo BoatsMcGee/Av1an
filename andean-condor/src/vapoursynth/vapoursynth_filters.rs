@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, node::Node};
 
 use crate::{
+    core::input::ffms2_filter::{ChromaSampling, Ffms2Filter, ffms2_pixel_format},
     ffmpeg::FFPixelFormat,
     models::encoder::photon_noise::PhotonNoise,
     vapoursynth::{
@@ -57,6 +58,14 @@ pub enum VapourSynthFilter {
         width: Option<usize>,
         height: Option<usize>,
         format: Option<FFPixelFormat>,
+    },
+    /// Native FFMS2 conversion intent, resolved against this filter's input node.
+    /// Omitted fields survive configuration edits without opening/indexing a source.
+    OutputFormat {
+        bit_depth: Option<u8>,
+        chroma: Option<ChromaSampling>,
+        width: Option<u32>,
+        height: Option<u32>,
     },
     Trim {
         start: Option<usize>,
@@ -224,6 +233,11 @@ impl FromStr for VapourSynthFilter {
             })
             .collect::<BTreeMap<_, _>>();
         match variant_name {
+            "output-format" | "output_format" => {
+                let native = Ffms2Filter::from_str(s)?;
+                native.validate()?;
+                Ok(native.to_vapoursynth().remove(0))
+            },
             "crop" => Ok(VapourSynthFilter::Crop {
                 top: variant_args
                     .get("top")
@@ -620,6 +634,18 @@ impl Display for VapourSynthFilter {
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
+            VapourSynthFilter::OutputFormat {
+                bit_depth,
+                chroma,
+                width,
+                height,
+            } => Ffms2Filter::OutputFormat {
+                bit_depth: *bit_depth,
+                chroma: *chroma,
+                width: *width,
+                height: *height,
+            }
+            .to_string(),
             VapourSynthFilter::Crop {
                 top,
                 bottom,
@@ -1023,6 +1049,62 @@ impl VapourSynthFilter {
         core: CoreRef<'core>,
         node: &Node<'core>,
     ) -> Result<Node<'core>> {
+        if let Self::OutputFormat {
+            bit_depth,
+            chroma,
+            width,
+            height,
+        } = self
+        {
+            use vapoursynth::format::{ColorFamily, SampleType};
+            Ffms2Filter::OutputFormat {
+                bit_depth: *bit_depth,
+                chroma: *chroma,
+                width: *width,
+                height: *height,
+            }
+            .validate()?;
+            let info = node.info();
+            let source = info.format;
+            let source_chroma = match (
+                source.color_family(),
+                source.sub_sampling_w(),
+                source.sub_sampling_h(),
+            ) {
+                (ColorFamily::Gray, 0, 0) => ChromaSampling::Monochrome,
+                (ColorFamily::YUV, 1, 1) => ChromaSampling::Yuv420,
+                (ColorFamily::YUV, 1, 0) => ChromaSampling::Yuv422,
+                (ColorFamily::YUV, 0, 0) => ChromaSampling::Yuv444,
+                _ => bail!("Unsupported FFMS2 source format: {}", source.name()),
+            };
+            anyhow::ensure!(
+                source.sample_type() == SampleType::Integer
+                    && matches!(source.bits_per_sample(), 8 | 10 | 12),
+                "Unsupported FFMS2 source format: {}",
+                source.name()
+            );
+            let (source_width, source_height) = super::get_resolution(&info)?;
+            anyhow::ensure!(
+                source_width > 0
+                    && source_height > 0
+                    && i32::try_from(source_width).is_ok()
+                    && i32::try_from(source_height).is_ok(),
+                "FFMS2 source dimensions must be positive and fit i32"
+            );
+            let depth = bit_depth.unwrap_or(source.bits_per_sample());
+            let chroma = chroma.unwrap_or(source_chroma);
+            let format = ffms2_pixel_format(usize::from(depth), chroma.to_chroma_subsampling())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Unsupported FFMS2 output format: {depth}-bit {chroma}")
+                })?;
+            return Self::Resize {
+                scaler: Some(Scaler::Bicubic),
+                width: width.map(|v| v as usize),
+                height: height.map(|v| v as usize),
+                format: Some(format),
+            }
+            .invoke_plugin_function(core, node);
+        }
         if self.is_script_only() {
             bail!("Cannot invoke script-only filter");
         }
@@ -1037,6 +1119,9 @@ impl VapourSynthFilter {
         node: &Node<'core>,
     ) -> Result<Node<'core>, VapourSynthError> {
         match self {
+            VapourSynthFilter::OutputFormat { .. } => {
+                unreachable!("resolved before plugin invocation")
+            },
             VapourSynthFilter::Crop {
                 top,
                 bottom,
@@ -1501,6 +1586,63 @@ impl VapourSynthFilter {
         node_name: NodeVariableName,
     ) -> Result<(Option<Imports>, Vec<Line>)> {
         let (import_lines, filter_lines) = match self {
+            VapourSynthFilter::OutputFormat {
+                bit_depth,
+                chroma,
+                width,
+                height,
+            } => {
+                Ffms2Filter::OutputFormat {
+                    bit_depth: *bit_depth,
+                    chroma: *chroma,
+                    width: *width,
+                    height: *height,
+                }
+                .validate()?;
+                let mut imports = Imports::new();
+                imports.insert(
+                    "vapoursynth".to_owned(),
+                    BTreeMap::from([
+                        ("GRAY".to_owned(), None),
+                        ("YUV".to_owned(), None),
+                        ("INTEGER".to_owned(), None),
+                    ]),
+                );
+                let depth = bit_depth.map_or_else(
+                    || "_condor_format.bits_per_sample".to_owned(),
+                    |v| v.to_string(),
+                );
+                let (family, sub_w, sub_h) = match chroma {
+                    Some(ChromaSampling::Monochrome) => ("GRAY", "0", "0"),
+                    Some(ChromaSampling::Yuv420) => ("YUV", "1", "1"),
+                    Some(ChromaSampling::Yuv422) => ("YUV", "1", "0"),
+                    Some(ChromaSampling::Yuv444) => ("YUV", "0", "0"),
+                    None => (
+                        "_condor_format.color_family",
+                        "_condor_format.subsampling_w",
+                        "_condor_format.subsampling_h",
+                    ),
+                };
+                let dimensions = format!(
+                    "{}{}",
+                    width.map(|v| format!("width={v}, ")).unwrap_or_default(),
+                    height.map(|v| format!("height={v}, ")).unwrap_or_default()
+                );
+                (
+                    Some(imports),
+                    vec![Line::Term(format!(
+                        "_condor_format = {node_name}.format
+if (_condor_format is None or _condor_format.sample_type != INTEGER
+    or _condor_format.bits_per_sample not in (8, 10, 12)
+    or _condor_format.color_family not in (GRAY, YUV)
+    or (_condor_format.subsampling_w, _condor_format.subsampling_h) not in ((0, 0), (1, 0), (1, 1))):
+    raise ValueError(f'Unsupported FFMS2 source format: {{_condor_format}}')
+if not (0 < {node_name}.width <= 2147483647 and 0 < {node_name}.height <= 2147483647):
+    raise ValueError('FFMS2 source dimensions must be positive and fit i32')
+{node_name} = core.resize.Bicubic(clip={node_name}, {dimensions}format=core.query_video_format({family}, INTEGER, {depth}, {sub_w}, {sub_h}).id)"
+                    ))],
+                )
+            },
             VapourSynthFilter::Crop {
                 top,
                 bottom,
