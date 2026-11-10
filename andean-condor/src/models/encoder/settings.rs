@@ -28,8 +28,23 @@ pub enum EncoderSettingsError {
     SvtMode(&'static str),
     #[error("unsupported {0} mode: {1}")]
     UnsupportedMode(EncoderBase, &'static str),
-    #[error("Photon Noise {0} must contain at most {1} coefficients")]
-    NoiseCoefficients(&'static str, usize),
+    #[error(
+        "Photon Noise c_y must contain exactly 0, 4, 12 or 24 coefficients (lag 0..=3); got {0}"
+    )]
+    NoiseLumaCoefficients(usize),
+    #[error(
+        "Photon Noise {name} must contain exactly {expected} coefficients for lag {lag}; got {actual} (supply compatible chroma overrides when changing c_y)"
+    )]
+    NoiseChromaCoefficients {
+        name: &'static str,
+        lag: u8,
+        expected: usize,
+        actual: usize,
+    },
+    #[error(
+        "Photon Noise coefficient overrides require generated luma scaling points; no-luma-point grain segments are unsupported"
+    )]
+    NoiseWithoutLumaPoints,
 }
 
 impl EncoderBase {
@@ -62,13 +77,7 @@ impl Encoder {
         };
         self.validate_pass_settings(pass)?;
         if let Some(noise) = self.photon_noise() {
-            for (name, coefficients, max) in
-                [("c_y", &noise.c_y, 24), ("ccb", &noise.ccb, 25), ("ccr", &noise.ccr, 25)]
-            {
-                if coefficients.as_ref().is_some_and(|values| values.len() > max) {
-                    return Err(EncoderSettingsError::NoiseCoefficients(name, max));
-                }
-            }
+            noise.validate_coefficients()?;
         }
         Ok(())
     }

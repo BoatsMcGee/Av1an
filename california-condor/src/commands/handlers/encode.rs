@@ -731,7 +731,9 @@ mod tests {
         assert_eq!(encoder.ffmpeg_filter(), Some("hflip"));
         assert!(!encoder.append_color_data());
         let mut noise = encoder.photon_noise().expect("luma").clone();
-        noise.c_y = Some(vec![1, 2]);
+        noise.c_y = Some(vec![1, 2, 3, 4]);
+        noise.ccb = Some(vec![5; 5]);
+        noise.ccr = Some(vec![-5; 5]);
         encoder.set_photon_noise(Some(noise.clone()));
         configure_encoder(&mut encoder, None, None, None, None, Some(70), None, None)
             .expect("chroma update");

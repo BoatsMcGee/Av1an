@@ -1221,15 +1221,7 @@ impl Encoder {
             params.scaling_points_cr = chroma_params.scaling_points_cr;
             params.scaling_points_cb = chroma_params.scaling_points_cb;
         }
-        if let Some(cy) = &photon_noise.c_y {
-            params.ar_coeffs_y = arrayvec::ArrayVec::<i8, 24>::from_iter(cy.iter().copied());
-        }
-        if let Some(ccb) = &photon_noise.ccb {
-            params.ar_coeffs_cb = arrayvec::ArrayVec::<i8, 25>::from_iter(ccb.iter().copied());
-        }
-        if let Some(ccr) = &photon_noise.ccr {
-            params.ar_coeffs_cr = arrayvec::ArrayVec::<i8, 25>::from_iter(ccr.iter().copied());
-        }
+        photon_noise.apply_coefficients(&mut params)?;
 
         Ok(Some((hash_name, params)))
     }

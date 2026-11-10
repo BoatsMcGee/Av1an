@@ -10,6 +10,9 @@ use crate::{
 
 mod raw;
 
+#[cfg(test)]
+mod e18_tests;
+
 /// Convert an `av1_grain::GrainTableSegment` (produced by
 /// `generate_photon_noise_params`) into the C-compatible binary blob.
 impl From<&GrainTableSegment> for Dav1dFilmGrainDataRaw {
@@ -80,6 +83,9 @@ impl FGS {
         transfer_function: TransferFunction,
         color_range: Option<ColorRange>,
     ) -> Result<Vec<u8>, VapourSynthError> {
+        self.photon_noise
+            .validate_coefficients()
+            .map_err(|error| Self::new_error(error.to_string()))?;
         let width = self.photon_noise.width.or(width).unwrap_or(1920);
         let height = self.photon_noise.height.or(height).unwrap_or(1080);
 
@@ -121,31 +127,9 @@ impl FGS {
             params.scaling_points_cb = chroma_params.scaling_points_cb;
         }
 
-        // Custom AR-coefficient overrides (c_y, ccb, ccr)
-        if let Some(cy) = &self.photon_noise.c_y {
-            if cy.len() > 24 {
-                return Err(Self::new_error(
-                    "c_y must be at most 24 coefficients".to_owned(),
-                ));
-            }
-            params.ar_coeffs_y = arrayvec::ArrayVec::<i8, 24>::from_iter(cy.iter().copied());
-        }
-        if let Some(ccb) = &self.photon_noise.ccb {
-            if ccb.len() > 25 {
-                return Err(Self::new_error(
-                    "ccb must be at most 25 coefficients".to_owned(),
-                ));
-            }
-            params.ar_coeffs_cb = arrayvec::ArrayVec::<i8, 25>::from_iter(ccb.iter().copied());
-        }
-        if let Some(ccr) = &self.photon_noise.ccr {
-            if ccr.len() > 25 {
-                return Err(Self::new_error(
-                    "ccr must be at most 25 coefficients".to_owned(),
-                ));
-            }
-            params.ar_coeffs_cr = arrayvec::ArrayVec::<i8, 25>::from_iter(ccr.iter().copied());
-        }
+        self.photon_noise
+            .apply_coefficients(&mut params)
+            .map_err(|error| Self::new_error(error.to_string()))?;
 
         // Convert to binary
         let raw: Dav1dFilmGrainDataRaw = (&params).into();
@@ -174,9 +158,9 @@ mod tests {
                 chroma_iso: Some(400),
                 width: Some(1280),
                 height: Some(720),
-                c_y: Some(vec![-128, 0, 127]),
-                ccb: Some(vec![-127, 126]),
-                ccr: Some(vec![125, -126, 124]),
+                c_y: Some(vec![-128, 0, 127, 1]),
+                ccb: Some(vec![-127, 126, 0, 1, -1]),
+                ccr: Some(vec![125, -126, 124, 0, 1]),
             },
             dynamic_seed: None,
             simd_mask: None,
@@ -194,17 +178,17 @@ mod tests {
             (
                 offset_of!(Dav1dFilmGrainDataRaw, ar_coeffs_y),
                 24,
-                vec![128, 0, 127],
+                vec![128, 0, 127, 1],
             ),
             (
                 offset_of!(Dav1dFilmGrainDataRaw, ar_coeffs_uv),
                 28,
-                vec![129, 126],
+                vec![129, 126, 0, 1, 255],
             ),
             (
                 offset_of!(Dav1dFilmGrainDataRaw, ar_coeffs_uv) + 28,
                 28,
-                vec![125, 130, 124],
+                vec![125, 130, 124, 0, 1],
             ),
         ] {
             assert_eq!(&bytes[offset..offset + expected.len()], expected);
@@ -273,6 +257,9 @@ mod tests {
     fn i12_fgs_coefficient_capacity_checks() {
         for (field, capacity) in [("c_y", 24), ("ccb", 25), ("ccr", 25)] {
             let mut fgs = fgs();
+            fgs.photon_noise.c_y = Some(vec![127; 24]);
+            fgs.photon_noise.ccb = Some(vec![127; 25]);
+            fgs.photon_noise.ccr = Some(vec![127; 25]);
             for len in [capacity, capacity + 1] {
                 let coefficients = match field {
                     "c_y" => &mut fgs.photon_noise.c_y,
@@ -285,9 +272,7 @@ mod tests {
                     assert!(result.is_ok());
                 } else {
                     let error = result.expect_err("reject coefficients exceeding capacity");
-                    assert!(
-                        error.to_string().contains(&format!("{field} must be at most {capacity}"))
-                    );
+                    assert!(error.to_string().contains(&format!("{field} must contain exactly")));
                 }
             }
         }
