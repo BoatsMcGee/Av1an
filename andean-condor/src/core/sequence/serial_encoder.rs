@@ -18,11 +18,12 @@ use crate::{
         sequence::{Sequence, SequenceDetails, SequenceStatus, parallel_encoder::artifact},
     },
     models::{
-        encoder::Encoder,
+        encoder::{Encoder, EncoderPasses},
         sequence::{
             SequenceConfigHandler, SequenceDataHandler, scene_detector::SceneDetectorDataHandler,
         },
     },
+    utils::cancellation::Cancelled,
 };
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
@@ -31,6 +32,9 @@ pub static DETAILS: SequenceDetails = SequenceDetails {
     version: "0.0.1",
 };
 
+/// Publishes complete scenes, not cross-call manual-pass statistics. Use
+/// [`Encoder::encode_pass_with_stream_cancel`] with an explicit
+/// [`PassStatistics`](crate::core::encoder::PassStatistics) for caller-managed passes.
 pub struct SerialEncoder {
     pub input: Option<Input>,
     pub encoder: Option<Encoder>,
@@ -61,8 +65,15 @@ where
         encoder.validate()?;
 
         // Ensure all the scene encoders are validated
-        for scene in &condor.scenes {
+        for (index, scene) in condor.scenes.iter().enumerate() {
             scene.encoder.validate()?;
+            if let EncoderPasses::Specific(current, total) = scene.encoder.passes() {
+                ensure!(
+                    current == total,
+                    "Serial scene {} cannot run non-final Specific pass {current} of {total}; use All({total}) for complete scenes, or Encoder::encode_pass_with_stream_cancel with one explicit PassStatistics retained across direct passes",
+                    Self::scene_id(index)
+                );
+            }
             ensure!(
                 scene.start_frame < scene.end_frame,
                 "Serial scenes require a nonempty increasing frame range"
@@ -302,7 +313,11 @@ where
                 // A later feed/probe/commit failure must not erase the native
                 // status/bytes. Typed context preserves the original cause too.
                 completed.map_err(|error| match diagnostic {
-                    Some(result) => error.context(result),
+                    Some(result) => {
+                        let headline =
+                            format!("Serial scene {scene_id} failed: {}", error.root_cause());
+                        error.context(result).context(headline)
+                    },
                     None => error,
                 })?;
             }
@@ -312,7 +327,17 @@ where
         // Reports are observations, not one-per-frame; only channel EOF ends collection.
         drop(progress_tx);
         let reported = join_worker(progress_thread, "Joining serial progress report worker");
-        cancellation_result(serial_results([scenes_result, reported]), &cancellation)?;
+        let result = serial_results([scenes_result, reported]);
+        // Keep an already-typed Forced error's scene headline; a fresh force
+        // after successful publication still reports cancellation without rollback.
+        if result
+            .as_ref()
+            .is_err_and(|error| error.downcast_ref::<Cancelled>() == Some(&Cancelled::Forced))
+        {
+            result?;
+        } else {
+            cancellation_result(result, &cancellation)?;
+        }
 
         Ok(((), warnings))
     }

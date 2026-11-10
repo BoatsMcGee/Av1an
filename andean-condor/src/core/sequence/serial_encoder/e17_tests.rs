@@ -37,9 +37,9 @@ case "$E08_CASE" in
  *) cp "$root/fixture" "$out" ;;
 esac
 case "$E08_CASE" in
- race) printf caller-owned > "$root/scenes/00000.264" ;;
+ race) printf caller-owned > "$root/scenes/00000.264"; printf 'raw\377stdout'; printf 'raw\376stderr' >&2 ;;
  status|optout-status) printf 'raw\377stdout' ; printf 'raw\376stderr' >&2; exit 42 ;;
- probe-force) printf 'raw\377stdout' ; printf 'raw\376stderr' >&2 ;;
+ probe-force|wrong) printf 'raw\377stdout' ; printf 'raw\376stderr' >&2 ;;
 esac
 printf done > "$root/codec-done"
 "#;
@@ -94,6 +94,8 @@ fn e17_bounded_public_serial_artifacts() {
             "feed-panic",
             "encoder-panic",
             "relay-panic",
+            "specific-first",
+            "specific-first-optout",
         ] {
             let job = root.join(format!("{native}-{case}"));
             fs::create_dir_all(job.join("scenes")).expect("job");
@@ -252,6 +254,72 @@ fn e17_public_child() {
         None,
         Box::new(|_| Ok(())),
     );
+    if case.starts_with("specific-first") {
+        *condor.scenes[0].encoder.passes_mut().expect("manual scene pass") =
+            EncoderPasses::Specific(1, 2);
+        let scenes = root.join("scenes");
+        for (name, bytes) in [
+            ("00000.log", b"caller statistics".as_slice()),
+            ("00000.log.mbtree", b"caller mbtree"),
+            ("caller.264", b"caller output"),
+        ] {
+            fs::write(scenes.join(name), bytes).expect("caller sentinel");
+        }
+        let mut serial = SerialEncoder::new(&scenes);
+        serial.validate_frame_count = !case.ends_with("optout");
+        let validated = serial.validate(&mut condor);
+        let (tx, rx) = sync::mpsc::channel();
+        drop(rx);
+        let executed = serial.execute_cancel(&mut condor, tx, Cancellation::default());
+        assert!(
+            !root.join("starts").exists(),
+            "non-final Specific must fail before codec launch: validate={validated:?}, execute={executed:?}"
+        );
+        for result in [validated, executed] {
+            let error = result.expect_err("serial rejects non-final Specific before any work");
+            let text = error.to_string();
+            for expected in [
+                "Serial scene 00000",
+                "pass 1 of 2",
+                "Encoder::encode_pass_with_stream_cancel",
+                "PassStatistics",
+            ] {
+                assert!(text.contains(expected), "{text}");
+            }
+        }
+        let info = match &condor.input {
+            Input::Video { clip_info, .. }
+            | Input::VapourSynth { clip_info, .. }
+            | Input::VapourSynthScript { clip_info, .. } => clip_info,
+        };
+        assert!(
+            info.is_none(),
+            "manual-pass rejection must precede backend consumption"
+        );
+        assert_eq!(
+            fs::read(scenes.join("00000.log")).expect("stats preserved"),
+            b"caller statistics"
+        );
+        assert_eq!(
+            fs::read(scenes.join("00000.log.mbtree")).expect("mbtree preserved"),
+            b"caller mbtree"
+        );
+        assert_eq!(
+            fs::read(scenes.join("caller.264")).expect("output preserved"),
+            b"caller output"
+        );
+        assert_eq!(
+            fs::read_dir(&scenes).expect("scene listing").count(),
+            3,
+            "no private output/statistics or final admitted"
+        );
+        fs::write(
+            root.join("verified"),
+            b"non-final Specific rejected before work",
+        )
+        .expect("verified");
+        return;
+    }
     if case.starts_with("preflight-") {
         fs::create_dir_all(root.join("empty-path")).expect("empty PATH");
         // SAFETY: Isolated child before any worker or controller threads exist.
@@ -408,11 +476,11 @@ fn e17_public_child() {
         assert!(final_path.exists(), "committed work survives cancellation");
     } else {
         let error = result.expect_err("invalid/interrupted serial output cannot succeed");
-        if case.ends_with("status") || case == "probe-force" {
+        if case.ends_with("status") || matches!(case.as_str(), "probe-force" | "wrong" | "race") {
             let diagnostic = error.downcast_ref::<EncoderResult>().expect("typed native status");
             assert_eq!(
                 diagnostic.status.code(),
-                Some(if case == "probe-force" { 0 } else { 42 })
+                Some(if case.ends_with("status") { 42 } else { 0 })
             );
             let bytes = |value: &StringOrBytes| match value {
                 StringOrBytes::String(s) => s.as_bytes().to_vec(),
@@ -423,6 +491,61 @@ fn e17_public_child() {
         }
         if case == "forced-before" || case == "probe-force" {
             assert_eq!(error.downcast_ref::<Cancelled>(), Some(&Cancelled::Forced));
+        }
+        if case == "probe-force" {
+            assert!(
+                error
+                    .to_string()
+                    .starts_with("Serial scene 00000 failed: forced cancellation requested"),
+                "forced validation keeps the scene headline too: {error}"
+            );
+        }
+        if case == "wrong" || case == "race" {
+            let plain = format!("{error}");
+            let detailed = format!("{error:#}");
+            let headline = if case == "wrong" {
+                "Serial scene 00000 failed: decoded frame count 2 does not match expected 3"
+            } else {
+                "Serial scene 00000 failed: File exists"
+            };
+            assert!(
+                plain.starts_with(headline),
+                "plain Display must lead with the actual failure, not codec success: {plain}"
+            );
+            assert!(detailed.starts_with(headline), "{detailed}");
+            for diagnostic in ["Encoder (x264", "STDOUT:", "STDERR:"] {
+                assert_eq!(
+                    detailed.matches(diagnostic).count(),
+                    1,
+                    "no copied full diagnostic chain: {detailed}"
+                );
+            }
+            assert_eq!(
+                detailed
+                    .matches(if case == "wrong" {
+                        "Validating encoded artifact "
+                    } else {
+                        "Publishing serial scene "
+                    })
+                    .count(),
+                1,
+                "actual cause context appears once: {detailed}"
+            );
+            if case == "wrong" {
+                assert!(
+                    error
+                        .root_cause()
+                        .to_string()
+                        .starts_with("decoded frame count 2 does not match expected 3")
+                );
+            } else {
+                assert!(
+                    error.chain().any(|cause| cause
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists)),
+                    "typed original no-clobber cause retained: {detailed}"
+                );
+            }
         }
         if case == "existing" || case == "race" {
             assert_eq!(
