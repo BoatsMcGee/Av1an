@@ -234,9 +234,11 @@ where
             },
         };
 
-        progress_tx.send(SequenceStatus::Whole(Status::Completed {
-            id: DETAILS.name.to_owned(),
-        }))?;
+        if !cancelled.load(sync::atomic::Ordering::Relaxed) {
+            progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                id: DETAILS.name.to_owned(),
+            }))?;
+        }
 
         Ok(((), warnings))
     }
