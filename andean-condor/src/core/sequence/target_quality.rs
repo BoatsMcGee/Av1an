@@ -170,6 +170,17 @@ where
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        self.execute_cancel(condor, progress_tx, cancelled.into())
+    }
+
+    #[inline]
+    fn execute_cancel(
+        &mut self,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: crate::utils::cancellation::Cancellation,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        cancelled.check()?;
         let mut warnings = vec![];
         let parallel_encoder_config = condor.sequence_config.parallel_encoder()?;
         let scene_concatenator_config = condor.sequence_config.scene_concatenator()?;
@@ -304,9 +315,10 @@ where
                         match task.encoder {
                             Encoder::X264 { .. } | Encoder::X265 { .. } => 0.25,
                             Encoder::SVTAV1 { .. }
-                                if task.encoder.supports_capability(
+                                if task.encoder.supports_capability_cancel(
                                     EncoderCapability::SvtAv1QuarterStepCrf,
-                                ) =>
+                                    &cancelled,
+                                )? =>
                             {
                                 0.25
                             },
@@ -344,7 +356,7 @@ where
 
             let progress_tx_clone = progress_tx.clone();
             let (pass_progress_tx, pass_progress_rx) = sync::mpsc::channel();
-            thread::spawn(move || -> Result<()> {
+            let relay = thread::spawn(move || -> Result<()> {
                 for progress in pass_progress_rx {
                     match progress {
                         SequenceStatus::Whole(Status::Processing { id, completion })
@@ -418,7 +430,7 @@ where
                 Ok(())
             });
 
-            let (completed_tasks, pass_warnings) = Self::probe_pass(
+            let probed = Self::probe_pass_cancel(
                 pass,
                 target_quality_directory,
                 &config,
@@ -429,7 +441,13 @@ where
                 tasks.as_slice(),
                 pass_progress_tx,
                 &cancelled,
-            )?;
+            );
+            let relayed = crate::core::encoder::pipes::join_worker(
+                relay,
+                "Joining target-quality pass progress",
+            );
+            let (completed_tasks, pass_warnings) = probed?;
+            relayed?;
 
             for completed_task in completed_tasks {
                 // Update Target Quality Passes
@@ -523,7 +541,8 @@ where
             data.scenes = condor.scenes.clone();
             (condor.save_callback)(data).expect("failed to save data");
 
-            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            cancelled.check_forced()?;
+            if cancelled.is_cancelled() {
                 break;
             }
         }
@@ -746,6 +765,38 @@ impl TargetQuality {
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<(Vec<Task>, Vec<anyhow::Error>)> {
+        Self::probe_pass_cancel(
+            pass,
+            target_quality_directory,
+            config,
+            input,
+            metric_input,
+            workers,
+            concat_method,
+            tasks,
+            progress_tx,
+            &crate::utils::cancellation::Cancellation::from(Arc::clone(cancelled)),
+        )
+    }
+
+    #[inline]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn probe_pass_cancel(
+        pass: u8,
+        target_quality_directory: &Path,
+        config: &TargetQualityConfig,
+        input: &mut Input,
+        metric_input: Option<&mut Input>,
+        workers: u8,
+        concat_method: &ConcatMethod,
+        tasks: &[Task],
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancellation: &crate::utils::cancellation::Cancellation,
+    ) -> Result<(Vec<Task>, Vec<anyhow::Error>)> {
+        cancellation.check_forced()?;
+        if cancellation.is_cancelled() {
+            return Ok((Vec::new(), Vec::new()));
+        }
         let warnings: Vec<anyhow::Error> = vec![];
         let temporal = metrics::scene_temporal(&config.metric);
         let scenes: Vec<_> = tasks.iter().map(|task| task.frame_indices.as_slice()).collect();
@@ -833,43 +884,57 @@ impl TargetQuality {
         // one encoder; anything else keeps the per-scene encoders. Probe
         // encoders never carry an FFmpeg filter, so filters cannot make scenes
         // differ here.
-        let zone_plan = match ZonePlan::try_build(&encode_tasks) {
+        let zone_plan = match ZonePlan::try_build_cancel(&encode_tasks, cancellation) {
             Ok(plan) => Some(plan),
             Err(reason) => {
+                if cancellation.is_forced() {
+                    drop(encode_progress_tx);
+                    let relayed = crate::core::encoder::pipes::join_worker(
+                        encode_thread,
+                        "Joining cancelled probe progress",
+                    );
+                    relayed?;
+                    return Err(reason);
+                }
                 debug!("Probe pass {pass} encoding scenes individually: {reason}");
                 None
             },
         };
         let results = match zone_plan {
-            Some(plan) => ZoneEncoder::encode_tasks(
+            Some(plan) => ZoneEncoder::encode_tasks_cancel(
                 input,
                 encode_tasks.iter().cloned().collect::<VecDeque<_>>(),
                 plan,
                 encode_progress_tx,
-                Arc::clone(cancelled),
-            )?,
-            None => ParallelEncoder::encode_tasks(
+                cancellation.clone(),
+            ),
+            None => ParallelEncoder::encode_tasks_cancel(
                 input,
                 workers,
                 encode_tasks.iter().cloned().collect::<VecDeque<_>>(),
                 encode_progress_tx,
-                Arc::clone(cancelled),
-            )?,
+                cancellation.clone(),
+            ),
         };
+        let relayed = crate::core::encoder::pipes::join_worker(
+            encode_thread,
+            "Joining probe encode progress",
+        );
+        let results = results?;
+        relayed?;
 
-        if cancelled.load(sync::atomic::Ordering::Relaxed) {
+        cancellation.check_forced()?;
+        if cancellation.is_cancelled() {
             // No scene was scored, so no task is complete. Returning the input
             // tasks would report them as scored with the `passes` they had on
             // entry, empty on the first pass.
             return Ok((Vec::new(), warnings));
         }
 
-        encode_thread.join().expect("encode progress thread should join")?;
-
         let scene_paths = tasks.iter().map(|task| task.output.clone()).collect::<Vec<_>>();
         match concat_method {
             ConcatMethod::MKVMerge(_) => {
-                SceneConcatenator::mkvmerge(
+                SceneConcatenator::mkvmerge_cancel(
                     &pass_directory,
                     &output,
                     &scene_paths,
@@ -877,11 +942,11 @@ impl TargetQuality {
                     framerate,
                     None,
                     &progress_tx,
-                    cancelled,
+                    cancellation,
                 )?;
             },
             ConcatMethod::FFmpeg(_) => {
-                SceneConcatenator::ffmpeg(
+                SceneConcatenator::ffmpeg_cancel(
                     &pass_directory,
                     &output,
                     &scene_paths,
@@ -890,14 +955,15 @@ impl TargetQuality {
                     framerate,
                     None,
                     &progress_tx,
-                    cancelled,
+                    cancellation,
                 )?;
             },
             ConcatMethod::Ivf => {
-                SceneConcatenator::ivf(&output, &scene_paths, &progress_tx, cancelled)?;
+                SceneConcatenator::ivf_cancel(&output, &scene_paths, &progress_tx, cancellation)?;
             },
         }
 
+        let cancelled = &cancellation.legacy_flag();
         let metric_input = metric_input.unwrap_or(input);
         // VMAF is scored by libvmaf over decoded frames, and its decoder borrow
         // would conflict with the one the node graph below needs. Score it

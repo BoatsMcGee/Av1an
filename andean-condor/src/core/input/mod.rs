@@ -8,6 +8,7 @@
 use std::{collections::HashMap, io::Cursor, path::PathBuf, sync::atomic::AtomicBool};
 
 // `::vapoursynth` is the crate, not this module's `vapoursynth` submodule.
+use crate::utils::cancellation::Cancellation;
 use ::vapoursynth::node::Node;
 use anyhow::Result;
 use av_decoders::{Decoder, VideoDetails, v_frame::chroma::ChromaSubsampling};
@@ -221,6 +222,43 @@ impl Input {
         }
     }
 
+    /// Force-capable input opening. Shares one job token with later sequence APIs.
+    /// Native plugin calls cooperate at callbacks; arbitrary hung FFI is not preemptible.
+    #[inline]
+    pub fn ensure_indexed_cancel(
+        data: &InputModel,
+        mut progress: impl FnMut(OpenProgress),
+        cancellation: &Cancellation,
+    ) -> Result<Self> {
+        cancellation.check_admission()?;
+        let cancellation = &cancellation.active();
+        Input::validate(data)?;
+        match data {
+            InputModel::Video {
+                path,
+                import_method,
+                ..
+            } => {
+                let ImportMethod::FFMS2 { cache_path, .. } = import_method;
+                ffms2::index_video_cancel(
+                    path,
+                    cache_path.as_deref(),
+                    Some(&mut |current, total| progress(OpenProgress::Indexing { current, total })),
+                    cancellation,
+                )?;
+            },
+            InputModel::VapourSynth { .. } => {
+                vapoursynth::index_source_cancel(data, &mut progress, cancellation)?;
+            },
+            InputModel::VapourSynthScript { .. } => {},
+        }
+        cancellation.check_forced()?;
+        progress(OpenProgress::Opening);
+        let input = Self::from_data(data)?;
+        cancellation.check_forced()?;
+        Ok(input)
+    }
+
     /// Reopens a natively-decoded input through VapourSynth, translating its
     /// native filters first so both paths convert the clip the same way.
     /// Already-VapourSynth inputs return `None`.
@@ -367,6 +405,25 @@ impl Input {
         Ok(())
     }
 
+    /// Active feed: force stops requests/sends; finite native callbacks already
+    /// outstanding must finish because Rust cannot preempt a foreign decoder.
+    #[inline]
+    pub fn y4m_frames_cancel(
+        &mut self,
+        sender: crossbeam_channel::Sender<Cursor<Vec<u8>>>,
+        indices: &[usize],
+        cancellation: &Cancellation,
+    ) -> Result<()> {
+        let result = self.frame_reader()?.y4m_frames_cancel(
+            &sender,
+            indices,
+            frame_feed::request_window(),
+            cancellation,
+        );
+        drop(sender);
+        result
+    }
+
     /// Whether [`Input::frame_sources`] can serve several readers at once
     /// without them slowing each other down. False for DGDecNV, which is
     /// unmeasured. A script streams concurrently unless the user turned it
@@ -474,6 +531,30 @@ enum FrameReaderKind<'a> {
 }
 
 impl FrameReader<'_> {
+    #[inline]
+    pub fn y4m_frames_cancel(
+        &mut self,
+        sender: &crossbeam_channel::Sender<Cursor<Vec<u8>>>,
+        indices: &[usize],
+        window: usize,
+        cancellation: &Cancellation,
+    ) -> Result<()> {
+        if let FrameReaderKind::VapourSynth(node) = &self.kind {
+            return vapoursynth::y4m_frames_cancel(
+                node,
+                sender,
+                indices,
+                window.max(1),
+                cancellation,
+            );
+        }
+        for &index in indices {
+            cancellation.check_forced()?;
+            let frame = self.y4m_frame(index)?;
+            cancellation.send(sender, frame)?;
+        }
+        Ok(())
+    }
     /// Reads one complete Y4M frame at an absolute index. Calls may repeat or
     /// seek to any index; a failed read returns no partial frame bytes.
     #[inline]

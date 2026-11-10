@@ -8,6 +8,10 @@ use std::{
     thread,
 };
 
+use crate::{
+    core::process::{InterruptedOutput, OwnedProcess},
+    utils::cancellation::Cancellation,
+};
 use anyhow::{Context, Result, bail};
 use av_format::{
     buffer::AccReader,
@@ -151,6 +155,17 @@ where
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        self.execute_cancel(condor, progress_tx, cancelled.into())
+    }
+
+    #[inline]
+    fn execute_cancel(
+        &mut self,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Cancellation,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        cancelled.check()?;
         let warnings = vec![];
 
         let framerate = condor.input.clip_info()?.frame_rate;
@@ -185,7 +200,7 @@ where
 
         match &config.method {
             ConcatMethod::MKVMerge(mkvmerge) => {
-                Self::mkvmerge(
+                Self::mkvmerge_cancel(
                     &config.scenes_directory,
                     &condor.output.path,
                     &scene_paths,
@@ -197,7 +212,7 @@ where
                 )?;
             },
             ConcatMethod::FFmpeg(ffmpeg) => {
-                Self::ffmpeg(
+                Self::ffmpeg_cancel(
                     &config.scenes_directory,
                     &condor.output.path,
                     &scene_paths,
@@ -210,7 +225,7 @@ where
                 )?;
             },
             ConcatMethod::Ivf => {
-                Self::ivf(&condor.output.path, &scene_paths, &progress_tx, &cancelled)?;
+                Self::ivf_cancel(&condor.output.path, &scene_paths, &progress_tx, &cancelled)?;
             },
         };
 

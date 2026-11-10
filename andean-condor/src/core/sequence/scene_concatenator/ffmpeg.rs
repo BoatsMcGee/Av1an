@@ -14,6 +14,35 @@ impl SceneConcatenator {
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<()> {
+        Self::ffmpeg_cancel(
+            scenes_directory,
+            output,
+            scene_paths,
+            input,
+            total_frames,
+            framerate,
+            config,
+            progress_tx,
+            &Cancellation::from(Arc::clone(cancelled)),
+        )
+    }
+
+    /// Runs one admitted concat unit; force kills its owned tree even while silent.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn ffmpeg_cancel(
+        scenes_directory: &Path,
+        output: &Path,
+        scene_paths: &[PathBuf],
+        input: Option<&Path>,
+        total_frames: usize,
+        framerate: Ratio<i64>,
+        config: Option<&FfmpegConfig>,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancellation: &Cancellation,
+    ) -> Result<()> {
+        cancellation.check_admission()?;
+        let _partial = InterruptedOutput::new(output, cancellation);
         let scratch_directory = scenes_directory.join("Scene Concatenator");
         let concat_file_path = scratch_directory.join("concat.txt");
         let concat_file = {
@@ -43,7 +72,8 @@ impl SceneConcatenator {
 
         cmd.args(ffmpeg_args(&concat_file_path, output, input, config));
 
-        let mut child = cmd.spawn().with_context(|| "Failed to concatenate with FFmpeg")?;
+        let mut child = OwnedProcess::spawn(&mut cmd, cancellation)
+            .with_context(|| "Failed to concatenate with FFmpeg")?;
         let stdout = child.stdout.take().expect("FFmpeg should have STDOUT");
         let stderr = child.stderr.take().expect("FFmpeg should have STDERR");
 
@@ -70,14 +100,9 @@ impl SceneConcatenator {
         let mut reader = BufReader::new(stderr);
         let mut buf = Vec::with_capacity(256);
         let mut stderr_output = String::new();
+        let mut read_error = None;
 
         loop {
-            if cancelled.load(sync::atomic::Ordering::Relaxed) {
-                child.kill()?;
-                child.wait()?;
-                return Ok(());
-            }
-
             match reader.read_until(b'\r', &mut buf) {
                 Ok(0) => break,
                 Ok(_) => {
@@ -91,14 +116,29 @@ impl SceneConcatenator {
                     }
                     buf.clear();
                 },
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    read_error = Some(e);
+                    break;
+                },
             }
         }
 
-        let status = child.wait().with_context(|| "Failed to wait for FFmpeg")?;
-        stdout_thread
+        let killed = if read_error.is_some() {
+            child.kill()
+        } else {
+            Ok(())
+        };
+        let status = child.wait().with_context(|| "Failed to wait for FFmpeg");
+        let drained = stdout_thread
             .join()
-            .map_err(|_| anyhow::anyhow!("FFmpeg STDOUT thread panicked"))??;
+            .map_err(|_| anyhow::anyhow!("FFmpeg STDOUT thread panicked"));
+        cancellation.check_forced()?;
+        killed?;
+        drained??;
+        if let Some(error) = read_error {
+            return Err(error.into());
+        }
+        let status = status?;
         if !status.success() {
             let error = SceneConcatenatorError::FfmpegFailed {
                 status,

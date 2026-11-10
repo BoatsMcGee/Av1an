@@ -457,7 +457,7 @@ fn e28_runtime_child() {
                 workers,
                 tasks,
                 tx,
-                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)).into(),
                 &mut stream,
             )
         } else {

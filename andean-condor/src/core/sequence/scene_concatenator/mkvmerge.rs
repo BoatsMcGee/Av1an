@@ -13,6 +13,33 @@ impl SceneConcatenator {
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<()> {
+        Self::mkvmerge_cancel(
+            scenes_directory,
+            output,
+            scene_paths,
+            input,
+            duration,
+            config,
+            progress_tx,
+            &Cancellation::from(Arc::clone(cancelled)),
+        )
+    }
+
+    /// Each intermediate group and final mux is a separate graceful admission.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn mkvmerge_cancel(
+        scenes_directory: &Path,
+        output: &Path,
+        scene_paths: &[PathBuf],
+        input: Option<&Path>,
+        duration: Ratio<i64>,
+        config: Option<&MkvmergeConfig>,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancellation: &Cancellation,
+    ) -> Result<()> {
+        cancellation.check_admission()?;
+        let _partial = InterruptedOutput::new(output, cancellation);
         #[cfg(windows)]
         const MAXIMUM_CHUNKS_PER_MERGE: usize = usize::MAX;
         #[cfg(not(windows))]
@@ -82,13 +109,12 @@ impl SceneConcatenator {
             write_options(&args, &options_path)?;
         } else {
             for (group_index, chunk_group) in chunk_groups.iter().enumerate() {
-                if cancelled.load(sync::atomic::Ordering::Relaxed) {
-                    return Ok(());
-                }
+                cancellation.check()?;
 
                 let group_options_path = scratch_directory.join(format!("{group_index:05}.json"));
                 let group_output_path =
                     fix_path(scratch_directory.join(format!("{group_index:05}.mkv")));
+                let _partial = InterruptedOutput::new(Path::new(&group_output_path), cancellation);
 
                 let group_args = mkvmerge_args(
                     &group_output_path,
@@ -110,8 +136,8 @@ impl SceneConcatenator {
                 group_cmd.stdout(Stdio::piped());
                 group_cmd.stderr(Stdio::piped());
 
-                let mut group_child =
-                    group_cmd.spawn().with_context(|| "Failed to concatenate with mkvmerge")?;
+                let mut group_child = OwnedProcess::spawn(&mut group_cmd, cancellation)
+                    .with_context(|| "Failed to concatenate with mkvmerge")?;
                 let group_stdout = group_child.stdout.take().expect("mkvmerge should have STDOUT");
                 let group_stderr = group_child.stderr.take().expect("mkvmerge should have STDERR");
 
@@ -138,23 +164,27 @@ impl SceneConcatenator {
                     Ok(())
                 });
 
-                let (cancelled, group_stdout_output) = Self::stream_mkvmerge_progress(
+                let group_stdout_output = Self::stream_mkvmerge_progress(
                     group_stdout,
                     progress_tx,
                     Some((group_index, chunk_groups.len())),
-                    cancelled,
-                )?;
-                if cancelled {
-                    group_child.kill()?;
-                    group_child.wait()?;
-                    return Ok(());
-                }
+                );
+                let killed = if group_stdout_output.is_err() {
+                    group_child.kill()
+                } else {
+                    Ok(())
+                };
 
                 let group_status =
-                    group_child.wait().with_context(|| "Failed to wait for mkvmerge")?;
-                group_stderr_thread
+                    group_child.wait().with_context(|| "Failed to wait for mkvmerge");
+                let drained = group_stderr_thread
                     .join()
-                    .map_err(|_| anyhow::anyhow!("mkvmerge STDERR thread panicked"))??;
+                    .map_err(|_| anyhow::anyhow!("mkvmerge STDERR thread panicked"));
+                cancellation.check_forced()?;
+                killed?;
+                drained??;
+                let group_status = group_status?;
+                let group_stdout_output = group_stdout_output?;
                 if !group_status.success() {
                     let error = SceneConcatenatorError::MkvmergeFailed {
                         status: group_status,
@@ -186,12 +216,16 @@ impl SceneConcatenator {
             write_options(&args, &options_path)?;
         }
 
+        if chunk_groups.len() != 1 {
+            cancellation.check()?;
+        }
         let mut cmd = Command::new("mkvmerge");
         cmd.arg(format!("@{}", fix_path(options_path)));
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        let mut child = cmd.spawn().with_context(|| "Failed to spawn mkvmerge")?;
+        let mut child = OwnedProcess::spawn(&mut cmd, cancellation)
+            .with_context(|| "Failed to spawn mkvmerge")?;
         let stdout = child.stdout.take().expect("mkvmerge should have STDOUT");
         let stderr = child.stderr.take().expect("mkvmerge should have STDERR");
 
@@ -215,18 +249,22 @@ impl SceneConcatenator {
             Ok(())
         });
 
-        let (cancelled, stdout_output) =
-            Self::stream_mkvmerge_progress(stdout, progress_tx, None, cancelled)?;
-        if cancelled {
-            child.kill()?;
-            child.wait()?;
-            return Ok(());
-        }
+        let stdout_output = Self::stream_mkvmerge_progress(stdout, progress_tx, None);
+        let killed = if stdout_output.is_err() {
+            child.kill()
+        } else {
+            Ok(())
+        };
 
-        let status = child.wait().with_context(|| "Failed to wait for mkvmerge")?;
-        stderr_thread
+        let status = child.wait().with_context(|| "Failed to wait for mkvmerge");
+        let drained = stderr_thread
             .join()
-            .map_err(|_| anyhow::anyhow!("mkvmerge STDERR thread panicked"))??;
+            .map_err(|_| anyhow::anyhow!("mkvmerge STDERR thread panicked"));
+        cancellation.check_forced()?;
+        killed?;
+        drained??;
+        let status = status?;
+        let stdout_output = stdout_output?;
         if !status.success() {
             let error = SceneConcatenatorError::MkvmergeFailed {
                 status,
@@ -246,17 +284,12 @@ impl SceneConcatenator {
         stdout: impl std::io::Read,
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
         group: Option<(usize, usize)>,
-        cancelled: &Arc<AtomicBool>,
-    ) -> Result<(bool, String)> {
+    ) -> Result<String> {
         let mut reader = BufReader::new(stdout);
         let mut buf = Vec::with_capacity(256);
         let mut output = String::new();
 
         loop {
-            if cancelled.load(sync::atomic::Ordering::Relaxed) {
-                return Ok((true, output));
-            }
-
             match reader.read_until(b'\r', &mut buf) {
                 Ok(0) => break,
                 Ok(_) => {
@@ -279,7 +312,7 @@ impl SceneConcatenator {
             }
         }
 
-        Ok((false, output))
+        Ok(output)
     }
 
     /// Parses a single mkvmerge progress line (e.g. `Progress: 33%`)

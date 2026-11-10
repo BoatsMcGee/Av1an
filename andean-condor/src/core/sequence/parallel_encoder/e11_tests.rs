@@ -579,7 +579,7 @@ fn e11_runtime_child() {
         workers,
         tasks,
         tx,
-        cancelled,
+        cancelled.into(),
         &mut stream,
     );
     let success = matches!(kind, "success1" | "success2" | "multipass" | "cancelled");

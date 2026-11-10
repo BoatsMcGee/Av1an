@@ -117,6 +117,17 @@ where
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        self.execute_cancel(condor, progress_tx, cancelled.into())
+    }
+
+    #[inline]
+    fn execute_cancel(
+        &mut self,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: crate::utils::cancellation::Cancellation,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        cancelled.check()?;
         const BENCHMARK_SCENES: usize = 16;
         const BENCHMARK_SCENE_FRAMES: usize = 24;
         let mut warnings = vec![];
@@ -161,20 +172,22 @@ where
             .collect();
 
         let mut previous_result =
-            Self::benchmark_workers(input, 1, tasks.as_slice(), &progress_tx, &cancelled)?;
+            Self::benchmark_workers_cancel(input, 1, tasks.as_slice(), &progress_tx, &cancelled)?;
 
         loop {
-            if cancelled.load(Ordering::Relaxed) {
+            cancelled.check_forced()?;
+            if cancelled.is_cancelled() {
                 break;
             }
-            let current_result = Self::benchmark_workers(
+            let current_result = Self::benchmark_workers_cancel(
                 input,
                 previous_result.workers + 1,
                 tasks.as_slice(),
                 &progress_tx,
                 &cancelled,
             )?;
-            if cancelled.load(Ordering::Relaxed) {
+            cancelled.check_forced()?;
+            if cancelled.is_cancelled() {
                 break;
             }
 
@@ -230,13 +243,30 @@ impl Benchmarker {
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<BenchmarkResult> {
+        Self::benchmark_workers_cancel(
+            input,
+            workers,
+            tasks,
+            progress_tx,
+            &crate::utils::cancellation::Cancellation::from(Arc::clone(cancelled)),
+        )
+    }
+
+    #[inline]
+    pub fn benchmark_workers_cancel(
+        input: &mut Input,
+        workers: u8,
+        tasks: &[ParallelEncodeTask],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &crate::utils::cancellation::Cancellation,
+    ) -> Result<BenchmarkResult> {
         let start_time = Instant::now();
         let frames_completed = sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let frames_completed_clone = Arc::clone(&frames_completed);
 
         let progress_tx_clone = progress_tx.clone();
         let (encode_progress_tx, encode_progress_rx) = sync::mpsc::channel();
-        thread::spawn(move || -> Result<()> {
+        let relay = thread::spawn(move || -> Result<()> {
             for progress in encode_progress_rx {
                 match progress {
                     SequenceStatus::Whole(Status::Processing {
@@ -283,13 +313,17 @@ impl Benchmarker {
             Ok(())
         });
 
-        ParallelEncoder::encode_tasks(
+        let encoded = ParallelEncoder::encode_tasks_cancel(
             input,
             workers,
             tasks.iter().cloned().collect::<VecDeque<_>>(),
             encode_progress_tx,
-            Arc::clone(cancelled),
-        )?;
+            cancelled.clone(),
+        );
+        let relayed =
+            crate::core::encoder::pipes::join_worker(relay, "Joining worker-probe progress");
+        encoded?;
+        relayed?;
 
         let result = BenchmarkResult {
             workers,

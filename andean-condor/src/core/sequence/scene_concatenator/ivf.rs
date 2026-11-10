@@ -8,6 +8,23 @@ impl SceneConcatenator {
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<()> {
+        Self::ivf_cancel(
+            output,
+            scene_paths,
+            progress_tx,
+            &Cancellation::from(Arc::clone(cancelled)),
+        )
+    }
+
+    #[inline]
+    pub fn ivf_cancel(
+        output: &Path,
+        scene_paths: &[PathBuf],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancellation: &Cancellation,
+    ) -> Result<()> {
+        cancellation.check_admission()?;
+        let _partial = InterruptedOutput::new(output, cancellation);
         let output = File::create(output)?;
         let mut muxer = MuxerContext::new(IvfMuxer::new(), Writer::new(output));
         let global_info = {
@@ -36,9 +53,7 @@ impl SceneConcatenator {
         let total_scenes = scene_paths.len();
         let mut pos_offset: usize = 0;
         for (index, file) in scene_paths.iter().enumerate() {
-            if cancelled.load(sync::atomic::Ordering::Relaxed) {
-                return Ok(());
-            }
+            cancellation.check_forced()?;
 
             Self::send_progress(
                 progress_tx,
@@ -56,6 +71,7 @@ impl SceneConcatenator {
             trace!("global info: {:#?}", demuxer.info);
 
             loop {
+                cancellation.check_forced()?;
                 match demuxer.read_event() {
                     Ok(event) => match event {
                         Event::MoreDataNeeded(sz) => panic!("needed more data: {sz} bytes"),

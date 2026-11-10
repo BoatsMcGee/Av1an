@@ -159,6 +159,20 @@ where
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        self.execute_cancel(condor, progress_tx, cancelled.into())
+    }
+
+    #[inline]
+    fn execute_cancel(
+        &mut self,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
+        progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
+        cancelled: crate::utils::cancellation::Cancellation,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        cancelled.check_forced()?;
+        if cancelled.is_cancelled() {
+            return Ok(((), Vec::new()));
+        }
         // TODO:
         // handle subscenes
 

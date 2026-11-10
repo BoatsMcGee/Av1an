@@ -98,6 +98,39 @@ $ condor \
 
 The Av1an library, Andean Condor, consists of the following components: `Input`, `Output`, `Encoder`, `Scene`, and `Sequence`. These components are managed with a single `Condor` instance. For a simple example using the library, see [here](./andean-condor/examples/simple.rs). For more information on using the library, see the [Andean Condor](./andean-condor/README.md#API) API documentation.
 
+##### Library cancellation
+
+Keep one `andean_condor::utils::cancellation::Cancellation` and pass it through
+`Input::ensure_indexed_cancel`, `AndeanCondor::process_all_cancel` (or
+`process_one_cancel`), and `Sequence::execute_cancel`. Clone the token for the
+application's cancellation controls; do not create a token per pass.
+
+```rust
+use andean_condor::utils::cancellation::Cancellation;
+
+let cancellation = Cancellation::default();
+let controls = cancellation.clone();
+controls.request()?; // Graceful: finish admitted scenes, including both passes.
+controls.request()?; // Forced: stop feeds, kill owned trees, join workers, reap.
+```
+
+Direct encoder, filter, zone/probe, indexing, and concat APIs also have `_cancel`
+entry points. Fresh jobs reject already-cancelled tokens. Errors retain a typed
+`Cancelled::Forced` cause through anyhow context. Existing `Arc<AtomicBool>`
+entry points remain available but cannot request force. Custom `Sequence`
+implementations must override `execute_cancel` to support forced child teardown;
+the default bridge exposes only the legacy flag. For manual scene pipelines,
+call `root.admit()?` once and pass that view through all passes/filter setup;
+keep the root for admitting the next scene. Custom `AndeanCondor`
+implementations must supply the new `process_one_cancel`/`process_all_cancel` methods.
+
+Native decoder/plugin calls already in progress must finish; arbitrary hung
+foreign calls cannot be interrupted safely. Unix children use private process
+groups; Windows uses suspended creation and kill-on-close Job Objects (native
+Windows acceptance remains pending). Deliberately escaping a managed group/job
+is not supported. These library APIs do not register signals or change the CLI's
+keyboard, terminal-exit, or exit-code behavior.
+
 ## Developing
 
 See [Developing and Contributing](https://rust-av.github.io/Av1an/contributing.html) for a guide on developing Av1an and preparing for a Pull Request.

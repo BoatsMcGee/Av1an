@@ -326,6 +326,33 @@ pub fn index_source(
     Ok(())
 }
 
+pub fn index_source_cancel(
+    data: &InputModel,
+    mut progress: impl FnMut(OpenProgress),
+    cancellation: &crate::utils::cancellation::Cancellation,
+) -> Result<()> {
+    if let InputModel::VapourSynth {
+        path,
+        import_method:
+            VapourSynthImportMethod::DGDecNV {
+                dgindexnv_executable,
+            },
+        cache_path,
+        ..
+    } = data
+    {
+        Input::validate(data)?;
+        DGSource::index_video_cancel(
+            path,
+            cache_path.as_deref(),
+            dgindexnv_executable.as_deref(),
+            Some(&mut |current, total| progress(OpenProgress::Indexing { current, total })),
+            cancellation,
+        )?;
+    }
+    Ok(())
+}
+
 /// Opens a VapourSynth input, chaining its filters onto the source node.
 pub fn from_vapoursynth(data: &InputModel, modify_node: Option<ModifyNode>) -> Result<Input> {
     Input::validate(data)?;
@@ -647,15 +674,33 @@ pub fn y4m_frames(
     frame_indices: &[usize],
     window: usize,
 ) -> Result<()> {
+    y4m_frames_cancel(
+        node,
+        frame_sender,
+        frame_indices,
+        window,
+        &crate::utils::cancellation::Cancellation::default(),
+    )
+}
+
+pub fn y4m_frames_cancel(
+    node: &Node<'_>,
+    frame_sender: &crossbeam_channel::Sender<std::io::Cursor<Vec<u8>>>,
+    frame_indices: &[usize],
+    window: usize,
+    cancellation: &crate::utils::cancellation::Cancellation,
+) -> Result<()> {
     let state = Arc::new((Mutex::new((BTreeMap::new(), 0_usize)), Condvar::new()));
     let mut next_request = 0;
     let mut next_send = 0;
 
     let result = (|| -> Result<()> {
         while next_send < frame_indices.len() {
+            cancellation.check_forced()?;
             // Requests run ahead of sends, so frames decode in parallel without
             // all sitting resident at once.
             while next_request < frame_indices.len() && next_request - next_send < window {
+                cancellation.check_forced()?;
                 let state = Arc::clone(&state);
                 let position = next_request;
                 node.get_frame_async(frame_indices[position], move |frame, _index, _node| {
@@ -670,10 +715,14 @@ pub fn y4m_frames(
 
             let frame = {
                 let (lock, condvar) = &*state;
-                let pending = lock.lock().expect("mutex should acquire lock");
-                let mut pending = condvar
-                    .wait_while(pending, |p| !p.0.contains_key(&next_send))
-                    .expect("Condvar should be notified");
+                let mut pending = lock.lock().expect("mutex should acquire lock");
+                while !pending.0.contains_key(&next_send) {
+                    cancellation.check_forced()?;
+                    pending = condvar
+                        .wait_timeout(pending, std::time::Duration::from_millis(10))
+                        .expect("Condvar should be notified")
+                        .0;
+                }
                 pending.0.remove(&next_send).expect("Map should have frame")
             };
             let frame = frame.map_err(|error| {
@@ -687,7 +736,7 @@ pub fn y4m_frames(
             data.extend_from_slice(&payload);
             drop(frame);
 
-            frame_sender.send(std::io::Cursor::new(data))?;
+            cancellation.send(frame_sender, std::io::Cursor::new(data))?;
             next_send += 1;
         }
         Ok(())

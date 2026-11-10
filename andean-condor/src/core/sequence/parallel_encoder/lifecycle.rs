@@ -8,10 +8,12 @@ use std::{
     },
 };
 
+use crate::utils::cancellation::Cancellation;
 use crate::utils::semaphore::Semaphore;
 use anyhow::{Result, anyhow};
 
 pub(super) struct Stop {
+    pub(super) cancellation: Cancellation,
     pub(super) stopped: AtomicBool,
     pub(super) workers: Arc<Semaphore>,
     sender: Mutex<Option<crossbeam_channel::Sender<()>>>,
@@ -19,9 +21,10 @@ pub(super) struct Stop {
 }
 
 impl Stop {
-    pub(super) fn new(workers: usize) -> Self {
+    pub(super) fn new_cancel(workers: usize, cancellation: Cancellation) -> Self {
         let (sender, receiver) = crossbeam_channel::bounded(0);
         Self {
+            cancellation,
             stopped: AtomicBool::new(false),
             workers: Arc::new(Semaphore::new(workers)),
             sender: Mutex::new(Some(sender)),
@@ -38,8 +41,8 @@ impl Stop {
         super::e11_tests::stopped();
     }
 
-    pub(super) fn stopped(&self, cancelled: &AtomicBool) -> bool {
-        self.stopped.load(Ordering::SeqCst) || cancelled.load(Ordering::Relaxed)
+    pub(super) fn stopped(&self, cancelled: &Cancellation) -> bool {
+        self.stopped.load(Ordering::SeqCst) || cancelled.is_cancelled()
     }
 
     /// The guard stops admission before outer permits/receivers are dropped.

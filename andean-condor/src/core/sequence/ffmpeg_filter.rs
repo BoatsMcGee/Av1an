@@ -11,7 +11,7 @@
 
 use std::{
     io::{self, Cursor, Read, Write},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -19,6 +19,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use crate::{core::process::OwnedProcess, utils::cancellation::Cancellation};
 use anyhow::{Context, Result, bail};
 use crossbeam_channel::Receiver;
 
@@ -33,11 +34,12 @@ const STDOUT_READ_SIZE: usize = 64 * 1024;
 ///
 /// Keep this handle with the consumer and call [`Self::check`] when it exits,
 /// not after joining a potentially blocked producer. Dropping it also stops
-/// and joins the stage. Only the owned FFmpeg child is stopped, not descendants.
+/// and joins the stage. Only the owned FFmpeg process group/job is stopped.
 pub struct FfmpegFilter {
     receiver: Option<Receiver<Cursor<Vec<u8>>>>,
     failure: Arc<Mutex<Option<String>>>,
-    child: Child,
+    child: OwnedProcess,
+    cancellation: Cancellation,
     stop: Option<crossbeam_channel::Sender<()>>,
     input_thread: Option<JoinHandle<io::Result<()>>>,
     output_thread: Option<JoinHandle<io::Result<()>>>,
@@ -61,12 +63,32 @@ impl FfmpegFilter {
         graph: &str,
         failure: Arc<Mutex<Option<String>>>,
     ) -> Result<Self> {
+        Self::spawn_cancel(
+            input,
+            output_bound,
+            graph,
+            failure,
+            &Cancellation::default(),
+        )
+    }
+
+    /// Shares the owning scene's forced teardown; local consumer stop remains independent.
+    #[inline]
+    pub fn spawn_cancel(
+        input: Receiver<Cursor<Vec<u8>>>,
+        output_bound: usize,
+        graph: &str,
+        failure: Arc<Mutex<Option<String>>>,
+        cancellation: &Cancellation,
+    ) -> Result<Self> {
+        cancellation.check_admission()?;
         let ffmpeg = which::which("ffmpeg").map_err(|err| {
             anyhow::anyhow!(
                 "FFmpeg is required to apply the filtergraph but was not found in PATH: {err}"
             )
         })?;
-        let mut child = Command::new(ffmpeg)
+        let mut child = OwnedProcess::spawn(
+            Command::new(ffmpeg)
             .arg("-hide_banner")
             .arg("-v")
             .arg("error")
@@ -86,8 +108,9 @@ impl FfmpegFilter {
             .arg("pipe:1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+            .stderr(Stdio::piped()),
+            cancellation,
+        )?;
         let mut stdin = child.stdin.take().expect("FFmpeg should have STDIN");
         let mut stdout = child.stdout.take().expect("FFmpeg should have STDOUT");
         let stderr = child.stderr.take().expect("FFmpeg should have STDERR");
@@ -98,9 +121,11 @@ impl FfmpegFilter {
         // Killing the owned child also releases blocked pipe I/O.
         let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
         let input_stop = stop_rx.clone();
+        let input_cancellation = cancellation.clone();
         let input_thread = thread::spawn(move || {
             loop {
                 crossbeam_channel::select_biased! {
+                    recv(input_cancellation.forced()) -> _ => return Ok(()),
                     recv(input_stop) -> _ => return Ok(()),
                     recv(input) -> chunk => match chunk {
                         Ok(chunk) => stdin.write_all(chunk.get_ref())?,
@@ -114,6 +139,7 @@ impl FfmpegFilter {
         let stderr_thread = spawn_stderr_drain(stderr);
         let output_eof = Arc::new(AtomicBool::new(false));
         let relay_eof = Arc::clone(&output_eof);
+        let output_cancellation = cancellation.clone();
         let output_thread = thread::spawn(move || {
             let mut buffer = vec![0_u8; STDOUT_READ_SIZE];
             loop {
@@ -125,6 +151,7 @@ impl FfmpegFilter {
                         return Ok(());
                     },
                     Ok(read) => crossbeam_channel::select_biased! {
+                        recv(output_cancellation.forced()) -> _ => return Ok(()),
                         recv(stop_rx) -> _ => return Ok(()),
                         send(output_tx, Cursor::new(buffer[..read].to_vec())) -> sent => {
                             if sent.is_err() { return Ok(()); }
@@ -140,6 +167,7 @@ impl FfmpegFilter {
             receiver: Some(output_rx),
             failure,
             child,
+            cancellation: cancellation.clone(),
             stop: Some(stop_tx),
             input_thread: Some(input_thread),
             output_thread: Some(output_thread),
@@ -164,6 +192,7 @@ impl FfmpegFilter {
         if !self.completed {
             self.finish();
         }
+        self.cancellation.check_forced()?;
         if let Some(message) = self.is_failed() {
             bail!(message);
         }
@@ -183,16 +212,8 @@ impl FfmpegFilter {
         // A disconnected consumer may already have caused FFmpeg's SIGPIPE
         // before cleanup runs. Exit status alone cannot identify a real failure.
         let aborted = !self.output_eof.load(Ordering::Acquire);
-        match self.child.try_wait() {
-            Ok(Some(_)) => {},
-            status => {
-                if let Err(err) = status {
-                    errors.push(format!("checking FFmpeg status failed: {err}"));
-                }
-                if aborted && let Err(err) = self.child.kill() {
-                    errors.push(format!("stopping FFmpeg failed: {err}"));
-                }
-            },
+        if aborted && let Err(err) = self.child.kill() {
+            errors.push(format!("stopping FFmpeg failed: {err}"));
         }
         // This stage alone owns/reaps Child. No mutex or completion worker can
         // prevent stop/kill or race take/drop against a blocking wait.

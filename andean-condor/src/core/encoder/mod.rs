@@ -13,6 +13,10 @@ use std::{
     time::Instant,
 };
 
+use crate::{
+    core::process::OwnedProcess,
+    utils::cancellation::{Cancellation, Cancelled},
+};
 use anyhow::{Context, Result, bail};
 use av1_grain::{GrainTableSegment, NoiseGenArgs, TransferFunction, generate_photon_noise_params};
 use cfg_if::cfg_if;
@@ -33,6 +37,10 @@ pub mod color_data;
 pub mod parse;
 pub(crate) mod pipes;
 mod spool;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e12_tests;
 pub mod string_or_bytes;
 pub use capability::{Container, EncoderCapability};
 pub use parse::*;
@@ -41,6 +49,30 @@ use pipes::{PassWorkers, progress_reader, spawn_reader};
 pub use string_or_bytes::StringOrBytes;
 
 const NULL_OUTPUT: &str = if cfg!(windows) { "nul" } else { "/dev/null" };
+
+pub(crate) fn cancellation_result<T>(result: Result<T>, cancellation: &Cancellation) -> Result<T> {
+    if cancellation.is_forced() {
+        return match result {
+            Err(error) => Err(error.context(Cancelled::Forced)),
+            Ok(_) => Err(Cancelled::Forced.into()),
+        };
+    }
+    result
+}
+
+fn pass_result(
+    result: Result<EncoderResult>,
+    cancellation: &Cancellation,
+) -> Result<EncoderResult> {
+    if cancellation.is_forced() {
+        let error = match result {
+            Ok(result) => anyhow::Error::from(result),
+            Err(error) => error,
+        };
+        return Err(error.context(Cancelled::Forced));
+    }
+    result
+}
 
 /// Statistics shared by every pass of one attempt. Clones keep owned files alive.
 ///
@@ -182,6 +214,17 @@ impl Encoder {
         capability::check_capability(self.base(), &executable_path, capability)
     }
 
+    #[inline]
+    pub fn supports_capability_cancel(
+        &self,
+        capability: EncoderCapability,
+        cancellation: &Cancellation,
+    ) -> Result<bool> {
+        cancellation.check_forced()?;
+        let executable = self.resolve_executable()?;
+        capability::check_capability_cancel(self.base(), &executable, capability, cancellation)
+    }
+
     /// The container this encoder binary writes, or `None` when it cannot be
     /// split per scene (Matroska/WebM).
     ///
@@ -191,6 +234,13 @@ impl Encoder {
         let executable_path = self.resolve_executable().ok()?;
 
         capability::encoder_container(self.base(), &executable_path)
+    }
+
+    #[inline]
+    pub fn container_cancel(&self, cancellation: &Cancellation) -> Result<Option<Container>> {
+        cancellation.check_forced()?;
+        let executable = self.resolve_executable()?;
+        capability::encoder_container_cancel(self.base(), &executable, cancellation)
     }
 
     #[inline]
@@ -555,14 +605,39 @@ impl Encoder {
         end_frame: usize,
         progress_tx: mpsc::Sender<EncodeProgress>,
     ) -> Result<EncoderResult> {
+        self.encode_with_input_cancel(
+            input,
+            output,
+            start_frame,
+            end_frame,
+            progress_tx,
+            &Cancellation::default(),
+        )
+    }
+
+    /// Force-capable attempt. Graceful finishes every pass of an admitted scene.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_with_input_cancel(
+        &self,
+        input: &mut Input,
+        output: &Path,
+        start_frame: usize,
+        end_frame: usize,
+        progress_tx: mpsc::Sender<EncodeProgress>,
+        cancellation: &Cancellation,
+    ) -> Result<EncoderResult> {
         self.validate()?;
+        cancellation.check_admission()?;
+        let cancellation = &cancellation.active();
+        let _output = crate::core::process::InterruptedOutput::new(output, cancellation);
         let stats = if matches!(self.passes(), EncoderPasses::All(total) if total > 1) {
             Some(PassStatistics::new(output)?)
         } else {
             None
         };
         match self.passes() {
-            EncoderPasses::All(1) => Ok(self.encode_pass_with_input(
+            EncoderPasses::All(1) => Ok(self.encode_pass_with_input_cancel(
                 input,
                 output,
                 start_frame,
@@ -570,8 +645,9 @@ impl Encoder {
                 (1, 1),
                 progress_tx,
                 None,
+                cancellation,
             )?),
-            EncoderPasses::Specific(current, total) => Ok(self.encode_pass_with_input(
+            EncoderPasses::Specific(current, total) => Ok(self.encode_pass_with_input_cancel(
                 input,
                 output,
                 start_frame,
@@ -579,6 +655,7 @@ impl Encoder {
                 (current, total),
                 progress_tx,
                 None,
+                cancellation,
             )?),
             EncoderPasses::All(total) => {
                 let clip_info = input.clip_info()?;
@@ -591,7 +668,7 @@ impl Encoder {
                 };
                 for pass in 1..=total {
                     let progress_tx = progress_tx.clone();
-                    result = self.encode_pass_with_input(
+                    result = self.encode_pass_with_input_cancel(
                         input,
                         output,
                         start_frame,
@@ -599,6 +676,7 @@ impl Encoder {
                         (pass, total),
                         progress_tx,
                         stats.as_ref(),
+                        cancellation,
                     )?;
                 }
 
@@ -627,9 +705,37 @@ impl Encoder {
         progress_tx: mpsc::Sender<EncodeProgress>,
         stats: Option<&PassStatistics>,
     ) -> Result<EncoderResult> {
+        self.encode_pass_with_input_cancel(
+            input,
+            output,
+            start_frame,
+            end_frame,
+            pass,
+            progress_tx,
+            stats,
+            &Cancellation::default(),
+        )
+    }
+
+    /// Force-capable direct pass; manual multipass callers share one token and statistics.
+    #[inline]
+    #[allow(clippy::too_many_arguments, clippy::unnecessary_debug_formatting)]
+    pub fn encode_pass_with_input_cancel(
+        &self,
+        input: &mut Input,
+        output: &Path,
+        start_frame: usize,
+        end_frame: usize,
+        pass: (u8, u8),
+        progress_tx: mpsc::Sender<EncodeProgress>,
+        stats: Option<&PassStatistics>,
+        cancellation: &Cancellation,
+    ) -> Result<EncoderResult> {
         self.validate_settings()?;
         self.validate_pass_settings(pass)?;
         let executable = self.resolve_executable()?;
+        cancellation.check_admission()?;
+        let _output = crate::core::process::InterruptedOutput::new(output, cancellation);
         let stats_base = stats.map_or_else(
             || absolute_file_path(output).map(|p| p.with_extension("")),
             |s| Ok(s.base().to_path_buf()),
@@ -637,7 +743,6 @@ impl Encoder {
         // TODO:
         // - Report mapped errors
         // - Report CPU, memory, disk usage - Performance testing required
-        // - Support cancellation
 
         let base_encoder = self.base();
         let clip_info = input.clip_info()?;
@@ -645,19 +750,21 @@ impl Encoder {
         let y4m_header = input.y4m_header(Some(end_frame - start_frame))?;
         let mut reader = input.frame_reader()?;
 
-        let mut encoder = Command::new(&executable)
-            .args(&parameters)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Could not spawn {} encoder executable {:?} (resolved to {executable:?})",
-                    self.base(),
-                    self.executable()
-                )
-            })?;
+        let mut encoder = OwnedProcess::spawn(
+            Command::new(&executable)
+                .args(&parameters)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+            cancellation,
+        )
+        .with_context(|| {
+            format!(
+                "Could not spawn {} encoder executable {:?} (resolved to {executable:?})",
+                self.base(),
+                self.executable()
+            )
+        })?;
         let pid = encoder.id();
 
         // Data produced and consumed throughout
@@ -691,12 +798,19 @@ impl Encoder {
             ),
         );
         let stats = stats.cloned();
+        let (reap, drained) = mpsc::channel();
         let encoder_output_thread = thread::spawn(move || {
             // Keep owned statistics until the child is reaped, even on an early input error.
             let _stats = stats;
-            Ok(encoder.wait_with_output()?)
+            drained.recv().context("Waiting for encoder pipes to drain")?;
+            Ok(std::process::Output {
+                status: encoder.wait()?,
+                stdout: vec![],
+                stderr: vec![],
+            })
         });
 
+        let writer_cancellation = cancellation.clone();
         let encoder_stdin_thread = thread::spawn(move || -> Result<()> {
             stdin.write_all(y4m_header.as_bytes())?;
             let mut frames_sent = 0;
@@ -706,7 +820,14 @@ impl Encoder {
                     break;
                 }
 
-                let frame: Vec<u8> = frame_rx.recv()?;
+                let frame: Vec<u8> = loop {
+                    writer_cancellation.check_forced()?;
+                    match frame_rx.recv_timeout(std::time::Duration::from_millis(10)) {
+                        Ok(frame) => break frame,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {},
+                        Err(error) => return Err(error.into()),
+                    }
+                };
                 stdin.write_all(frame.as_bytes())?;
                 frames_sent += 1;
             }
@@ -720,6 +841,7 @@ impl Encoder {
         let decode_start_time = Instant::now();
         let feed_result = (|| -> Result<()> {
             for index in start_frame..end_frame {
+                cancellation.check_forced()?;
                 let frame = reader
                     .y4m_frame(index)
                     .with_context(|| format!("Decoding encoder input frame {index}"))?;
@@ -736,8 +858,10 @@ impl Encoder {
             stdout: encoder_stdout_thread,
             stderr: encoder_stderr_thread,
             wait: encoder_output_thread,
+            reap: Some(reap),
         }
-        .finish(base_encoder, parameters, feed_result)?;
+        .finish(base_encoder, parameters, feed_result);
+        let encoder_result = pass_result(encoder_result, cancellation)?;
         let encode_duration = decode_start_time.elapsed();
 
         if !encoder_result.status.success() {
@@ -772,7 +896,29 @@ impl Encoder {
         progress_tx: mpsc::Sender<EncodeProgress>,
         clip_info: &ClipInfo,
     ) -> Result<EncoderResult> {
+        self.encode_with_stream_cancel(
+            frames_rx,
+            output,
+            progress_tx,
+            clip_info,
+            &Cancellation::default(),
+        )
+    }
+
+    /// Force-capable streaming attempt; an already graceful token admits no new scene.
+    #[inline]
+    pub fn encode_with_stream_cancel(
+        &self,
+        frames_rx: crossbeam_channel::Receiver<Cursor<Vec<u8>>>,
+        output: &Path,
+        progress_tx: mpsc::Sender<EncodeProgress>,
+        clip_info: &ClipInfo,
+        cancellation: &Cancellation,
+    ) -> Result<EncoderResult> {
         self.validate()?;
+        cancellation.check_admission()?;
+        let cancellation = &cancellation.active();
+        let _output = crate::core::process::InterruptedOutput::new(output, cancellation);
         match self.passes() {
             EncoderPasses::All(1) => {
                 let _ = progress_tx.send(EncodeProgress {
@@ -780,13 +926,14 @@ impl Encoder {
                     frame: 0,
                     usage: EncodeResourceUsage::default(),
                 });
-                Ok(self.encode_pass_with_stream(
+                Ok(self.encode_pass_with_stream_cancel(
                     (1, 1),
                     frames_rx,
                     output,
                     progress_tx,
                     clip_info,
                     None,
+                    cancellation,
                 )?)
             },
             EncoderPasses::Specific(current, total) => {
@@ -795,13 +942,14 @@ impl Encoder {
                     frame: 0,
                     usage: EncodeResourceUsage::default(),
                 });
-                Ok(self.encode_pass_with_stream(
+                Ok(self.encode_pass_with_stream_cancel(
                     (current, total),
                     frames_rx,
                     output,
                     progress_tx,
                     clip_info,
                     None,
+                    cancellation,
                 )?)
             },
             EncoderPasses::All(total) => {
@@ -810,21 +958,29 @@ impl Encoder {
                     stats.base().parent().context("Statistics need a parent")?,
                     output,
                 )?;
-                spool::encode(file, frames_rx, output, total, |pass, frames_rx| {
-                    let _ = progress_tx.send(EncodeProgress {
-                        pass: (pass, total),
-                        frame: 0,
-                        usage: EncodeResourceUsage::default(),
-                    });
-                    self.encode_pass_with_stream(
-                        (pass, total),
-                        frames_rx,
-                        output,
-                        progress_tx.clone(),
-                        clip_info,
-                        Some(&stats),
-                    )
-                })
+                spool::encode_cancel(
+                    file,
+                    frames_rx,
+                    output,
+                    total,
+                    cancellation,
+                    |pass, frames_rx| {
+                        let _ = progress_tx.send(EncodeProgress {
+                            pass: (pass, total),
+                            frame: 0,
+                            usage: EncodeResourceUsage::default(),
+                        });
+                        self.encode_pass_with_stream_cancel(
+                            (pass, total),
+                            frames_rx,
+                            output,
+                            progress_tx.clone(),
+                            clip_info,
+                            Some(&stats),
+                            cancellation,
+                        )
+                    },
+                )
             },
         }
     }
@@ -849,9 +1005,35 @@ impl Encoder {
         clip_info: &ClipInfo,
         stats: Option<&PassStatistics>,
     ) -> Result<EncoderResult> {
+        self.encode_pass_with_stream_cancel(
+            pass,
+            frames_rx,
+            output,
+            progress_tx,
+            clip_info,
+            stats,
+            &Cancellation::default(),
+        )
+    }
+
+    /// Force-capable direct streaming pass. All pipe/wait workers join before return.
+    #[inline]
+    #[allow(clippy::too_many_arguments, clippy::unnecessary_debug_formatting)]
+    pub fn encode_pass_with_stream_cancel(
+        &self,
+        pass: (u8, u8),
+        frames_rx: crossbeam_channel::Receiver<Cursor<Vec<u8>>>,
+        output: &Path,
+        progress_tx: mpsc::Sender<EncodeProgress>,
+        clip_info: &ClipInfo,
+        stats: Option<&PassStatistics>,
+        cancellation: &Cancellation,
+    ) -> Result<EncoderResult> {
         self.validate_settings()?;
         self.validate_pass_settings(pass)?;
         let executable = self.resolve_executable()?;
+        cancellation.check_admission()?;
+        let _output = crate::core::process::InterruptedOutput::new(output, cancellation);
         let stats_base = stats.map_or_else(
             || absolute_file_path(output).map(|p| p.with_extension("")),
             |s| Ok(s.base().to_path_buf()),
@@ -860,25 +1042,26 @@ impl Encoder {
         // TODO:
         // - Report mapped errors
         // - Report CPU, memory, disk usage - Done-ish
-        // - Support cancellation
 
         let base_encoder = self.base();
 
         // println!("Encoding with params: {:?}", self.parameters(pass,
         // output)); let mut system = sysinfo::System::new();
-        let mut encoder = Command::new(&executable)
-            .args(&parameters)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Could not spawn {} encoder executable {:?} (resolved to {executable:?})",
-                    self.base(),
-                    self.executable()
-                )
-            })?;
+        let mut encoder = OwnedProcess::spawn(
+            Command::new(&executable)
+                .args(&parameters)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+            cancellation,
+        )
+        .with_context(|| {
+            format!(
+                "Could not spawn {} encoder executable {:?} (resolved to {executable:?})",
+                self.base(),
+                self.executable()
+            )
+        })?;
         // let pid = encoder.id();
 
         // Data produced and consumed throughout
@@ -904,8 +1087,13 @@ impl Encoder {
             progress_reader(base_encoder, pass, progress_tx, false, frames_encoded, None),
         );
 
+        let writer_cancellation = cancellation.clone();
         let encoder_stdin_thread = thread::spawn(move || -> Result<()> {
-            for frame in frames_rx {
+            loop {
+                let frame = crossbeam_channel::select_biased! {
+                    recv(writer_cancellation.forced()) -> _ => return Err(Cancelled::Forced.into()),
+                    recv(frames_rx) -> frame => match frame { Ok(frame) => frame, Err(_) => break },
+                };
                 stdin.write_all(frame.into_inner().as_bytes())?;
             }
 
@@ -915,17 +1103,25 @@ impl Encoder {
         });
 
         let stats = stats.cloned();
+        let (reap, drained) = mpsc::channel();
         let encoder_output_thread = thread::spawn(move || -> Result<_> {
             let _stats = stats;
-            Ok(encoder.wait_with_output()?)
+            drained.recv().context("Waiting for encoder pipes to drain")?;
+            Ok(std::process::Output {
+                status: encoder.wait()?,
+                stdout: vec![],
+                stderr: vec![],
+            })
         });
         let encoder_result = PassWorkers {
             stdin: encoder_stdin_thread,
             stdout: encoder_stdout_thread,
             stderr: encoder_stderr_thread,
             wait: encoder_output_thread,
+            reap: Some(reap),
         }
-        .finish(base_encoder, parameters, Ok(()))?;
+        .finish(base_encoder, parameters, Ok(()));
+        let encoder_result = pass_result(encoder_result, cancellation)?;
         if !encoder_result.status.success() {
             return Err(encoder_result.into());
         }

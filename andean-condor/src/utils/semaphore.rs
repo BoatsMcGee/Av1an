@@ -67,20 +67,33 @@ impl Semaphore {
     /// returned on Drop, including errors and unwinding. `None` means closed.
     #[inline]
     pub fn acquire_owned(self: &Arc<Self>) -> Option<Permit> {
+        self.acquire_owned_cancel(&super::cancellation::Cancellation::default())
+    }
+
+    /// Admission waits observe graceful shutdown even while every worker is busy.
+    #[inline]
+    pub fn acquire_owned_cancel(
+        self: &Arc<Self>,
+        cancellation: &super::cancellation::Cancellation,
+    ) -> Option<Permit> {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        while state.permits == 0 && !state.closed {
+        while state.permits == 0 && !state.closed && !cancellation.is_cancelled() {
             #[cfg(test)]
             {
                 state.waiters += 1;
                 self.waiting.notify_all();
             }
-            state = self.condvar.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = self
+                .condvar
+                .wait_timeout(state, std::time::Duration::from_millis(10))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
             #[cfg(test)]
             {
                 state.waiters -= 1;
             }
         }
-        if state.closed {
+        if state.closed || cancellation.is_cancelled() {
             return None;
         }
         state.permits -= 1;

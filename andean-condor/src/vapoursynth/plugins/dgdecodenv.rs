@@ -299,16 +299,39 @@ impl DGSource {
     ///
     /// DGIndexNV runs out of process, so its console output is read line by
     /// line rather than swallowed by [`Command::output`] and forwarded to
-    /// `progress` as `(current, total)`. Pass `cancelled` to kill the child
-    /// part-way through.
+    /// `progress` as `(current, total)`. This legacy bool entry point is graceful-only;
+    /// use `index_video_cancel` to force teardown of an in-flight index.
     #[inline]
     pub fn index_video(
         source: &Path,
         cache: Option<&Path>,
         executable: Option<&Path>,
-        mut progress: Option<IndexProgress<'_>>,
+        progress: Option<IndexProgress<'_>>,
         cancelled: Option<&AtomicBool>,
     ) -> Result<PathBuf> {
+        // Legacy cancellation is graceful-only: an admitted index finishes.
+        if cancelled.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(crate::utils::cancellation::Cancelled::Graceful.into());
+        }
+        Self::index_video_cancel(
+            source,
+            cache,
+            executable,
+            progress,
+            &crate::utils::cancellation::Cancellation::default(),
+        )
+    }
+
+    /// Owns the indexer's whole process tree through reader completion and reap.
+    #[inline]
+    pub fn index_video_cancel(
+        source: &Path,
+        cache: Option<&Path>,
+        executable: Option<&Path>,
+        mut progress: Option<IndexProgress<'_>>,
+        cancellation: &crate::utils::cancellation::Cancellation,
+    ) -> Result<PathBuf> {
+        cancellation.check_admission()?;
         let absolute_source = absolute(source)?;
         let absolute_cache = if let Some(c_path) = cache {
             absolute(c_path)?
@@ -318,29 +341,27 @@ impl DGSource {
         if absolute_cache.exists() {
             return Ok(absolute_cache);
         }
+        let _partial = crate::core::process::InterruptedOutput::new(&absolute_cache, cancellation);
         // The cache is known missing from here on, so this is the only point
         // that can honestly claim indexing is starting.
         if let Some(progress) = progress.as_mut() {
             (**progress)(0, 0);
         }
 
-        let mut child = Command::new(
-            executable.map_or_else(|| "dgindexnv".to_owned(), |exe| exe.display().to_string()),
-        )
-        .arg("-h")
-        .arg("-i")
-        .arg(&absolute_source)
-        .arg("-o")
-        .arg(&absolute_cache)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|_| VapourSynthError::PluginFunctionError {
-            plugin: DGSource::PLUGIN_NAME.to_owned(),
-            function: DGSource::FUNCTION_NAME.to_owned(),
-            message: "Failed to index video".to_owned(),
-        })?;
+        let mut child = crate::core::process::OwnedProcess::spawn(
+            Command::new(
+                executable.map_or_else(|| "dgindexnv".to_owned(), |exe| exe.display().to_string()),
+            )
+            .arg("-h")
+            .arg("-i")
+            .arg(&absolute_source)
+            .arg("-o")
+            .arg(&absolute_cache)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+            cancellation,
+        )?;
 
         // Drained on its own thread so DGIndexNV can never stall writing to a
         // pipe nobody is reading. Kept for diagnostics; the exit status is
@@ -351,10 +372,10 @@ impl DGSource {
                 function: DGSource::FUNCTION_NAME.to_owned(),
                 message: "Failed to read DGIndexNV stderr".to_owned(),
             })?;
-        let stderr_thread = thread::spawn(move || {
+        let stderr_thread = thread::spawn(move || -> Result<String> {
             let mut captured = String::new();
-            let _ = std::io::Read::read_to_string(&mut stderr, &mut captured);
-            captured
+            std::io::Read::read_to_string(&mut stderr, &mut captured)?;
+            Ok(captured)
         });
 
         let stdout = child.stdout.take().ok_or_else(|| VapourSynthError::PluginFunctionError {
@@ -379,12 +400,6 @@ impl DGSource {
                             (**progress)(current, total);
                         }
                     }
-                    if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Relaxed)) {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        let _ = stderr_thread.join();
-                        anyhow::bail!("indexing of {} was cancelled", source.display());
-                    }
                 },
                 Err(error) => {
                     read_error = Some(error);
@@ -393,15 +408,23 @@ impl DGSource {
             }
         }
         // A failed read must still reap the child, or `dgindexnv` outlives us.
+        let killed = if read_error.is_some() {
+            child.kill()
+        } else {
+            Ok(())
+        };
+        let waited = child.wait();
+        let captured = crate::core::encoder::pipes::join_worker(
+            stderr_thread,
+            "Joining DGIndexNV stderr drain",
+        );
+        cancellation.check_forced()?;
+        killed?;
+        waited?;
+        let captured = captured?;
         if let Some(error) = read_error {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stderr_thread.join();
             return Err(error.into());
         }
-
-        let _ = child.wait()?;
-        let captured = stderr_thread.join().unwrap_or_default();
         if !captured.trim().is_empty() {
             tracing::debug!("DGIndexNV stderr: {}", captured.trim());
         }

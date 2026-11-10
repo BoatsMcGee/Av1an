@@ -18,15 +18,12 @@ use std::{
     fs,
     io::{BufRead, BufReader, BufWriter, Cursor, Read, Write},
     path::{Path, PathBuf},
-    sync::{
-        self, Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::{self, Arc, Mutex, atomic::AtomicBool, mpsc},
     thread,
     time::SystemTime,
 };
 
+use crate::utils::cancellation::Cancellation;
 use anyhow::{Context, Result, bail};
 use thiserror::Error;
 use tracing::debug;
@@ -163,6 +160,39 @@ impl ZonePlan {
     /// encoder binary) runs only when everything else already holds.
     #[inline]
     pub fn try_build(tasks: &[Task]) -> Result<ZonePlan, ZoneIneligible> {
+        let plan = Self::settings(tasks)?;
+        let first = &tasks[0];
+        if !first.encoder.supports_capability(EncoderCapability::Zoning) {
+            return Err(ZoneIneligible::NoZoneSupport);
+        }
+        if first.encoder.container().is_none() {
+            return Err(ZoneIneligible::UnsplittableContainer);
+        }
+        Ok(plan)
+    }
+
+    /// Force-capable eligibility probes. Pure settings checks precede every spawn.
+    #[inline]
+    pub fn try_build_cancel(
+        tasks: &[Task],
+        cancellation: &Cancellation,
+    ) -> anyhow::Result<ZonePlan> {
+        let plan = Self::settings(tasks)?;
+        cancellation.check_admission()?;
+        let first = &tasks[0];
+        if !first
+            .encoder
+            .supports_capability_cancel(EncoderCapability::Zoning, cancellation)?
+        {
+            return Err(ZoneIneligible::NoZoneSupport.into());
+        }
+        if first.encoder.container_cancel(cancellation)?.is_none() {
+            return Err(ZoneIneligible::UnsplittableContainer.into());
+        }
+        Ok(plan)
+    }
+
+    fn settings(tasks: &[Task]) -> Result<ZonePlan, ZoneIneligible> {
         let first = tasks.first().ok_or(ZoneIneligible::Empty)?;
         let base = first.encoder.base();
         if !matches!(
@@ -197,16 +227,6 @@ impl ZonePlan {
 
         let zones = Self::from_tasks(tasks)?;
         let (zone_option, qpfile_content, config_content) = format_zone_options(base, &zones);
-
-        if !first.encoder.supports_capability(EncoderCapability::Zoning) {
-            return Err(ZoneIneligible::NoZoneSupport);
-        }
-        // SVT-AV1 is probed with `--webm 0` (see [`apply_zone_options`]), so a
-        // build that writes Matroska still reports the IVF it will produce.
-        // A build whose output cannot be split per scene is ineligible.
-        if first.encoder.container().is_none() {
-            return Err(ZoneIneligible::UnsplittableContainer);
-        }
 
         Ok(ZonePlan {
             zones,
@@ -433,11 +453,31 @@ impl ZoneEncoder {
     #[inline]
     pub fn encode_tasks(
         input: &mut Input,
-        mut tasks: VecDeque<Task>,
+        tasks: VecDeque<Task>,
         plan: ZonePlan,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        Self::encode_tasks_cancel(input, tasks, plan, progress_tx, cancelled.into())
+    }
+
+    #[inline]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Mirrors the owning parallel job API"
+    )]
+    pub fn encode_tasks_cancel(
+        input: &mut Input,
+        mut tasks: VecDeque<Task>,
+        plan: ZonePlan,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Cancellation,
+    ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        cancelled.check_forced()?;
+        if cancelled.is_cancelled() {
+            return Ok(vec![None; tasks.len()]);
+        }
+        let cancelled = cancelled.active();
         let total_tasks = tasks.len();
         let total_frames: usize = tasks.iter().map(|task| task.frame_indices.len()).sum();
         debug!("Zone encoding {total_tasks} scenes ({total_frames} frames) in one process");
@@ -449,9 +489,12 @@ impl ZoneEncoder {
         let header = Cursor::new(input.y4m_header(Some(total_frames))?.into_bytes());
         let clip_info = input.clip_info()?;
         let mut reader = input.frame_reader()?;
-        let zone_files = apply_zone_options(&mut encoder, &plan, &directory)?;
+        let zone_directory =
+            tempfile::tempdir_in(&directory).context("Creating owned zone files")?;
+        let zone_files = apply_zone_options(&mut encoder, &plan, zone_directory.path())?;
         let extension = encoder.output_extension();
         let whole_output = directory.join(format!("zone-pass.temp.{extension}"));
+        let _partial = crate::core::process::InterruptedOutput::new(&whole_output, &cancelled);
         let discard = {
             let whole_output = whole_output.clone();
             move || {
@@ -486,8 +529,13 @@ impl ZoneEncoder {
         // on it — `differing_field` already rejected the pass otherwise.
         let (encoder_rx, mut filter_stage) = match encoder.ffmpeg_filter() {
             Some(graph) => {
-                let mut stage =
-                    FfmpegFilter::spawn(frames_rx, 8, graph, Arc::new(Mutex::new(None)))?;
+                let mut stage = FfmpegFilter::spawn_cancel(
+                    frames_rx,
+                    8,
+                    graph,
+                    Arc::new(Mutex::new(None)),
+                    &cancelled,
+                )?;
                 (stage.take_receiver()?, Some(stage))
             },
             None => (frames_rx, None),
@@ -495,12 +543,14 @@ impl ZoneEncoder {
         let encode_thread = thread::spawn({
             let encoder = encoder.clone();
             let whole_output = whole_output.clone();
+            let cancelled = cancelled.clone();
             move || {
-                let encoded = encoder.encode_with_stream(
+                let encoded = encoder.encode_with_stream_cancel(
                     encoder_rx,
                     &whole_output,
                     encode_progress_tx,
                     &clip_info,
+                    &cancelled,
                 );
                 let filtered = filter_stage.as_mut().map_or(Ok(()), |stage| stage.check());
                 (encoded, filtered)
@@ -511,18 +561,18 @@ impl ZoneEncoder {
         // responsive: the flag is checked between frames, a full channel
         // blocks only while the encoder lags, and a dead encoder shows up as a
         // failed send.
-        let mut feed_failure = frames_tx.send(header).err().map(anyhow::Error::from);
+        let mut feed_failure = cancelled.send(&frames_tx, header).err();
         'feed: for task in &tasks {
             if feed_failure.is_some() {
                 break;
             }
             for &index in &task.frame_indices {
-                if cancelled.load(Ordering::Relaxed) {
+                if cancelled.is_forced() {
                     break 'feed;
                 }
                 match reader.y4m_frame(index) {
                     Ok(frame) => {
-                        if frames_tx.send(frame).is_err() {
+                        if cancelled.send(&frames_tx, frame).is_err() {
                             break 'feed;
                         }
                     },
@@ -540,9 +590,12 @@ impl ZoneEncoder {
         // The relay ends once the encode thread drops its progress sender.
         relay.join().expect("zone progress relay should join")?;
 
-        if cancelled.load(Ordering::Relaxed) {
+        if cancelled.is_forced() {
             discard();
-            return Ok(vec![None; total_tasks]);
+            return crate::core::encoder::cancellation_result(
+                encoded.map(|_| vec![None; total_tasks]),
+                &cancelled,
+            );
         }
         if let Err(err) = filtered {
             discard();
@@ -569,14 +622,25 @@ impl ZoneEncoder {
         }
         let ended = SystemTime::now();
 
-        let split = match encoder.container() {
-            Some(Container::Ivf) => split_ivf(&whole_output, tasks.make_contiguous(), extension),
+        let split = match encoder.container_cancel(&cancelled)? {
+            Some(Container::Ivf) => split_ivf_cancel(
+                &whole_output,
+                tasks.make_contiguous(),
+                extension,
+                &cancelled,
+            ),
             Some(Container::AnnexB) => {
                 let codec = match first.encoder.base() {
                     EncoderBase::X264 => Codec::H264,
                     _ => Codec::H265,
                 };
-                split_annexb(&whole_output, codec, tasks.make_contiguous(), extension)
+                split_annexb_cancel(
+                    &whole_output,
+                    codec,
+                    tasks.make_contiguous(),
+                    extension,
+                    &cancelled,
+                )
             },
             None => {
                 discard();
@@ -630,7 +694,17 @@ const IVF_NFRAME_OFFSET: usize = 22;
 
 /// Splits a whole-pass IVF file into one file per task, each with the shared
 /// 32-byte file header. Returns `(bytes, frames)` per task.
+#[cfg(test)]
 fn split_ivf(whole_output: &Path, tasks: &[Task], extension: &str) -> Result<Vec<(u64, usize)>> {
+    split_ivf_cancel(whole_output, tasks, extension, &Cancellation::default())
+}
+
+fn split_ivf_cancel(
+    whole_output: &Path,
+    tasks: &[Task],
+    extension: &str,
+    cancellation: &Cancellation,
+) -> Result<Vec<(u64, usize)>> {
     let mut reader = BufReader::new(
         fs::File::open(whole_output)
             .with_context(|| format!("failed to open {}", whole_output.display()))?,
@@ -647,13 +721,19 @@ fn split_ivf(whole_output: &Path, tasks: &[Task], extension: &str) -> Result<Vec
     }
 
     let mut parts: Vec<(PathBuf, u64, usize)> = Vec::with_capacity(tasks.len());
+    let mut partials = Vec::new();
     for task in tasks {
+        cancellation.check_forced()?;
         let expected = task.frame_indices.len();
         // Each part declares only its own frames: the whole-pass count would be
         // summed as duration when the scenes are concatenated back together.
         header[IVF_NFRAME_OFFSET..IVF_NFRAME_OFFSET + 4]
             .copy_from_slice(&(expected as u32).to_le_bytes());
         let temp = task.output.with_extension(format!("temp.{extension}"));
+        partials.push(crate::core::process::InterruptedOutput::new(
+            &temp,
+            cancellation,
+        ));
         let mut output = BufWriter::new(
             fs::File::create(&temp)
                 .with_context(|| format!("failed to create {}", temp.display()))?,
@@ -662,6 +742,7 @@ fn split_ivf(whole_output: &Path, tasks: &[Task], extension: &str) -> Result<Vec
         let mut bytes = 32u64;
         let mut frames = 0usize;
         while frames < expected {
+            cancellation.check_forced()?;
             let mut frame_header = [0u8; 12];
             reader.read_exact(&mut frame_header).with_context(|| {
                 format!(
@@ -688,21 +769,42 @@ fn split_ivf(whole_output: &Path, tasks: &[Task], extension: &str) -> Result<Vec
     if reader.read(&mut trailing)? != 0 {
         bail!("zone output has more frames than the scenes expect");
     }
-    for ((part, _, _), task) in parts.iter().zip(tasks) {
-        fs::rename(part, &task.output)
-            .with_context(|| format!("failed to save {}", task.output.display()))?;
-    }
+    cancellation.publish(|| {
+        for ((part, _, _), task) in parts.iter().zip(tasks) {
+            fs::rename(part, &task.output)
+                .with_context(|| format!("failed to save {}", task.output.display()))?;
+        }
+        Ok(())
+    })?;
+    drop(partials);
     Ok(parts.into_iter().map(|(_, bytes, frames)| (bytes, frames)).collect())
 }
 
 /// Splits a whole-pass Annex-B stream into one file per task. Each file gets
 /// a copy of the headers (SPS/PPS/SEI) that precede the first frame, so every
 /// part decodes standalone like a per-scene encode would.
+#[cfg(test)]
 fn split_annexb(
     whole_output: &Path,
     codec: Codec,
     tasks: &[Task],
     extension: &str,
+) -> Result<Vec<(u64, usize)>> {
+    split_annexb_cancel(
+        whole_output,
+        codec,
+        tasks,
+        extension,
+        &Cancellation::default(),
+    )
+}
+
+fn split_annexb_cancel(
+    whole_output: &Path,
+    codec: Codec,
+    tasks: &[Task],
+    extension: &str,
+    cancellation: &Cancellation,
 ) -> Result<Vec<(u64, usize)>> {
     let file = fs::File::open(whole_output)
         .with_context(|| format!("failed to open {}", whole_output.display()))?;
@@ -712,12 +814,14 @@ fn split_annexb(
     let mut prefix_complete = false;
     let mut parts: Vec<(PathBuf, u64, usize)> = Vec::with_capacity(tasks.len());
     let mut temp = tasks[0].output.with_extension(format!("temp.{extension}"));
+    let mut partials = vec![crate::core::process::InterruptedOutput::new(&temp, cancellation)];
     let mut output = new_part(&temp)?;
     let mut bytes = 0u64;
     let mut frames = 0usize;
     let mut part_index = 0usize;
 
     while let Some(segment) = nals.next_segment()? {
+        cancellation.check_forced()?;
         let frame_start = is_frame_start(codec, &segment);
         if frame_start && frames == tasks[part_index].frame_indices.len() {
             output.flush()?;
@@ -727,6 +831,10 @@ fn split_annexb(
                 bail!("zone output has more frames than the scenes expect");
             }
             temp = tasks[part_index].output.with_extension(format!("temp.{extension}"));
+            partials.push(crate::core::process::InterruptedOutput::new(
+                &temp,
+                cancellation,
+            ));
             output = new_part(&temp)?;
             output.write_all(&prefix)?;
             bytes = prefix.len() as u64;
@@ -764,10 +872,14 @@ fn split_annexb(
             );
         }
     }
-    for (part, task) in parts.iter().zip(tasks) {
-        fs::rename(&part.0, &task.output)
-            .with_context(|| format!("failed to save {}", task.output.display()))?;
-    }
+    cancellation.publish(|| {
+        for (part, task) in parts.iter().zip(tasks) {
+            fs::rename(&part.0, &task.output)
+                .with_context(|| format!("failed to save {}", task.output.display()))?;
+        }
+        Ok(())
+    })?;
+    drop(partials);
     Ok(parts.into_iter().map(|(_, bytes, frames)| (bytes, frames)).collect())
 }
 

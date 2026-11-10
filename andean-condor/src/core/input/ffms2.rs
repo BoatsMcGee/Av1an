@@ -243,6 +243,31 @@ pub fn index_video_with_progress(
     )?)
 }
 
+pub fn index_video_cancel(
+    path: &Path,
+    cache_path: Option<&Path>,
+    mut progress: Option<IndexProgress<'_>>,
+    cancellation: &crate::utils::cancellation::Cancellation,
+) -> Result<bool> {
+    cancellation.check_admission()?;
+    let mut default_cache = path.as_os_str().to_os_string();
+    default_cache.push(".ffindex");
+    let default_cache = std::path::PathBuf::from(default_cache);
+    let _partial = crate::core::process::InterruptedOutput::new(
+        cache_path.unwrap_or(&default_cache),
+        cancellation,
+    );
+    let mut report = |percentage: u8| {
+        if let Some(progress) = progress.as_mut() {
+            (**progress)(u64::from(percentage), 100);
+        }
+    };
+    let cancelled = || cancellation.is_forced();
+    let result = Ffms2Decoder::build_index(path, cache_path, Some(&mut report), Some(&cancelled));
+    cancellation.check_forced()?;
+    Ok(result?)
+}
+
 /// Writes a single decoded frame to `stream` as a complete y4m frame.
 pub fn y4m_frame(decoder: &mut Decoder, index: usize, stream: &mut Vec<u8>) -> Result<()> {
     pack_frame(decoder, index, stream)

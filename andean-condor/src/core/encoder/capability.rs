@@ -7,6 +7,7 @@ use std::{
 };
 
 use crate::models::encoder::EncoderBase;
+use crate::{core::process::OwnedProcess, utils::cancellation::Cancellation};
 
 /// Capabilities that need to be checked per encoder binary
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -83,35 +84,37 @@ fn probe_capability(
     encoder_base: EncoderBase,
     executable: &Path,
     capability: EncoderCapability,
+    cancellation: &Cancellation,
 ) -> bool {
     match capability {
         EncoderCapability::SvtAv1QuarterStepCrf => {
             if encoder_base != EncoderBase::SVTAV1 {
                 return false;
             }
-            svt_av1_supports_quarter_step_crf(executable)
+            svt_av1_supports_quarter_step_crf(executable, cancellation)
         },
-        EncoderCapability::Zoning => probe_zoning(encoder_base, executable),
+        EncoderCapability::Zoning => probe_zoning(encoder_base, executable, cancellation),
     }
 }
 
-fn svt_av1_supports_quarter_step_crf(executable: &Path) -> bool {
-    let Ok(mut child) = Command::new(executable)
-        .args([
-            "-i",
-            "stdin",
-            "--crf",
-            "50.75",
-            "-b",
-            crate::core::encoder::NULL_OUTPUT,
-            "--progress",
-            "0",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+fn svt_av1_supports_quarter_step_crf(executable: &Path, cancellation: &Cancellation) -> bool {
+    let Ok(mut child) = OwnedProcess::spawn(
+        Command::new(executable)
+            .args([
+                "-i",
+                "stdin",
+                "--crf",
+                "50.75",
+                "-b",
+                crate::core::encoder::NULL_OUTPUT,
+                "--progress",
+                "0",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+        cancellation,
+    ) else {
         return false;
     };
 
@@ -128,7 +131,7 @@ fn svt_av1_supports_quarter_step_crf(executable: &Path) -> bool {
 /// arguments together with a forced keyframe at a zone boundary.
 ///
 /// Returns `false` on any failure.
-fn probe_zoning(encoder_base: EncoderBase, executable: &Path) -> bool {
+fn probe_zoning(encoder_base: EncoderBase, executable: &Path, cancellation: &Cancellation) -> bool {
     let (args, bit_depth, zone_file) = match encoder_base {
         EncoderBase::X264 => (
             vec![
@@ -220,12 +223,14 @@ fn probe_zoning(encoder_base: EncoderBase, executable: &Path) -> bool {
         _ => return false,
     };
 
-    let spawned = Command::new(executable)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    let spawned = OwnedProcess::spawn(
+        Command::new(executable)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+        cancellation,
+    );
     let Ok(mut child) = spawned else {
         if let Some(path) = &zone_file {
             let _ = std::fs::remove_file(path);
@@ -268,6 +273,17 @@ pub(crate) fn detect_container(bytes: &[u8]) -> Option<Container> {
 /// A probe failure is reported as `AnnexB` for the Annex-B encoders, which
 /// always write Annex-B, and `None` otherwise.
 pub(crate) fn encoder_container(encoder_base: EncoderBase, executable: &Path) -> Option<Container> {
+    encoder_container_cancel(encoder_base, executable, &Cancellation::default())
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn encoder_container_cancel(
+    encoder_base: EncoderBase,
+    executable: &Path,
+    cancellation: &Cancellation,
+) -> anyhow::Result<Option<Container>> {
+    cancellation.check_forced()?;
     let key = BinaryKey {
         encoder_base,
         executable: executable.to_path_buf(),
@@ -275,7 +291,7 @@ pub(crate) fn encoder_container(encoder_base: EncoderBase, executable: &Path) ->
     if let Ok(cache) = CONTAINER_CACHE.read()
         && let Some(container) = cache.get(&key)
     {
-        return Some(*container);
+        return Ok(Some(*container));
     }
 
     let container = match encoder_base {
@@ -283,12 +299,13 @@ pub(crate) fn encoder_container(encoder_base: EncoderBase, executable: &Path) ->
         // Probed from real output below.
         _ => None,
     }
-    .or_else(|| probe_container(&key));
+    .or_else(|| probe_container(&key, cancellation));
+    cancellation.check_forced()?;
 
     if let (Ok(mut cache), Some(container)) = (CONTAINER_CACHE.write(), container) {
         cache.insert(key, container);
     }
-    container
+    Ok(container)
 }
 
 /// Whether the SVT-AV1 binary was built with WebM IO, which makes it write
@@ -296,7 +313,7 @@ pub(crate) fn encoder_container(encoder_base: EncoderBase, executable: &Path) ->
 ///
 /// `--webm` is absent from a stock build, so the option is probed by name
 /// rather than assumed.
-fn supports_webm_io(executable: &Path) -> bool {
+fn supports_webm_io(executable: &Path, cancellation: &Cancellation) -> bool {
     static CACHE: LazyLock<RwLock<HashMap<PathBuf, bool>>> =
         LazyLock::new(|| RwLock::new(HashMap::new()));
     if let Ok(cache) = CACHE.read()
@@ -304,18 +321,33 @@ fn supports_webm_io(executable: &Path) -> bool {
     {
         return supported;
     }
-    let supported = Command::new(executable)
-        .arg("--full-help")
-        .output()
-        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("--webm"));
-    if let Ok(mut cache) = CACHE.write() {
+    let supported = OwnedProcess::spawn(
+        Command::new(executable)
+            .arg("--full-help")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+        cancellation,
+    )
+    .is_ok_and(|mut child| {
+        let mut output = Vec::new();
+        let read = std::io::Read::read_to_end(
+            &mut child.stdout.take().expect("piped help output"),
+            &mut output,
+        );
+        let waited = child.wait();
+        read.is_ok() && waited.is_ok() && String::from_utf8_lossy(&output).contains("--webm")
+    });
+    if !cancellation.is_forced()
+        && let Ok(mut cache) = CACHE.write()
+    {
         cache.insert(executable.to_path_buf(), supported);
     }
     supported
 }
 
 /// Encodes one throwaway frame and inspects the container it produced.
-fn probe_container(key: &BinaryKey) -> Option<Container> {
+fn probe_container(key: &BinaryKey, cancellation: &Cancellation) -> Option<Container> {
     if key.encoder_base != EncoderBase::SVTAV1 {
         return None;
     }
@@ -336,16 +368,17 @@ fn probe_container(key: &BinaryKey) -> Option<Container> {
     // A WebM IO build writes Matroska by default; Zone Encoder passes this to
     // force the IVF it can split, so the probe must pass it too or it reports
     // a different container than the encode produces.
-    if supports_webm_io(&key.executable) {
+    if supports_webm_io(&key.executable, cancellation) {
         args.extend(["--webm".to_owned(), "0".to_owned()]);
     }
-    let Ok(mut child) = Command::new(&key.executable)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
+    let Ok(mut child) = OwnedProcess::spawn(
+        Command::new(&key.executable)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+        cancellation,
+    ) else {
         return None;
     };
     if let Some(stdin) = child.stdin.take() {
@@ -366,6 +399,22 @@ pub(crate) fn check_capability(
     executable: &Path,
     capability: EncoderCapability,
 ) -> bool {
+    check_capability_cancel(
+        encoder_base,
+        executable,
+        capability,
+        &Cancellation::default(),
+    )
+    .unwrap_or(false)
+}
+
+pub(crate) fn check_capability_cancel(
+    encoder_base: EncoderBase,
+    executable: &Path,
+    capability: EncoderCapability,
+    cancellation: &Cancellation,
+) -> anyhow::Result<bool> {
+    cancellation.check_forced()?;
     let key = BinaryKey {
         encoder_base,
         executable: executable.to_path_buf(),
@@ -375,15 +424,16 @@ pub(crate) fn check_capability(
     if let Ok(cache) = CAPABILITY_CACHE.read()
         && let Some(&supported) = cache.get(&(key.clone(), capability))
     {
-        return supported;
+        return Ok(supported);
     }
 
     // Write result to cache
-    let supported = probe_capability(encoder_base, &key.executable, capability);
+    let supported = probe_capability(encoder_base, &key.executable, capability, cancellation);
+    cancellation.check_forced()?;
 
     if let Ok(mut cache) = CAPABILITY_CACHE.write() {
         cache.insert((key, capability), supported);
     }
 
-    supported
+    Ok(supported)
 }

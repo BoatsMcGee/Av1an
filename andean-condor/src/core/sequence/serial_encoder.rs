@@ -101,9 +101,23 @@ where
     fn execute(
         &mut self,
         condor: &mut Condor<DataHandler, ConfigHandler>,
-        _progress_tx: sync::mpsc::Sender<SequenceStatus>,
-        _cancelled: Arc<AtomicBool>,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Arc<AtomicBool>,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        self.execute_cancel(condor, progress_tx, cancelled.into())
+    }
+
+    #[inline]
+    fn execute_cancel(
+        &mut self,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
+        _progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancellation: crate::utils::cancellation::Cancellation,
+    ) -> Result<((), Vec<anyhow::Error>)> {
+        cancellation.check_forced()?;
+        if cancellation.is_cancelled() {
+            return Ok(((), Vec::new()));
+        }
         let mut warnings = vec![];
         if condor.scenes.is_empty() {
             warnings.push(anyhow::Error::new(SerialEncoderError::NoScenes));
@@ -168,6 +182,11 @@ where
 
         let scenes_result = (|| -> Result<()> {
             for (index, scene) in &mut condor.scenes.iter_mut().enumerate() {
+                cancellation.check_forced()?;
+                if cancellation.is_cancelled() {
+                    break;
+                }
+                let active = cancellation.active();
                 let scene_encoder = scene.encoder.clone();
                 let progress_tx_clone = progress_tx.clone();
                 let scene_id = SerialEncoder::scene_id(index);
@@ -185,11 +204,12 @@ where
                 });
 
                 let encoder_thread = thread::spawn(move || -> Result<()> {
-                    scene_encoder.encode_with_stream(
+                    scene_encoder.encode_with_stream_cancel(
                         frames_rx,
                         &output,
                         scene_progress_tx,
                         &clip_info,
+                        &active,
                     )?;
 
                     Ok(())
@@ -198,7 +218,7 @@ where
                 let feed = (|| -> Result<()> {
                     frames_tx.send(Cursor::new(Vec::from(y4m_header.as_bytes())))?;
                     let frame_indices = (scene.start_frame..scene.end_frame).collect::<Vec<_>>();
-                    input.y4m_frames(frames_tx, &frame_indices)
+                    input.y4m_frames_cancel(frames_tx, &frame_indices, &cancellation)
                 })();
                 let encoded = join_worker(encoder_thread, "Joining serial scene encoder");
                 let relayed =

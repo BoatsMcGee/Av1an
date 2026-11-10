@@ -1,11 +1,7 @@
 //! Bounded frame streaming; active finite jobs finish on admission shutdown.
-use std::{
-    collections::VecDeque,
-    io::Cursor,
-    sync::atomic::{AtomicBool, AtomicUsize},
-    thread,
-};
+use std::{collections::VecDeque, io::Cursor, sync::atomic::AtomicUsize, thread};
 
+use crate::utils::cancellation::Cancellation;
 use anyhow::Result;
 
 use super::{
@@ -25,7 +21,7 @@ impl ParallelEncoder {
         window: usize,
         tasks: VecDeque<Task>,
         progress_tx: &std::sync::mpsc::Sender<SequenceStatus>,
-        cancelled: &AtomicBool,
+        cancelled: &Cancellation,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
@@ -52,7 +48,7 @@ impl ParallelEncoder {
             task_tx.send(task)?;
         }
         drop(task_tx);
-        let stop = Stop::new(workers);
+        let stop = Stop::new_cancel(workers, cancelled.clone());
         let total_final = AtomicUsize::new(0);
         stop.catch_panic("Streaming scheduling", || {
             thread::scope(|scope| {
@@ -127,10 +123,11 @@ impl ParallelEncoder {
                                                             "produce",
                                                             task.original_index,
                                                         )?;
-                                                        reader.y4m_frames(
+                                                        reader.y4m_frames_cancel(
                                                             &tx,
                                                             &task.frame_indices,
                                                             window,
+                                                            cancelled,
                                                         )
                                                     },
                                                 );
@@ -158,29 +155,35 @@ impl ParallelEncoder {
                                                 return Err(err);
                                             }
                                             let ended = std::time::SystemTime::now();
+                                            cancelled.check_forced()?;
                                             let bytes = temp.path.metadata()?.len();
-                                            finalize_scene(
-                                                SceneOutcome {
-                                                    temp_output: temp.path.clone(),
+                                            let result = cancelled.publish(|| {
+                                                finalize_scene(
+                                                    SceneOutcome {
+                                                        temp_output: temp.path.clone(),
+                                                        bytes,
+                                                        usable: true,
+                                                    },
+                                                    &task.output,
+                                                    task.original_index,
+                                                    progress_tx,
+                                                    &stop.stopped,
+                                                )?;
+                                                let result = ParallelEncoderResult {
+                                                    scene: task.original_index,
+                                                    started,
+                                                    ended,
                                                     bytes,
-                                                    usable: true,
-                                                },
-                                                &task.output,
-                                                task.original_index,
-                                                progress_tx,
-                                                &stop.stopped,
-                                            )?;
-                                            let result = ParallelEncoderResult {
-                                                scene: task.original_index,
-                                                started,
-                                                ended,
-                                                bytes,
-                                                bitrate: (bytes * 8) as f64
-                                                    / (task.frame_indices.len() as f64 / framerate),
-                                                result: result.expect("successful consumer result"),
-                                            };
-                                            results_tx.send(result.clone())?;
-                                            finished.release();
+                                                    bitrate: (bytes * 8) as f64
+                                                        / (task.frame_indices.len() as f64
+                                                            / framerate),
+                                                    result: result
+                                                        .expect("successful consumer result"),
+                                                };
+                                                results_tx.send(result.clone())?;
+                                                finished.release();
+                                                Ok(result)
+                                            })?;
                                             Ok(result)
                                         },
                                     )?;

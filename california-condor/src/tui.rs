@@ -90,10 +90,22 @@ fn finish_stage(
 /// Returns the input together with its probed clip info, so callers do not have
 /// to reopen it just to read the header.
 pub fn open_input(data: &InputModel, cancelled: &Arc<AtomicBool>) -> Result<(Input, ClipInfo)> {
+    // Compatibility entry point: OS/keyboard force escalation is owned by T06.
+    open_input_cancel(
+        data,
+        &andean_condor::utils::cancellation::Cancellation::from(Arc::clone(cancelled)),
+    )
+}
+
+/// Library callers can retain this token across opening and sequence execution.
+pub fn open_input_cancel(
+    data: &InputModel,
+    cancellation: &andean_condor::utils::cancellation::Cancellation,
+) -> Result<(Input, ClipInfo)> {
     info!("Opening input...");
     // FFMS2 reports every whole percent, so only the tens are worth a line.
     let mut last_decile = 0;
-    let mut input = Input::ensure_indexed(
+    let mut input = Input::ensure_indexed_cancel(
         data,
         |progress| {
             let OpenProgress::Indexing { current, total } = progress else {
@@ -108,7 +120,7 @@ pub fn open_input(data: &InputModel, cancelled: &Arc<AtomicBool>) -> Result<(Inp
                 trace!("Indexing input: {}%", decile * 10);
             }
         },
-        Some(cancelled),
+        cancellation,
     )?;
     let clip_info = input.clip_info()?;
     Ok((input, clip_info))

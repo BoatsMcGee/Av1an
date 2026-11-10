@@ -9,6 +9,7 @@ use std::{
     thread,
 };
 
+use crate::utils::cancellation::Cancellation;
 use anyhow::Result;
 use crossbeam_channel::Receiver;
 use tracing::debug;
@@ -42,6 +43,7 @@ pub(super) fn spawn_filter(
     task: &Task,
     filter_failures: Option<&BTreeMap<usize, Arc<Mutex<Option<String>>>>>,
     window: usize,
+    cancellation: &Cancellation,
 ) -> Result<FilteredFrames> {
     match task.encoder.ffmpeg_filter() {
         Some(graph) => {
@@ -49,7 +51,8 @@ pub(super) fn spawn_filter(
                 .and_then(|cells| cells.get(&task.original_index))
                 .cloned()
                 .unwrap_or_else(|| Arc::new(Mutex::new(None)));
-            let mut stage = FfmpegFilter::spawn(frames_rx, window, graph, failure)?;
+            let mut stage =
+                FfmpegFilter::spawn_cancel(frames_rx, window, graph, failure, cancellation)?;
             Ok((stage.take_receiver()?, Some(stage)))
         },
         None => Ok((frames_rx, None)),
@@ -110,7 +113,8 @@ pub(super) fn consume_frames(
     if let Some(result) = super::e28_tests::consume(task, &frames, temp, stop) {
         return result;
     }
-    let (frames, mut filter) = spawn_filter(frames, task, None, window)?;
+    let cancellation = &stop.cancellation.active();
+    let (frames, mut filter) = spawn_filter(frames, task, None, window, cancellation)?;
     thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel::<EncodeProgress>();
         let relay = scope.spawn(move || {
@@ -136,8 +140,14 @@ pub(super) fn consume_frames(
             super::e11_tests::fault("worker", task.original_index)?;
             let result = task
                 .encoder
-                .encode_with_stream(frames, temp, tx, clip_info)
-                .or_else(anyhow::Error::downcast::<EncoderResult>);
+                .encode_with_stream_cancel(frames, temp, tx, clip_info, cancellation)
+                .or_else(|error| {
+                    if error.is::<crate::utils::cancellation::Cancelled>() {
+                        Err(error)
+                    } else {
+                        error.downcast::<EncoderResult>()
+                    }
+                });
             #[cfg(all(test, target_os = "linux"))]
             super::e28_tests::consumer_closed("encoder");
             result
@@ -163,7 +173,11 @@ pub(super) fn consume_frames(
             ))
         });
         // The filter's diagnostic explains truncated-input fallout best.
-        let mut error = filtered.err();
+        let mut error = if cancellation.is_forced() {
+            None
+        } else {
+            filtered.err()
+        };
         let result = match encoded {
             Ok(result) if result.status.success() => Some(result),
             Ok(result) => {
@@ -212,6 +226,18 @@ impl ParallelEncoder {
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        Self::encode_tasks_cancel(input, workers, tasks, progress_tx, cancelled.into())
+    }
+
+    /// Force-capable public dispatcher; all active worker owners join before return.
+    #[inline]
+    pub fn encode_tasks_cancel(
+        input: &mut Input,
+        workers: u8,
+        tasks: VecDeque<Task>,
+        progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Cancellation,
+    ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
         }
@@ -235,14 +261,25 @@ impl ParallelEncoder {
     }
 
     #[inline]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Own the shared token through all worker joins"
+    )]
     pub(super) fn encode_tasks_with_sender(
         input: &mut Input,
         workers: u8,
         tasks: VecDeque<Task>,
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
-        cancelled: Arc<AtomicBool>,
+        cancelled: Cancellation,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        if workers == 0 {
+            anyhow::bail!(ParallelEncoderError::NoWorkers);
+        }
+        cancelled.check_forced()?;
+        if cancelled.is_cancelled() {
+            return Ok(vec![None; tasks.len()]);
+        }
         // Nonstream VS decoding stays on this thread; both paths bound workers.
         if input.streams_concurrently() {
             return Self::encode_tasks_streaming(
@@ -259,7 +296,7 @@ impl ParallelEncoder {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
         }
         let clip_info = input.clip_info()?;
-        let stop = Stop::new(workers.into());
+        let stop = Stop::new_cancel(workers.into(), cancelled.clone());
         let total_final = AtomicUsize::new(0);
         let total_frames = tasks.iter().map(|task| task.frame_indices.len()).sum();
         let total_tasks = tasks.len();
@@ -311,16 +348,20 @@ impl ParallelEncoder {
                                 guard.success();
                                 return Ok(None);
                             }
-                            let ended = std::time::SystemTime::now();
+                             let ended = std::time::SystemTime::now();
+                             cancelled.check_forced()?;
                             let bytes = temp.path.metadata()?.len();
                             let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
                             // Preserve the existing nonstream bitrate calculation (unrelated to E28).
                             let bitrate = (bytes * 8) as f64 / (task.frame_indices.len() as f64 * framerate);
-                            finalize_scene(SceneOutcome { temp_output: temp.path.clone(), bytes, usable: true },
-                                &task.output, task.original_index, &progress_tx, &stop.stopped)?;
-                            let result = report_result(&results_tx, &finished, ParallelEncoderResult {
-                                scene: task.original_index, started, ended, bytes, bitrate, result,
-                            })?;
+                             let result = cancelled.publish(|| {
+                             finalize_scene(SceneOutcome { temp_output: temp.path.clone(), bytes, usable: true },
+                                 &task.output, task.original_index, &progress_tx, &stop.stopped)?;
+                             let result = report_result(&results_tx, &finished, ParallelEncoderResult {
+                                 scene: task.original_index, started, ended, bytes, bitrate, result,
+                             })?;
+                             Ok(result)
+                             })?;
                             guard.success();
                             Ok(Some(result))
                         });
@@ -353,7 +394,7 @@ impl ParallelEncoder {
                     super::e28_tests::before_admission(&stop, task);
                     // Reserve a real worker before creating/decoding its input.
                     // The worker owns this permit through completion, never reacquires it.
-                    let Some(permit) = stop.workers.acquire_owned() else {
+                    let Some(permit) = stop.workers.acquire_owned_cancel(&cancelled) else {
                         break;
                     };
                     if stop.stopped(&cancelled) {
@@ -373,7 +414,7 @@ impl ParallelEncoder {
                         },
                     }
                     #[cfg(all(test, target_os = "linux"))]
-                    super::e28_tests::after_handoff(&cancelled);
+                    super::e28_tests::after_handoff(&cancelled.legacy_flag());
                     // The worker owns the stop check after handoff. If it has
                     // started, graceful cancellation must still feed its input.
                     #[cfg(all(test, target_os = "linux"))]
@@ -394,7 +435,7 @@ impl ParallelEncoder {
                     super::e11_tests::fault("decode", task.original_index)?;
                     #[cfg(all(test, target_os = "linux"))]
                     super::e28_tests::before_frames(&stop);
-                    let produced = input.y4m_frames(frames_tx.clone(), &task.frame_indices);
+                    let produced = input.y4m_frames_cancel(frames_tx.clone(), &task.frame_indices, &cancelled);
                     #[cfg(all(test, target_os = "linux"))]
                     super::e28_tests::producer_returned(&produced);
                     if let Err(err) = produced {
@@ -478,8 +519,7 @@ impl ParallelEncoder {
             error.map_or_else(|| Ok(results), Err)
         }));
         drop(progress_tx);
-        drop(cancelled);
-        results
+        crate::core::encoder::cancellation_result(results, &cancelled)
     }
 }
 

@@ -136,6 +136,7 @@ pub(super) struct PassWorkers {
     pub stdout: JoinHandle<Result<PipeOutput>>,
     pub stderr: JoinHandle<Result<PipeOutput>>,
     pub wait: JoinHandle<Result<Output>>,
+    pub reap: Option<mpsc::Sender<()>>,
 }
 
 impl PassWorkers {
@@ -149,6 +150,9 @@ impl PassWorkers {
         let stdin = join_worker(self.stdin, "Writing encoder STDIN");
         let stdout = join_worker(self.stdout, "Reading encoder STDOUT");
         let stderr = join_worker(self.stderr, "Reading encoder STDERR");
+        if let Some(reap) = self.reap {
+            let _ = reap.send(());
+        }
         let wait = join_worker(self.wait, "Waiting for encoder child");
         let mut failures = Vec::new();
         for result in [feed, stdin] {
@@ -356,6 +360,7 @@ mod tests {
             let writer_done = Completion(Arc::clone(&completed));
             let wait_done = Completion(Arc::clone(&completed));
             let workers = PassWorkers {
+                reap: None,
                 stdin: thread::spawn(move || {
                     let _done = writer_done;
                     assert!(!panic, "injected writer panic");
