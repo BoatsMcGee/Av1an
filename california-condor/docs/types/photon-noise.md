@@ -10,11 +10,36 @@ Film Grain Synthesis tables generated from an ISO strength. Used by `--photon-no
 | `chroma_iso` | Integer | No       | Chroma grain ISO strength (`--chroma-noise`, defaults to `iso`) |
 | `width`      | Integer | No       | Grain table width                                        |
 | `height`     | Integer | No       | Grain table height                                       |
-| `c_y`        | List    | No       | Custom luma AR coefficients (max 24)                     |
-| `ccb`        | List    | No       | Custom chroma-blue AR coefficients (max 25)              |
-| `ccr`        | List    | No       | Custom chroma-red AR coefficients (max 25)               |
+| `c_y`        | List    | No       | Custom luma AR coefficients; determines lag              |
+| `ccb`        | List    | No       | Custom chroma-blue AR coefficients                       |
+| `ccr`        | List    | No       | Custom chroma-red AR coefficients                        |
 
 The `fgs` [filter](./filters.md) exposes the same struct plus `dynamic_seed` (randomize grain seed per frame).
+
+## Coefficient shapes
+
+Effective coefficient lengths must match exactly:
+
+| Lag | `c_y` (`N`) | `ccb` and `ccr` (each `N+1`) |
+| --- | ----------- | -------------------------- |
+| 0   | 0           | 1                          |
+| 1   | 4           | 5                          |
+| 2   | 12          | 13                         |
+| 3   | 24          | 25                         |
+
+Omitted or `null` coefficients inherit generator defaults: `c_y=[]`,
+`ccb=[0]`, `ccr=[0]` (lag 0). Explicit `[]` supplies zero coefficients:
+valid for luma lag 0, invalid for either chroma plane. Partial overrides are
+allowed only when all effective lengths match. Changing luma to a nonzero lag
+requires supplying both chroma vectors at the matching length. Coefficients
+are never padded or truncated.
+
+These rules cover generated parameters with luma scaling points and the
+supported text-table format, which requires `N+1` chroma slots even when
+chroma is inactive or output is monochrome. Arbitrary segments without luma
+scaling points are unsupported. Native AV1 chroma AR signaling is conditional:
+only active planes (including chroma-from-luma) signal coefficients, and
+monochrome suppresses chroma fields.
 
 ## Compatibility
 

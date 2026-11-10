@@ -85,8 +85,8 @@ encoder before opening/indexing the source or launching workers.
   SVT bitrate limits and exact quarter-step CRF are deliberate checks: values
   the native encoder would clamp or truncate are rejected rather than changed.
 - Chroma Photon Noise needs a supplied or existing luma table. A chroma-only
-  update retains that table's other settings. Coefficient limits are 24 for
-  `c_y` and 25 each for `ccb`/`ccr`; ISO zero is allowed.
+  update retains that table's other settings; ISO zero is allowed. Custom
+  coefficients must follow the [exact shapes and inheritance rules](../../types/photon-noise.md#coefficient-shapes).
 - Photon Noise requests on unsupported backends and `--ffmpeg-filter` on the
   FFmpeg encoder are errors, not ignored flags. Use FFmpeg's `-vf` in `options`.
 
