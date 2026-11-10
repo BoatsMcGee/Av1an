@@ -9,13 +9,15 @@ fn publish_pid(path: PathBuf, pid: u32) -> io::Result<()> {
 fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|a| a == "--complete") { return Ok(()); }
-    if args.get(1).is_some_and(|a| a == "supervise") {
+    if args.get(1).is_some_and(|a| a == "supervise" || a == "supervise-i13") {
         use std::os::unix::process::CommandExt;
         // SAFETY: This isolated Linux subreaper takes integer arguments only.
         assert_eq!(unsafe { prctl(36, 1_usize, 0_usize, 0_usize, 0_usize) }, 0);
         let root = PathBuf::from(&args[3]);
         let case = &args[4];
-        let mut child = Command::new(&args[2]).args(["--exact", "core::encoder::e12_tests::e12_scene_child", "--nocapture"]).env("E12_ROOT", &root).env("E12_CASE", case).process_group(0).spawn()?;
+        let i13 = args[1] == "supervise-i13";
+        let test = if i13 { "core::input::vapoursynth::i13_tests::i13_index_child" } else { "core::encoder::e12_tests::e12_scene_child" };
+        let mut child = Command::new(&args[2]).args(["--exact", test, "--nocapture"]).env(if i13 { "I13_ROOT" } else { "E12_ROOT" }, &root).env(if i13 { "I13_CASE" } else { "E12_CASE" }, case).process_group(0).spawn()?;
         let start = Instant::now();
         let mut rescued = 0;
         let status = loop {
@@ -28,6 +30,16 @@ fn main() -> io::Result<()> {
                     if let Ok(pid) = fs::read_to_string(root.join(name)).and_then(|s| s.parse::<i32>().map_err(io::Error::other)) {
                         // SAFETY: PIDs came only from this private finite fixture.
                         unsafe { kill(pid, 9); }
+                    }
+                }
+                if i13 && case == "concurrent" {
+                    for entry in fs::read_dir(&root)? {
+                        let path = entry?.path();
+                        if path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("leader-")) {
+                            let pid = fs::read_to_string(path)?.parse::<i32>().map_err(io::Error::other)?;
+                            // SAFETY: Each PID is a child handshake in this private fixture directory.
+                            unsafe { kill(pid, 9); }
+                        }
                     }
                 }
                 break child.wait()?;
@@ -47,6 +59,48 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
     let value = |key: &str| args.windows(2).find(|a| a[0] == key).map(|a| a[1].clone());
+    if let Some(root) = std::env::var_os("I13_ROOT") {
+        let root = PathBuf::from(root);
+        let case = std::env::var("I13_CASE").expect("case");
+        writeln!(fs::OpenOptions::new().create(true).append(true).open(root.join("invocations"))?, "run")?;
+        let output = PathBuf::from(value("-o").expect("output"));
+        fs::write(root.join(format!("argv-{}", std::process::id())), args[1..].join("\n"))?;
+        let leader = if case == "concurrent" { format!("leader-{}", std::process::id()) } else { "leader".into() };
+        publish_pid(root.join(leader), std::process::id())?;
+        if case != "missing" { fs::write(&output, "partial")?; }
+        io::stdout().write_all(b"index stdout\xff\n")?;
+        if case == "observer-panic" { io::stdout().write_all(b"100\n")?; }
+        io::stderr().write_all(b"index stderr\xfe\n")?;
+        if case == "failure-retry" && !root.join("succeed").exists() { std::process::exit(42); }
+        if case == "force-retry" && !root.join("succeed").exists() {
+            let mut grandchild = Command::new(std::env::current_exe()?).arg("grandchild").spawn()?;
+            publish_pid(root.join("grandchild"), grandchild.id())?;
+            // Do not race the subreaper by reaping the grandchild during group SIGKILL.
+            std::thread::sleep(Duration::from_secs(8));
+            grandchild.wait()?;
+            return Ok(());
+        }
+        if case == "graceful" {
+            fs::write(root.join("active"), "yes")?;
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while !root.join("release").exists() && Instant::now() < deadline { std::thread::yield_now(); }
+        }
+        if case == "concurrent" {
+            fs::write(root.join(format!("active-{}", std::process::id())), "yes")?;
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while !root.join("release").exists() && Instant::now() < deadline { std::thread::yield_now(); }
+        }
+        match case.as_str() {
+            "missing" => {},
+            "zero" => fs::write(&output, "")?,
+            "garbage" => fs::write(&output, "garbage")?,
+            "truncated" => fs::write(&output, "DGHEVCIndexFileNV18 DGIndexNV 2053\nCODED 50\nORDER ")?,
+            "directory" => { fs::remove_file(&output)?; fs::create_dir(&output)?; fs::write(output.join("private-sidecar"), "owned")?; },
+            "symlink" => { fs::remove_file(&output)?; std::os::unix::fs::symlink(root.join("sentinel"), &output)?; },
+            _ => { fs::copy(root.join("sample.dgi"), &output)?; fs::write(output.with_extension("log"), "owned sidecar")?; },
+        }
+        return Ok(());
+    }
     // The public zone eligibility probe is finite and receives a real Y4M frame.
     if value("--zones").as_deref() == Some("0,0,crf=30") && std::env::var("E12_CASE").as_deref() != Ok("zone-probe") {
         io::copy(&mut io::stdin(), &mut io::sink())?;
@@ -73,7 +127,7 @@ fn main() -> io::Result<()> {
     if case.starts_with("commit-") {
         io::copy(&mut io::stdin(), &mut io::sink())?;
         if let Some(pass) = value("--pass") { writeln!(fs::OpenOptions::new().create(true).append(true).open(root.join("passes"))?, "{pass}")?; }
-        if output != PathBuf::from("/dev/null") { fs::write(output, "complete")?; }
+        if output != PathBuf::from("/dev/null") { fs::write(output, if case.starts_with("commit-dg") { "DGHEVCIndexFileNV18 DGIndexNV 2053\n\nCODED 50\nORDER 0\n" } else { "complete" })?; }
         if case.ends_with("-between") { fs::write(root.join("committed"), "pass1partial")?; }
         return Ok(());
     }
@@ -108,6 +162,10 @@ fn main() -> io::Result<()> {
     if case == "filter-full" {
         for _ in 0..32 { io::stdout().write_all(&[b'x'; 64 * 1024])?; }
     }
+    // Keep the leader out of waitpid during simultaneous group SIGKILL: otherwise
+    // it can reap the grandchild just before dying, defeating the adoption oracle.
+    // The four-second supervisor fails/rescues if force never arrives.
+    std::thread::sleep(Duration::from_secs(8));
     grandchild.wait()?;
     Ok(())
 }

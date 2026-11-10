@@ -1,17 +1,19 @@
 use std::{
     fmt::Write,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf, absolute},
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
     sync::atomic::{AtomicBool, Ordering},
     thread,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use vapoursynth::{core::CoreRef, map::ValueType, node::Node};
 
 use crate::{
+    core::encoder::StringOrBytes,
     core::input::IndexProgress,
     vapoursynth::{
         VapourSynthError,
@@ -23,11 +25,98 @@ use crate::{
     },
 };
 
+/// Original process diagnostics, including non-UTF8 console bytes. A missing
+/// status means waiting failed; the OS error remains in the anyhow chain.
+#[derive(Debug, thiserror::Error)]
+#[error("DGIndexNV status {status:?}\nstdout: {stdout}\nstderr: {stderr}")]
+pub struct DGIndexFailure {
+    pub status: Option<ExitStatus>,
+    pub stdout: StringOrBytes,
+    pub stderr: StringOrBytes,
+}
+
+/// ponytail: reject obvious incomplete projects; leave proprietary frame tables
+/// to the native decoder rather than inventing a full format parser.
+/// The pinned consumer checks DGIndexNV in the first line and reads CODED/ORDER
+/// in the final ten lines; the vendor HEVC sample confirms both footer records.
+/// No codec/version restriction or filename decoding; only 4KiB head + 8KiB tail.
+/// https://github.com/Jaded-Encoding-Thaumaturgy/vs-source/blob/ec851aa98e019a8dc6eae3a3aa6bc9e43866540b/vssource/indexers/DGIndexNV.py
+/// https://github.com/Jaded-Encoding-Thaumaturgy/vs-source/blob/ec851aa98e019a8dc6eae3a3aa6bc9e43866540b/vssource/dataclasses.py
+/// https://forum.doom9.org/showthread.php?t=175328
+fn validate_index(path: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file() && metadata.len() > 0,
+        "index must be a nonempty regular file (not a symlink)"
+    );
+    let mut file = std::fs::File::open(path)?;
+    let mut head = Vec::new();
+    file.by_ref().take(4096).read_to_end(&mut head)?;
+    let header = head.split(|&byte| byte == b'\n').next().unwrap_or_default();
+    ensure!(
+        header.windows(b"DGIndexNV".len()).any(|word| word == b"DGIndexNV"),
+        "missing DGIndexNV header"
+    );
+    let start = metadata.len().saturating_sub(8192);
+    file.seek(SeekFrom::Start(start))?;
+    let mut tail = Vec::new();
+    file.take(8192).read_to_end(&mut tail)?;
+    let tail = if start > 0 {
+        tail.iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(&[][..], |index| &tail[index + 1..])
+    } else {
+        &tail
+    };
+    let mut order = false;
+    for line in tail.rsplit(|&byte| byte == b'\n').take(10) {
+        let mut fields = line.split(u8::is_ascii_whitespace).filter(|field| !field.is_empty());
+        let key = fields.next();
+        let value = fields.next().and_then(|value| std::str::from_utf8(value).ok());
+        if fields.next().is_some() {
+            continue;
+        }
+        match (key, value) {
+            (Some(b"ORDER"), Some(value)) => order = value.parse::<i64>().is_ok(),
+            (Some(b"CODED"), Some(value))
+                if order && value.parse::<u64>().is_ok_and(|frames| frames > 0) =>
+            {
+                return Ok(());
+            },
+            _ => {},
+        }
+    }
+    bail!("missing complete CODED/ORDER footer")
+}
+
+fn existing_index(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => {
+            validate_index(path).with_context(|| format!("Invalid existing DGIndexNV index {}; preserved unchanged. Inspect and remove it explicitly, or choose a new cache path", path.display()))?;
+            Ok(true)
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Opens a DGIndexNV `.dgi` project as `source`, not the original media file.
 ///
 /// This portable source-only contract follows the [pinned upstream consumer],
 /// not a verified signature for every DGDecNV release. `indexing_path` remains
 /// a compatibility alias for the project path; no cache keyword is emitted.
+///
+/// Index generation uses a private directory beside the destination. Successful
+/// exit and structural validation precede atomic, no-clobber publication; errors
+/// or force before commit leave no new reusable index. Committed indices survive
+/// later force. Existing invalid files are preserved:
+/// inspect/remove them explicitly, or choose another cache path. Existing `.dgi`
+/// inputs are validated directly, regardless of the cache alias.
+///
+/// Validation checks a regular/nonempty file, `DGIndexNV` in its first line and
+/// numeric `CODED` (positive) / `ORDER` footer records in its final ten lines.
+/// It does not verify frame tables, media freshness, or every proprietary version.
+/// Filenames need not be UTF-8; only bounded header/footer windows are read.
 ///
 /// # Native acceptance (manual)
 ///
@@ -40,6 +129,10 @@ use crate::{
 /// ```
 ///
 /// Record the installed signature and require both frame reads to succeed.
+/// Also generate using an absolute media path into a private sibling directory,
+/// move only the `.dgi` to `INDEX`, and repeat both frame reads. The cited sample
+/// and pinned consumer use media paths in the project, not a required sidecar;
+/// native testing must confirm relocation for the installed indexer version.
 /// CPU argument-planning tests do not replace this native gate.
 ///
 /// [pinned upstream consumer]: https://github.com/rust-av/Av1an/blob/def0a97eca67a4635fcc7e42d4c1a48381b8cd5b/av1an-core/src/loadscript.vpy#L38-L40
@@ -294,8 +387,11 @@ impl DGSource {
 
     /// Attempt to index a video file using `dgindexnv` or the provided
     /// executable and save the resulting cache file to the provided path or
-    /// next to the source file. If the cache file already exists, indexing will
-    /// be skipped.
+    /// next to the source file. Reuses only structurally valid existing indices;
+    /// invalid existing data is preserved and must be removed explicitly or a new
+    /// path chosen. An input already ending in `.dgi` is validated directly.
+    /// Generates privately and publishes without clobbering only after successful
+    /// exit, validation and a force-linearized commit. This is not a full DGI parser.
     ///
     /// DGIndexNV runs out of process, so its console output is read line by
     /// line rather than swallowed by [`Command::output`] and forwarded to
@@ -328,111 +424,166 @@ impl DGSource {
         source: &Path,
         cache: Option<&Path>,
         executable: Option<&Path>,
-        mut progress: Option<IndexProgress<'_>>,
+        progress: Option<IndexProgress<'_>>,
         cancellation: &crate::utils::cancellation::Cancellation,
     ) -> Result<PathBuf> {
         cancellation.check_admission()?;
         let absolute_source = absolute(source)?;
-        let absolute_cache = if let Some(c_path) = cache {
+        let absolute_cache = if source
+            .extension()
+            .is_some_and(|ext| ext.as_encoded_bytes().eq_ignore_ascii_case(b"dgi"))
+        {
+            absolute_source.clone()
+        } else if let Some(c_path) = cache {
             absolute(c_path)?
         } else {
             absolute_source.with_extension("dgi")
         };
-        if absolute_cache.exists() {
-            return Ok(absolute_cache);
-        }
-        let mut partial =
-            crate::core::process::InterruptedOutput::new(&absolute_cache, cancellation);
-        // The cache is known missing from here on, so this is the only point
-        // that can honestly claim indexing is starting.
-        if let Some(progress) = progress.as_mut() {
-            (**progress)(0, 0);
-        }
-
-        let mut child = crate::core::process::OwnedProcess::spawn(
-            Command::new(
-                executable.map_or_else(|| "dgindexnv".to_owned(), |exe| exe.display().to_string()),
+        let executable = executable.unwrap_or_else(|| Path::new("dgindexnv"));
+        run_index(
+            &absolute_source,
+            &absolute_cache,
+            executable,
+            progress,
+            cancellation,
+        )
+        .with_context(|| {
+            format!(
+                "DGIndexNV source {} index {} executable {}",
+                absolute_source.display(),
+                absolute_cache.display(),
+                executable.display()
             )
+        })
+    }
+}
+
+fn run_index(
+    source: &Path,
+    cache: &Path,
+    executable: &Path,
+    mut progress: Option<IndexProgress<'_>>,
+    cancellation: &crate::utils::cancellation::Cancellation,
+) -> Result<PathBuf> {
+    if existing_index(cache)? {
+        cancellation.check_forced()?;
+        return Ok(cache.to_owned());
+    }
+    ensure!(
+        source != cache,
+        "DGI source is missing; choose an existing .dgi project"
+    );
+    // Absolute -i keeps media references independent of this private directory.
+    // Own potential sidecars too; never clean up a caller's directory.
+    let directory = tempfile::Builder::new()
+        .prefix(".av1an-dgi-")
+        .tempdir_in(cache.parent().context("index has no parent")?)?;
+    let candidate = tempfile::TempPath::try_from_path(directory.path().join("index.dgi"))?;
+    if let Some(progress) = progress.as_mut() {
+        (**progress)(0, 0);
+    }
+    let mut child = crate::core::process::OwnedProcess::spawn(
+        Command::new(executable)
             .arg("-h")
             .arg("-i")
-            .arg(&absolute_source)
+            .arg(source)
             .arg("-o")
-            .arg(&absolute_cache)
+            .arg(&candidate)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()),
-            cancellation,
-        )?;
+        cancellation,
+    )?;
 
-        // Drained on its own thread so DGIndexNV can never stall writing to a
-        // pipe nobody is reading. Kept for diagnostics; the exit status is
-        // still ignored, exactly as it was when this used `output()`.
-        let mut stderr =
-            child.stderr.take().ok_or_else(|| VapourSynthError::PluginFunctionError {
-                plugin: DGSource::PLUGIN_NAME.to_owned(),
-                function: DGSource::FUNCTION_NAME.to_owned(),
-                message: "Failed to read DGIndexNV stderr".to_owned(),
-            })?;
-        let stderr_thread = thread::spawn(move || -> Result<String> {
-            let mut captured = String::new();
-            std::io::Read::read_to_string(&mut stderr, &mut captured)?;
-            Ok(captured)
-        });
-
-        let stdout = child.stdout.take().ok_or_else(|| VapourSynthError::PluginFunctionError {
-            plugin: DGSource::PLUGIN_NAME.to_owned(),
-            function: DGSource::FUNCTION_NAME.to_owned(),
-            message: "Failed to read DGIndexNV stdout".to_owned(),
+    // Take both handles before starting a worker; no early return can detach it.
+    let mut stderr = child.stderr.take().context("Missing DGIndexNV stderr pipe")?;
+    let stdout = child.stdout.take().context("Missing DGIndexNV stdout pipe")?;
+    let stderr_thread =
+        thread::Builder::new().name("dgindexnv-stderr".into()).spawn(move || {
+            let mut bytes = Vec::new();
+            let result =
+                stderr.read_to_end(&mut bytes).map(|_| ()).context("Reading DGIndexNV stderr");
+            #[cfg(all(test, target_os = "linux"))]
+            crate::core::input::i13_tests::after_stderr_read();
+            Ok((bytes, result))
         })?;
-        let mut reader = BufReader::new(stdout);
+    let mut reader = BufReader::new(stdout);
+    let mut stdout = Vec::new();
+    let read = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
         let mut line = Vec::new();
-        let mut read_error = None;
         loop {
             line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(0) => break,
-                // Progress is rewritten in place with carriage returns, so both
-                // terminators delimit a report and `\r\n` yields empty chunks.
-                Ok(_) => {
-                    for chunk in String::from_utf8_lossy(&line).split(['\n', '\r']) {
-                        if let (Some(progress), Some((current, total))) =
-                            (progress.as_mut(), parse_progress(chunk))
-                        {
-                            (**progress)(current, total);
-                        }
-                    }
-                },
-                Err(error) => {
-                    read_error = Some(error);
-                    break;
-                },
+            let read = reader.read_until(b'\n', &mut line);
+            stdout.extend_from_slice(&line); // Capture even a failed partial read.
+            #[cfg(all(test, target_os = "linux"))]
+            crate::core::input::i13_tests::after_stdout_read()?;
+            if read.context("Reading DGIndexNV stdout")? == 0 {
+                return Ok(());
+            }
+            for chunk in String::from_utf8_lossy(&line).split(['\n', '\r']) {
+                if let (Some(progress), Some((current, total))) =
+                    (progress.as_mut(), parse_progress(chunk))
+                {
+                    (**progress)(current, total);
+                }
             }
         }
-        // A failed read must still reap the child, or `dgindexnv` outlives us.
-        let killed = if read_error.is_some() {
-            child.kill()
-        } else {
-            Ok(())
-        };
-        let waited = child.wait();
-        let captured = crate::core::encoder::pipes::join_worker(
-            stderr_thread,
-            "Joining DGIndexNV stderr drain",
-        );
+    }))
+    .unwrap_or_else(|_| Err(anyhow::anyhow!("DGIndexNV progress observer panicked")));
+    let killed = if read.is_err() { child.kill() } else { Ok(()) };
+    // Even on read/observer failure, join and reap before inspecting any result.
+    let waited = child.wait();
+    let (stderr, stderr_result) = match crate::core::encoder::pipes::join_worker(
+        stderr_thread,
+        "Joining DGIndexNV stderr drain",
+    ) {
+        Ok(captured) => captured,
+        Err(error) => (Vec::new(), Err(error)),
+    };
+    let diagnostic = DGIndexFailure {
+        status: waited.as_ref().ok().copied(),
+        stdout: stdout.into(),
+        stderr: stderr.into(),
+    };
+    (|| -> Result<()> {
         cancellation.check_forced()?;
         killed?;
-        waited?;
-        let captured = captured?;
-        if let Some(error) = read_error {
-            return Err(error.into());
-        }
-        if !captured.trim().is_empty() {
-            tracing::debug!("DGIndexNV stderr: {}", captured.trim());
-        }
+        let status = waited?;
+        stderr_result?;
+        read?;
+        ensure!(
+            status.success(),
+            "DGIndexNV exited unsuccessfully: {status}"
+        );
+        validate_index(&candidate).context("Invalid DGIndexNV candidate")
+    })()
+    .context(diagnostic)?;
 
-        partial.complete()?;
-        Ok(absolute_cache)
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        crate::core::encoder::e12_tests::before_output_commit(cache, cancellation);
+        crate::core::input::i13_tests::before_publish(cache, cancellation);
     }
+    // persist_noclobber uses rename(NOREPLACE), or an atomic hard-link on Unix.
+    // The old private link may remain on some platforms; the directory owns it.
+    let published = cancellation.publish(|| match candidate.persist_noclobber(cache) {
+        Ok(()) => Ok(true),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error.into()),
+    })?;
+    if !published {
+        ensure!(
+            existing_index(cache)?,
+            "Concurrent DGIndexNV result disappeared; retry indexing"
+        );
+        cancellation.check_forced()?;
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    {
+        crate::core::encoder::e12_tests::output_drop(cache, cancellation);
+        crate::core::input::i13_tests::after_publish(cancellation);
+    }
+    Ok(cache.to_owned())
 }
 
 /// Extract `(current, total)` from one chunk of DGIndexNV output.

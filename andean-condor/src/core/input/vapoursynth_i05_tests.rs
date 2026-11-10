@@ -283,7 +283,7 @@ fn i05_native_metric_reference_preserves_track_cache_and_filter_baseline() {
     }
 }
 
-fn recorded(lines: Lines) -> serde_json::Value {
+pub(super) fn recorded(lines: Lines) -> serde_json::Value {
     let mut script = VapourSynthScript::default();
     script.add_lines(lines);
     script.outputs.insert(0, "clip".to_owned());
@@ -364,8 +364,9 @@ fn i05_dg_production_routes_plan_existing_index_as_source_without_indexer() {
     fs::write(&media, b"CPU planning fixture").expect("media placeholder");
     let explicit = directory.path().join("chosen cache 索引.dgi");
     let default = media.with_extension("dgi");
-    fs::write(&explicit, b"existing index fixture").expect("explicit index fixture");
-    fs::write(&default, b"existing default index fixture").expect("default index fixture");
+    let structural_sample = include_bytes!("../../vapoursynth/plugins/dgindexnv_sample.dgi");
+    fs::write(&explicit, structural_sample).expect("explicit index fixture");
+    fs::write(&default, structural_sample).expect("default index fixture");
     let method = VapourSynthImportMethod::DGDecNV {
         dgindexnv_executable: Some(directory.path().join("must-not-run")),
     };

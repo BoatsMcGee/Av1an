@@ -213,6 +213,10 @@ fn source_path(
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "vapoursynth_i13_tests.rs"]
+pub(crate) mod i13_tests;
+
 /// Translate the input's explicit source options, leaving absent options to the plugin.
 fn source_script(
     path: &std::path::Path,

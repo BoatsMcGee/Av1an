@@ -26,6 +26,8 @@ use crate::{
 mod ffms2;
 mod frame_feed;
 mod vapoursynth;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use vapoursynth::i13_tests;
 
 pub use self::frame_feed::{FrameFeed, RawFrame, RawPlane};
 
