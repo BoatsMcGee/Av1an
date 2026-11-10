@@ -137,7 +137,7 @@ A picture-altering filter (`crop`, `hflip`, `negate`, ...) changes what gets enc
 - `set input [--path P] [--decoder D] [--filters …] [--vs-args …] [--stream-concurrently [on|off]]` — the input Parallel Encoder reads instead of the main input; `--filters` applies to the main input.
 - `set scenes-directory PATH` — the directory the encoded scenes are written to.
 - `set encoder ENCODER` — switches the encoder and starts from its defaults.
-- `set executable PATH` — pins a custom encoder binary path; `reset executable` restores PATH lookup.
+- `set executable PATH` — stores a custom binary path or PATH name unchanged, even when unavailable while editing. Validation/encoding fails if it cannot be resolved; there is no stock-binary fallback. `reset executable` restores lookup of the base's stock name on PATH.
 - `set passes N` — a supported pass count, subject to the same backend/mode checks as `--passes`; rejected for `ffmpeg`.
 - `set params "--crf 16 --tune 0"` — merges encoder parameters into the current encoder's options; `reset params` restores the encoder's defaults.
 - `set photon-noise ISO [--chroma-noise ISO]` — sets the Photon Noise table; rejected for encoders that do not support Photon Noise; `reset photon-noise` clears it.

@@ -26,7 +26,7 @@ The [`--zones`](../commands/condor.md#zones---zones) flag and [`zone`](../comman
 | `<start>` `<end>` | Frame numbers, or `-1` for the input's first or last frame |
 | `replace` | Replaces the scene's encoder outright. The default, `merge`, patches the scene's own |
 | `encoder` | The encoder base the zone's settings belong to. A merge that names another base leaves the scene unchanged |
-| `(executable)` | The encoder binary, in parentheses after the base (e.g. `svt-av1("/tools/fish")`). A path that does not exist falls back to the base's default binary |
+| `(executable)` | The encoder binary path or PATH name, in parentheses after the base (e.g. `svt-av1("/tools/fish")`). An unavailable custom executable fails validation/encoding; it never falls back to the stock binary |
 | `"options"` | Encoder parameters, as in [`--params`](./encoder-params.md) |
 | `--maximum-frames` | Splits the zone's scenes past this many frames |
 | `--ffmpeg-filter` | FFmpeg filtergraph applied to the zone's scenes; unsupported for an FFmpeg encoder, which uses native FFmpeg options |

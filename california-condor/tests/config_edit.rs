@@ -17,6 +17,71 @@ mod tests {
 
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn e06_cli_path_name_edits_are_offline_and_not_reported_as_missing_paths() {
+        use california_condor::configuration::Configuration;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("fixture");
+        let script = temp.path().join("blank.vpy");
+        std::fs::write(&script, "from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=32,height=16,format=YUV420P8).set_output()\n").expect("script");
+        let config = Configuration::new(
+            &script,
+            &temp.path().join("out.mkv"),
+            Some(temp.path()),
+            None,
+            None,
+        )
+        .expect("config");
+        let file = temp.path().join("condor.json");
+        config.save(&file).expect("save");
+        let bin = temp.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let executable = bin.join("renamed-encoder");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf unexpected > \"$E06_MARKER\"\n",
+        )
+        .expect("binary");
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+            .expect("permissions");
+        let marker = temp.path().join("must-not-probe");
+        let output = condor_cmd(&temp)
+            .env("PATH", &bin)
+            .env("E06_MARKER", &marker)
+            .args(["encode", "set", "executable", "renamed-encoder"])
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("does not exist"),
+            "valid PATH name: {stderr}"
+        );
+        let output = condor_cmd(&temp)
+            .env("PATH", &bin)
+            .args(["encode", "info", "executable"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output).expect("info"),
+            serde_json::json!("renamed-encoder")
+        );
+        assert_eq!(
+            load(&file).condor.encoder.executable(),
+            std::path::Path::new("renamed-encoder")
+        );
+        assert!(
+            !marker.exists(),
+            "pure edits must not probe even an available binary"
+        );
+    }
+
     #[test]
     fn i06_cli_format_errors_leave_saved_config_unchanged_without_indexing() {
         use andean_condor::models::input::{Ffms2Filter, ImportMethod};

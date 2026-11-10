@@ -53,6 +53,67 @@ fn x265() -> EncoderMethod {
 }
 
 #[test]
+fn e06_offline_encoder_edits_save_and_report_requested_identity() {
+    use crate::commands::{
+        config::ConfigCommand,
+        handlers::encode::{EncodeCrud, EncodeKey, EncodeSet},
+    };
+
+    let temp = tempfile::tempdir().expect("fixture");
+    let mut configuration = configuration(temp.path());
+    let requested = PathBuf::from("e06-missing-custom");
+    EncodeCrud::apply(
+        &mut configuration,
+        &EncodeSet::Executable {
+            path: requested.clone(),
+        },
+    )
+    .expect("offline global edit");
+    assert_eq!(
+        EncodeCrud::render(&configuration, Some(&EncodeKey::Executable)).expect("info"),
+        json!("e06-missing-custom")
+    );
+    apply_set(
+        &mut configuration,
+        0,
+        &ScenesSet::Executable {
+            path: requested.clone(),
+        },
+    )
+    .expect("offline scene edit");
+    apply_set(
+        &mut configuration,
+        1,
+        &ScenesSet::Encoder {
+            encoder: EncoderMethod::VVenC,
+            executable: Some(PathBuf::from("./offline tools 映像/vvenc")),
+            passes: None,
+            params: None,
+            iso: None,
+            chroma_iso: None,
+            ffmpeg_filter: None,
+            append_color_data: None,
+        },
+    )
+    .expect("offline native encoder override");
+    let file = temp.path().join("condor.json");
+    configuration.save(&file).expect("save");
+    let saved = Configuration::load(&file).expect("load").expect("saved config");
+    assert_eq!(saved.condor.encoder.executable(), requested);
+    assert_eq!(saved.condor.scenes[0].encoder.executable(), requested);
+    assert_eq!(
+        saved.condor.scenes[1].encoder.executable().as_os_str(),
+        std::ffi::OsStr::new("./offline tools 映像/vvenc")
+    );
+    let info = selection_value(&saved.condor.scenes, &[1], Some(&ScenesKey::Encoder), true)
+        .expect("scene info");
+    assert_eq!(
+        info["VVenC"]["executable"],
+        json!("./offline tools 映像/vvenc")
+    );
+}
+
+#[test]
 fn setting_frames_moves_the_range_and_keeps_the_neighbours() {
     let temp = tempfile::tempdir().expect("temp directory");
     let mut configuration = configuration(temp.path());

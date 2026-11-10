@@ -165,7 +165,12 @@ Commit Date:  {}",
         .iter()
         .map(|plugin_info| format!("🐦 {}({})", plugin_info.name, plugin_info.id).len())
         .chain(encoders.iter().map(|(base, encoder)| {
-            format!("{} ({})", base.friendly_name(), encoder.executable()).len()
+            format!(
+                "{} ({})",
+                base.friendly_name(),
+                encoder.executable().display()
+            )
+            .len()
         }))
         .chain(library_infos.iter().map(|info| info.name.len()))
         .max()
@@ -198,7 +203,7 @@ Commit Date:  {}",
             "{} {} ({}){}",
             marker(installed),
             render(&format!("**{}**", base.friendly_name())),
-            encoder.executable(),
+            encoder.executable().display(),
             if verbose && let Some(version) = encoder.version_text() {
                 format!(": {}", render(&version))
             } else {

@@ -122,7 +122,7 @@ mod tests {
     }
 
     #[test]
-    fn configure_zoner_merges_the_zone_string() {
+    fn e06_configure_zoner_preserves_requested_executable() {
         let test_video = get_test_video();
         let temp = tempfile::tempdir().expect("temp directory");
         let temp_abs = path_abs::PathAbs::new(temp.path())
@@ -131,10 +131,7 @@ mod tests {
             .to_path_buf();
         let mut configuration =
             default_config(&test_video, &temp.path().join("out.mkv"), &temp_abs);
-        // `Encoder::executable` falls back to the base's default name for a
-        // path that does not exist, so the zone's binary has to be a
-        // real file.
-        let binary = std::env::current_exe().expect("the test binary has a path");
+        let binary = PathBuf::from("e06-missing-zone-encoder");
 
         configure_zoner(
             &mut configuration,
@@ -151,7 +148,7 @@ mod tests {
             panic!("the zone replaces the encoder");
         };
         assert_eq!(encoder.base(), EncoderBase::SVTAV1);
-        assert_eq!(encoder.executable(), binary.to_str().expect("a UTF-8 path"));
+        assert_eq!(encoder.executable(), binary);
         assert_eq!(
             encoder.photon_noise().map(|table| table.iso),
             Some(400),

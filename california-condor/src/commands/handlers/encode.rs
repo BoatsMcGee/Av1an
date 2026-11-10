@@ -18,7 +18,8 @@ use crate::{
         handlers::{
             apply_input_filters, apply_stream_concurrently,
             config::{edit, ensure_override_requested},
-            configure_input, configure_temp, load_configuration, warn_missing_path,
+            configure_input, configure_temp, load_configuration, warn_missing_executable,
+            warn_missing_path,
         },
     },
     configuration::Configuration,
@@ -263,7 +264,7 @@ pub enum EncodeSet {
         #[arg(value_name = "Encoder")]
         encoder: EncoderMethod,
     },
-    /// Custom encoder binary path (`reset executable` restores PATH lookup).
+    /// Custom binary path or PATH name (`reset executable` restores the stock name).
     Executable {
         #[arg(value_name = "Path")]
         path: PathBuf,
@@ -412,7 +413,7 @@ impl ConfigCommand for EncodeCrud {
                 PropertyChange::new("encoder", &configuration.condor.encoder)
             },
             EncodeSet::Executable { path } => {
-                warn_missing_path("encoder executable", path);
+                warn_missing_executable(path);
                 let mut candidate = configuration.condor.encoder.clone();
                 candidate.set_executable(Some(path.clone()));
                 candidate.validate_settings()?;

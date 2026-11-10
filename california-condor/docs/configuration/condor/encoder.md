@@ -8,7 +8,7 @@ Externally-tagged enum keyed by encoder base. Exactly one key per object: `AOM`,
 
 | Field | Type | Required | Present on | Description |
 | ----- | ---- | -------- | ---------- | ----------- |
-| `executable` | String (path) or null | Yes | All | Custom encoder binary path, `null` for PATH lookup |
+| `executable` | String (path or PATH name) or null | Yes | All | Requested custom binary, or `null` to find the base's stock name on PATH. An unavailable custom binary fails validation/encoding without falling back |
 | `pass` | Object | Yes | All except `FFmpeg` | `{ "All": <u8> }` or `{ "Specific": [<u8>, <u8>] }`. Default `{"All": 2}` for AOM/VPX, `{"All": 1}` otherwise |
 | `options` | Object (string→CLIParameter) | Yes | All | Encoder CLI options. See [Encoder Parameters](../../types/encoder-params.md) |
 | `photon_noise` | Object or null | Yes | AOM, RAV1E, SVTAV1, AVM | See [Photon Noise](../../types/photon-noise.md). VPX/X264/X265/VVenC/FFmpeg have no such field |

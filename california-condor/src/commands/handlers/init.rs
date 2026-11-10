@@ -29,7 +29,7 @@ use crate::{
             configure_input, configure_temp,
             encode::{configure_encoder, configure_parallel_encoder},
             target_quality::{TargetQualityCrud, configure_target_quality},
-            warn_missing_path, warn_unused_vs_args,
+            warn_missing_executable, warn_missing_path, warn_unused_vs_args,
         },
     },
     configuration::Configuration,
@@ -355,7 +355,7 @@ impl ConfigCommand for InitCrud {
                     return Err(InitConfigError::EncoderOptionsRequired.into());
                 }
                 if let Some(executable) = executable.as_deref() {
-                    warn_missing_path("encoder executable", executable);
+                    warn_missing_executable(executable);
                 }
                 configure_encoder(
                     &mut configuration.condor.encoder,

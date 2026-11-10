@@ -268,6 +268,14 @@ pub fn warn_missing_path(what: &str, path: &Path) {
     }
 }
 
+/// Warns about missing explicit paths, leaving bare executable names for PATH
+/// lookup when encoding starts. Offline configuration edits never probe binaries.
+pub fn warn_missing_executable(path: &Path) {
+    if path.file_name() != Some(path.as_os_str()) {
+        warn_missing_path("encoder executable", path);
+    }
+}
+
 /// Builds the override input an [`InputOverride`] describes, warning if a
 /// supplied path does not exist yet.
 ///

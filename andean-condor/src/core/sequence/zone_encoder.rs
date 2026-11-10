@@ -992,6 +992,21 @@ mod tests {
     }
 
     #[test]
+    fn e06_missing_custom_binaries_do_not_group_as_stock() {
+        let mut first = x264(20.0);
+        let mut second = x264(30.0);
+        first.set_executable(Some(PathBuf::from("e06-missing-one")));
+        second.set_executable(Some(PathBuf::from("e06-missing-two")));
+        assert_eq!(
+            ZonePlan::try_build(&[task(0, 5, first), task(1, 3, second)]),
+            Err(ZoneIneligible::DifferingEncoder {
+                scene: 1,
+                field: DifferingField::Executable,
+            })
+        );
+    }
+
+    #[test]
     fn a_different_encoder_is_ineligible() {
         let mut other = Encoder::default_from_base(&EncoderBase::X265, false);
         other.set_quantizer(30.0);

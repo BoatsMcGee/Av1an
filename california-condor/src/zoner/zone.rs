@@ -568,17 +568,14 @@ mod tests {
     }
 
     #[test]
-    fn a_merge_zone_patches_executable_and_filter() {
+    fn e06_a_merge_zone_patches_requested_executable_and_filter_offline() {
         let mut scene = scene(0, 100);
         scene.encoder.set_photon_noise(Some(photon_noise(400)));
         scene.encoder.parameters_mut().insert(
             "film-grain".to_owned(),
             CLIParameter::new_number("--", " ", 10.0),
         );
-        // `Encoder::executable` falls back to the base's default name for a
-        // path that does not exist, so the zone's binary has to be a
-        // real file.
-        let binary = std::env::current_exe().expect("the test binary has a path");
+        let binary = PathBuf::from("e06-missing-zone-encoder");
         let zone = merge(ZoneEncoderMerge {
             base: Some(EncoderBase::SVTAV1),
             executable: Some(binary.clone()),
@@ -588,7 +585,7 @@ mod tests {
 
         let encoder = merge_encoder(&zone, scene);
 
-        assert_eq!(encoder.executable(), binary.to_str().expect("a UTF-8 path"));
+        assert_eq!(encoder.executable(), binary);
         assert_eq!(encoder.ffmpeg_filter(), Some("eq=brightness=0.05"));
         // Untouched settings stay.
         assert_eq!(encoder.photon_noise(), Some(&photon_noise(400)));

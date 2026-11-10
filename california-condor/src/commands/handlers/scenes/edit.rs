@@ -20,7 +20,7 @@ use super::{
 use crate::{
     commands::{
         config::Toggle,
-        handlers::{encode::configure_encoder, warn_missing_path},
+        handlers::{encode::configure_encoder, warn_missing_executable},
     },
     configuration::{CliSequenceData, Configuration},
     scenes::{
@@ -61,7 +61,7 @@ pub(super) fn apply_set(
             append_color_data,
         } => {
             if let Some(path) = executable {
-                warn_missing_path("encoder executable", path);
+                warn_missing_executable(path);
             }
             let scene = require_scene_mut(scenes, index)?;
             configure_encoder(
@@ -83,7 +83,7 @@ pub(super) fn apply_set(
             ("encoder", serde_json::to_value(&scene.encoder)?)
         },
         ScenesSet::Executable { path } => {
-            warn_missing_path("encoder executable", path);
+            warn_missing_executable(path);
             let scene = require_scene_mut(scenes, index)?;
             let mut candidate = scene.encoder.clone();
             candidate.set_executable(Some(path.clone()));

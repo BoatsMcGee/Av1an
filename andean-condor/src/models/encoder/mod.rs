@@ -805,7 +805,7 @@ impl Encoder {
         }
     }
 
-    /// The custom encoder binary path, if one was configured.
+    /// The requested custom binary path or PATH name, without resolving it.
     #[inline]
     pub fn custom_executable(&self) -> Option<&PathBuf> {
         match self {
@@ -821,7 +821,8 @@ impl Encoder {
         }
     }
 
-    /// Sets the encoder binary, or restores the base's default when `None`.
+    /// Stores a binary path or PATH name unchanged, or restores the stock name
+    /// when `None`. Resolution is deferred until validation or execution.
     #[inline]
     pub fn set_executable(&mut self, executable: Option<PathBuf>) {
         match self {

@@ -129,13 +129,15 @@ impl Encoder {
     #[inline]
     pub fn validate(&self) -> Result<()> {
         self.validate_settings()?;
-        which::which(self.executable())?;
+        self.resolve_executable()?;
 
         Ok(())
     }
 
+    /// Requested binary identity, without filesystem access or PATH lookup.
+    /// Returns the stock name only when no custom executable is configured.
     #[inline]
-    pub fn executable(&self) -> &str {
+    pub fn executable(&self) -> &Path {
         let (default_name, executable) = match self {
             Encoder::AOM { executable, .. } => ("aomenc", executable),
             Encoder::RAV1E { executable, .. } => ("rav1e", executable),
@@ -148,20 +150,31 @@ impl Encoder {
             Encoder::FFmpeg { executable, .. } => ("ffmpeg", executable),
         };
 
-        if let Some(executable) = executable
-            && executable.exists()
-        {
-            return executable.to_str().expect("Executable name is not empty");
-        }
+        executable.as_deref().unwrap_or_else(|| Path::new(default_name))
+    }
 
-        default_name
+    /// Resolves the requested path or PATH name, never substituting a stock binary.
+    /// Fails when the requested binary is missing, invalid, or not executable.
+    #[inline]
+    #[allow(
+        clippy::unnecessary_debug_formatting,
+        reason = "Escape control characters and invalid OS path bytes in diagnostics"
+    )]
+    pub fn resolve_executable(&self) -> Result<PathBuf> {
+        which::which(self.executable()).with_context(|| {
+            format!(
+                "Could not resolve {} encoder executable {:?}",
+                self.base(),
+                self.executable()
+            )
+        })
     }
 
     /// Checks if the encoder binary supports a specific capability,
     /// using the global capability cache to avoid repeated expensive probes.
     #[inline]
     pub fn supports_capability(&self, capability: EncoderCapability) -> bool {
-        let Ok(executable_path) = which::which(self.executable()) else {
+        let Ok(executable_path) = self.resolve_executable() else {
             return false;
         };
 
@@ -174,7 +187,7 @@ impl Encoder {
     /// A probe result is cached, so this is cheap after the first call.
     #[inline]
     pub fn container(&self) -> Option<Container> {
-        let executable_path = which::which(self.executable()).ok()?;
+        let executable_path = self.resolve_executable().ok()?;
 
         capability::encoder_container(self.base(), &executable_path)
     }
@@ -539,7 +552,7 @@ impl Encoder {
         end_frame: usize,
         progress_tx: mpsc::Sender<EncodeProgress>,
     ) -> Result<EncoderResult> {
-        self.validate_settings()?;
+        self.validate()?;
         let stats = if matches!(self.passes(), EncoderPasses::All(total) if total > 1) {
             Some(PassStatistics::new(output)?)
         } else {
@@ -595,6 +608,10 @@ impl Encoder {
     /// `None` uses caller-owned output-derived files (no automatic cleanup/isolation).
     #[inline]
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::unnecessary_debug_formatting,
+        reason = "Escape control characters and invalid OS path bytes in diagnostics"
+    )]
     pub fn encode_pass_with_input(
         &self,
         input: &mut Input,
@@ -607,6 +624,7 @@ impl Encoder {
     ) -> Result<EncoderResult> {
         self.validate_settings()?;
         self.validate_pass_settings(pass)?;
+        let executable = self.resolve_executable()?;
         let stats_base = stats.map_or_else(
             || absolute_file_path(output).map(|p| p.with_extension("")),
             |s| Ok(s.base().to_path_buf()),
@@ -622,12 +640,19 @@ impl Encoder {
         let y4m_header = input.y4m_header(Some(end_frame - start_frame))?;
         let mut reader = input.frame_reader()?;
 
-        let mut encoder = Command::new(self.executable())
+        let mut encoder = Command::new(&executable)
             .args(&parameters)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "Could not spawn {} encoder executable {:?} (resolved to {executable:?})",
+                    self.base(),
+                    self.executable()
+                )
+            })?;
         let pid = encoder.id();
 
         // Data produced and consumed throughout
@@ -737,7 +762,7 @@ impl Encoder {
         progress_tx: mpsc::Sender<EncodeProgress>,
         clip_info: &ClipInfo,
     ) -> Result<EncoderResult> {
-        self.validate_settings()?;
+        self.validate()?;
         let stats = if matches!(self.passes(), EncoderPasses::All(total) if total > 1) {
             Some(PassStatistics::new(output)?)
         } else {
@@ -826,6 +851,10 @@ impl Encoder {
     /// `None` retains caller-owned output-derived statistics. Explicit native path
     /// overrides are never cleaned. For VVenC `All(1)` plus native `--pass N`, provide
     /// `--rcstatsfile` yourself: the frontend `(1, 1)` tuple generates no stats option.
+    #[allow(
+        clippy::unnecessary_debug_formatting,
+        reason = "Escape control characters and invalid OS path bytes in diagnostics"
+    )]
     pub fn encode_pass_with_stream(
         &self,
         pass: (u8, u8),
@@ -837,6 +866,7 @@ impl Encoder {
     ) -> Result<EncoderResult> {
         self.validate_settings()?;
         self.validate_pass_settings(pass)?;
+        let executable = self.resolve_executable()?;
         let stats_base = stats.map_or_else(
             || absolute_file_path(output).map(|p| p.with_extension("")),
             |s| Ok(s.base().to_path_buf()),
@@ -851,12 +881,19 @@ impl Encoder {
 
         // println!("Encoding with params: {:?}", self.parameters(pass,
         // output)); let mut system = sysinfo::System::new();
-        let mut encoder = Command::new(self.executable())
+        let mut encoder = Command::new(&executable)
             .args(&parameters)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "Could not spawn {} encoder executable {:?} (resolved to {executable:?})",
+                    self.base(),
+                    self.executable()
+                )
+            })?;
         // let pid = encoder.id();
 
         // Data produced and consumed throughout
@@ -1261,13 +1298,11 @@ impl Encoder {
 
     #[inline]
     pub fn version_text(&self) -> Option<String> {
+        let executable = self.resolve_executable().ok()?;
         match self {
             Encoder::AOM { .. } => {
-                let result = Command::new(self.executable())
-                    .arg("--help")
-                    .stdin(Stdio::null())
-                    .output()
-                    .ok()?;
+                let result =
+                    Command::new(&executable).arg("--help").stdin(Stdio::null()).output().ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("    av1"))?;
                 Some(
@@ -1281,7 +1316,7 @@ impl Encoder {
                 )
             },
             Encoder::RAV1E { .. } => {
-                let result = Command::new(self.executable())
+                let result = Command::new(&executable)
                     .arg("--version")
                     .stdin(Stdio::null())
                     .output()
@@ -1291,11 +1326,8 @@ impl Encoder {
                 Some(version_line.to_string())
             },
             Encoder::VPX { .. } => {
-                let result = Command::new(self.executable())
-                    .arg("--help")
-                    .stdin(Stdio::null())
-                    .output()
-                    .ok()?;
+                let result =
+                    Command::new(&executable).arg("--help").stdin(Stdio::null()).output().ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("    vp9"))?;
                 Some(
@@ -1309,7 +1341,7 @@ impl Encoder {
                 )
             },
             Encoder::SVTAV1 { .. } => {
-                let result = Command::new(self.executable())
+                let result = Command::new(&executable)
                     .arg("--version")
                     .stdin(Stdio::null())
                     .output()
@@ -1319,11 +1351,8 @@ impl Encoder {
                 Some(version_line.to_string())
             },
             Encoder::AVM { .. } => {
-                let result = Command::new(self.executable())
-                    .arg("--help")
-                    .stdin(Stdio::null())
-                    .output()
-                    .ok()?;
+                let result =
+                    Command::new(&executable).arg("--help").stdin(Stdio::null()).output().ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("    av2"))?;
                 Some(
@@ -1337,7 +1366,7 @@ impl Encoder {
                 )
             },
             Encoder::X264 { .. } => {
-                let result = Command::new(self.executable())
+                let result = Command::new(&executable)
                     .arg("--version")
                     .stdin(Stdio::null())
                     .output()
@@ -1354,7 +1383,7 @@ impl Encoder {
                 )
             },
             Encoder::X265 { .. } => {
-                let result = Command::new(self.executable())
+                let result = Command::new(&executable)
                     .arg("--version")
                     .stdin(Stdio::null())
                     .output()
@@ -1371,7 +1400,7 @@ impl Encoder {
                 )
             },
             Encoder::VVenC { .. } => {
-                let result = Command::new(self.executable())
+                let result = Command::new(&executable)
                     .arg("--version")
                     .stdin(Stdio::null())
                     .output()
@@ -1381,7 +1410,7 @@ impl Encoder {
                 Some(version_line.to_string())
             },
             Encoder::FFmpeg { .. } => {
-                let result = Command::new(self.executable()).stdin(Stdio::null()).output().ok()?;
+                let result = Command::new(&executable).stdin(Stdio::null()).output().ok()?;
                 let stderr = String::from_utf8_lossy(&result.stderr);
                 let version_line = stderr.lines().find(|line| line.starts_with("ffmpeg"))?;
                 version_line.split(' ').nth(2).map(String::from)
@@ -1466,6 +1495,10 @@ mod e03_tests;
 
 #[cfg(test)]
 mod e04_tests;
+
+#[cfg(test)]
+#[cfg(unix)]
+mod e06_tests;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
