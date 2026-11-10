@@ -478,7 +478,7 @@ impl EncoderBase {
             EncoderBase::X264 => "264",
             EncoderBase::X265 => "hevc",
             EncoderBase::VVenC => "266",
-            EncoderBase::FFmpeg => ".mkv",
+            EncoderBase::FFmpeg => "mkv",
         }
     }
 
@@ -955,6 +955,21 @@ pub enum EncoderPasses {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn e21_ffmpeg_extension_uses_one_dot_in_output_names() {
+        let encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, false);
+        for extension in [EncoderBase::FFmpeg.output_extension(), encoder.output_extension()] {
+            assert_eq!(
+                (
+                    extension,
+                    format!("00000.{extension}"),
+                    format!("00000.temp.{extension}")
+                ),
+                ("mkv", "00000.mkv".to_owned(), "00000.temp.mkv".to_owned())
+            );
+        }
+    }
 
     #[test]
     fn every_base_except_ffmpeg_round_trips_a_filter() {
