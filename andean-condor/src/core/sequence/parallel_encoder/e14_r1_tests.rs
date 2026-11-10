@@ -245,7 +245,7 @@ exec "$E14_FFPROBE" "$@"
 }
 
 fn size(status: &SequenceStatus) -> bool {
-    matches!(status, SequenceStatus::Whole(Status::Processing { completion: SequenceCompletion::Custom { name, .. }, .. }) if name == "size")
+    matches!(status, SequenceStatus::Whole(Status::Processing { completion: SequenceCompletion::Custom { name, .. }, .. }) if matches!(name.as_str(), "size" | "resumed-size"))
 }
 
 #[test]

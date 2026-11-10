@@ -41,6 +41,18 @@ impl Default for ProgressBar {
 }
 
 impl ProgressBar {
+    /// Rates measure this run's usable work, excluding validated resume frames.
+    fn rates(&self, elapsed: f64) -> (f64, f64) {
+        let done = self.completed.saturating_sub(self.initial_completed);
+        if done == 0 || elapsed <= 0.0 {
+            return (0.0, 0.0);
+        }
+        (
+            done as f64 / elapsed,
+            self.total.saturating_sub(self.completed) as f64 * elapsed / done as f64,
+        )
+    }
+
     /// SAFETY: `Gauge::ratio()` panics if the value is not between 0.0 and
     /// 1.0 (inclusive) or is NaN.  We clamp to [0.0, 1.0] to prevent crashes
     /// when `total == 0` (division by zero → inf/NaN).
@@ -69,15 +81,7 @@ impl ProgressBar {
             },
             |started| {
                 let elapsed = started.elapsed();
-                let done = self.completed.saturating_sub(self.initial_completed);
-                let ups = done as f64 / elapsed.as_secs_f64();
-                let elapsed_per_unit = if done == 0 {
-                    0.0
-                } else {
-                    elapsed.as_secs_f64() / done as f64
-                };
-                let remaining_time =
-                    self.total.saturating_sub(self.completed) as f64 * elapsed_per_unit;
+                let (ups, remaining_time) = self.rates(elapsed.as_secs_f64());
                 let eta = elapsed.as_secs_f64() + remaining_time;
                 let elapsed_hms = seconds_to_hms(elapsed.as_secs(), false);
                 let remaining_hms = seconds_to_hms(remaining_time as u64, false);
@@ -115,5 +119,27 @@ impl ProgressBar {
             gauge = gauge.label(Span::styled(label, Style::default()));
         }
         gauge
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProgressBar;
+
+    #[test]
+    fn e16_resume_rate_formula_excludes_validated_baseline() {
+        let mut bar = ProgressBar {
+            initial_completed: 100,
+            completed: 150,
+            total: 300,
+            ..Default::default()
+        };
+        assert_eq!(bar.rates(10.0), (5.0, 30.0));
+        bar.completed = 100;
+        assert_eq!(bar.rates(10.0), (0.0, 0.0));
+        bar.completed = 300;
+        bar.initial_completed = 300;
+        assert_eq!(bar.rates(0.0), (0.0, 0.0));
+        assert_eq!(ProgressBar::clamped_ratio(0, 0), 0.0);
     }
 }

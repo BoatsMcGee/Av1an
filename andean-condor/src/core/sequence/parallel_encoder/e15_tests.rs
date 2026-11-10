@@ -118,6 +118,11 @@ esac
 printf '%s\n' "$pass" >> "$root/passes"
 printf '%s\n' "$out" >> "$root/outputs"
 printf '%s\n' "$stats" >> "$root/stat-paths"
+case "$E08_CASE" in
+    *e16-quiet|*e16-resume) ;;
+    *e16-sparse) printf '1 frames: 1 fps\r1 frames: 1 fps\r0 frames: 1 fps\r' >&2 ;;
+    *e16-*) printf '1 frames: 1 fps\r3 frames: 1 fps\r3 frames: 1 fps\r2 frames: 1 fps\r' >&2 ;;
+esac
 if [ "$pass" = 1 ]; then test ! -f "$out"; fi
 case "$E08_CASE" in
     *force)
@@ -146,6 +151,7 @@ case "$E08_CASE" in
     *exhaust*) fail=99 ;;
     *filter-failure) fail=99 ;;
     *all2-graceful|*save|*publication|*filter-only) fail=0 ;;
+    *e16-quiet|*e16-sparse|*e16-resume) fail=0 ;;
 esac
 case "$root" in */peer-*) fail=0 ;; esac
 if [ "$n" -le "$fail" ] && { [ "$pass" = 2 ] || [ -z "$stats" ]; }; then
@@ -301,6 +307,70 @@ exec {real:?} "$@"
 }
 
 #[test]
+fn e16_bounded_public_progress_jobs() {
+    let temp = tempfile::tempdir().expect("fixture");
+    let root = temp.path();
+    fs::write(
+        root.join("watchdog.rs"),
+        include_str!("../../encoder/e08_fixture.rs"),
+    )
+    .expect("supervisor");
+    assert!(
+        Command::new("rustc")
+            .arg(root.join("watchdog.rs"))
+            .arg("-o")
+            .arg(root.join("watchdog"))
+            .status()
+            .expect("rustc")
+            .success()
+    );
+    let mut failures = Vec::new();
+    for path in ["native", "vs"] {
+        for kind in [
+            "quiet",
+            "sparse",
+            "once",
+            "all2",
+            "exhaust1",
+            "exhaust-wrong",
+            "force",
+            "publication",
+            "peer-exhaust",
+            "resume",
+            "resumed",
+        ] {
+            let case = format!("e15-{path}-e16-{kind}");
+            let job = root.join(&case);
+            fs::create_dir_all(&job).expect("job");
+            let output = Command::new(root.join("watchdog"))
+                .arg("--e08-watchdog")
+                .arg(std::env::current_exe().expect("binary"))
+                .arg(&job)
+                .arg(&case)
+                .arg("core::sequence::parallel_encoder::e15_tests::e15_public_child")
+                .output()
+                .expect("bounded child");
+            let text = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            eprintln!("E16 {case}: {text}");
+            if !output.status.success()
+                || !job.join("verified").exists()
+                || !text.contains("test result: ok. 1 passed;")
+                || !text
+                    .lines()
+                    .any(|line| line == "E08 watchdog reaped 0 descendants; timeout=false")
+            {
+                failures.push(format!("{case}: {text}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn e15_public_child() {
     let Some(root) = std::env::var_os("E08_ROOT") else {
         return;
@@ -311,6 +381,8 @@ fn e15_public_child() {
         return;
     };
     let (path, kind) = rest.split_once('-').expect("path-kind");
+    let e16 = kind.starts_with("e16-");
+    let kind = kind.strip_prefix("e16-").unwrap_or(kind);
     let warnings = RetryWarnings::default();
     tracing::subscriber::set_global_default(warnings.clone()).expect("isolated child subscriber");
     assert_eq!(
@@ -420,6 +492,9 @@ fn e15_public_child() {
     config.parallel_encoder = serde_json::from_value(json).expect("saved config");
     config.parallel_encoder.workers = Some(1);
     config.parallel_encoder.scenes_directory = scenes.clone();
+    if e16 && matches!(kind, "quiet" | "sparse") {
+        config.parallel_encoder.max_tries = 1;
+    }
     let peers = matches!(kind, "peers" | "peer-exhaust");
     if peers {
         config.parallel_encoder.workers = Some(2);
@@ -471,6 +546,18 @@ fn e15_public_child() {
                 encoder,
                 sequence_data: DefaultSequenceData::default(),
             });
+        }
+    }
+    if e16 && matches!(kind, "resume" | "resumed") {
+        fs::copy(root.join("fixture"), &output).expect("resumed artifact");
+        let data = &mut condor.scenes[0].sequence_data.parallel_encoder;
+        data.bytes = Some(1);
+        data.started_on = Some(1);
+        data.completed_on = Some(2);
+        if kind == "resume" {
+            let mut scene = condor.scenes[0].clone();
+            scene.sequence_data = DefaultSequenceData::default();
+            condor.scenes.push(scene);
         }
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -529,8 +616,8 @@ fn e15_public_child() {
                 fs::write(root.join("release"), "continue").expect("release active attempt");
             })
         });
-        let result = if kind.starts_with("direct") {
-            ParallelEncoder::encode_tasks_cancel(
+        let result = if kind.starts_with("direct") || (e16 && matches!(kind, "quiet" | "sparse")) {
+            ParallelEncoder::encode_tasks_with_options(
                 &mut condor.input,
                 1,
                 vec![Task {
@@ -544,6 +631,10 @@ fn e15_public_child() {
                 .into(),
                 tx,
                 token.clone(),
+                ParallelEncoderOptions {
+                    max_tries: if e16 { 1 } else { 3 },
+                    validate_frame_count: true,
+                },
             )
             .map(|results| {
                 assert_eq!(results.len(), 1);
@@ -562,6 +653,82 @@ fn e15_public_child() {
         .ok()
         .map_or(0, |s| s.parse().expect("count"));
     let events: Vec<_> = rx.try_iter().collect();
+    if e16 {
+        let totals: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                SequenceStatus::Whole(Status::Processing {
+                    completion: SequenceCompletion::Frames { completed, total },
+                    ..
+                }) => Some((*completed, *total)),
+                _ => None,
+            })
+            .collect();
+        let expected = match kind {
+            "exhaust1" | "exhaust-wrong" | "force" | "publication" => 0,
+            "peer-exhaust" => 3,
+            "resume" => 6,
+            _ => 3,
+        };
+        assert_eq!(
+            totals.last().map_or(0, |v| v.0),
+            expected,
+            "usable final frames: {events:?}"
+        );
+        assert_eq!(
+            totals.last().map(|v| v.1),
+            Some(match kind {
+                "peer-exhaust" => 9,
+                "resume" => 6,
+                _ => 3,
+            })
+        );
+        assert!(totals.iter().all(|(done, total)| done <= total));
+        let completed = events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    SequenceStatus::Subprocess {
+                        child: Status::Completed { .. },
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            completed,
+            usize::from(!matches!(
+                kind,
+                "exhaust1" | "exhaust-wrong" | "force" | "publication" | "resumed"
+            ))
+        );
+        if kind == "once" {
+            assert!(
+                totals.windows(2).any(|pair| pair[0].0 > pair[1].0),
+                "failed attempt rolls back before retry"
+            );
+        }
+        if matches!(kind, "resume" | "resumed") {
+            result.expect("partial resume");
+            assert_eq!(calls, u32::from(kind == "resume"));
+            assert!(
+                events
+                    .iter()
+                    .any(|event| matches!(event, SequenceStatus::Whole(Status::Completed { .. })))
+            );
+            assert!(events.iter().any(|event| matches!(event, SequenceStatus::Whole(Status::Processing { completion: SequenceCompletion::Custom { name, .. }, .. }) if name == "resumed-size")));
+            assert!(
+                condor.scenes.iter().all(|scene| scene
+                    .sequence_data
+                    .parallel_encoder
+                    .bytes
+                    .is_some())
+            );
+            fs::write(root.join("verified"), "resume progress checked").expect("verified");
+            return;
+        }
+    }
     if let Some(expected) = match kind {
         "once" | "exhaust2" | "filter-only" => Some(1),
         "exhaust3" => Some(2),
@@ -753,8 +920,13 @@ fn e15_public_child() {
                     .expect("status"),
             };
             assert_eq!(result.status.code(), Some(42));
+            let expected: &[u8] = if e16 {
+                b"1 frames: 1 fps\r3 frames: 1 fps\r3 frames: 1 fps\r2 frames: 1 fps\rlast-codec-diagnostic\xff"
+            } else {
+                b"last-codec-diagnostic\xff"
+            };
             assert!(
-                matches!(&result.stderr, crate::core::encoder::StringOrBytes::Bytes(bytes) if bytes == b"last-codec-diagnostic\xff")
+                matches!(&result.stderr, crate::core::encoder::StringOrBytes::Bytes(bytes) if bytes == expected)
             );
         }
         assert!(!output.exists());
@@ -762,7 +934,16 @@ fn e15_public_child() {
         assert!(condor.scenes[0].sequence_data.parallel_encoder.bytes.is_none());
     } else {
         result.expect("public job retries a transient scene failure");
-        assert_eq!(calls, if kind == "all2" { 4 } else { 2 });
+        assert_eq!(
+            calls,
+            if kind == "all2" {
+                4
+            } else if e16 && matches!(kind, "quiet" | "sparse") {
+                1
+            } else {
+                2
+            }
+        );
         if kind == "filter-only" {
             assert_eq!(
                 fs::read_to_string(root.join("filter-count")).expect("actual filter attempts"),
@@ -802,7 +983,7 @@ fn e15_public_child() {
         );
         assert_eq!(
             saved.lock().expect("saved").len(),
-            usize::from(kind != "direct"),
+            usize::from(kind != "direct" && !(e16 && matches!(kind, "quiet" | "sparse"))),
             "Sequence persists once; the direct API leaves persistence to its caller"
         );
         let input = fs::read(root.join("input-1")).expect("literal scene input");

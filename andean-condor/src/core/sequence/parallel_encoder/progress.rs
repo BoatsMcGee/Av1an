@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, mpsc::Sender};
 
 use anyhow::Result;
 
@@ -8,13 +8,166 @@ use crate::core::{
     sequence::{SequenceCompletion, SequenceStatus, Status, parallel_encoder::DETAILS},
 };
 
-/// Record one finished final-pass frame and return the running total.
-///
-/// `fetch_add` returns the pre-increment value, so the count returned here
-/// includes the frame just recorded.
-#[inline]
-pub(super) fn count_frame(count: &AtomicUsize) -> usize {
-    count.fetch_add(1, Ordering::Relaxed) + 1
+/// One dispatch's usable logical frames, including validated resume work.
+pub(super) struct Progress {
+    completed: Mutex<usize>,
+    total: usize,
+    tx: Sender<SequenceStatus>,
+}
+
+impl Progress {
+    pub(super) fn new(tx: Sender<SequenceStatus>, total: usize, initial: usize) -> Self {
+        Self {
+            completed: Mutex::new(initial),
+            total,
+            tx,
+        }
+    }
+
+    fn parent(&self, completed: usize) -> Status {
+        Status::Processing {
+            id: DETAILS.name.to_owned(),
+            completion: SequenceCompletion::Frames {
+                completed: completed as u64,
+                total: self.total as u64,
+            },
+        }
+    }
+
+    fn whole(&self, completed: usize) {
+        let _ = self.tx.send(SequenceStatus::Whole(self.parent(completed)));
+    }
+}
+
+/// Own tentative credit until the validated artifact is published. Drop rolls
+/// back only this attempt; all codec/producer/relay joins precede that drop.
+pub(super) struct AttemptProgress<'a> {
+    progress: &'a Progress,
+    scene: usize,
+    frames: usize,
+    passes: u8,
+    // Only the relay mutates this until it joins; the owner then commits/drops.
+    state: Mutex<(u8, usize, usize)>,
+    committed: bool,
+}
+
+impl<'a> AttemptProgress<'a> {
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn scene(&self) -> usize {
+        self.scene
+    }
+
+    pub(super) fn new(progress: &'a Progress, scene: usize, frames: usize, passes: u8) -> Self {
+        // Private parallel protocol: `attempt` precedes native records, even
+        // with no records. Only this explicit boundary resets the UI panel.
+        let _ = progress.tx.send(SequenceStatus::Whole(Status::Processing {
+            id: scene.to_string(),
+            completion: SequenceCompletion::Custom {
+                name: "attempt".into(),
+                completed: 0.0,
+                total: 0.0,
+            },
+        }));
+        Self {
+            progress,
+            scene,
+            frames,
+            passes,
+            state: Mutex::new((0, 0, 0)),
+            committed: false,
+        }
+    }
+
+    fn report(&self, record: EncodeProgress) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (pass, total) = record.pass;
+        if total != self.passes || pass == 0 || pass > total || pass < state.0 {
+            return Ok(());
+        }
+        if pass > state.0 {
+            state.0 = pass;
+            state.1 = 0;
+        }
+        state.1 = state.1.max(record.frame.min(self.frames));
+        // Serialize mutation AND sends: another scene's commit/rollback cannot
+        // overtake a total computed earlier. Never held across native waits.
+        let mut completed = self
+            .progress
+            .completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pass == self.passes {
+            *completed += state.1 - state.2;
+            state.2 = state.1;
+            self.progress.tx.send(SequenceStatus::Whole(self.progress.parent(*completed)))?;
+        }
+        self.progress.tx.send(SequenceStatus::Subprocess {
+            parent: self.progress.parent(*completed),
+            child: Status::Processing {
+                id: self.scene.to_string(),
+                completion: SequenceCompletion::PassFrames {
+                    passes: (pass, total),
+                    frames: (state.1 as u64, self.frames as u64),
+                },
+            },
+        })?;
+        Ok(())
+    }
+
+    pub(super) fn commit(&mut self, bytes: u64) {
+        if self.committed {
+            return;
+        }
+        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut completed = self
+            .progress
+            .completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *completed += self.frames - state.2;
+        self.committed = true;
+        self.progress.whole(*completed);
+        // Notification loss after rename must not lose saved usable work.
+        let size = SequenceCompletion::Custom {
+            name: "size".into(),
+            completed: bytes as f64,
+            total: bytes as f64,
+        };
+        let _ = self.progress.tx.send(SequenceStatus::Whole(Status::Processing {
+            id: self.scene.to_string(),
+            completion: size,
+        }));
+        let _ = self.progress.tx.send(SequenceStatus::Subprocess {
+            parent: self.progress.parent(*completed),
+            child: Status::Completed {
+                id: self.scene.to_string(),
+            },
+        });
+    }
+}
+
+impl Drop for AttemptProgress<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let state = self.state.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut completed = self
+            .progress
+            .completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *completed -= state.2;
+        self.progress.whole(*completed);
+        // Failed is panel cleanup, not a replacement for the typed task error.
+        let _ = self.progress.tx.send(SequenceStatus::Subprocess {
+            parent: self.progress.parent(*completed),
+            child: Status::Failed {
+                id: self.scene.to_string(),
+                error: "Attempt not published".into(),
+            },
+        });
+    }
 }
 
 /// Drains any finished scene results from the channel and forwards them to
@@ -39,70 +192,68 @@ where
 ///
 /// The parent status carries the whole encode's final-pass total, so every
 /// scene's relay contributes to one shared bar.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn relay_progress(
     encode_progress_rx: std::sync::mpsc::Receiver<EncodeProgress>,
-    task_progress_tx: &std::sync::mpsc::Sender<SequenceStatus>,
-    total_passes: u8,
-    scene: usize,
-    total_scene_frames: usize,
-    total_process_frames: usize,
-    total_final_pass_frames_encoded: &AtomicUsize,
+    attempt: &AttemptProgress<'_>,
 ) -> Result<()> {
     for progress in encode_progress_rx {
-        if progress.pass.0 == total_passes && progress.frame > 0 {
-            let total_final_encoded = count_frame(total_final_pass_frames_encoded);
-            task_progress_tx.send(SequenceStatus::Whole(Status::Processing {
-                id: DETAILS.name.to_owned(),
-                completion: SequenceCompletion::Frames {
-                    completed: total_final_encoded as u64,
-                    total: total_process_frames as u64,
-                },
-            }))?;
-        }
-        task_progress_tx.send(SequenceStatus::Subprocess {
-            parent: Status::Processing {
-                id: DETAILS.name.to_owned(),
-                completion: SequenceCompletion::Frames {
-                    completed: total_final_pass_frames_encoded.load(Ordering::Relaxed) as u64,
-                    total: total_process_frames as u64,
-                },
-            },
-            child: Status::Processing {
-                id: scene.to_string(),
-                completion: SequenceCompletion::PassFrames {
-                    passes: progress.pass,
-                    frames: (progress.frame as u64, total_scene_frames as u64),
-                },
-            },
-        })?;
-
-        // Progress is advisory. Only artifact publication can complete a scene;
-        // a codec can report its last frame and still leave truncated output.
+        attempt.report(progress)?;
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        atomic::AtomicUsize,
-        mpsc::{Receiver, Sender, channel},
-    };
+    use std::sync::mpsc::{Receiver, Sender, channel};
 
-    use super::{count_frame, relay_progress};
+    use super::{AttemptProgress, Progress, relay_progress};
     use crate::core::{encoder::EncodeProgress, sequence::SequenceStatus};
+
+    #[test]
+    fn e16_sparse_absolute_relay() {
+        let (tx, rx) = channel();
+        let (status_tx, status_rx) = channel();
+        let total = Progress::new(status_tx, 30, 0);
+        let attempt = AttemptProgress::new(&total, 7, 30, 1);
+        for frame in [1, 10, 10, 9, 30] {
+            tx.send(EncodeProgress {
+                pass: (1, 1),
+                frame,
+                usage: Default::default(),
+            })
+            .expect("progress");
+        }
+        drop(tx);
+        relay_progress(rx, &attempt).expect("relay");
+        let counts: Vec<_> =
+            status_rx
+                .try_iter()
+                .filter_map(|event| match event {
+                    SequenceStatus::Subprocess {
+                        child:
+                            crate::core::sequence::Status::Processing {
+                                completion:
+                                    crate::core::sequence::SequenceCompletion::PassFrames {
+                                        frames, ..
+                                    },
+                                ..
+                            },
+                        ..
+                    } => Some(frames.0),
+                    _ => None,
+                })
+                .collect();
+        assert_eq!(*total.completed.lock().expect("total"), 30);
+        assert_eq!(counts, [1, 10, 10, 10, 30]);
+    }
 
     /// Drives `relay_progress` with one scene's final pass and returns every
     /// status it emitted.
     fn relay_one_scene(frames: usize) -> Vec<SequenceStatus> {
         let (tx, rx): (Sender<EncodeProgress>, Receiver<EncodeProgress>) = channel();
         let (status_tx, status_rx) = std::sync::mpsc::channel();
-        let total_final = AtomicUsize::new(0);
-
-        let handle = std::thread::spawn(move || {
-            relay_progress(rx, &status_tx, 1, 7, frames, frames, &total_final)
-        });
+        let total = Progress::new(status_tx, frames, 0);
+        let attempt = AttemptProgress::new(&total, 7, frames, 1);
 
         for frame in 1..=frames {
             tx.send(EncodeProgress {
@@ -113,9 +264,8 @@ mod tests {
             .expect("send progress");
         }
         drop(tx);
-        handle.join().expect("relay should join").expect("relay should succeed");
-
-        status_rx.iter().collect()
+        relay_progress(rx, &attempt).expect("relay");
+        status_rx.try_iter().collect()
     }
 
     /// Even final-frame progress cannot establish artifact eligibility.
@@ -150,51 +300,103 @@ mod tests {
         );
     }
 
-    /// The count must include the frame just recorded, or the bar stops one
-    /// short of its total.
     #[test]
-    fn the_frame_count_includes_the_frame_just_recorded() {
-        let count = AtomicUsize::new(0);
-        for expected in 1..=44_usize {
-            assert_eq!(
-                count_frame(&count),
-                expected,
-                "frame {expected} should count itself"
-            );
+    fn e16_two_scenes_passes_retry_commit_and_zero() {
+        let (tx, rx) = channel();
+        let total = Progress::new(tx, 60, 0);
+        let mut peer = AttemptProgress::new(&total, 8, 30, 2);
+        let report = |attempt: &AttemptProgress<'_>, pass, frame| {
+            attempt
+                .report(EncodeProgress {
+                    pass,
+                    frame,
+                    usage: Default::default(),
+                })
+                .expect("report");
+        };
+        {
+            let failed = AttemptProgress::new(&total, 7, 30, 2);
+            report(&failed, (1, 2), 30);
+            assert_eq!(*total.completed.lock().expect("total"), 0);
+            report(&failed, (2, 2), 10);
+            report(&peer, (2, 2), 10);
+            report(&failed, (1, 2), 30);
+            report(&failed, (2, 1), 30);
+            report(&failed, (2, 2), usize::MAX);
+            assert_eq!(*total.completed.lock().expect("total"), 40);
         }
-        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 44);
+        assert_eq!(
+            *total.completed.lock().expect("total"),
+            10,
+            "only failed credit removed"
+        );
+        let mut retry = AttemptProgress::new(&total, 7, 30, 2);
+        report(&retry, (2, 2), 1);
+        assert_eq!(*total.completed.lock().expect("total"), 11);
+        peer.commit(42);
+        retry.commit(42);
+        retry.commit(42);
+        assert_eq!(*total.completed.lock().expect("total"), 60);
+        let mut zero = AttemptProgress::new(&total, 9, 0, 1);
+        report(&zero, (1, 1), usize::MAX);
+        zero.commit(1);
+        assert_eq!(*total.completed.lock().expect("total"), 60);
+        assert_eq!(
+            rx.try_iter()
+                .filter(|e| matches!(
+                    e,
+                    SequenceStatus::Subprocess {
+                        child: crate::core::sequence::Status::Completed { .. },
+                        ..
+                    }
+                ))
+                .count(),
+            3
+        );
     }
 
     /// Concurrent workers must not lose a count.
     #[test]
-    fn concurrent_counts_do_not_lose_frames() {
+    fn e16_concurrent_attempts_do_not_emit_stale_totals() {
         let workers = 8_usize;
         let per_worker = 500_usize;
         let total = workers * per_worker;
-        let count = AtomicUsize::new(0);
-
-        let counts: Vec<Vec<usize>> = std::thread::scope(|scope| {
+        let (tx, rx) = channel();
+        let count = Progress::new(tx, total, 0);
+        std::thread::scope(|scope| {
             let mut handles = Vec::with_capacity(workers);
-            for _ in 0..workers {
-                handles.push(scope.spawn(|| {
-                    let mut seen = Vec::with_capacity(per_worker);
-                    for _ in 0..per_worker {
-                        seen.push(count_frame(&count));
+            for scene in 0..workers {
+                let count = &count;
+                handles.push(scope.spawn(move || {
+                    let mut attempt = AttemptProgress::new(count, scene, per_worker, 1);
+                    for frame in 1..=per_worker {
+                        attempt
+                            .report(EncodeProgress {
+                                pass: (1, 1),
+                                frame,
+                                usage: Default::default(),
+                            })
+                            .expect("report");
                     }
-                    seen
+                    attempt.commit(42);
                 }));
             }
             handles
                 .into_iter()
-                .map(|handle| handle.join().expect("worker should not panic"))
-                .collect()
+                .for_each(|handle| handle.join().expect("worker should not panic"));
         });
-
-        assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), total);
-
-        // Every value from 1 to the total is handed out exactly once.
-        let mut all: Vec<usize> = counts.into_iter().flatten().collect();
-        all.sort_unstable();
-        assert_eq!(all, (1..=total).collect::<Vec<_>>());
+        assert_eq!(*count.completed.lock().expect("total"), total);
+        let totals: Vec<_> = rx
+            .try_iter()
+            .filter_map(|event| match event {
+                SequenceStatus::Whole(crate::core::sequence::Status::Processing {
+                    completion: crate::core::sequence::SequenceCompletion::Frames { completed, .. },
+                    ..
+                }) => Some(completed),
+                _ => None,
+            })
+            .collect();
+        assert!(totals.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(totals.last(), Some(&(total as u64)));
     }
 }

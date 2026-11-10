@@ -34,13 +34,14 @@ pub struct ParallelEncoderState {
     pub estimated_bitrate: f64,
     pub estimated_bytes: u64,
     pub validation: Option<(u64, u64)>,
+    pub initial_frames: u64,
+    pub completed: bool,
 }
 
 pub struct ParallelEncoderApp {
     pub started: std::time::Instant,
     pub workers: u8,
     pub encoder: Encoder,
-    pub initial_frames: u64,
     pub total_frames: u64,
     pub clip_info: ClipInfo,
     attempted_cancel: bool,
@@ -78,6 +79,10 @@ impl TuiApp for ParallelEncoderApp {
     fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool {
         match status {
             SequenceStatus::Whole(status) => {
+                if matches!(status, Status::Completed { .. }) {
+                    state.completed = true;
+                    return true;
+                }
                 if let Status::Processing {
                     completion:
                         SequenceCompletion::Custom {
@@ -91,17 +96,39 @@ impl TuiApp for ParallelEncoderApp {
                 {
                     state.validation =
                         (*completed < *total).then_some((*completed as u64, *total as u64));
+                    state.completed = false;
                     return true;
                 }
                 if let Status::Processing { id, completion } = status
                     && let SequenceCompletion::Custom {
                         name, completed, ..
                     } = completion
-                    && name == "size"
                 {
+                    if !matches!(name.as_str(), "attempt" | "size" | "resumed-size") {
+                        return false;
+                    }
                     let scene = id.parse::<u64>().expect("Scene index is a number");
+                    if name == "attempt" {
+                        state.completed = false;
+                        state.active_encoders.remove(&scene);
+                        if let Some((frames, data)) = state.scenes.get_mut(&scene)
+                            && data.sequence_data.parallel_encoder.bytes.is_none()
+                        {
+                            *frames = 0;
+                        }
+                        return true;
+                    }
                     state.validation = None;
                     let bytes = completed as u64;
+                    if bytes == 0 {
+                        return false;
+                    }
+                    if name == "resumed-size"
+                        && let Some((_, data)) = state.scenes.get(&scene)
+                        && data.sequence_data.parallel_encoder.bytes.is_none()
+                    {
+                        state.initial_frames += (data.end_frame - data.start_frame) as u64;
+                    }
                     state.scenes.entry(scene).and_modify(|(completed, scene)| {
                         *completed = (scene.end_frame - scene.start_frame) as u64;
                         scene.sequence_data.parallel_encoder.bytes = Some(bytes);
@@ -117,6 +144,7 @@ impl TuiApp for ParallelEncoderApp {
                         Self::estimate_size(&state.scenes, &state.clip_info);
                     state.estimated_bitrate = bitrate;
                     state.estimated_bytes = estimated_bytes;
+                    state.active_encoders.remove(&scene);
                     if !std::io::stdout().is_terminal() {
                         let event = ParallelEncoderConsoleEvent::SceneSize {
                             scene_index: scene,
@@ -137,39 +165,47 @@ impl TuiApp for ParallelEncoderApp {
                     completion: SequenceCompletion::PassFrames { passes, frames },
                 } => {
                     let scene = id.parse::<u64>().expect("Scene index is a number");
+                    let Some((completed, scene_data)) = state.scenes.get_mut(&scene) else {
+                        return false;
+                    };
                     let (current_pass, total_passes) = passes;
-                    let (current_frame, total_frames) = frames;
-
-                    if current_pass == total_passes && state.active_encoders.contains_key(&scene) {
-                        state.scenes.entry(scene).and_modify(|(completed, _)| {
-                            *completed = current_frame;
-                        });
-                    }
-
-                    if let Some(active) = state.active_encoders.get_mut(&scene) {
-                        active.current_pass = current_pass;
-                        active.total_passes = total_passes;
-                        active.frames_processed = current_frame;
-                        active.total_frames = total_frames;
-                    } else if current_frame < total_frames
-                        && let Some((_, scene_data)) = state.scenes.get(&scene)
+                    if current_pass == 0
+                        || current_pass > total_passes
+                        || scene_data.sequence_data.parallel_encoder.bytes.is_some()
                     {
-                        let scene_encoder = SceneEncoder {
+                        return false;
+                    }
+                    let total_frames = (scene_data.end_frame - scene_data.start_frame) as u64;
+                    let current_frame = frames.0.min(total_frames);
+                    let active =
+                        state.active_encoders.entry(scene).or_insert_with(|| SceneEncoder {
                             scene: scene_data.clone(),
                             started: std::time::Instant::now(),
                             current_pass,
                             total_passes,
-                            frames_processed: current_frame,
+                            frames_processed: 0,
                             total_frames,
-                        };
-                        state.active_encoders.insert(scene, scene_encoder);
+                        });
+                    if total_passes != active.total_passes || current_pass < active.current_pass {
+                        return false;
+                    }
+                    if current_pass > active.current_pass {
+                        active.current_pass = current_pass;
+                        active.frames_processed = 0;
+                        active.started = std::time::Instant::now();
+                    }
+                    active.frames_processed = active.frames_processed.max(current_frame);
+                    if current_pass == total_passes {
+                        *completed = (*completed).max(active.frames_processed);
                     }
                     true
                 },
                 Status::Completed { id } => {
                     let scene = id.parse::<u64>().expect("Scene index is a number");
                     state.scenes.entry(scene).and_modify(|(completed, scene)| {
-                        *completed = (scene.end_frame - scene.start_frame) as u64;
+                        if scene.sequence_data.parallel_encoder.bytes.is_some() {
+                            *completed = (scene.end_frame - scene.start_frame) as u64;
+                        }
                     });
                     state.active_encoders.remove(&scene);
                     state.completed_scenes_count = state
@@ -179,6 +215,16 @@ impl TuiApp for ParallelEncoderApp {
                             s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0)
                         })
                         .count();
+                    true
+                },
+                Status::Failed { id, .. } => {
+                    let scene = id.parse::<u64>().expect("Scene index is a number");
+                    state.active_encoders.remove(&scene);
+                    if let Some((completed, scene)) = state.scenes.get_mut(&scene)
+                        && scene.sequence_data.parallel_encoder.bytes.is_none()
+                    {
+                        *completed = 0;
+                    }
                     true
                 },
                 _ => false,
@@ -235,8 +281,10 @@ impl TuiApp for ParallelEncoderApp {
             },
             completed_title: if self.attempted_cancel {
                 "Encoding Aborted".to_owned()
-            } else {
+            } else if self.cached_state.completed {
                 "Encoding Completed".to_owned()
+            } else {
+                "Encoding Scenes...".to_owned()
             },
             top_right_title: if self.cached_state.estimated_bytes > 0 {
                 format!(
@@ -254,7 +302,7 @@ impl TuiApp for ParallelEncoderApp {
             ),
             unit_per_second: "FPS".to_owned(),
             unit: "Frame".to_owned(),
-            initial_completed: self.initial_frames,
+            initial_completed: self.cached_state.initial_frames,
             completed: total_frames_completed,
             total: total_frames,
             show_label: true,
@@ -285,7 +333,6 @@ impl ParallelEncoderApp {
             .filter(|(_, (_, s))| s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0))
             .count();
         let (estimated_bitrate, estimated_bytes) = Self::estimate_size(&scenes, &clip_info);
-        let initial_frames = scenes.iter().fold(0, |acc, (_, (completed, _))| acc + completed);
         let initial_state = ParallelEncoderState {
             scenes,
             active_encoders: BTreeMap::new(),
@@ -294,13 +341,14 @@ impl ParallelEncoderApp {
             estimated_bitrate,
             estimated_bytes,
             validation: None,
+            initial_frames: 0,
+            completed: false,
         };
 
         ParallelEncoderApp {
             started: std::time::Instant::now(),
             workers,
             encoder,
-            initial_frames,
             total_frames,
             clip_info: initial_state.clip_info,
             attempted_cancel: false,
@@ -436,6 +484,163 @@ mod tests {
             .enumerate()
             .map(|(index, scene)| (index as u64, (0, scene)))
             .collect()
+    }
+
+    fn progress(scene: u64, passes: (u8, u8), frame: u64) -> SequenceStatus {
+        SequenceStatus::Subprocess {
+            parent: Status::Processing {
+                id: "Parallel Encoder".into(),
+                completion: SequenceCompletion::Frames {
+                    completed: 0,
+                    total: 400,
+                },
+            },
+            child: Status::Processing {
+                id: scene.to_string(),
+                completion: SequenceCompletion::PassFrames {
+                    passes,
+                    frames: (frame, 100),
+                },
+            },
+        }
+    }
+
+    fn custom(scene: u64, name: &str, completed: f64) -> SequenceStatus {
+        SequenceStatus::Whole(Status::Processing {
+            id: scene.to_string(),
+            completion: SequenceCompletion::Custom {
+                name: name.into(),
+                completed,
+                total: completed,
+            },
+        })
+    }
+
+    fn screen(app: &ParallelEncoderApp) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("render");
+        let buf = terminal.backend().buffer();
+        (0..40)
+            .map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn e16_first_event_pass_order_and_retry_reset() {
+        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let state = app.cached_state_mut();
+        ParallelEncoderApp::map_progress(progress(0, (1, 1), 10), state);
+        assert_eq!(state.scenes[&0].0, 10, "first final-pass record counts");
+        for frame in [10, 9, 30] {
+            ParallelEncoderApp::map_progress(progress(0, (1, 1), frame), state);
+        }
+        assert_eq!(state.scenes[&0].0, 30);
+        ParallelEncoderApp::map_progress(progress(1, (1, 2), 90), state);
+        assert_eq!(state.scenes[&1].0, 0);
+        ParallelEncoderApp::map_progress(progress(1, (2, 2), 10), state);
+        ParallelEncoderApp::map_progress(progress(1, (1, 2), 99), state);
+        assert_eq!(state.active_encoders[&1].current_pass, 2);
+        assert_eq!(state.active_encoders[&1].frames_processed, 10);
+        ParallelEncoderApp::map_progress(custom(1, "attempt", 2.0), state);
+        ParallelEncoderApp::map_progress(progress(1, (1, 2), 2), state);
+        assert_eq!(state.scenes[&1].0, 0);
+        assert_eq!(state.active_encoders[&1].frames_processed, 2);
+    }
+
+    #[test]
+    fn e16_final_native_frame_is_not_a_completion_title() {
+        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        for scene in 0..4 {
+            ParallelEncoderApp::map_progress(progress(scene, (1, 1), 100), app.cached_state_mut());
+        }
+        let text = screen(&app);
+        assert!(text.contains("Encoding Scenes..."), "{text}");
+        assert!(!text.contains("Encoding Completed"), "{text}");
+        assert_eq!(app.cached_state.completed_scenes_count, 0);
+        assert_eq!(app.cached_state.active_encoders.len(), 4);
+    }
+
+    #[test]
+    fn e16_validated_resume_has_no_new_work_fps() {
+        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        for scene in 0..4 {
+            for _ in 0..2 {
+                ParallelEncoderApp::map_progress(
+                    custom(scene, "resumed-size", 1000.0),
+                    app.cached_state_mut(),
+                );
+            }
+        }
+        let text = screen(&app);
+        assert_eq!(app.cached_state.completed_scenes_count, 4);
+        assert_eq!(app.cached_state.initial_frames, 400);
+        assert!(text.contains("400/400 Frames (0.00FPS)"), "{text}");
+        assert!(
+            !text.contains("Encoding Completed"),
+            "publication sizes alone do not finish the whole job"
+        );
+        ParallelEncoderApp::map_progress(
+            SequenceStatus::Whole(Status::Completed {
+                id: "Parallel Encoder".into(),
+            }),
+            app.cached_state_mut(),
+        );
+        assert!(screen(&app).contains("Encoding Completed"));
+    }
+
+    #[test]
+    fn e16_failure_cleanup_and_publication_do_not_inflate_resume_baseline() {
+        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let state = app.cached_state_mut();
+        ParallelEncoderApp::map_progress(custom(0, "resumed-size", 1000.0), state);
+        ParallelEncoderApp::map_progress(progress(1, (1, 1), 100), state);
+        ParallelEncoderApp::map_progress(
+            SequenceStatus::Subprocess {
+                parent: Status::Completed {
+                    id: "unused".into(),
+                },
+                child: Status::Failed {
+                    id: "1".into(),
+                    error: "unpublished".into(),
+                },
+            },
+            state,
+        );
+        assert_eq!(state.scenes[&1].0, 0);
+        assert!(state.active_encoders.is_empty());
+        assert_eq!(state.completed_scenes_count, 1);
+        for _ in 0..2 {
+            ParallelEncoderApp::map_progress(custom(1, "size", 1000.0), state);
+        }
+        ParallelEncoderApp::map_progress(progress(1, (1, 1), 2), state);
+        assert_eq!(state.scenes[&1].0, 100);
+        assert_eq!(
+            state.initial_frames, 100,
+            "newly published size is not resume work"
+        );
+        assert_eq!(state.completed_scenes_count, 2);
+        ParallelEncoderApp::map_progress(
+            SequenceStatus::Whole(Status::Completed {
+                id: "Parallel Encoder".into(),
+            }),
+            state,
+        );
+        assert!(state.completed);
+    }
+
+    #[test]
+    fn e16_zero_length_scene_render_is_finite() {
+        let mut scenes = scenes();
+        scenes.retain(|id, _| *id == 0);
+        scenes.get_mut(&0).expect("scene").1.end_frame = 0;
+        let mut app = ParallelEncoderApp::new(1, encoder(), scenes, clip_info());
+        ParallelEncoderApp::map_progress(progress(0, (1, 1), u64::MAX), app.cached_state_mut());
+        assert_eq!(app.cached_state.scenes[&0].0, 0);
+        let text = screen(&app);
+        assert!(text.contains("0/0 Frames (0.00FPS)"), "{text}");
+        assert!(!text.contains("NaN"));
+        assert!(!text.contains("Encoding Completed"));
     }
 
     /// The size event a finished scene emits is what fills the bar: the count

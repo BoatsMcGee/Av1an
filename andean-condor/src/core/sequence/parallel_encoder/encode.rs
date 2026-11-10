@@ -4,7 +4,7 @@ use std::{
     io::Cursor,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     thread,
 };
@@ -18,14 +18,14 @@ use super::{
     ParallelEncoder, ParallelEncoderOptions, STREAM_WINDOW,
     error::ParallelEncoderError,
     lifecycle::{Stop, retain_error},
-    progress::{drain_finished_results, relay_progress},
+    progress::{AttemptProgress, Progress, drain_finished_results, relay_progress},
     task::{ParallelEncoderResult, ResultStream, Task},
 };
 use crate::{
     core::{
         encoder::{EncodeProgress, EncoderResult},
         input::{Input, clip_info::ClipInfo},
-        sequence::{SequenceCompletion, SequenceStatus, Status, ffmpeg_filter::FfmpegFilter},
+        sequence::{SequenceStatus, Status, ffmpeg_filter::FfmpegFilter},
     },
     utils::semaphore::Semaphore,
 };
@@ -72,40 +72,17 @@ pub(super) struct SceneOutcome {
 pub(super) fn finalize_scene(
     outcome: SceneOutcome,
     output: &std::path::Path,
-    scene: usize,
-    size_tx: &std::sync::mpsc::Sender<SequenceStatus>,
+    progress: &mut AttemptProgress<'_>,
     encoder_errored: &AtomicBool,
 ) -> Result<()> {
     if outcome.usable {
         #[cfg(all(test, target_os = "linux"))]
-        super::e11_tests::fault("size", scene)?;
+        super::e11_tests::fault("size", progress.scene())?;
         super::artifact::protect_existing(output)?;
         fs::rename(outcome.temp_output, output)?;
         #[cfg(all(test, target_os = "linux"))]
         super::e14_r1_tests::after_rename(output);
-        // The rename committed usable work. Losing an optional observer must
-        // not prevent the owning worker from enqueuing its completed result.
-        let _ = size_tx.send(SequenceStatus::Whole(Status::Processing {
-            id: scene.to_string(),
-            completion: SequenceCompletion::Custom {
-                name: "size".to_owned(),
-                completed: outcome.bytes as f64,
-                total: outcome.bytes as f64,
-            },
-        }));
-        let _ = size_tx.send(SequenceStatus::Subprocess {
-            parent: Status::Processing {
-                id: super::DETAILS.name.to_owned(),
-                completion: SequenceCompletion::Custom {
-                    name: "size".to_owned(),
-                    completed: outcome.bytes as f64,
-                    total: outcome.bytes as f64,
-                },
-            },
-            child: Status::Completed {
-                id: scene.to_string(),
-            },
-        });
+        progress.commit(outcome.bytes);
     } else {
         let _ = fs::remove_file(&outcome.temp_output);
         encoder_errored.store(true, Ordering::Relaxed);
@@ -121,9 +98,7 @@ pub(super) fn consume_frames(
     frames: Receiver<Cursor<Vec<u8>>>,
     temp: &std::path::Path,
     clip_info: &ClipInfo,
-    progress_tx: &std::sync::mpsc::Sender<SequenceStatus>,
-    total_frames: usize,
-    total_final: &AtomicUsize,
+    progress: &AttemptProgress<'_>,
     stop: &Stop,
     window: usize,
 ) -> Result<EncoderResult> {
@@ -141,15 +116,7 @@ pub(super) fn consume_frames(
                 || {
                     #[cfg(all(test, target_os = "linux"))]
                     super::e11_tests::fault("relay", task.original_index)?;
-                    relay_progress(
-                        rx,
-                        progress_tx,
-                        task.encoder.total_passes(),
-                        task.original_index,
-                        task.frame_indices.len(),
-                        total_frames,
-                        total_final,
-                    )
+                    relay_progress(rx, progress)
                 },
             )
         });
@@ -231,11 +198,12 @@ pub(super) fn consume_frames(
 struct RetryableAttempt;
 
 /// All attempt owners join inside `encode`; only the successful private output escapes.
-pub(super) struct EncodedAttempt {
+pub(super) struct EncodedAttempt<'a> {
     _directory: tempfile::TempDir,
     pub(super) path: std::path::PathBuf,
     pub(super) result: EncoderResult,
     pub(super) bytes: u64,
+    pub(super) progress: AttemptProgress<'a>,
 }
 
 fn retryable(error: &anyhow::Error) -> bool {
@@ -255,12 +223,13 @@ fn retryable(error: &anyhow::Error) -> bool {
             })
 }
 
-pub(super) fn encode_attempts(
+pub(super) fn encode_attempts<'a>(
     task: &Task,
     options: ParallelEncoderOptions,
     stop: &Stop,
-    mut encode: impl FnMut(&std::path::Path) -> Result<EncoderResult>,
-) -> Result<EncodedAttempt> {
+    progress: &'a Progress,
+    mut encode: impl FnMut(&std::path::Path, &AttemptProgress<'_>) -> Result<EncoderResult>,
+) -> Result<EncodedAttempt<'a>> {
     let terminal_error = |error: anyhow::Error| {
         if stop.cancellation.is_cancelled() && !stop.cancellation.is_forced() {
             error.context(crate::utils::cancellation::Cancelled::Graceful)
@@ -280,7 +249,13 @@ pub(super) fn encode_attempts(
             .prefix(".av1an-attempt-")
             .tempdir_in(task.output.parent().unwrap_or_else(|| std::path::Path::new(".")))?;
         let path = directory.path().join(format!("scene.{}", task.encoder.output_extension()));
-        let encoded = encode(&path).and_then(|result| {
+        let attempt_progress = AttemptProgress::new(
+            progress,
+            task.original_index,
+            task.frame_indices.len(),
+            task.encoder.total_passes(),
+        );
+        let encoded = encode(&path, &attempt_progress).and_then(|result| {
             stop.cancellation.check_forced()?;
             let bytes = super::artifact::validate(
                 &path,
@@ -298,11 +273,13 @@ pub(super) fn encode_attempts(
                     path,
                     result,
                     bytes,
+                    progress: attempt_progress,
                 });
             },
             Err(error) => {
                 // Cleanup follows joins, and precedes even the retry-admission check.
                 drop(directory);
+                drop(attempt_progress);
                 #[cfg(all(test, target_os = "linux"))]
                 super::e15_tests::after_failure(&stop.cancellation);
                 let again = retryable(&error)
@@ -439,6 +416,33 @@ impl ParallelEncoder {
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
         options: ParallelEncoderOptions,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        Self::encode_tasks_with_baseline(
+            input,
+            workers,
+            tasks,
+            progress_tx,
+            cancelled,
+            stream,
+            options,
+            0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "Own the shared token through all worker joins"
+    )]
+    pub(super) fn encode_tasks_with_baseline(
+        input: &mut Input,
+        workers: u8,
+        tasks: VecDeque<Task>,
+        progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Cancellation,
+        stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
+        options: ParallelEncoderOptions,
+        initial_frames: usize,
+    ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
         }
@@ -463,6 +467,9 @@ impl ParallelEncoder {
                 anyhow::bail!(ParallelEncoderError::FfmpegNotFound);
             }
         }
+        let total_frames =
+            tasks.iter().map(|task| task.frame_indices.len()).sum::<usize>() + initial_frames;
+        let progress = Progress::new(progress_tx.clone(), total_frames, initial_frames);
         // Nonstream VS decoding stays on this thread; both paths bound workers.
         if input.streams_concurrently() {
             let result = Self::encode_tasks_streaming(
@@ -470,10 +477,10 @@ impl ParallelEncoder {
                 workers,
                 STREAM_WINDOW,
                 tasks,
-                &progress_tx,
                 &cancelled,
                 stream,
                 options,
+                &progress,
             );
             #[cfg(all(test, target_os = "linux"))]
             crate::core::encoder::e12_tests::before_stream_return(&cancelled);
@@ -493,8 +500,6 @@ impl ParallelEncoder {
         }
         let clip_info = input.clip_info()?;
         let stop = Stop::new_cancel(workers.into(), cancelled.clone());
-        let total_final = AtomicUsize::new(0);
-        let total_frames = tasks.iter().map(|task| task.frame_indices.len()).sum();
         let total_tasks = tasks.len();
         let results = stop.catch_panic("Parallel scheduling", || thread::scope(|scope| {
             // Also covers a thread-spawn panic before the scheduling loop:
@@ -508,10 +513,9 @@ impl ParallelEncoder {
             let mut handles = Vec::new();
             let setup = stop.catch("Parallel worker setup", || {
             for worker in 0..usize::from(workers).min(total_tasks) {
-                let (stop, total_final, clip_info, cancelled) =
-                    (&stop, &total_final, &clip_info, &cancelled);
+                let (stop, progress, clip_info, cancelled) =
+                    (&stop, &progress, &clip_info, &cancelled);
                 let jobs_rx = jobs_rx.clone();
-                let progress_tx = progress_tx.clone();
                 let results_tx = stream.results_tx.clone();
                 let finished = Arc::clone(&stream.finished_scenes);
                 handles.push(scope.spawn(move || stop.catch_panic(&format!("Parallel worker {worker}"), || {
@@ -544,9 +548,9 @@ impl ParallelEncoder {
                                  }
                                  Some(file)
                              } else { None };
-                             let attempt = encode_attempts(task, options, stop, |path| {
-                                 let consume = |frames| consume_frames(task, frames, path, clip_info, &progress_tx,
-                                     total_frames, total_final, stop, STREAM_WINDOW);
+                              let mut attempt = encode_attempts(task, options, stop, progress, |path, attempt_progress| {
+                                  let consume = |frames| consume_frames(task, frames, path, clip_info, attempt_progress,
+                                      stop, STREAM_WINDOW);
                                  spool.as_mut().map_or_else(
                                      || consume(direct.take().expect("one direct attempt")),
                                      |file| crate::core::encoder::spool::replay_cancel(file, &task.output, cancelled, consume),
@@ -567,7 +571,7 @@ impl ParallelEncoder {
                             let bitrate = (bytes * 8) as f64 / (task.frame_indices.len() as f64 * framerate);
                              let result = cancelled.publish(|| {
                               finalize_scene(SceneOutcome { temp_output: attempt.path.clone(), bytes, usable: true },
-                                 &task.output, task.original_index, &progress_tx, &stop.stopped)?;
+                                  &task.output, &mut attempt.progress, &stop.stopped)?;
                              let result = report_result(&results_tx, &finished, ParallelEncoderResult {
                                   scene: task.original_index, started, ended, bytes, bitrate, result: attempt.result.clone(),
                              })?;
@@ -762,6 +766,8 @@ mod tests {
         std::fs::write(&temp_output, vec![7_u8; 42]).expect("temp file should be written");
         let (tx, rx) = std::sync::mpsc::channel();
         let errored = AtomicBool::new(false);
+        let progress = Progress::new(tx, 3, 0);
+        let mut attempt = AttemptProgress::new(&progress, 3, 3, 1);
 
         finalize_scene(
             SceneOutcome {
@@ -770,17 +776,16 @@ mod tests {
                 usable: true,
             },
             &output,
-            3,
-            &tx,
+            &mut attempt,
             &errored,
         )
         .expect("finalize should succeed");
 
-        match rx.try_recv().expect("the size event is sent") {
+        match rx.try_iter().find(|event| matches!(event, SequenceStatus::Whole(Status::Processing { completion: crate::core::sequence::SequenceCompletion::Custom { name, .. }, .. }) if name == "size")).expect("the size event is sent") {
             SequenceStatus::Whole(Status::Processing {
                 id,
                 completion:
-                    SequenceCompletion::Custom {
+                    crate::core::sequence::SequenceCompletion::Custom {
                         name,
                         completed,
                         total,
@@ -810,6 +815,9 @@ mod tests {
         std::fs::write(&temp_output, vec![7_u8; 42]).expect("temp file should be written");
         let (tx, rx) = std::sync::mpsc::channel();
         let errored = AtomicBool::new(false);
+        let progress = Progress::new(tx, 1, 0);
+        let mut attempt = AttemptProgress::new(&progress, 1, 1, 1);
+        let _ = rx.try_iter().count();
 
         finalize_scene(
             SceneOutcome {
@@ -818,8 +826,7 @@ mod tests {
                 usable: false,
             },
             &output,
-            1,
-            &tx,
+            &mut attempt,
             &errored,
         )
         .expect("finalize should succeed");

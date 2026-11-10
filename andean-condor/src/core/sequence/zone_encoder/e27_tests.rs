@@ -457,7 +457,9 @@ fn e27_sequence_runtime_child() {
                     SequenceCompletion::Custom {
                         name, completed, ..
                     },
-            }) if name == "size" => Some((id.as_str(), *completed)),
+            }) if matches!(name.as_str(), "size" | "resumed-size") => {
+                Some((id.as_str(), *completed))
+            },
             _ => None,
         })
         .collect();

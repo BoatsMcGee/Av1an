@@ -337,7 +337,7 @@ fn e14_public_child() {
         result.expect("eligible artifact");
         assert_eq!(data.bytes, Some(output.metadata().expect("output").len()));
         assert!(data.started_on.is_some() && data.completed_on.is_some());
-        assert_eq!(statuses.iter().filter(|s| matches!(s, SequenceStatus::Whole(Status::Processing { completion: SequenceCompletion::Custom { name, .. }, .. }) if name == "size")).count(), 1, "exactly one eligibility/size event");
+        assert_eq!(statuses.iter().filter(|s| matches!(s, SequenceStatus::Whole(Status::Processing { completion: SequenceCompletion::Custom { name, .. }, .. }) if matches!(name.as_str(), "size" | "resumed-size"))).count(), 1, "exactly one eligibility/size event");
         if kind == "filter-optout" {
             let counted = Command::new("ffprobe")
                 .args([
@@ -429,7 +429,7 @@ fn e14_public_child() {
                 "no false metadata"
             );
         }
-        assert!(!statuses.iter().any(|s| matches!(s, SequenceStatus::Whole(Status::Processing { completion: SequenceCompletion::Custom { name, .. }, .. }) if name == "size")), "no success-size event");
+        assert!(!statuses.iter().any(|s| matches!(s, SequenceStatus::Whole(Status::Processing { completion: SequenceCompletion::Custom { name, .. }, .. }) if matches!(name.as_str(), "size" | "resumed-size"))), "no success-size event");
         assert!(
             !statuses.iter().any(|s| matches!(
                 s,

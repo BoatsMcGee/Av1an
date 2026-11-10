@@ -326,12 +326,20 @@ where
         if let Some(error) = resume_error {
             return Err(error);
         }
+        let initial_frames = resumed
+            .iter()
+            .map(|(index, _)| condor.scenes[*index].end_frame - condor.scenes[*index].start_frame)
+            .sum::<usize>();
+        let total_frames =
+            tasks.iter().map(|task| task.frame_indices.len()).sum::<usize>() + initial_frames;
         for (scene, bytes) in resumed {
             cancelled.publish(|| {
                 let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
                     id: scene.to_string(),
                     completion: SequenceCompletion::Custom {
-                        name: "size".to_owned(),
+                        // Private parallel protocol: only a currently validated
+                        // resume contributes to the initial-completed FPS baseline.
+                        name: "resumed-size".to_owned(),
                         completed: bytes as f64,
                         total: bytes as f64,
                     },
@@ -339,7 +347,22 @@ where
                 Ok(())
             })?;
         }
+        let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
+            id: DETAILS.name.to_owned(),
+            completion: SequenceCompletion::Frames {
+                completed: initial_frames as u64,
+                total: total_frames as u64,
+            },
+        }));
         if tasks.is_empty() || cancelled.is_cancelled() {
+            if tasks.is_empty() && !cancelled.is_cancelled() {
+                cancelled.publish(|| {
+                    let _ = progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                        id: DETAILS.name.to_owned(),
+                    }));
+                    Ok(())
+                })?;
+            }
             return Ok(((), warnings));
         }
 
@@ -398,7 +421,7 @@ where
             on_results: &mut on_results,
         };
 
-        let encoder_thread = ParallelEncoder::encode_tasks_with_sender(
+        let encoder_thread = ParallelEncoder::encode_tasks_with_baseline(
             input,
             workers,
             tasks,
@@ -409,6 +432,7 @@ where
                 max_tries: config.max_tries,
                 validate_frame_count: config.validate_frame_count,
             },
+            initial_frames,
         );
 
         if let Err(e) = encoder_thread {

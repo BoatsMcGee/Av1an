@@ -1,5 +1,5 @@
 //! Bounded frame streaming; active finite jobs finish on admission shutdown.
-use std::{collections::VecDeque, io::Cursor, sync::atomic::AtomicUsize, thread};
+use std::{collections::VecDeque, io::Cursor, thread};
 
 use crate::utils::cancellation::{Cancellation, Cancelled};
 use anyhow::Result;
@@ -9,9 +9,10 @@ use super::{
     encode::{SceneOutcome, consume_frames, encode_attempts, finalize_scene},
     error::ParallelEncoderError,
     lifecycle::{Stop, retain_error},
+    progress::Progress,
     task::{ParallelEncoderResult, ResultStream, Task},
 };
-use crate::core::{encoder::EncoderResult, input::Input, sequence::SequenceStatus};
+use crate::core::{encoder::EncoderResult, input::Input};
 
 /// Merge only after the consumer (including filter/relays) and producer have joined.
 pub(super) fn joined_scene_result(
@@ -48,10 +49,10 @@ impl ParallelEncoder {
         workers: u8,
         window: usize,
         tasks: VecDeque<Task>,
-        progress_tx: &std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Cancellation,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
         options: ParallelEncoderOptions,
+        progress: &Progress,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
@@ -61,7 +62,6 @@ impl ParallelEncoder {
         let window = window.max(1);
         let clip_info = input.clip_info()?;
         let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
-        let total_frames = tasks.iter().map(|task| task.frame_indices.len()).sum();
         let headers = tasks
             .iter()
             .map(|task| {
@@ -78,7 +78,6 @@ impl ParallelEncoder {
         }
         drop(task_tx);
         let stop = Stop::new_cancel(workers, cancelled.clone());
-        let total_final = AtomicUsize::new(0);
         stop.catch_panic("Streaming scheduling", || {
             thread::scope(|scope| {
                 let mut scheduling = stop.guard();
@@ -88,8 +87,7 @@ impl ParallelEncoder {
                         let task_rx = task_rx.clone();
                         let results_tx = stream.results_tx.clone();
                         let finished = std::sync::Arc::clone(&stream.finished_scenes);
-                        let (stop, headers, total_final, clip_info) =
-                            (&stop, &headers, &total_final, &clip_info);
+                        let (stop, headers, clip_info) = (&stop, &headers, &clip_info);
                         handles.push(scope.spawn(move || {
                             let mut scene = None;
                             let result = stop.catch(&format!("Streaming worker {worker}"), || {
@@ -108,8 +106,12 @@ impl ParallelEncoder {
                                         &format!("Scene {} worker", task.original_index),
                                         || {
                                             let started = std::time::SystemTime::now();
-                                            let attempt =
-                                                encode_attempts(&task, options, stop, |temp| {
+                                            let mut attempt = encode_attempts(
+                                                &task,
+                                                options,
+                                                stop,
+                                                progress,
+                                                |temp, attempt_progress| {
                                                     let (tx, rx) = crossbeam_channel::bounded::<
                                                         Cursor<Vec<u8>>,
                                                     >(
@@ -133,9 +135,7 @@ impl ParallelEncoder {
                                                                             rx,
                                                                             temp,
                                                                             clip_info,
-                                                                            progress_tx,
-                                                                            total_frames,
-                                                                            total_final,
+                                                                            attempt_progress,
                                                                             stop,
                                                                             window,
                                                                         )
@@ -176,7 +176,8 @@ impl ParallelEncoder {
                                                             (encoded, produced)
                                                         });
                                                     joined_scene_result(encoded, produced)
-                                                })?;
+                                                },
+                                            )?;
                                             let bytes = attempt.bytes;
                                             let ended = std::time::SystemTime::now();
                                             let result = cancelled.publish(|| {
@@ -187,8 +188,7 @@ impl ParallelEncoder {
                                                         usable: true,
                                                     },
                                                     &task.output,
-                                                    task.original_index,
-                                                    progress_tx,
+                                                    &mut attempt.progress,
                                                     &stop.stopped,
                                                 )?;
                                                 let result = ParallelEncoderResult {
