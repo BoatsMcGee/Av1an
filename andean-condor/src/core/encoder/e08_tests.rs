@@ -76,7 +76,11 @@ fn e08_bounded_runtime() {
                 "watchdog must bound a stuck process tree"
             );
             assert!(log.contains("reaped 1 descendants; timeout=true"), "{log}");
-        } else if !status.success() {
+        } else if !status.success()
+            || !log
+                .lines()
+                .any(|line| line == "E08 watchdog reaped 0 descendants; timeout=false")
+        {
             failed.push(format!("{case}: {status}\n{log}"));
         } else if let Some(expected) = match case {
             "serial0" => Some(1),

@@ -36,7 +36,11 @@ fn read_pipe(mut reader: impl BufRead, mut report: impl FnMut(&str)) -> PipeOutp
     let result = catch_unwind(AssertUnwindSafe(|| -> io::Result<()> {
         let mut record = Vec::new();
         loop {
-            let available = reader.fill_buf()?;
+            let available = match reader.fill_buf() {
+                Ok(available) => available,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            };
             if available.is_empty() {
                 if let Ok(line) = simdutf8::basic::from_utf8(&record) {
                     report(line);
@@ -258,6 +262,43 @@ mod tests {
             assert!(!self.panic, "injected reader panic");
             Err(io::Error::other("injected reader error"))
         }
+    }
+
+    #[test]
+    fn e08_interrupted_reads_retain_fragments_bytes_and_progress() {
+        struct InterruptedReader(usize);
+        impl Read for InterruptedReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let step = self.0;
+                self.0 += 1;
+                let data: &[u8] = match step {
+                    0 | 2 | 4 => return Err(io::ErrorKind::Interrupted.into()),
+                    1 => b"1/4 fra",
+                    3 => b"mes\r\nbad\xff\n3/4 fra",
+                    5 => b"mes",
+                    _ => b"",
+                };
+                buf[..data.len()].copy_from_slice(data);
+                Ok(data.len())
+            }
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let reader = spawn_reader(
+            InterruptedReader(0),
+            progress_reader(
+                EncoderBase::X264,
+                (1, 1),
+                tx,
+                false,
+                Arc::new(AtomicU64::new(0)),
+                None,
+            ),
+        );
+        let captured = join_worker(reader, "interrupted pipe regression").expect("reader joined");
+        assert!(captured.failure.is_none(), "{:?}", captured.failure);
+        assert_eq!(captured.bytes, b"1/4 frames\r\nbad\xff\n3/4 frames");
+        assert_eq!(rx.into_iter().map(|p| p.frame).collect::<Vec<_>>(), [1, 3]);
     }
 
     #[test]

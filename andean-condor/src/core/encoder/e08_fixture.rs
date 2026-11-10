@@ -13,9 +13,9 @@ fn main() -> io::Result<()> {
         unreachable!("watchdog exits after reaping the fixture tree");
     }
     if args.get(1).is_some_and(|arg| arg == "--e08-stall") {
-        loop {
-            std::thread::park();
-        }
+        // Bound orphan lifetime even if the watchdog itself is interrupted.
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return Ok(());
     }
     let value = |key: &str| args.windows(2).find(|a| a[0] == key).map(|a| a[1].clone());
     let early = value("--e08-exit");
