@@ -55,10 +55,11 @@ impl EncoderBase {
         }
     }
 
-    /// Whether this encoder can carry a Photon Noise table.
+    /// Whether this encoder accepts the application's generated filmgrn1 tables.
+    /// The supported AVM CLI requires filmgrn2; raw native options remain available.
     #[inline]
     pub fn supports_photon_noise(&self) -> bool {
-        matches!(self, Self::AOM | Self::RAV1E | Self::SVTAV1 | Self::AVM)
+        matches!(self, Self::AOM | Self::RAV1E | Self::SVTAV1)
     }
 
     #[inline]

@@ -130,11 +130,11 @@ Parameters for the video encoder (`--encoder`). Passed directly to the encoder b
 
 ## Photon Noise `--photon-noise`
 
-Generate and apply a photon noise table using Film Grain Synthesis with the specified ISO strength. Only compatible with `aom`, `svt-av1`, `rav1e`, and `avm`. A minimum ISO of `200` is recommended for reducing gradient banding. See [Photon Noise](../types/photon-noise.md).
+Generate and apply a photon noise table using Film Grain Synthesis with the specified ISO strength. Only compatible with `aom`, `svt-av1`, and `rav1e`. AVM requires incompatible `filmgrn2`, not generated AV1 `filmgrn1` tables. A minimum ISO of `200` is recommended for reducing gradient banding. See [Photon Noise](../types/photon-noise.md).
 
 ## Chroma Noise `--chroma-noise`
 
-Apply chroma noise of the specified ISO strength to the photon noise table using Film Grain Synthesis. Only compatible with `aom`, `svt-av1`, `rav1e`, and `avm`. See [Photon Noise](../types/photon-noise.md).
+Apply chroma noise of the specified ISO strength to the photon noise table using Film Grain Synthesis. Only compatible with `aom`, `svt-av1`, and `rav1e`. AVM requires incompatible `filmgrn2`, not generated AV1 `filmgrn1` tables. See [Photon Noise](../types/photon-noise.md).
 
 Requires `--photon-noise` or an existing luma table. With an existing table,
 changing only chroma noise keeps its luma strength and other settings.

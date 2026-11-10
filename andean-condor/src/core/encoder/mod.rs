@@ -1147,6 +1147,8 @@ impl Encoder {
         complete_output(encoder_result, &mut output_guard)
     }
 
+    /// Stores the request on variants with a Photon Noise field, including legacy AVM.
+    /// Storage is not support: validate_settings rejects unsupported requests; None clears them.
     #[inline]
     pub fn set_photon_noise(&mut self, photon_noise: Option<PhotonNoise>) {
         match self {

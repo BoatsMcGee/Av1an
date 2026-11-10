@@ -49,7 +49,7 @@ for the per-encoder flags.
 
 ## Photon Noise
 
-`--photon-noise` / `--chroma-noise` (Film Grain Synthesis tables) are only compatible with `aom`, `svt-av1`, `rav1e`, and `avm`. Do not combine with internal encoder grain (e.g. `--film-grain` in `svt-av1`). Minimum ISO `200` recommended against banding.
+`--photon-noise` / `--chroma-noise` (Film Grain Synthesis tables) are only compatible with `aom`, `svt-av1`, and `rav1e`. AVM's supported CLI requires incompatible `filmgrn2` rather than the generated AV1 `filmgrn1` tables; see [Photon Noise compatibility](./photon-noise.md#compatibility). Do not combine with internal encoder grain (e.g. `--film-grain` in `svt-av1`). Minimum ISO `200` recommended against banding.
 
 ## Examples
 

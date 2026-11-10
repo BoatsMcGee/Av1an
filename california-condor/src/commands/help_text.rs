@@ -227,7 +227,9 @@ pub const HELP_TQ_PARAMS_SHORT: &str = short_help(HELP_TQ_PARAMS);
 
 pub const HELP_PHOTON_NOISE: &str = r#"Generate and apply a photon noise table using Film Grain Synthesis with the specified ISO strength.
 
-Do not specify this option when using the internal encoder Film Grain Synthesis (e.g. `--film-grain` in **svt-av1**). Only compatible with **aom**, **svt-av1**,  **rav1e**, and **avm** encoders (*--encoder*).
+Do not specify this option when using the internal encoder Film Grain Synthesis (e.g. `--film-grain` in **svt-av1**). Only compatible with **aom**, **svt-av1**, and **rav1e** encoders (*--encoder*).
+
+The supported **avm** CLI requires incompatible `filmgrn2` tables; generated tables use AV1 `filmgrn1`.
 
 A minimum noise ISO strength of `200` is recommended for reducing gradient banding.
 "#;
@@ -235,7 +237,9 @@ pub const HELP_PHOTON_NOISE_SHORT: &str = short_help(HELP_PHOTON_NOISE);
 
 pub const HELP_CHROMA_NOISE: &str = r#"Apply chroma noise of the specified ISO strength to the photon noise table using Film Grain Synthesis.
 
-Do not specify this option when using the internal encoder Film Grain Synthesis (e.g. `--film-grain` in **svt-av1**). Only compatible with **aom**, **svt-av1**,  **rav1e**, and **avm** encoders (*--encoder*).
+Do not specify this option when using the internal encoder Film Grain Synthesis (e.g. `--film-grain` in **svt-av1**). Only compatible with **aom**, **svt-av1**, and **rav1e** encoders (*--encoder*).
+
+The supported **avm** CLI requires incompatible `filmgrn2` tables; generated tables use AV1 `filmgrn1`.
 "#;
 pub const HELP_CHROMA_NOISE_SHORT: &str = short_help(HELP_CHROMA_NOISE);
 

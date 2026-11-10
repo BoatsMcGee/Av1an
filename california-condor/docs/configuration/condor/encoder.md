@@ -11,7 +11,7 @@ Externally-tagged enum keyed by encoder base. Exactly one key per object: `AOM`,
 | `executable` | String (path or PATH name) or null | Yes | All | Requested custom binary, or `null` to find the base's stock name on PATH. An unavailable custom binary fails validation/encoding without falling back |
 | `pass` | Object | Yes | All except `FFmpeg` | `{ "All": <u8> }` or `{ "Specific": [<u8>, <u8>] }`. Default `{"All": 2}` for AOM/VPX, `{"All": 1}` otherwise |
 | `options` | Object (string→CLIParameter) | Yes | All | Encoder CLI options. See [Encoder Parameters](../../types/encoder-params.md) |
-| `photon_noise` | Object or null | Yes | AOM, RAV1E, SVTAV1, AVM | See [Photon Noise](../../types/photon-noise.md). VPX/X264/X265/VVenC/FFmpeg have no such field |
+| `photon_noise` | Object or null | Yes | AOM, RAV1E, SVTAV1, AVM | AVM retains the field for legacy data but requires null to run; see [Photon Noise](../../types/photon-noise.md). VPX/X264/X265/VVenC/FFmpeg have no such field |
 | `append_color_data` | Boolean | No | All | Appends the input's colour and HDR metadata to the encoder's parameters. Defaults to `true`. See [Colour Metadata](#colour-metadata) |
 | `ffmpeg_filter` | String or null | No | All except `FFmpeg` | FFmpeg filtergraph applied to the frames before they reach this encoder. Defaults to `null`. See [FFmpeg Filter](#ffmpeg-filter) |
 
@@ -89,6 +89,9 @@ encoder before opening/indexing the source or launching workers.
   coefficients must follow the [exact shapes and inheritance rules](../../types/photon-noise.md#coefficient-shapes).
 - Photon Noise requests on unsupported backends and `--ffmpeg-filter` on the
   FFmpeg encoder are errors, not ignored flags. Use FFmpeg's `-vf` in `options`.
+  AVM requires native `filmgrn2`, not the generated AV1 `filmgrn1` format:
+  clear legacy `photon_noise` with `condor encode reset photon-noise` or switch
+  encoders. Raw native `--film-grain-table` options remain caller-controlled.
 
 Library callers can use `Encoder::validate_settings()` without an installed
 encoder. Public input/stream encode entrypoints also check settings before

@@ -5,6 +5,38 @@ mod tests {
     };
 
     #[test]
+    fn e19_avm_legacy_noise_is_preserved_rejected_and_clearable() {
+        use andean_condor::models::encoder::EncoderSettingsError;
+        let json = r#"{"AVM":{"pass":{"All":1},"options":{},"photon_noise":{"iso":800,"chroma_iso":400}}}"#;
+        let mut encoder: Encoder = serde_json::from_str(json).expect("legacy AVM settings");
+        let noise = encoder.photon_noise().expect("preserve saved intent").clone();
+        assert_eq!(noise.iso, 800);
+        assert_eq!(noise.chroma_iso, Some(400));
+        assert_eq!(
+            encoder.validate_settings(),
+            Err(EncoderSettingsError::PhotonNoiseNotSupported(
+                EncoderBase::AVM
+            ))
+        );
+        let saved = serde_json::to_value(&encoder).expect("save invalid legacy settings");
+        assert_eq!(saved["AVM"]["photon_noise"]["iso"], 800);
+        encoder.set_photon_noise(None);
+        assert_eq!(encoder.validate_settings(), Ok(()));
+        assert!(encoder.photon_noise().is_none());
+        encoder.set_photon_noise(Some(noise));
+        assert_eq!(
+            encoder.validate_settings(),
+            Err(EncoderSettingsError::PhotonNoiseNotSupported(
+                EncoderBase::AVM
+            ))
+        );
+        assert!(
+            encoder.photon_noise().is_some(),
+            "setter must not discard the request"
+        );
+    }
+
+    #[test]
     fn c04_round2_vvenc_all_pass_overrides_fail_before_first_pass() {
         use andean_condor::models::encoder::EncoderSettingsError;
         for (name, value) in [("passes", 1.0), ("p", 1.0), ("pass", 1.0), ("pass", 2.0)] {

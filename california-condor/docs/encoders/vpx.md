@@ -69,7 +69,7 @@ its defaults keep key frames out of the way within a scene.
 ## Photon noise
 
 Photon Noise is not available for `vpx`: `--photon-noise` and `--chroma-noise`
-are rejected for it. Use `svt-av1`, `rav1e`, `aom`, or `avm` for film grain
+are rejected for it. Use `svt-av1`, `rav1e`, or `aom` for film grain
 synthesis. See [Photon Noise](../types/photon-noise.md).
 
 ## Examples

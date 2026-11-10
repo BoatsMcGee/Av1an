@@ -43,7 +43,16 @@ monochrome suppresses chroma fields.
 
 ## Compatibility
 
-Only `aom`, `svt-av1`, `rav1e`, and `avm` encoders (see [encoder](./encoder.md)). Do not combine with internal encoder grain such as `--film-grain` in `svt-av1`.
+Only `aom`, `svt-av1`, and `rav1e` encoders (see [encoder](./encoder.md)). Do not combine with internal encoder grain such as `--film-grain` in `svt-av1`.
+
+The supported `avm` CLI has a native `--film-grain-table` option, but requires
+`filmgrn2` tables with 13 `p` values. Condor generates AV1 `filmgrn1` tables
+with 12 `p` values, so application Photon Noise settings are rejected for AVM.
+Legacy AVM `photon_noise` values remain stored and readable; clear them with
+`condor encode reset photon-noise` (or set the field to `null`), or switch
+encoders. Caller-supplied native tables remain available through
+`--params "--film-grain-table=path/to/native-filmgrn2.tbl"`; Condor does not
+convert or validate their format.
 
 ## Defaults and Guidance
 

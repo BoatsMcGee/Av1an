@@ -160,11 +160,11 @@ Parameters for the video encoder used in Target Quality. If omitted, `--params` 
 
 ## Photon Noise `--photon-noise`
 
-Photon Noise ISO strength for Film Grain Synthesis. Compatible with `aom`, `svt-av1`, `rav1e`, `avm`. See [Photon Noise](../types/photon-noise.md).
+Photon Noise ISO strength for Film Grain Synthesis. Compatible with `aom`, `svt-av1`, `rav1e`. AVM requires incompatible `filmgrn2`, not generated AV1 `filmgrn1` tables. See [Photon Noise](../types/photon-noise.md).
 
 ## Chroma Noise `--chroma-noise`
 
-Chroma noise ISO strength for the photon noise table. Compatible with `aom`, `svt-av1`, `rav1e`, `avm`. See [Photon Noise](../types/photon-noise.md).
+Chroma noise ISO strength for the photon noise table. Compatible with `aom`, `svt-av1`, `rav1e`. AVM requires incompatible `filmgrn2`, not generated AV1 `filmgrn1` tables. See [Photon Noise](../types/photon-noise.md).
 
 ## FFmpeg Filter `--ffmpeg-filter`
 

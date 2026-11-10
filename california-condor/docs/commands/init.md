@@ -153,7 +153,7 @@ Parameters for the video encoder (`--encoder`). Passed directly to the encoder b
 
 ## Photon Noise `--photon-noise`
 
-Generate and apply a photon noise table using Film Grain Synthesis with the specified ISO strength. Only compatible with `aom`, `svt-av1`, `rav1e`, and `avm`. Do not use with internal encoder grain (e.g. `--film-grain` in `svt-av1`). See [Photon Noise](../types/photon-noise.md).
+Generate and apply a photon noise table using Film Grain Synthesis with the specified ISO strength. Only compatible with `aom`, `svt-av1`, and `rav1e`. AVM requires incompatible `filmgrn2`, not generated AV1 `filmgrn1` tables. Do not use with internal encoder grain (e.g. `--film-grain` in `svt-av1`). See [Photon Noise](../types/photon-noise.md).
 
 ### Examples
 
