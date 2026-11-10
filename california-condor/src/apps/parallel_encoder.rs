@@ -33,6 +33,7 @@ pub struct ParallelEncoderState {
     pub completed_scenes_count: usize,
     pub estimated_bitrate: f64,
     pub estimated_bytes: u64,
+    pub validation: Option<(u64, u64)>,
 }
 
 pub struct ParallelEncoderApp {
@@ -77,6 +78,21 @@ impl TuiApp for ParallelEncoderApp {
     fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool {
         match status {
             SequenceStatus::Whole(status) => {
+                if let Status::Processing {
+                    completion:
+                        SequenceCompletion::Custom {
+                            name,
+                            completed,
+                            total,
+                        },
+                    ..
+                } = &status
+                    && name == "validating"
+                {
+                    state.validation =
+                        (*completed < *total).then_some((*completed as u64, *total as u64));
+                    return true;
+                }
                 if let Status::Processing { id, completion } = status
                     && let SequenceCompletion::Custom {
                         name, completed, ..
@@ -84,6 +100,7 @@ impl TuiApp for ParallelEncoderApp {
                     && name == "size"
                 {
                     let scene = id.parse::<u64>().expect("Scene index is a number");
+                    state.validation = None;
                     let bytes = completed as u64;
                     state.scenes.entry(scene).and_modify(|(completed, scene)| {
                         *completed = (scene.end_frame - scene.start_frame) as u64;
@@ -211,6 +228,8 @@ impl TuiApp for ParallelEncoderApp {
             color: main,
             processing_title: if self.attempted_cancel {
                 "Shutting down after Encoders complete...".to_owned()
+            } else if let Some((completed, total)) = self.cached_state.validation {
+                format!("Validating completed chunks ({completed}/{total})")
             } else {
                 "Encoding Scenes...".to_owned()
             },
@@ -274,6 +293,7 @@ impl ParallelEncoderApp {
             completed_scenes_count,
             estimated_bitrate,
             estimated_bytes,
+            validation: None,
         };
 
         ParallelEncoderApp {
@@ -505,6 +525,37 @@ mod tests {
             "validated resume fills its frame range even without encoder progress"
         );
         assert!(state.estimated_bytes > 0);
+    }
+
+    #[test]
+    fn e14_r1_validation_progress_renders_without_completing_scenes() {
+        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let event = SequenceStatus::Whole(Status::Processing {
+            id: "Parallel Encoder".into(),
+            completion: SequenceCompletion::Custom {
+                name: "validating".into(),
+                completed: 1.0,
+                total: 4.0,
+            },
+        });
+        assert!(ParallelEncoderApp::map_progress(
+            event,
+            app.cached_state_mut()
+        ));
+        let state = app.cached_state();
+        assert_eq!(state.completed_scenes_count, 0);
+        assert_eq!(
+            state.scenes.values().map(|(frames, _)| frames).sum::<u64>(),
+            0
+        );
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal.draw(|frame| app.render(frame)).expect("validation render");
+        let buf = terminal.backend().buffer();
+        let text = (0..40)
+            .map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Validating completed chunks (1/4)"), "{text}");
     }
 
     /// The row a worker panel's title sits on, or `None` when no panel

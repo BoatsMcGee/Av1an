@@ -13,6 +13,15 @@ use crate::{
     utils::cancellation::Cancellation,
 };
 
+/// Check the counter prerequisite without opening input or launching encoders.
+/// Decoder support is still verified against the actual completed artifact.
+pub(crate) fn preflight(count: bool) -> Result<()> {
+    if count {
+        which::which("ffprobe").context("Frame-count validation requires ffprobe on PATH; provide ffprobe or explicitly disable validate_frame_count")?;
+    }
+    Ok(())
+}
+
 /// Publication must not replace caller-owned files (including dangling links).
 /// Directories remain ordinary rename errors; a regular file cannot replace one.
 pub(crate) fn protect_existing(path: &Path) -> Result<()> {

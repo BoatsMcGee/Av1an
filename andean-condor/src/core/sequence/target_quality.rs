@@ -92,6 +92,9 @@ where
         for scene in &condor.scenes {
             scene.encoder.validate()?;
         }
+        super::parallel_encoder::artifact::preflight(
+            condor.sequence_config.parallel_encoder()?.validate_frame_count,
+        )?;
 
         Ok(((), warnings))
     }
@@ -430,7 +433,7 @@ where
                 Ok(())
             });
 
-            let probed = Self::probe_pass_cancel(
+            let probed = Self::probe_pass_with_validation(
                 pass,
                 target_quality_directory,
                 &config,
@@ -441,6 +444,7 @@ where
                 tasks.as_slice(),
                 pass_progress_tx,
                 &cancelled,
+                parallel_encoder_config.validate_frame_count,
             );
             let relayed = crate::core::encoder::pipes::join_worker(
                 relay,
@@ -793,10 +797,45 @@ impl TargetQuality {
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancellation: &crate::utils::cancellation::Cancellation,
     ) -> Result<(Vec<Task>, Vec<anyhow::Error>)> {
+        Self::probe_pass_with_validation(
+            pass,
+            target_quality_directory,
+            config,
+            input,
+            metric_input,
+            workers,
+            concat_method,
+            tasks,
+            progress_tx,
+            cancellation,
+            true,
+        )
+    }
+
+    /// Probe pass with the owning job's count-only policy; old standalone APIs are strict.
+    #[inline]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    pub fn probe_pass_with_validation(
+        pass: u8,
+        target_quality_directory: &Path,
+        config: &TargetQualityConfig,
+        input: &mut Input,
+        metric_input: Option<&mut Input>,
+        workers: u8,
+        concat_method: &ConcatMethod,
+        tasks: &[Task],
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancellation: &crate::utils::cancellation::Cancellation,
+        validate_frame_count: bool,
+    ) -> Result<(Vec<Task>, Vec<anyhow::Error>)> {
         cancellation.check_forced()?;
         if cancellation.is_cancelled() {
             return Ok((Vec::new(), Vec::new()));
         }
+        for task in tasks {
+            task.encoder.validate()?;
+        }
+        super::parallel_encoder::artifact::preflight(validate_frame_count)?;
         let warnings: Vec<anyhow::Error> = vec![];
         let temporal = metrics::scene_temporal(&config.metric);
         let scenes: Vec<_> = tasks.iter().map(|task| task.frame_indices.as_slice()).collect();
@@ -901,19 +940,21 @@ impl TargetQuality {
             },
         };
         let results = match zone_plan {
-            Some(plan) => ZoneEncoder::encode_tasks_cancel(
+            Some(plan) => ZoneEncoder::encode_tasks_with_validation(
                 input,
                 encode_tasks.iter().cloned().collect::<VecDeque<_>>(),
                 plan,
                 encode_progress_tx,
                 cancellation.clone(),
+                validate_frame_count,
             ),
-            None => ParallelEncoder::encode_tasks_cancel(
+            None => ParallelEncoder::encode_tasks_with_validation(
                 input,
                 workers,
                 encode_tasks.iter().cloned().collect::<VecDeque<_>>(),
                 encode_progress_tx,
                 cancellation.clone(),
+                validate_frame_count,
             ),
         };
         let relayed = crate::core::encoder::pipes::join_worker(

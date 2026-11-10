@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use av1_grain::write_grain_table;
 use tracing::{debug, error};
 
@@ -27,6 +27,10 @@ mod task;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod e14_tests;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+pub(super) mod e14_r1_tests;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
@@ -95,9 +99,7 @@ where
             scene.encoder.validate()?;
         }
 
-        if condor.sequence_config.parallel_encoder()?.validate_frame_count {
-            which::which("ffprobe").context("Frame-count validation requires ffprobe on PATH")?;
-        }
+        artifact::preflight(condor.sequence_config.parallel_encoder()?.validate_frame_count)?;
 
         Ok(((), warnings))
     }
@@ -203,7 +205,14 @@ where
         let mut resumed = Vec::new();
         let mut resume_error = None;
         let mut metadata_changed = false;
+        let scene_count = condor.scenes.len();
         for (original_index, scene) in condor.scenes.iter_mut().enumerate() {
+            cancelled.check_forced()?;
+            // Finish an active finite probe during Graceful, but admit neither
+            // another candidate nor a new encode after it returns.
+            if cancelled.is_cancelled() {
+                break;
+            }
             let output = scenes_directory.join(format!(
                 "{}.{}",
                 Self::scene_id(original_index),
@@ -220,6 +229,17 @@ where
                 Err(_) => true,
             };
             if present || recorded {
+                let validation_progress = |completed: usize| {
+                    let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                        id: DETAILS.name.to_owned(),
+                        completion: SequenceCompletion::Custom {
+                            name: "validating".to_owned(),
+                            completed: completed as f64,
+                            total: scene_count as f64,
+                        },
+                    }));
+                };
+                validation_progress(original_index);
                 let eligible = (|| -> Result<u64> {
                     ensure!(
                         data.bytes.is_some_and(|bytes| bytes > 0)
@@ -244,11 +264,20 @@ where
                     },
                     Err(error) if cancelled.is_forced() => return Err(error),
                     Err(error) => {
-                        *data = Default::default();
-                        metadata_changed |= recorded;
-                        lifecycle::retain_error(&mut resume_error, error.context(format!("Scene {original_index} cannot resume {}; file preserved. Recompute in a new job or move the existing chunk aside and clear its saved completion record", output.display())));
+                        let conclusively_unusable = match output.metadata() {
+                            Ok(metadata) => !metadata.is_file() || metadata.len() == 0,
+                            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+                        };
+                        // Probe/count/read failures withhold eligibility, not the
+                        // historical record needed to retry after policy/tool repair.
+                        if conclusively_unusable {
+                            *data = Default::default();
+                            metadata_changed |= recorded;
+                        }
+                        lifecycle::retain_error(&mut resume_error, error.context(format!("Scene {original_index} cannot resume {}; file preserved. Repair the probe or intentional count policy and retry; otherwise recompute in a new job or move the chunk aside and clear its saved completion record", output.display())));
                     },
                 }
+                validation_progress(original_index + 1);
                 continue;
             }
             tasks.push_back(Task {
@@ -274,18 +303,18 @@ where
         }
         for (scene, bytes) in resumed {
             cancelled.publish(|| {
-                progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                let _ = progress_tx.send(SequenceStatus::Whole(Status::Processing {
                     id: scene.to_string(),
                     completion: SequenceCompletion::Custom {
                         name: "size".to_owned(),
                         completed: bytes as f64,
                         total: bytes as f64,
                     },
-                }))?;
+                }));
                 Ok(())
             })?;
         }
-        if tasks.is_empty() {
+        if tasks.is_empty() || cancelled.is_cancelled() {
             return Ok(((), warnings));
         }
 

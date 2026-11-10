@@ -81,15 +81,19 @@ pub(super) fn finalize_scene(
         super::e11_tests::fault("size", scene)?;
         super::artifact::protect_existing(output)?;
         fs::rename(outcome.temp_output, output)?;
-        size_tx.send(SequenceStatus::Whole(Status::Processing {
+        #[cfg(all(test, target_os = "linux"))]
+        super::e14_r1_tests::after_rename(output);
+        // The rename committed usable work. Losing an optional observer must
+        // not prevent the owning worker from enqueuing its completed result.
+        let _ = size_tx.send(SequenceStatus::Whole(Status::Processing {
             id: scene.to_string(),
             completion: SequenceCompletion::Custom {
                 name: "size".to_owned(),
                 completed: outcome.bytes as f64,
                 total: outcome.bytes as f64,
             },
-        }))?;
-        size_tx.send(SequenceStatus::Subprocess {
+        }));
+        let _ = size_tx.send(SequenceStatus::Subprocess {
             parent: Status::Processing {
                 id: super::DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Custom {
@@ -101,7 +105,7 @@ pub(super) fn finalize_scene(
             child: Status::Completed {
                 id: scene.to_string(),
             },
-        })?;
+        });
     } else {
         let _ = fs::remove_file(&outcome.temp_output);
         encoder_errored.store(true, Ordering::Relaxed);
@@ -311,6 +315,14 @@ impl ParallelEncoder {
         if cancelled.is_cancelled() {
             return Ok(vec![None; tasks.len()]);
         }
+        for task in &tasks {
+            task.encoder.validate().map_err(|error| {
+                error.context(format!("Scene {} encoder preflight", task.original_index))
+            })?;
+        }
+        if !tasks.is_empty() {
+            super::artifact::preflight(validate_frame_count)?;
+        }
         // Nonstream VS decoding stays on this thread; both paths bound workers.
         if input.streams_concurrently() {
             let result = Self::encode_tasks_streaming(
@@ -328,9 +340,9 @@ impl ParallelEncoder {
             let result = crate::core::encoder::cancellation_result(result, &cancelled);
             if result.as_ref().is_ok_and(|results| results.iter().all(Option::is_some)) {
                 cancelled.publish(|| {
-                    progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                    let _ = progress_tx.send(SequenceStatus::Whole(Status::Completed {
                         id: super::DETAILS.name.to_owned(),
-                    }))?;
+                    }));
                     Ok(())
                 })?;
             }
@@ -569,9 +581,9 @@ impl ParallelEncoder {
         let results = crate::core::encoder::cancellation_result(results, &cancelled);
         if results.as_ref().is_ok_and(|results| results.iter().all(Option::is_some)) {
             cancelled.publish(|| {
-                progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                let _ = progress_tx.send(SequenceStatus::Whole(Status::Completed {
                     id: super::DETAILS.name.to_owned(),
-                }))?;
+                }));
                 Ok(())
             })?;
         }

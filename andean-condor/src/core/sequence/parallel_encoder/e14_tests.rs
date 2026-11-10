@@ -213,8 +213,8 @@ fn e14_public_child() {
     }
     if resume && kind != "missing" {
         match kind {
-            "zero" => fs::write(&output, b"").expect("zero"),
-            "corrupt" | "save-error" => fs::write(&output, b"corrupt").expect("corrupt"),
+            "zero" | "save-error" => fs::write(&output, b"").expect("zero"),
+            "corrupt" => fs::write(&output, b"corrupt").expect("corrupt"),
             _ => {
                 fs::copy(root.join("fixture"), &output).expect("existing");
             },
@@ -416,10 +416,19 @@ fn e14_public_child() {
             assert!(text.contains(diagnostic), "{text}");
         }
         assert!(text.to_lowercase().contains("scene 0"), "{text}");
-        assert!(
-            data.bytes.is_none() && data.started_on.is_none() && data.completed_on.is_none(),
-            "no false metadata"
-        );
+        let withheld_history = resume && matches!(kind, "corrupt" | "wrong");
+        if withheld_history {
+            assert_eq!(
+                (data.bytes, data.started_on, data.completed_on),
+                (Some(999999), Some(10), Some(20)),
+                "withhold current eligibility without destroying repairable historical records"
+            );
+        } else {
+            assert!(
+                data.bytes.is_none() && data.started_on.is_none() && data.completed_on.is_none(),
+                "no false metadata"
+            );
+        }
         assert!(!statuses.iter().any(|s| matches!(s, SequenceStatus::Whole(Status::Processing { completion: SequenceCompletion::Custom { name, .. }, .. }) if name == "size")), "no success-size event");
         assert!(
             !statuses.iter().any(|s| matches!(
@@ -443,11 +452,18 @@ fn e14_public_child() {
             );
             if resume && kind != "bare" {
                 let saved = saved.lock().expect("saved");
-                assert!(
-                    !saved.is_empty(),
-                    "withdraw stale completion through save path"
-                );
-                assert!(saved.iter().all(|d| d.bytes.is_none() && d.completed_on.is_none()));
+                if withheld_history {
+                    assert!(
+                        saved.is_empty(),
+                        "no irreversible withdrawal for probe/count failure"
+                    );
+                } else {
+                    assert!(
+                        !saved.is_empty(),
+                        "withdraw conclusively unusable completion through save path"
+                    );
+                    assert!(saved.iter().all(|d| d.bytes.is_none() && d.completed_on.is_none()));
+                }
             }
         } else {
             assert!(!output.exists(), "no final artifact");

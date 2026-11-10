@@ -468,15 +468,33 @@ impl ZoneEncoder {
     )]
     pub fn encode_tasks_cancel(
         input: &mut Input,
+        tasks: VecDeque<Task>,
+        plan: ZonePlan,
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Cancellation,
+    ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        Self::encode_tasks_with_validation(input, tasks, plan, progress_tx, cancelled, true)
+    }
+
+    /// Explicit count-only policy for probe stages; status/nonempty remain mandatory.
+    #[inline]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn encode_tasks_with_validation(
+        input: &mut Input,
         mut tasks: VecDeque<Task>,
         plan: ZonePlan,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Cancellation,
+        validate_frame_count: bool,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         cancelled.check_forced()?;
         if cancelled.is_cancelled() {
             return Ok(vec![None; tasks.len()]);
         }
+        for task in &tasks {
+            task.encoder.validate()?;
+        }
+        super::parallel_encoder::artifact::preflight(validate_frame_count)?;
         let cancelled = cancelled.active();
         let total_tasks = tasks.len();
         let total_frames: usize = tasks.iter().map(|task| task.frame_indices.len()).sum();
@@ -628,7 +646,7 @@ impl ZoneEncoder {
                 tasks.make_contiguous(),
                 extension,
                 &cancelled,
-                true,
+                validate_frame_count,
             ),
             Some(Container::AnnexB) => {
                 let codec = match first.encoder.base() {
@@ -641,7 +659,7 @@ impl ZoneEncoder {
                     tasks.make_contiguous(),
                     extension,
                     &cancelled,
-                    true,
+                    validate_frame_count,
                 )
             },
             None => {

@@ -59,6 +59,10 @@ where
         for scene in &condor.scenes {
             scene.encoder.validate()?;
         }
+        condor.encoder.validate()?;
+        super::parallel_encoder::artifact::preflight(
+            condor.sequence_config.parallel_encoder()?.validate_frame_count,
+        )?;
 
         Ok(((), warnings))
     }
@@ -130,6 +134,10 @@ where
         cancelled.check()?;
         const BENCHMARK_SCENES: usize = 16;
         const BENCHMARK_SCENE_FRAMES: usize = 24;
+        let (batch_scenes, batch_frames) = (BENCHMARK_SCENES, BENCHMARK_SCENE_FRAMES);
+        #[cfg(all(test, target_os = "linux"))]
+        let (batch_scenes, batch_frames) = super::parallel_encoder::e14_r1_tests::fixed_batch()
+            .unwrap_or((batch_scenes, batch_frames));
         let mut warnings = vec![];
         let parallel_encoder_config = condor.sequence_config.parallel_encoder()?;
         let config = condor.sequence_config.benchmarker()?;
@@ -155,8 +163,8 @@ where
         }
 
         let total_frames = input.clip_info()?.num_frames;
-        let scene_frames = BENCHMARK_SCENE_FRAMES.min(total_frames).max(1);
-        let tasks: Vec<ParallelEncodeTask> = (0..BENCHMARK_SCENES)
+        let scene_frames = batch_frames.min(total_frames).max(1);
+        let tasks: Vec<ParallelEncodeTask> = (0..batch_scenes)
             .map(|index| ParallelEncodeTask {
                 index,
                 original_index: index,
@@ -171,20 +179,29 @@ where
             })
             .collect();
 
-        let mut previous_result =
-            Self::benchmark_workers_cancel(input, 1, tasks.as_slice(), &progress_tx, &cancelled)?;
+        let mut previous_result = Self::benchmark_workers_with_validation(
+            input,
+            1,
+            tasks.as_slice(),
+            &progress_tx,
+            &cancelled,
+            parallel_encoder_config.validate_frame_count,
+        )?;
+        #[cfg(all(test, target_os = "linux"))]
+        super::parallel_encoder::e14_r1_tests::finish_fixed_batch(&cancelled);
 
         loop {
             cancelled.check_forced()?;
             if cancelled.is_cancelled() {
                 break;
             }
-            let current_result = Self::benchmark_workers_cancel(
+            let current_result = Self::benchmark_workers_with_validation(
                 input,
                 previous_result.workers + 1,
                 tasks.as_slice(),
                 &progress_tx,
                 &cancelled,
+                parallel_encoder_config.validate_frame_count,
             )?;
             cancelled.check_forced()?;
             if cancelled.is_cancelled() {
@@ -214,8 +231,8 @@ where
         }
 
         condor.save()?;
-        // delete benchmarker data
-        std::fs::remove_dir_all(benchmarker_directory)?;
+        // Trial directories clean only their own outputs; preexisting scratch
+        // contents do not belong to this invocation.
 
         progress_tx.send(SequenceStatus::Whole(Status::Completed {
             id: DETAILS.name.to_string(),
@@ -260,9 +277,30 @@ impl Benchmarker {
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
         cancelled: &crate::utils::cancellation::Cancellation,
     ) -> Result<BenchmarkResult> {
+        Self::benchmark_workers_with_validation(input, workers, tasks, progress_tx, cancelled, true)
+    }
+
+    /// One fixed trial with an explicit count-only policy; legacy APIs stay strict.
+    #[inline]
+    pub fn benchmark_workers_with_validation(
+        input: &mut Input,
+        workers: u8,
+        tasks: &[ParallelEncodeTask],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &crate::utils::cancellation::Cancellation,
+        validate_frame_count: bool,
+    ) -> Result<BenchmarkResult> {
+        for task in tasks {
+            task.encoder.validate()?;
+        }
+        super::parallel_encoder::artifact::preflight(validate_frame_count)?;
         // Each worker-count trial owns fresh outputs, not the previous trial's
         // files. The parallel dispatcher deliberately refuses existing targets.
-        let attempt = tempfile::tempdir()?;
+        let directory = tasks
+            .first()
+            .and_then(|task| task.output.parent())
+            .ok_or(BenchmarkerError::ScenesEmpty)?;
+        let attempt = tempfile::tempdir_in(directory)?;
         let tasks = tasks
             .iter()
             .cloned()
@@ -328,12 +366,13 @@ impl Benchmarker {
             Ok(())
         });
 
-        let encoded = ParallelEncoder::encode_tasks_cancel(
+        let encoded = ParallelEncoder::encode_tasks_with_validation(
             input,
             workers,
             tasks,
             encode_progress_tx,
             cancelled.clone(),
+            validate_frame_count,
         );
         let relayed =
             crate::core::encoder::pipes::join_worker(relay, "Joining worker-probe progress");

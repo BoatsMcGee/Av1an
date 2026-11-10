@@ -10,6 +10,9 @@
 | `validate_frame_count` | Boolean | No | `true` | Decode-count completed chunks with `ffprobe` before publishing or resuming. Set `false` only for filters intentionally changing the frame count. |
 
 Count validation requires `ffprobe` on `PATH` with a decoder for the output codec.
+The saved policy also applies to automatic worker discovery and Target Quality
+individual/zone outputs. Strict stages check for `ffprobe` before encoding;
+opting out removes only that counter prerequisite, not metric decoder requirements.
 It counts decoded frames in the actual container, not progress or header counts;
 decode errors, unavailable decoders, and missing/malformed counts fail closed.
 Setting `validate_frame_count` to `false` disables decode-count verification only:
@@ -17,10 +20,19 @@ successful encoder exit and a nonempty regular output file are still required.
 With this opt-out, corrupt but nonempty output cannot be decode-verified.
 
 Resume requires a saved completed encoding record and a currently valid chunk.
-Bare files are not adopted. Ineligible files are preserved and their completion
-metadata is withdrawn; recompute in a new job, or move the chunk aside and clear
-its saved completion record before retrying. Count validation does not establish
-that a chunk matches changed source media or encoder settings.
+Bare files are not adopted. Ineligible files are preserved. Missing, empty or
+nonregular chunks lose their unusable completion metadata; count/probe/read
+failures retain historical records but withhold current eligibility. Repair the
+probe or intentional count policy and retry the same job; the historical record
+alone never authorizes resume. Otherwise recompute in a new job, or move the
+chunk aside and clear its saved completion record. Count validation does not
+establish that a chunk matches changed source media or encoder settings.
+
+Strict resume fully decodes each completed chunk again, sequentially, before new
+encoding; large jobs can spend substantial time validating. The UI reports
+validation progress separately from encoded frames. Graceful cancellation lets
+the active check finish, then stops before another check or new encode; Force
+terminates the active probe.
 
 Frame buffering is chosen from the input:
 
