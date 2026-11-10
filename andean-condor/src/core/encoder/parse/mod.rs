@@ -52,12 +52,14 @@ pub fn parse_aom_vpx_frames(s: &str) -> Option<u64> {
         .position(|&c| c == b' ')?
         + first_digit_index;
 
-    s.get(
+    let digits = s.get(
         AOM_VPX_IGNORED_PREFIX.len() + first_digit_index
             ..AOM_VPX_IGNORED_PREFIX.len() + first_space_index,
-    )?
-    .parse()
-    .ok()
+    )?;
+    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 /// x86 SIMD implementation of parsing aomenc/vpxenc output using
@@ -89,9 +91,9 @@ pub unsafe fn parse_aom_vpx_frames_sse41(s: &[u8]) -> Option<u64> {
     // unknown] 1272F                       ^^^^^^
     //                       matches this number and returns `Some(102261)`
     //
-    // If invalid input is detected, this function returns `None`.
-    // We cheat in this implementation by taking a mutable slice to the string
-    // so we can reuse its allocation to add padding zeroes for free.
+    // Input is immutable: every load must fit the slice, not spare allocation
+    // capacity. Short lines and counts outside the SIMD window use scalar parsing.
+    let scalar = || parse_aom_vpx_frames(std::str::from_utf8(s).ok()?);
 
     // Number of bytes processed (size in bytes of xmm register)
     //
@@ -100,12 +102,10 @@ pub unsafe fn parse_aom_vpx_frames_sse41(s: &[u8]) -> Option<u64> {
     // to parse the fewest number of bytes possible to get the correct result.
     const CHUNK_SIZE: usize = 16;
 
-    // This implementation needs to read `CHUNK_SIZE` bytes past the ignored
-    // prefix, so we pay the cost of the bounds check only once at the start
-    // of this function. This also serves as an input validation check.
-    if s.len() < AOM_VPX_IGNORED_PREFIX.len() + CHUNK_SIZE {
-        return None;
-    }
+    let prefix = AOM_VPX_IGNORED_PREFIX.len();
+    let Some(output_bytes) = s.get(prefix..prefix + CHUNK_SIZE) else {
+        return scalar();
+    };
 
     // Since the aomenc output follows a particular pattern, we can calculate
     // the position of the '/' character from the index of the first space
@@ -113,13 +113,9 @@ pub unsafe fn parse_aom_vpx_frames_sse41(s: &[u8]) -> Option<u64> {
     // first space in the output.
     let spaces = _mm_set1_epi8(b' ' as i8);
 
-    // Load the relevant part of the output, which are the 16 bytes after the
-    // ignored prefix. This is safe because we already asserted that at least
-    // `IGNORED_PREFIX.len() + CHUNK_SIZE` bytes are available, and
-    // `_mm_loadu_si128` loads `CHUNK_SIZE` (16) bytes.
-    #[allow(clippy::undocumented_unsafe_blocks)]
-    let relevant_output =
-        unsafe { _mm_loadu_si128(s.get_unchecked(AOM_VPX_IGNORED_PREFIX.len()..).as_ptr().cast()) };
+    // SAFETY: output_bytes is a checked, readable 16-byte range inside s. The
+    // caller guarantees SSSE3+SSE4.1, as required by this target-feature function.
+    let relevant_output = unsafe { _mm_loadu_si128(output_bytes.as_ptr().cast()) };
 
     // Compare the relevant output to spaces to create a mask where each bit
     // is set to 1 if the corresponding character was a space, and 0 otherwise.
@@ -127,6 +123,9 @@ pub unsafe fn parse_aom_vpx_frames_sse41(s: &[u8]) -> Option<u64> {
     //
     // Only the lower 16 bits are relevant, as the rest are always set to 0.
     let mask16 = _mm_movemask_epi8(_mm_cmpeq_epi8(relevant_output, spaces));
+    if mask16 == 0 {
+        return scalar();
+    }
 
     // The bits in the mask are set as so:
     //
@@ -151,33 +150,38 @@ pub unsafe fn parse_aom_vpx_frames_sse41(s: &[u8]) -> Option<u64> {
     // actual first space character.
     let first_space_index = mask16.trailing_zeros() as usize;
 
-    let first_digit_index = {
-        _mm_movemask_epi8(_mm_cmpeq_epi8(
-            #[allow(clippy::undocumented_unsafe_blocks)]
-            unsafe {
-                _mm_loadu_si128(s.get(AOM_VPX_IGNORED_PREFIX.len() - 1..)?.as_ptr().cast())
-            },
-            _mm_set1_epi8(b'/' as i8),
-        ))
-        .trailing_zeros() as usize
-    };
+    let slash_bytes = s.get(prefix - 1..prefix - 1 + CHUNK_SIZE)?;
+    // SAFETY: slash_bytes is another checked 16-byte range inside s; the same
+    // caller-guaranteed CPU feature precondition applies.
+    let slash_output = unsafe { _mm_loadu_si128(slash_bytes.as_ptr().cast()) };
+    let slash_mask = _mm_movemask_epi8(_mm_cmpeq_epi8(slash_output, _mm_set1_epi8(b'/' as i8)));
+    if slash_mask == 0 {
+        return scalar();
+    }
+    let first_digit_index = slash_mask.trailing_zeros() as usize;
 
     let ascending = _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-    let num_digits = first_space_index.checked_sub(first_digit_index)?;
+    // The integer kernel handles at most 16 decimal digits (10^16-1 fits u64).
+    // A missing/earlier space can also mean the actual count is beyond this window.
+    let Some(num_digits @ 1..=CHUNK_SIZE) = first_space_index.checked_sub(first_digit_index) else {
+        return scalar();
+    };
+    let end = prefix + first_space_index;
+    let digits = s.get(prefix + first_digit_index..end)?;
+    if !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
 
     let dynamic_mask = _mm_cmplt_epi8(ascending, _mm_set1_epi8(num_digits as i8));
 
     // At this point, we have done all the setup and can use the actual SIMD
     // integer parsing algorithm. The description of the algorithm can be
     // found here: https://kholdstare.github.io/technical/2020/05/26/faster-integer-parsing.html
-    #[allow(clippy::undocumented_unsafe_blocks)]
-    let mut chunk = unsafe {
-        _mm_loadu_si128(
-            s.as_ptr()
-                .add(AOM_VPX_IGNORED_PREFIX.len() + first_space_index - CHUNK_SIZE)
-                .cast(),
-        )
-    };
+    let chunk_bytes = s.get(end.checked_sub(CHUNK_SIZE)?..end)?;
+    // SAFETY: The complete final 16-byte load range, not only its start, was
+    // checked inside s. CPU support is guaranteed by the caller. Only the
+    // validated ASCII digit span contributes after dynamic_mask is applied.
+    let mut chunk = unsafe { _mm_loadu_si128(chunk_bytes.as_ptr().cast()) };
 
     let zeros = _mm_set1_epi8(b'0' as i8);
     chunk = _mm_sub_epi8(chunk, zeros);
@@ -193,7 +197,7 @@ pub unsafe fn parse_aom_vpx_frames_sse41(s: &[u8]) -> Option<u64> {
     let mult = _mm_set_epi16(0, 0, 0, 0, 1, 10000, 1, 10000);
     chunk = _mm_madd_epi16(chunk, mult);
 
-    #[allow(clippy::undocumented_unsafe_blocks)]
+    // SAFETY: Both types occupy 128 bits and every bit pattern is valid for u64.
     let chunk = unsafe { transmute::<__m128i, [u64; 2]>(chunk) };
 
     Some(((chunk[0] & 0xffff_ffff) * 100_000_000) + (chunk[0] >> 32))
