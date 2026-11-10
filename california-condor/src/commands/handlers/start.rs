@@ -173,6 +173,15 @@ pub fn start_handler(
             append_color_data,
         )?;
     }
+    configure_parallel_encoder(
+        &mut configuration,
+        None,
+        None,
+        None,
+        None,
+        workers,
+        max_tries,
+    )?;
     configuration.validate_encoder_settings()?;
     configure_scene_detector(
         &mut configuration,
@@ -183,15 +192,6 @@ pub fn start_handler(
         None,
         None,
         None,
-    )?;
-    configure_parallel_encoder(
-        &mut configuration,
-        None,
-        None,
-        None,
-        None,
-        workers,
-        max_tries,
     )?;
     // configure_benchmarker(
     //     &mut configuration,

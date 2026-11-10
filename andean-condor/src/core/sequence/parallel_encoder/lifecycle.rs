@@ -54,13 +54,15 @@ impl Stop {
     }
 
     pub(super) fn catch<T>(&self, context: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        self.catch_panic(context, f).map_err(|err| err.context(context.to_owned()))
+        self.catch_panic(context, || {
+            f().map_err(|error| error.context(context.to_owned()))
+        })
     }
 
     /// Scope boundaries already contain contextual worker errors; preserve
     /// them while converting scheduling/spawn panics after shutdown and joins.
     pub(super) fn catch_panic<T>(&self, context: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        let result = self.attempt(context, f);
+        let result = self.boundary(context, f);
         if result.is_err() {
             self.stop();
         }
@@ -69,15 +71,24 @@ impl Stop {
 
     /// An ordinary attempt failure is local; panics always close admission.
     pub(super) fn attempt<T>(&self, context: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|panic| {
-            self.stop();
-            let message = panic
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("non-string panic");
-            Err(anyhow!("{context} panicked: {message}"))
+        self.boundary(context, || {
+            f().map_err(|error| error.context(context.to_owned()))
         })
+    }
+
+    fn boundary<T>(&self, context: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        match catch_unwind(AssertUnwindSafe(f)) {
+            Ok(result) => result,
+            Err(panic) => {
+                self.stop();
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("non-string panic");
+                Err(anyhow!("{context} panicked: {message}"))
+            },
+        }
     }
 }
 

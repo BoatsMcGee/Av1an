@@ -308,6 +308,13 @@ pub(super) fn encode_attempts(
                 let again = retryable(&error)
                     && attempt < options.max_tries
                     && !stop.stopped(&stop.cancellation);
+                if again {
+                    tracing::warn!(
+                        "Scene {} attempt {attempt}/{} failed; retrying: {error:#}",
+                        task.original_index,
+                        options.max_tries
+                    );
+                }
                 last = Some(error.context(format!(
                     "Scene {} attempt {attempt}/{}",
                     task.original_index, options.max_tries

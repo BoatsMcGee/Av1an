@@ -421,7 +421,9 @@ fn e27_sequence_runtime_child() {
             !temp_output.exists(),
             "owned failed temporary output removed"
         );
-        if let Ok(path) = fs::read_to_string(root.join("partial-path")) {
+        if case != "zone-spawn" {
+            let path = fs::read_to_string(root.join("partial-path"))
+                .expect("actual codec partial path recorded");
             assert!(
                 !Path::new(&path).exists(),
                 "actual owned codec partial removed after joins"

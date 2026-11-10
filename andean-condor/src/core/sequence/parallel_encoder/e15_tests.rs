@@ -11,6 +11,50 @@ use crate::{
 };
 use std::{fs, os::unix::fs::PermissionsExt, process::Command, sync::Mutex};
 
+#[derive(Clone, Default)]
+struct RetryWarnings(Arc<Mutex<Vec<String>>>);
+
+struct WarningFields<'a>(&'a mut String);
+
+impl tracing::field::Visit for WarningFields<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write as _;
+        write!(self.0, "{}={value:?};", field.name()).expect("warning field");
+    }
+}
+
+impl tracing::Subscriber for RetryWarnings {
+    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+        metadata.level() == &tracing::Level::WARN
+            && metadata.target().ends_with("parallel_encoder::encode")
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        let mut text = String::new();
+        event.record(&mut WarningFields(&mut text));
+        self.0.lock().expect("retry warnings").push(text);
+    }
+}
+
+fn scene_fds(scenes: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fs::read_dir("/proc/self/fd")
+        .expect("open descriptors")
+        .filter_map(|entry| {
+            let path = entry.expect("descriptor").path();
+            fs::read_link(&path)
+                .ok()
+                .filter(|target| target.starts_with(scenes))
+                .map(|_| path)
+        })
+        .collect()
+}
+
 pub(super) fn after_failure(token: &Cancellation) {
     let Ok(case) = std::env::var("E08_CASE") else {
         return;
@@ -39,6 +83,10 @@ pub(super) fn after_failure(token: &Cancellation) {
     }
     if case.ends_with("graceful") && !case.ends_with("all2-graceful") {
         token.request().expect("graceful at retry admission");
+    }
+    if case.ends_with("force-boundary") {
+        token.request().expect("first request after joined failure");
+        token.request().expect("force before replacement");
     }
 }
 
@@ -97,7 +145,7 @@ esac
 case "$E08_CASE" in
     *exhaust*) fail=99 ;;
     *filter-failure) fail=99 ;;
-    *all2-graceful|*save|*publication) fail=0 ;;
+    *all2-graceful|*save|*publication|*filter-only) fail=0 ;;
 esac
 case "$root" in */peer-*) fail=0 ;; esac
 if [ "$n" -le "$fail" ] && { [ "$pass" = 2 ] || [ -z "$stats" ]; }; then
@@ -111,6 +159,7 @@ if [ "$n" -le "$fail" ] && { [ "$pass" = 2 ] || [ -z "$stats" ]; }; then
     exit 42
 fi
 cp "$root/fixture" "$out"
+printf 0 > "$root/codec-status-$n"
 case "$E08_CASE" in *publication) printf caller-final > "$root/scenes/00000.264" ;; esac
 "#;
 
@@ -152,6 +201,7 @@ fn e15_bounded_public_retry_jobs() {
             "once",
             "filter",
             "filter-failure",
+            "filter-only",
             "all2",
             "exhaust1",
             "exhaust2",
@@ -165,6 +215,9 @@ fn e15_bounded_public_retry_jobs() {
             "graceful",
             "all2-graceful",
             "force",
+            "force-boundary",
+            "capture-force",
+            "worker-fault",
             "cancelled",
             "budget0",
             "preflight",
@@ -176,15 +229,55 @@ fn e15_bounded_public_retry_jobs() {
             "direct",
             "direct-exhaust",
         ] {
+            if path == "native" && kind == "capture-force" {
+                continue;
+            }
             let case = format!("e15-{path}-{kind}");
             let job = root.join(&case);
             fs::create_dir_all(&job).expect("job");
+            fs::create_dir_all(job.join("bin")).expect("controlled filter directory");
+            if kind == "filter-only" {
+                let real = which::which("ffmpeg").expect("real filter executable");
+                fs::write(
+                    job.join("bin/ffmpeg"),
+                    format!(
+                        r#"#!/bin/sh
+set -eu
+root=$(dirname "$(dirname "$0")")
+for arg in "$@"; do
+    if [ "$arg" = -vf ]; then
+        n=0
+        if [ -f "$root/filter-count" ]; then n=$(cat "$root/filter-count"); fi
+        n=$((n+1)); printf '%s' "$n" > "$root/filter-count"
+        if [ "$n" = 1 ]; then
+            {real:?} "$@"
+            printf 'E15 filter-only failure' >&2
+            exit 42
+        fi
+    fi
+done
+exec {real:?} "$@"
+"#
+                    ),
+                )
+                .expect("controlled FFmpeg");
+                fs::set_permissions(job.join("bin/ffmpeg"), fs::Permissions::from_mode(0o755))
+                    .expect("executable filter");
+            }
             let output = Command::new(root.join("watchdog"))
                 .arg("--e08-watchdog")
                 .arg(std::env::current_exe().expect("binary"))
                 .arg(&job)
                 .arg(&case)
                 .arg("core::sequence::parallel_encoder::e15_tests::e15_public_child")
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        job.join("bin").display(),
+                        std::env::var("PATH").expect("PATH")
+                    ),
+                )
                 .output()
                 .expect("bounded child");
             let text = format!(
@@ -218,6 +311,8 @@ fn e15_public_child() {
         return;
     };
     let (path, kind) = rest.split_once('-').expect("path-kind");
+    let warnings = RetryWarnings::default();
+    tracing::subscriber::set_global_default(warnings.clone()).expect("isolated child subscriber");
     assert_eq!(
         // SAFETY: This isolated child adopts only its own fixture descendants.
         unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) },
@@ -270,7 +365,21 @@ fn e15_public_child() {
     fs::write(root.join("encoder"), ENCODER).expect("encoder");
     fs::set_permissions(root.join("encoder"), fs::Permissions::from_mode(0o755))
         .expect("executable");
-    let input = e11_tests::input(&root, path == "native");
+    let input = if kind == "capture-force" {
+        use crate::models::input::{Input as InputModel, VapourSynthScriptSource};
+        let script = root.join("capture.vpy");
+        fs::write(&script, format!("import os,time\nfrom vapoursynth import core,YUV420P8\nc=core.std.BlankClip(width=64,height=64,length=4,format=YUV420P8,fpsnum=24,fpsden=1)\ndef hold(n):\n if n==3:\n  open({:?},'w').write('producer alive')\n  deadline=time.monotonic()+15\n  while not os.path.exists({:?}) and time.monotonic()<deadline: pass\n  if not os.path.exists({:?}): open({:?},'w').write('rescue')\n  open({:?},'w').write('producer released')\n return c\ncore.std.FrameEval(c,hold).set_output()\n", root.join("producer-held"), root.join("release-frame"), root.join("release-frame"), root.join("producer-rescued"), root.join("producer-released"))).expect("held producer script");
+        Input::from_data(&InputModel::VapourSynthScript {
+            source: VapourSynthScriptSource::Path(script),
+            variables: Default::default(),
+            index: 0,
+            filters: vec![],
+            stream_concurrently: false,
+        })
+        .expect("real nonstream source")
+    } else {
+        e11_tests::input(&root, path == "native")
+    };
     let index_before = fs::read(root.join("native.ffindex")).ok();
     let scenes = root.join("scenes");
     fs::create_dir_all(&scenes).expect("scratch");
@@ -283,7 +392,7 @@ fn e15_public_child() {
         "e15-root".into(),
         CLIParameter::new_string("--", " ", root.to_str().expect("UTF8")),
     );
-    if kind == "filter" {
+    if matches!(kind, "filter" | "filter-only") {
         encoder.set_ffmpeg_filter(Some("null".into()));
     }
     if kind == "filter-failure" {
@@ -379,8 +488,37 @@ fn e15_public_child() {
         token.request().expect("already cancelled");
     }
     let result = std::thread::scope(|scope| {
-        let controller = matches!(kind, "force" | "all2-graceful").then(|| {
+        let controller = matches!(kind, "force" | "all2-graceful" | "capture-force").then(|| {
             scope.spawn(|| {
+                if kind == "capture-force" {
+                    while !root.join("producer-held").exists()
+                        || !scene_fds(&scenes)
+                            .iter()
+                            .any(|fd| fd.metadata().is_ok_and(|metadata| metadata.len() > 0))
+                    {
+                        std::thread::yield_now();
+                    }
+                    assert!(
+                        !root.join("count").exists(),
+                        "default-budget capture precedes codec spawn"
+                    );
+                    token.request().expect("graceful while capturing");
+                    token.request().expect("force capture wait");
+                    while !root.join("stop-observed").exists() {
+                        std::thread::yield_now();
+                    }
+                    assert!(
+                        scene_fds(&scenes).is_empty(),
+                        "capture closed its anonymous spool while producer is still alive"
+                    );
+                    assert!(!root.join("producer-released").exists());
+                    fs::write(
+                        root.join("release-frame"),
+                        "release finite callback after capture stopped",
+                    )
+                    .expect("release producer");
+                    return;
+                }
                 while !root.join("ready").exists() {
                     std::thread::yield_now();
                 }
@@ -424,6 +562,40 @@ fn e15_public_child() {
         .ok()
         .map_or(0, |s| s.parse().expect("count"));
     let events: Vec<_> = rx.try_iter().collect();
+    if let Some(expected) = match kind {
+        "once" | "exhaust2" | "filter-only" => Some(1),
+        "exhaust3" => Some(2),
+        "exhaust1" | "graceful" | "force-boundary" | "capture-force" | "worker-fault" => Some(0),
+        _ => None,
+    } {
+        let warnings = warnings.0.lock().expect("captured retry warnings");
+        assert_eq!(
+            warnings.len(),
+            expected,
+            "one warning per retry, not terminal failure"
+        );
+        for (index, warning) in warnings.iter().enumerate() {
+            assert!(
+                warning.contains(&format!(
+                    "Scene 0 attempt {}/{}",
+                    index + 1,
+                    tries.unwrap_or(3)
+                )),
+                "{warning}"
+            );
+            let diagnostics = if kind == "filter-only" {
+                vec!["E15 filter-only failure", "42"]
+            } else {
+                vec!["Encoder (", "42", "STDERR", "bytes:"]
+            };
+            for diagnostic in diagnostics {
+                assert!(
+                    warning.contains(diagnostic),
+                    "original contextual diagnostic: {warning}"
+                );
+            }
+        }
+    }
     if peers {
         if kind == "peers" {
             result.expect("transient failure must not stop queued/healthy scenes");
@@ -484,9 +656,36 @@ fn e15_public_child() {
             index_before,
             "no input consumption/index changes"
         );
-    } else if matches!(kind, "source" | "save" | "publication" | "force") {
+    } else if matches!(
+        kind,
+        "source" | "save" | "publication" | "force" | "capture-force" | "worker-fault"
+    ) {
         let error = result.expect_err("terminal failure");
         assert!(calls <= 1, "no retry for non-attempt failure: {error:#}");
+        if kind == "source" {
+            let cause = error.root_cause().to_string();
+            assert!(
+                cause.contains("96") && cause.to_lowercase().contains("frame"),
+                "actual source cause, not EOF/send fallout: {error:#}"
+            );
+        }
+        if kind == "worker-fault" {
+            assert_eq!(calls, 0);
+            assert!(format!("{error:#}").contains("e11 worker fault"));
+        }
+        if kind == "capture-force" {
+            assert_eq!(calls, 0);
+            assert_eq!(
+                error.downcast_ref::<crate::utils::cancellation::Cancelled>(),
+                Some(&crate::utils::cancellation::Cancelled::Forced)
+            );
+            assert!(root.join("producer-released").exists());
+            assert!(!root.join("producer-rescued").exists());
+            assert!(
+                scene_fds(&scenes).is_empty(),
+                "no anonymous capture descriptors after joins"
+            );
+        }
         if kind == "force" {
             assert_eq!(calls, 1);
             assert_eq!(
@@ -516,7 +715,7 @@ fn e15_public_child() {
         if kind != "save" {
             assert!(saved.lock().expect("saved").is_empty());
         }
-    } else if tries.is_some() || kind == "graceful" {
+    } else if tries.is_some() || matches!(kind, "graceful" | "force-boundary") {
         let tries = tries.unwrap_or(1);
         let error = result.expect_err("exhausted");
         if kind == "graceful" {
@@ -525,11 +724,21 @@ fn e15_public_child() {
                 Some(&crate::utils::cancellation::Cancelled::Graceful)
             );
         }
+        if kind == "force-boundary" {
+            assert_eq!(
+                error.downcast_ref::<crate::utils::cancellation::Cancelled>(),
+                Some(&crate::utils::cancellation::Cancelled::Forced)
+            );
+        }
         assert_eq!(calls, tries, "total attempts, not extra retries");
         assert!(
             format!("{error:#}").contains(&format!(
                 "attempt {tries}/{}",
-                if kind == "graceful" { 3 } else { tries }
+                if matches!(kind, "graceful" | "force-boundary") {
+                    3
+                } else {
+                    tries
+                }
             )),
             "{error:#}"
         );
@@ -554,6 +763,19 @@ fn e15_public_child() {
     } else {
         result.expect("public job retries a transient scene failure");
         assert_eq!(calls, if kind == "all2" { 4 } else { 2 });
+        if kind == "filter-only" {
+            assert_eq!(
+                fs::read_to_string(root.join("filter-count")).expect("actual filter attempts"),
+                "2"
+            );
+            for n in 1..=2 {
+                assert_eq!(
+                    fs::read(root.join(format!("codec-status-{n}")))
+                        .expect("successful codec, failed filter only"),
+                    b"0"
+                );
+            }
+        }
         assert_eq!(
             fs::read(&output).expect("published"),
             fs::read(root.join("fixture")).expect("fixture")

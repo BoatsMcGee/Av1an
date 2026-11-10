@@ -273,6 +273,10 @@ fn e13_public_stream_child() {
         );
         if matches!(case, "decode" | "both") {
             assert!(
+                text.contains("Scene 7 frame production"),
+                "actual streaming decode operation: {text}"
+            );
+            assert!(
                 text.contains("FFMS2 could not decode frame 9999")
                     && text.contains("Out of bounds"),
                 "returned decoder context: {text}"
@@ -317,6 +321,13 @@ fn e13_public_stream_child() {
                 }
             }
             if case == "early" {
+                for label in ["Scene 7 consumer", "Scene 7 encoder"] {
+                    assert_eq!(
+                        text.matches(label).count(),
+                        1,
+                        "one operation context: {text}"
+                    );
+                }
                 let process = error
                     .downcast_ref::<EncoderProcessError>()
                     .expect("actual broken pipe aggregate");

@@ -166,6 +166,48 @@ fn e15_offline_handlers_crud_preserve_and_validate_budget() {
     let before = fs::read(&path).expect("before root zero");
     assert!(run_start(Some(0)).is_err());
     assert_eq!(fs::read(&path).expect("root atomic"), before);
+    let mut invalid =
+        serde_json::to_value(Configuration::load(&path).expect("load").expect("exists"))
+            .expect("JSON");
+    invalid["condor"]["sequence_config"]["parallel_encoder"]["max_tries"] = 0.into();
+    let invalid = serde_json::to_vec(&invalid).expect("saved zero");
+    for root in [false, true] {
+        fs::write(&path, &invalid).expect("saved zero config");
+        let run = |value| {
+            if root {
+                run_start(value)
+            } else {
+                run_encode(value)
+            }
+        };
+        assert!(
+            run(None)
+                .expect_err("omission cannot repair saved zero")
+                .to_string()
+                .contains("max_tries")
+        );
+        assert_eq!(fs::read(&path).expect("unchanged zero"), invalid);
+        assert_eq!(
+            run(Some(2))
+                .expect("explicit positive budget replaces saved zero")
+                .0
+                .condor
+                .sequence_config
+                .parallel_encoder
+                .max_tries,
+            2
+        );
+        assert_eq!(
+            Configuration::load(&path)
+                .expect("persisted")
+                .expect("exists")
+                .condor
+                .sequence_config
+                .parallel_encoder
+                .max_tries,
+            2
+        );
+    }
     encode::config(
         Some(&path),
         &ConfigAction::Set {

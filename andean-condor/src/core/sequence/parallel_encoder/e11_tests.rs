@@ -20,6 +20,9 @@ pub(super) fn fault(point: &str, scene: usize) -> anyhow::Result<()> {
         return Ok(());
     };
     let root = std::path::PathBuf::from(std::env::var_os("E08_ROOT").expect("fixture root"));
+    if case.starts_with("e15-") && case.ends_with("worker-fault") && point == "worker" {
+        anyhow::bail!("e11 worker fault");
+    }
     if case.starts_with("vs-")
         && point == "header"
         && scene == 8
