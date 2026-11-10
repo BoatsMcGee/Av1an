@@ -24,7 +24,7 @@ Each encoder ships with Condor defaults (merged with `--params`):
 
 | Encoder | Defaults                                                                 |
 | ------- | ------------------------------------------------------------------------ |
-| `aom`   | `--threads=8 --cpu-used=6 --cq-level=30 --kf-max-dist=9999 --end-usage=q` |
+| `aom`   | `--threads=8 --cpu-used=6 --cq-level=30 --kf-max-dist=9999 --disable-kf --end-usage=q` |
 | `rav1e` | `--speed 8 --quantizer 100 --keyint 0 --no-scene-detection -y`            |
 | `vpx`   | `--profile=2 --threads=4 --cpu-used=2 --cq-level=30 --codec=vp9 --end-usage=q` and more |
 | `svt-av1` | `--preset 4 --keyint 0 --scd 0 --rc 0 --crf 25 --progress 2`            |
