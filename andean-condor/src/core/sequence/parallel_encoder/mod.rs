@@ -205,6 +205,7 @@ where
         let mut on_results = |results: Vec<ParallelEncoderResult>| -> Result<()> {
             for encoder_result in results {
                 if let Some(scene) = scenes.get_mut(encoder_result.scene)
+                    && encoder_result.result.status.success()
                     && encoder_result.bytes != 0
                 {
                     let parallel_encode_data = scene.sequence_data.get_parallel_encoder_mut()?;

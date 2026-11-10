@@ -22,7 +22,11 @@ use super::{
     progress::relay_progress,
     task::{ParallelEncoderResult, ResultStream, Task},
 };
-use crate::core::{encoder::EncodeProgress, input::Input, sequence::SequenceStatus};
+use crate::core::{
+    encoder::{EncodeProgress, EncoderResult},
+    input::Input,
+    sequence::SequenceStatus,
+};
 
 impl ParallelEncoder {
     #[allow(clippy::too_many_lines)]
@@ -140,7 +144,9 @@ impl ParallelEncoder {
                                         task.original_index
                                     );
                                 }
-                                let result = encode_result?;
+                                // A failed status still needs scene cleanup and the shared stop flag.
+                                let result = encode_result
+                                    .or_else(anyhow::Error::downcast::<EncoderResult>)?;
                                 let ended = std::time::SystemTime::now();
                                 let bytes = temp_output.metadata().ok().map_or(0, |m| m.len());
                                 let seconds = task.frame_indices.len() as f64 / framerate;

@@ -21,7 +21,7 @@ use super::{
 };
 use crate::{
     core::{
-        encoder::EncodeProgress,
+        encoder::{EncodeProgress, EncoderResult},
         input::Input,
         sequence::{SequenceCompletion, SequenceStatus, Status, ffmpeg_filter::FfmpegFilter},
     },
@@ -252,12 +252,11 @@ impl ParallelEncoder {
                     );
                     let (frames_rx, filter_stage) =
                         spawn_filter(frames_rx, &task, Some(filter_failures), STREAM_WINDOW)?;
-                    let result = task.encoder.encode_with_stream(
-                        frames_rx,
-                        &temp_output,
-                        encode_progress_tx,
-                        &clip_info,
-                    )?;
+                    // Retain failed statuses for scene cleanup and permit release, not other errors.
+                    let result = task
+                        .encoder
+                        .encode_with_stream(frames_rx, &temp_output, encode_progress_tx, &clip_info)
+                        .or_else(anyhow::Error::downcast::<EncoderResult>)?;
                     let ended = std::time::SystemTime::now();
                     let framerate =
                         *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;

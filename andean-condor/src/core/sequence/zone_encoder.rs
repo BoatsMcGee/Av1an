@@ -33,7 +33,7 @@ use tracing::debug;
 
 use crate::{
     core::{
-        encoder::{Container, EncodeProgress, EncoderCapability},
+        encoder::{Container, EncodeProgress, EncoderCapability, EncoderResult},
         input::Input,
         sequence::{
             SequenceCompletion, SequenceStatus, Status,
@@ -417,6 +417,10 @@ fn apply_zone_options(
 
 pub struct ZoneEncoder;
 
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e27_tests;
+
 impl ZoneEncoder {
     /// Encodes every task in one zoned process and splits the output back
     /// into the tasks' files, mirroring
@@ -545,7 +549,7 @@ impl ZoneEncoder {
             discard();
             bail!(error);
         }
-        let result = match encoded {
+        let result = match encoded.or_else(anyhow::Error::downcast::<EncoderResult>) {
             Ok(result) => result,
             Err(error) => {
                 discard();

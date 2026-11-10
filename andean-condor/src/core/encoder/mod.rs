@@ -543,6 +543,8 @@ impl Encoder {
 
     /// Automatic multi-pass attempts own isolated statistics. `Specific` reuses
     /// caller-owned output-derived files; use a shared context for isolated manual passes.
+    /// Stops after the first failed pass, once its workers have joined.
+    /// A nonzero exit without worker errors returns an `EncoderResult` error.
     #[inline]
     pub fn encode_with_input(
         &self,
@@ -606,6 +608,8 @@ impl Encoder {
 
     /// Encodes one pass. Reuse the same `PassStatistics` for all passes of an attempt.
     /// `None` uses caller-owned output-derived files (no automatic cleanup/isolation).
+    /// After all pass workers join, a nonzero exit without worker errors returns
+    /// an `EncoderResult` error.
     #[inline]
     #[allow(clippy::too_many_arguments)]
     #[allow(
@@ -755,6 +759,8 @@ impl Encoder {
     /// Runs all requested passes with one isolated, owned statistics context.
     /// `Specific` is caller-managed: it reuses output-derived statistics without cleanup.
     /// For isolated manual attempts, call `encode_pass_with_stream` with a shared context.
+    /// Stops after the first failed pass, once its workers have joined.
+    /// A nonzero exit without worker errors returns an `EncoderResult` error.
     pub fn encode_with_stream(
         &self,
         frames_rx: crossbeam_channel::Receiver<Cursor<Vec<u8>>>,
@@ -851,6 +857,8 @@ impl Encoder {
     /// `None` retains caller-owned output-derived statistics. Explicit native path
     /// overrides are never cleaned. For VVenC `All(1)` plus native `--pass N`, provide
     /// `--rcstatsfile` yourself: the frontend `(1, 1)` tuple generates no stats option.
+    /// After all pass workers join, a nonzero exit without worker errors returns
+    /// an `EncoderResult` error.
     #[allow(
         clippy::unnecessary_debug_formatting,
         reason = "Escape control characters and invalid OS path bytes in diagnostics"
