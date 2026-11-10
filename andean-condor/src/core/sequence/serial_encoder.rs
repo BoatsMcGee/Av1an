@@ -1,20 +1,21 @@
 use std::{
     io::Cursor,
+    panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{self, Arc, Mutex, atomic::AtomicBool},
     thread,
     time::Instant,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use thiserror::Error;
 
 use crate::{
     core::{
         Condor,
-        encoder::{EncodeProgress, pipes::join_worker},
+        encoder::{EncodeProgress, cancellation_result, pipes::join_worker},
         input::Input,
-        sequence::{Sequence, SequenceDetails, SequenceStatus},
+        sequence::{Sequence, SequenceDetails, SequenceStatus, parallel_encoder::artifact},
     },
     models::{
         encoder::Encoder,
@@ -34,6 +35,9 @@ pub struct SerialEncoder {
     pub input: Option<Input>,
     pub encoder: Option<Encoder>,
     pub scenes_directory: PathBuf,
+    /// Require the decoded output count to match the scene range (default true).
+    /// Disabling this never disables successful-status/nonempty-file checks.
+    pub validate_frame_count: bool,
 }
 
 impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for SerialEncoder
@@ -54,15 +58,20 @@ where
         let warnings = vec![];
 
         let encoder = self.encoder.as_ref().map_or(&condor.encoder, |e| e);
-        if let Some(input) = &self.input {
-            Input::validate(&input.as_data())?;
-        }
-
         encoder.validate()?;
 
         // Ensure all the scene encoders are validated
         for scene in &condor.scenes {
             scene.encoder.validate()?;
+            ensure!(
+                scene.start_frame < scene.end_frame,
+                "Serial scenes require a nonempty increasing frame range"
+            );
+        }
+
+        artifact::preflight(self.validate_frame_count)?;
+        if let Some(input) = &self.input {
+            Input::validate(&input.as_data())?;
         }
 
         // TODO: Validate all scenes output the same codec
@@ -123,7 +132,8 @@ where
             warnings.push(anyhow::Error::new(SerialEncoderError::NoScenes));
             return Ok(((), warnings));
         }
-        let encoder = self.encoder.as_ref().map_or(&condor.encoder, |e| e);
+        // Direct execution has the same pure preflight as the sequence pipeline.
+        self.validate(condor)?;
         let input: &mut Input = self.input.as_mut().map_or(&mut condor.input, |i| i);
         let clip_info = input.clip_info()?;
         let total_frames: usize = condor.scenes.iter().map(|s| s.end_frame - s.start_frame).sum();
@@ -131,56 +141,59 @@ where
         let (progress_tx, progress_rx) = sync::mpsc::channel::<EncodeProgress>();
         let progress_reports = Arc::new(Mutex::new(Vec::new()));
 
-        let progress_thread = thread::spawn(move || -> Result<()> {
-            for progress in progress_rx.iter() {
-                let mut reports = progress_reports.lock().expect("mutex should acquire lock");
-                reports.push(progress);
+        let progress_thread = thread::Builder::new()
+            .name("serial-reports".into())
+            .spawn(move || -> Result<()> {
+                for progress in progress_rx.iter() {
+                    let mut reports = progress_reports.lock().expect("mutex should acquire lock");
+                    reports.push(progress);
 
-                let now = Instant::now();
-                let elapsed = now - start_time;
-                let frames_encoded = reports.len();
-                let fps = frames_encoded as f64 / elapsed.as_secs_f64();
-                // let eta = elapsed * (total_frames as f64 / frames_encoded as
-                // f64) - elapsed;
-                let cpu_usage = {
-                    let usage: Vec<f64> = reports
-                        .iter()
-                        .filter(|p| {
-                            p.usage.cpu > 0.0 // Ignore empty reports
-                        })
-                        .map(|p| p.usage.cpu as f64)
-                        .collect();
-                    let count = usage.len() as f64;
-                    usage.iter().sum::<f64>() / count
-                };
-                let memory_usage = {
-                    let usage: Vec<f64> = reports
-                        .iter()
-                        .filter(|p| {
-                            p.usage.memory > 0 // Ignore empty reports
-                        })
-                        .map(|p| p.usage.memory as f64)
-                        .collect();
-                    let count = usage.len() as f64;
-                    usage.iter().sum::<f64>() / count
-                };
+                    let now = Instant::now();
+                    let elapsed = now - start_time;
+                    let frames_encoded = reports.len();
+                    let fps = frames_encoded as f64 / elapsed.as_secs_f64();
+                    // let eta = elapsed * (total_frames as f64 / frames_encoded as
+                    // f64) - elapsed;
+                    let cpu_usage = {
+                        let usage: Vec<f64> = reports
+                            .iter()
+                            .filter(|p| {
+                                p.usage.cpu > 0.0 // Ignore empty reports
+                            })
+                            .map(|p| p.usage.cpu as f64)
+                            .collect();
+                        let count = usage.len() as f64;
+                        usage.iter().sum::<f64>() / count
+                    };
+                    let memory_usage = {
+                        let usage: Vec<f64> = reports
+                            .iter()
+                            .filter(|p| {
+                                p.usage.memory > 0 // Ignore empty reports
+                            })
+                            .map(|p| p.usage.memory as f64)
+                            .collect();
+                        let count = usage.len() as f64;
+                        usage.iter().sum::<f64>() / count
+                    };
 
-                println!(
-                    "Progress: {}/{} frames, {:.2} fps | CPU: {:.2}%, Memory: {:.2} MB",
-                    frames_encoded,
-                    total_frames,
-                    fps,
-                    cpu_usage,
-                    memory_usage / 1024. / 1024.
-                );
-                // "Progress: {}/{} frames, {:.2} fps, {:.2} s remaining",
-                // frames_encoded, total_frames, fps, eta.as_secs_f64()
-            }
+                    println!(
+                        "Progress: {}/{} frames, {:.2} fps | CPU: {:.2}%, Memory: {:.2} MB",
+                        frames_encoded,
+                        total_frames,
+                        fps,
+                        cpu_usage,
+                        memory_usage / 1024. / 1024.
+                    );
+                    // "Progress: {}/{} frames, {:.2} fps, {:.2} s remaining",
+                    // frames_encoded, total_frames, fps, eta.as_secs_f64()
+                }
 
-            Ok(())
-        });
+                Ok(())
+            })
+            .context("Starting serial progress collector")?;
 
-        let scenes_result = (|| -> Result<()> {
+        let scenes_result = serial_catch(|| -> Result<()> {
             for (index, scene) in &mut condor.scenes.iter_mut().enumerate() {
                 cancellation.check_forced()?;
                 if cancellation.is_cancelled() {
@@ -190,48 +203,116 @@ where
                 let scene_encoder = scene.encoder.clone();
                 let progress_tx_clone = progress_tx.clone();
                 let scene_id = SerialEncoder::scene_id(index);
-                let extension = encoder.output_extension();
+                let extension = scene_encoder.output_extension();
                 let output = self.scenes_directory.join(format!("{}.{}", scene_id, extension));
+                artifact::protect_existing(&output)?;
+                let attempt = tempfile::Builder::new()
+                    .prefix(".av1an-serial-")
+                    .tempdir_in(&self.scenes_directory)
+                    .context("Creating private serial scene directory")?;
+                // A missing basename inside our exclusive directory lets native
+                // codecs create output without an overwrite flag or caller files.
+                let candidate = tempfile::TempPath::try_from_path(
+                    attempt.path().join(format!("{scene_id}.{extension}")),
+                )?;
+                let private_output = candidate.to_path_buf();
                 let y4m_header = input.y4m_header(Some(scene.end_frame - scene.start_frame))?;
 
                 let (scene_progress_tx, scene_progress_rx) = sync::mpsc::channel();
                 // let (frames_tx, frames_rx) = sync::mpsc::channel();
                 let (frames_tx, frames_rx) = crossbeam_channel::unbounded();
 
-                let scene_progress_thread = thread::spawn(move || -> Result<()> {
-                    relay_progress(scene_progress_rx, progress_tx_clone);
-                    Ok(())
-                });
+                let scene_progress_thread = thread::Builder::new()
+                    .name("serial-relay".into())
+                    .spawn(move || -> Result<()> {
+                        #[cfg(all(test, target_os = "linux"))]
+                        e17_tests::worker("relay");
+                        relay_progress(scene_progress_rx, progress_tx_clone);
+                        Ok(())
+                    })
+                    .context("Starting serial progress relay")?;
 
-                let encoder_thread = thread::spawn(move || -> Result<()> {
-                    scene_encoder.encode_with_stream_cancel(
-                        frames_rx,
-                        &output,
-                        scene_progress_tx,
-                        &clip_info,
-                        &active,
-                    )?;
+                let encode_cancellation = active.clone();
+                let encoder_thread =
+                    thread::Builder::new().name("serial-encoder".into()).spawn(move || {
+                        #[cfg(all(test, target_os = "linux"))]
+                        e17_tests::worker("encoder");
+                        scene_encoder.encode_with_stream_cancel(
+                            frames_rx,
+                            &private_output,
+                            scene_progress_tx,
+                            &clip_info,
+                            &encode_cancellation,
+                        )
+                    });
+                let encoder_thread = match encoder_thread {
+                    Ok(worker) => worker,
+                    Err(error) => {
+                        let relayed = join_worker(
+                            scene_progress_thread,
+                            "Joining serial relay after encoder setup failure",
+                        );
+                        return serial_results([
+                            Err(error).context("Starting serial encoder worker"),
+                            relayed,
+                        ]);
+                    },
+                };
 
-                    Ok(())
-                });
-
-                let feed = (|| -> Result<()> {
+                let feed = serial_catch(|| -> Result<()> {
+                    #[cfg(all(test, target_os = "linux"))]
+                    e17_tests::worker("feed");
                     frames_tx.send(Cursor::new(Vec::from(y4m_header.as_bytes())))?;
                     let frame_indices = (scene.start_frame..scene.end_frame).collect::<Vec<_>>();
-                    input.y4m_frames_cancel(frames_tx, &frame_indices, &cancellation)
-                })();
+                    input.y4m_frames_cancel(frames_tx, &frame_indices, &active)
+                });
                 let encoded = join_worker(encoder_thread, "Joining serial scene encoder");
                 let relayed =
                     join_worker(scene_progress_thread, "Joining serial scene progress relay");
-                serial_results([encoded, feed, relayed])?;
+                // Collect every join before propagating any error or removing scratch.
+                let mut diagnostic = None;
+                let encoded = encoded.and_then(|result| {
+                    if result.status.success() {
+                        diagnostic = Some(result);
+                        Ok(())
+                    } else {
+                        Err(result.into())
+                    }
+                });
+                let completed = (|| -> Result<()> {
+                    cancellation_result(serial_results([encoded, feed, relayed]), &active)?;
+                    artifact::validate(
+                        &candidate,
+                        scene.end_frame - scene.start_frame,
+                        self.validate_frame_count,
+                        &active,
+                    )?;
+                    // persist_noclobber is atomic and cannot replace even a target
+                    // created during encoding; publish linearizes this commit with Force.
+                    active.publish(|| {
+                        candidate
+                            .persist_noclobber(&output)
+                            .map_err(anyhow::Error::from)
+                            .with_context(|| {
+                                format!("Publishing serial scene {}", output.display())
+                            })
+                    })?;
+                    Ok(())
+                })();
+                // A later feed/probe/commit failure must not erase the native
+                // status/bytes. Typed context preserves the original cause too.
+                completed.map_err(|error| match diagnostic {
+                    Some(result) => error.context(result),
+                    None => error,
+                })?;
             }
             Ok(())
-        })();
+        });
 
         // Reports are observations, not one-per-frame; only channel EOF ends collection.
         drop(progress_tx);
         let reported = join_worker(progress_thread, "Joining serial progress report worker");
-        serial_results([scenes_result, reported])?;
+        cancellation_result(serial_results([scenes_result, reported]), &cancellation)?;
 
         Ok(((), warnings))
     }
@@ -264,6 +345,17 @@ fn serial_results(results: impl IntoIterator<Item = Result<()>>) -> Result<()> {
     error.map_or(Ok(()), Err)
 }
 
+fn serial_catch<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
+    catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|panic| {
+        let message = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("non-string panic");
+        Err(anyhow::anyhow!("Serial scene worker panicked: {message}"))
+    })
+}
+
 impl SerialEncoder {
     pub const DETAILS: SequenceDetails = DETAILS;
 
@@ -273,6 +365,7 @@ impl SerialEncoder {
             input: None,
             encoder: None,
             scenes_directory: scenes_directory.to_path_buf(),
+            validate_frame_count: true,
         }
     }
 
@@ -287,6 +380,10 @@ pub enum SerialEncoderError {
     #[error("No scenes found")]
     NoScenes,
 }
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e17_tests;
 
 #[cfg(test)]
 mod tests {

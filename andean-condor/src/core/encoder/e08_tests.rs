@@ -382,6 +382,8 @@ fn serial_case(root: &Path, case: &str, mut encoder: Encoder) {
     let dir = root.join(case);
     fs::create_dir_all(&dir).expect("scenes");
     let mut serial = SerialEncoder::new(&dir);
+    // These cases test EOF/join ownership, not decoder-backed bitstream counts.
+    serial.validate_frame_count = false;
     let (tx, rx) = mpsc::channel();
     drop(rx);
     let result = serial.execute(
@@ -399,9 +401,31 @@ fn serial_case(root: &Path, case: &str, mut encoder: Encoder) {
             order.exists(),
             "error path must join encoder and relay before returning"
         );
+        assert_eq!(
+            fs::read_dir(&dir).expect("failed scene listing").count(),
+            0,
+            "joined failed scenes leave neither final files nor private scratch"
+        );
     } else {
         assert!(result.is_ok(), "serial encode succeeds");
         let order = fs::read_to_string(order).expect("scene execution records");
+        for output in order.lines().filter(|line| *line != "/dev/null") {
+            let output = Path::new(output);
+            assert!(
+                output
+                    .parent()
+                    .expect("private parent")
+                    .file_name()
+                    .expect("directory")
+                    .to_string_lossy()
+                    .starts_with(".av1an-serial-")
+            );
+            assert!(!output.exists(), "private path is gone after publication");
+            assert!(
+                dir.join(output.file_name().expect("final basename")).exists(),
+                "published final name retained"
+            );
+        }
         let names: Vec<_> = order
             .lines()
             .map(|line| Path::new(line).file_name().expect("scene").to_str().expect("utf8"))

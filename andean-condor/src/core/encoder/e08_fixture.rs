@@ -68,6 +68,10 @@ fn main() -> io::Result<()> {
             "{}",
             value("-o").unwrap()
         )?;
+        let output = PathBuf::from(value("-o").unwrap());
+        if output != PathBuf::from("/dev/null") {
+            fs::write(output, "finite serial ownership marker")?;
+        }
     }
     if let Some(code) = early {
         std::process::exit(code.parse().unwrap());

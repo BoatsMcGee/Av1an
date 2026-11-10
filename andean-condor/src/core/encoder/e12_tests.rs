@@ -47,6 +47,7 @@ fn e12_bounded_scene_force() {
         "stdin-full",
         "replay-full",
         "serial",
+        "serial-native",
         "zone",
         "zone-probe",
         "filter-empty",
@@ -107,6 +108,9 @@ fn e12_bounded_scene_force() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        if case.starts_with("serial") {
+            eprintln!("{log}");
+        }
         if !output.status.success()
             || !log
                 .lines()
@@ -318,6 +322,13 @@ fn reap(root: &Path) {
             .file_name()
             .to_string_lossy()
             .starts_with(".av1an-stats-"))
+    );
+    assert!(
+        !fs::read_dir(root).expect("serial scratch listing").any(|e| e
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".av1an-serial-"))
     );
 }
 
@@ -981,7 +992,7 @@ fn e12_scene_child() {
                     Ok(())
                 }),
             );
-            let result = if case == "serial" {
+            let result = if case.starts_with("serial") {
                 SerialEncoder::new(&root).execute_cancel(&mut condor, progress, cancellation)
             } else {
                 ParallelEncoder::default().execute_cancel(&mut condor, progress, cancellation)
@@ -1026,6 +1037,7 @@ fn e12_scene_child() {
             "stream-idle",
             "replay-full",
             "serial",
+            "serial-native",
             "zone",
         ]
         .contains(&case.as_str())
@@ -1035,7 +1047,7 @@ fn e12_scene_child() {
                 "forced encoder diagnostics/status must remain typed: {error:#}"
             );
         }
-        if case == "mid-production" || case == "stdin-full" {
+        if ["mid-production", "stdin-full", "serial", "serial-native"].contains(&case.as_str()) {
             let diagnostic = error
                 .chain()
                 .find_map(|cause| cause.downcast_ref::<EncoderResult>())
@@ -1046,7 +1058,9 @@ fn e12_scene_child() {
             };
             assert_eq!(bytes(&diagnostic.stdout), b"E12 mid stdout\xff\n");
             assert_eq!(bytes(&diagnostic.stderr), b"E12 mid stderr\xfe\n");
-            assert!(error.chain().any(|cause| cause.is::<EncoderProcessError>()));
+            if case == "mid-production" || case == "stdin-full" {
+                assert!(error.chain().any(|cause| cause.is::<EncoderProcessError>()));
+            }
         }
         assert!(!root.join("00000.264").exists());
         if case == "encoder-existing" {
