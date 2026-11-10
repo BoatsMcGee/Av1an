@@ -282,7 +282,7 @@ impl ParallelEncoder {
         }
         // Nonstream VS decoding stays on this thread; both paths bound workers.
         if input.streams_concurrently() {
-            return Self::encode_tasks_streaming(
+            let result = Self::encode_tasks_streaming(
                 input,
                 workers,
                 STREAM_WINDOW,
@@ -291,6 +291,9 @@ impl ParallelEncoder {
                 &cancelled,
                 stream,
             );
+            #[cfg(all(test, target_os = "linux"))]
+            crate::core::encoder::e12_tests::before_stream_return(&cancelled);
+            return crate::core::encoder::cancellation_result(result, &cancelled);
         }
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
@@ -480,10 +483,13 @@ impl ParallelEncoder {
             }
             let mut error = setup.err();
             // A consumer can close its receiver before reporting its diagnostic.
-            // Defer only that typed disconnect; real header/decode errors stay primary.
+            // Defer typed consumer disconnect/cancellation until worker diagnostics
+            // arrive. Real header/decode errors still stay primary (E28).
             let mut frame_send_error = None;
             if let Err(err) = scheduled {
-                if err.is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>() {
+                if err.is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>()
+                    || err.is::<crate::utils::cancellation::Cancelled>()
+                {
                     frame_send_error = Some(err);
                 } else {
                     retain_error(&mut error, err);

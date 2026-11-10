@@ -24,7 +24,7 @@ impl SceneConcatenator {
         cancellation: &Cancellation,
     ) -> Result<()> {
         cancellation.check_admission()?;
-        let _partial = InterruptedOutput::new(output, cancellation);
+        let mut partial = InterruptedOutput::new(output, cancellation);
         let output = File::create(output)?;
         let mut muxer = MuxerContext::new(IvfMuxer::new(), Writer::new(output));
         let global_info = {
@@ -104,7 +104,7 @@ impl SceneConcatenator {
         }
 
         muxer.write_trailer()?;
-
-        Ok(())
+        drop(muxer);
+        partial.complete()
     }
 }

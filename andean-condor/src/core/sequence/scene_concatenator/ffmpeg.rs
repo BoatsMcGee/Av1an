@@ -42,7 +42,7 @@ impl SceneConcatenator {
         cancellation: &Cancellation,
     ) -> Result<()> {
         cancellation.check_admission()?;
-        let _partial = InterruptedOutput::new(output, cancellation);
+        let mut partial = InterruptedOutput::new(output, cancellation);
         let scratch_directory = scenes_directory.join("Scene Concatenator");
         let concat_file_path = scratch_directory.join("concat.txt");
         let concat_file = {
@@ -149,7 +149,7 @@ impl SceneConcatenator {
             bail!(error);
         }
 
-        Ok(())
+        partial.complete()
     }
 
     /// Parses a single ffmpeg progress line (e.g. `frame=23310 fps=4835 ...

@@ -40,7 +40,7 @@ mod spool;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
-mod e12_tests;
+pub(crate) mod e12_tests;
 pub mod string_or_bytes;
 pub use capability::{Container, EncoderCapability};
 pub use parse::*;
@@ -72,6 +72,44 @@ fn pass_result(
         return Err(error.context(Cancelled::Forced));
     }
     result
+}
+
+fn complete_output(
+    result: EncoderResult,
+    output: &mut crate::core::process::InterruptedOutput,
+) -> Result<EncoderResult> {
+    match output.complete() {
+        Ok(()) => Ok(result),
+        Err(_) => Err(anyhow::Error::from(result).context(Cancelled::Forced)),
+    }
+}
+
+fn spawn_waiter(
+    encoder: OwnedProcess,
+    stats: Option<PassStatistics>,
+) -> (
+    mpsc::Sender<()>,
+    thread::JoinHandle<Result<std::process::Output>>,
+) {
+    let (reap, drained) = mpsc::channel();
+    let waiter = thread::spawn(move || {
+        let _stats = stats;
+        // E01: locals drop in reverse order on recv/wait errors and unwind too.
+        let mut encoder = encoder;
+        drained.recv().context("Waiting for encoder pipes to drain")?;
+        #[cfg(all(test, target_os = "linux"))]
+        assert_ne!(
+            std::env::var("E12_CASE").as_deref(),
+            Ok("stats-unwind"),
+            "injected waiter unwind"
+        );
+        Ok(std::process::Output {
+            status: encoder.wait()?,
+            stdout: vec![],
+            stderr: vec![],
+        })
+    });
+    (reap, waiter)
 }
 
 /// Statistics shared by every pass of one attempt. Clones keep owned files alive.
@@ -630,13 +668,13 @@ impl Encoder {
         self.validate()?;
         cancellation.check_admission()?;
         let cancellation = &cancellation.active();
-        let _output = crate::core::process::InterruptedOutput::new(output, cancellation);
+        let mut output_guard = crate::core::process::InterruptedOutput::new(output, cancellation);
         let stats = if matches!(self.passes(), EncoderPasses::All(total) if total > 1) {
             Some(PassStatistics::new(output)?)
         } else {
             None
         };
-        match self.passes() {
+        let result: Result<EncoderResult> = match self.passes() {
             EncoderPasses::All(1) => Ok(self.encode_pass_with_input_cancel(
                 input,
                 output,
@@ -682,7 +720,8 @@ impl Encoder {
 
                 Ok(result)
             },
-        }
+        };
+        complete_output(result?, &mut output_guard)
     }
 
     /// Encodes one pass. Reuse the same `PassStatistics` for all passes of an attempt.
@@ -735,7 +774,7 @@ impl Encoder {
         self.validate_pass_settings(pass)?;
         let executable = self.resolve_executable()?;
         cancellation.check_admission()?;
-        let _output = crate::core::process::InterruptedOutput::new(output, cancellation);
+        let mut output_guard = crate::core::process::InterruptedOutput::new(output, cancellation);
         let stats_base = stats.map_or_else(
             || absolute_file_path(output).map(|p| p.with_extension("")),
             |s| Ok(s.base().to_path_buf()),
@@ -797,18 +836,7 @@ impl Encoder {
                 Some(pid),
             ),
         );
-        let stats = stats.cloned();
-        let (reap, drained) = mpsc::channel();
-        let encoder_output_thread = thread::spawn(move || {
-            // Keep owned statistics until the child is reaped, even on an early input error.
-            let _stats = stats;
-            drained.recv().context("Waiting for encoder pipes to drain")?;
-            Ok(std::process::Output {
-                status: encoder.wait()?,
-                stdout: vec![],
-                stderr: vec![],
-            })
-        });
+        let (reap, encoder_output_thread) = spawn_waiter(encoder, stats.cloned());
 
         let writer_cancellation = cancellation.clone();
         let encoder_stdin_thread = thread::spawn(move || -> Result<()> {
@@ -877,7 +905,7 @@ impl Encoder {
             encode_duration.as_secs_f64()
         );
 
-        Ok(encoder_result)
+        complete_output(encoder_result, &mut output_guard)
     }
 
     #[inline]
@@ -918,8 +946,8 @@ impl Encoder {
         self.validate()?;
         cancellation.check_admission()?;
         let cancellation = &cancellation.active();
-        let _output = crate::core::process::InterruptedOutput::new(output, cancellation);
-        match self.passes() {
+        let mut output_guard = crate::core::process::InterruptedOutput::new(output, cancellation);
+        let result: Result<EncoderResult> = match self.passes() {
             EncoderPasses::All(1) => {
                 let _ = progress_tx.send(EncodeProgress {
                     pass: (1, 1),
@@ -982,7 +1010,8 @@ impl Encoder {
                     },
                 )
             },
-        }
+        };
+        complete_output(result?, &mut output_guard)
     }
 
     #[inline]
@@ -1033,7 +1062,7 @@ impl Encoder {
         self.validate_pass_settings(pass)?;
         let executable = self.resolve_executable()?;
         cancellation.check_admission()?;
-        let _output = crate::core::process::InterruptedOutput::new(output, cancellation);
+        let mut output_guard = crate::core::process::InterruptedOutput::new(output, cancellation);
         let stats_base = stats.map_or_else(
             || absolute_file_path(output).map(|p| p.with_extension("")),
             |s| Ok(s.base().to_path_buf()),
@@ -1102,17 +1131,7 @@ impl Encoder {
             Ok(())
         });
 
-        let stats = stats.cloned();
-        let (reap, drained) = mpsc::channel();
-        let encoder_output_thread = thread::spawn(move || -> Result<_> {
-            let _stats = stats;
-            drained.recv().context("Waiting for encoder pipes to drain")?;
-            Ok(std::process::Output {
-                status: encoder.wait()?,
-                stdout: vec![],
-                stderr: vec![],
-            })
-        });
+        let (reap, encoder_output_thread) = spawn_waiter(encoder, stats.cloned());
         let encoder_result = PassWorkers {
             stdin: encoder_stdin_thread,
             stdout: encoder_stdout_thread,
@@ -1125,7 +1144,7 @@ impl Encoder {
         if !encoder_result.status.success() {
             return Err(encoder_result.into());
         }
-        Ok(encoder_result)
+        complete_output(encoder_result, &mut output_guard)
     }
 
     #[inline]

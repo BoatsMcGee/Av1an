@@ -24,17 +24,26 @@ impl ProcessState {
         }
         #[cfg(unix)]
         {
+            // Fail closed if a host waiter/disposition change already lost the child.
+            self.exited()?;
             let pid = i32::try_from(self.child.id()).map_err(io::Error::other)?;
             if pid <= 0 {
                 return Err(io::Error::other("invalid owned process group"));
             }
-            // SAFETY: Command::process_group(0) created this group. Its leader is
-            // still unreaped under this lock, so the ID cannot have been reused.
-            if unsafe { libc::kill(-pid, libc::SIGKILL) } != 0 {
-                let error = io::Error::last_os_error();
-                if error.raw_os_error() != Some(libc::ESRCH) {
-                    return Err(error);
+            let mut failure = None;
+            for target in [-pid, pid] {
+                // SAFETY: waitid just verified our unreaped child. Under the host
+                // ownership contract its PID pins the original group ID too. The
+                // positive PID also covers a direct child that changed groups.
+                if unsafe { libc::kill(target, libc::SIGKILL) } != 0 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        failure.get_or_insert(error);
+                    }
                 }
+            }
+            if let Some(error) = failure {
+                return Err(error);
             }
         }
         #[cfg(windows)]
@@ -43,13 +52,20 @@ impl ProcessState {
         Ok(())
     }
 
-    fn exited(&self) -> io::Result<bool> {
+    #[cfg_attr(
+        windows,
+        allow(
+            clippy::needless_pass_by_ref_mut,
+            reason = "Unix must disarm on ECHILD; both platforms share the wait callsites"
+        )
+    )]
+    fn exited(&mut self) -> io::Result<bool> {
         #[cfg(unix)]
         {
-            // SAFETY: waitid initializes siginfo, WNOWAIT preserves the owned
-            // leader/PID until all pipe workers finish and final group cleanup runs.
+            // SAFETY: Zero is a valid initial siginfo value; waitid fills it below.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            // SAFETY: The child is unreaped and info is a valid writable siginfo.
+            // SAFETY: Query only the known child into a valid writable siginfo.
+            // WNOWAIT leaves it unreaped, subject to the host ownership contract.
             let result = unsafe {
                 libc::waitid(
                     libc::P_PID,
@@ -59,7 +75,11 @@ impl ProcessState {
                 )
             };
             if result != 0 {
-                return Err(io::Error::last_os_error());
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ECHILD) {
+                    self.armed = false; // Never signal a known-lost PID/group on Drop.
+                }
+                return Err(error);
             }
             // SAFETY: Successful waitid initialized the SIGCHLD union member.
             Ok(unsafe { info.si_pid() } != 0)
@@ -73,6 +93,8 @@ impl ProcessState {
 
 /// Owns kill control independently of pipe readers/writers. Drop kills the tree
 /// and reaps the direct child; explicit `wait` reports OS cleanup failures.
+/// On Unix the host must not reap this child externally or change SIGCHLD to
+/// auto-reap while a guard is active. Piped/null stdin avoids background-TTY stops.
 pub struct OwnedProcess {
     state: Arc<Mutex<ProcessState>>,
     pub stdin: Option<ChildStdin>,
@@ -88,6 +110,19 @@ impl OwnedProcess {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
+            // SAFETY: A zeroed sigaction is a valid output buffer for this query.
+            let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+            // SAFETY: A null action only queries SIGCHLD; no host disposition changes.
+            if unsafe { libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut action) } != 0 {
+                return Err(io::Error::last_os_error()).context("Checking SIGCHLD ownership");
+            }
+            if action.sa_sigaction == libc::SIG_IGN || action.sa_flags & libc::SA_NOCLDWAIT != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "OwnedProcess requires SIGCHLD without SIG_IGN or SA_NOCLDWAIT",
+                )
+                .into());
+            }
             command.process_group(0);
         }
         #[cfg(windows)]
@@ -144,15 +179,21 @@ impl OwnedProcess {
         }
         #[cfg(windows)]
         {
+            #[cfg(test)]
+            windows::tests::before_resume(&process, cancellation);
             let resumed = {
                 let state = process.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                windows::resume(&state.child)
+                if state.killed || cancellation.is_forced() {
+                    Err(crate::utils::cancellation::Cancelled::Forced.into())
+                } else {
+                    windows::resume(&state.child).context("Resuming job-assigned child")
+                }
             };
             if let Err(error) = resumed {
                 process.kill()?;
                 process.wait()?;
                 cancellation.check_forced()?;
-                return Err(error).context("Resuming job-assigned child");
+                return Err(error);
             }
         }
         Ok(process)
@@ -186,6 +227,8 @@ impl OwnedProcess {
                 if state.exited().context("Checking owned child without reaping")? {
                     let killed = state.kill(); // Before reap: no stale group ID can be signalled.
                     let status = state.child.wait();
+                    #[cfg(all(test, target_os = "linux"))]
+                    crate::core::encoder::e12_tests::observe_reap(state.child.id());
                     state.armed = false;
                     if let Ok(status) = &status {
                         state.status = Some(*status);
@@ -201,7 +244,7 @@ impl OwnedProcess {
     #[cfg(test)]
     pub(crate) fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
         let exited = {
-            let state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             state.status.is_some() || state.exited()?
         };
         if exited {
@@ -209,6 +252,11 @@ impl OwnedProcess {
         } else {
             Ok(None)
         }
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn is_armed(&self) -> bool {
+        self.state.lock().expect("state").armed
     }
 }
 
@@ -242,10 +290,28 @@ impl InterruptedOutput {
             cancellation: cancellation.clone(),
         }
     }
+
+    /// Commit this unit against force; enclosing units retain their own guards.
+    pub(crate) fn complete(&mut self) -> Result<()> {
+        #[cfg(all(test, target_os = "linux"))]
+        crate::core::encoder::e12_tests::before_output_commit(&self.path, &self.cancellation);
+        let cancellation = self.cancellation.clone();
+        cancellation.publish(|| {
+            self.disarm();
+            Ok(())
+        })
+    }
+
+    /// Caller already holds the token's publication lock (for batched renames).
+    pub(crate) fn disarm(&mut self) {
+        self.owned = false;
+    }
 }
 
 impl Drop for InterruptedOutput {
     fn drop(&mut self) {
+        #[cfg(all(test, target_os = "linux"))]
+        crate::core::encoder::e12_tests::output_drop(&self.path, &self.cancellation);
         if self.owned && self.cancellation.is_forced() {
             match std::fs::remove_file(&self.path) {
                 Ok(()) => {},

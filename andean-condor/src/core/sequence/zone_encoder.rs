@@ -494,7 +494,7 @@ impl ZoneEncoder {
         let zone_files = apply_zone_options(&mut encoder, &plan, zone_directory.path())?;
         let extension = encoder.output_extension();
         let whole_output = directory.join(format!("zone-pass.temp.{extension}"));
-        let _partial = crate::core::process::InterruptedOutput::new(&whole_output, &cancelled);
+        let mut partial = crate::core::process::InterruptedOutput::new(&whole_output, &cancelled);
         let discard = {
             let whole_output = whole_output.clone();
             move || {
@@ -678,6 +678,7 @@ impl ZoneEncoder {
         progress_tx.send(SequenceStatus::Whole(Status::Completed {
             id: "Zone Encoder".to_owned(),
         }))?;
+        partial.complete()?;
         Ok(results)
     }
 }
@@ -773,6 +774,9 @@ fn split_ivf_cancel(
         for ((part, _, _), task) in parts.iter().zip(tasks) {
             fs::rename(part, &task.output)
                 .with_context(|| format!("failed to save {}", task.output.display()))?;
+        }
+        for partial in &mut partials {
+            partial.disarm();
         }
         Ok(())
     })?;
@@ -876,6 +880,9 @@ fn split_annexb_cancel(
         for (part, task) in parts.iter().zip(tasks) {
             fs::rename(&part.0, &task.output)
                 .with_context(|| format!("failed to save {}", task.output.display()))?;
+        }
+        for partial in &mut partials {
+            partial.disarm();
         }
         Ok(())
     })?;

@@ -1,6 +1,11 @@
 // Finite Linux lifecycle fixture, not codec or licensed-plugin acceptance.
 use std::{fs, io::{self, Write}, path::PathBuf, process::Command, time::{Duration, Instant}};
-unsafe extern "C" { fn prctl(option: i32, ...) -> i32; fn kill(pid: i32, sig: i32) -> i32; fn waitpid(pid: i32, status: *mut i32, flags: i32) -> i32; fn signal(sig: i32, handler: usize) -> usize; }
+unsafe extern "C" { fn prctl(option: i32, ...) -> i32; fn kill(pid: i32, sig: i32) -> i32; fn waitpid(pid: i32, status: *mut i32, flags: i32) -> i32; fn signal(sig: i32, handler: usize) -> usize; fn getppid() -> i32; fn getpgid(pid: i32) -> i32; fn setpgid(pid: i32, pgid: i32) -> i32; }
+fn publish_pid(path: PathBuf, pid: u32) -> io::Result<()> {
+    let pending = path.with_extension("pending");
+    fs::write(&pending, pid.to_string())?;
+    fs::rename(pending, path)
+}
 fn main() -> io::Result<()> {
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|a| a == "--complete") { return Ok(()); }
@@ -51,8 +56,8 @@ fn main() -> io::Result<()> {
     let case = std::env::var("E12_CASE").expect("case");
     // SAFETY: Reset only this fixture process's SIGINT disposition, so group shielding is real.
     unsafe { signal(2, 0); }
-    fs::write(root.join("leader"), std::process::id().to_string())?;
-    let output = if case.starts_with("mkv") {
+    publish_pid(root.join("leader"), std::process::id())?;
+    let output = if case.starts_with("mkv") || case.starts_with("commit-mkvmerge") {
         let options = fs::read_to_string(args.iter().find_map(|s| s.strip_prefix('@')).expect("options"))?;
         let mut lines = options.lines().map(str::trim);
         lines.find(|s| *s == "\"-o\",");
@@ -60,6 +65,18 @@ fn main() -> io::Result<()> {
     } else {
         PathBuf::from(value("-o").unwrap_or_else(|| args.last().expect("output").clone()))
     };
+    if case == "stream-idle-return" {
+        io::copy(&mut io::stdin(), &mut io::sink())?;
+        fs::write(output, "complete")?;
+        return Ok(());
+    }
+    if case.starts_with("commit-") {
+        io::copy(&mut io::stdin(), &mut io::sink())?;
+        if let Some(pass) = value("--pass") { writeln!(fs::OpenOptions::new().create(true).append(true).open(root.join("passes"))?, "{pass}")?; }
+        if output != PathBuf::from("/dev/null") { fs::write(output, "complete")?; }
+        if case.ends_with("-between") { fs::write(root.join("committed"), "pass1partial")?; }
+        return Ok(());
+    }
     if case.starts_with("graceful") {
         io::copy(&mut io::stdin(), &mut io::sink())?;
         writeln!(fs::OpenOptions::new().create(true).append(true).open(root.join("passes"))?, "{}", value("--pass").expect("pass"))?;
@@ -73,7 +90,20 @@ fn main() -> io::Result<()> {
     }
     if !case.starts_with("filter") && output != PathBuf::from("/dev/null") && !output.exists() { fs::write(output, "interrupted")?; }
     let mut grandchild = Command::new(std::env::current_exe()?).arg("grandchild").spawn()?;
-    fs::write(root.join("grandchild"), grandchild.id().to_string())?;
+    if case == "mid-production" {
+        io::stdout().write_all(b"E12 mid stdout\xff\n")?;
+        io::stdout().flush()?;
+        io::stderr().write_all(b"E12 mid stderr\xfe\n")?;
+        io::stderr().flush()?;
+    }
+    publish_pid(root.join("grandchild"), grandchild.id())?;
+    if case == "leader-changes-group" {
+        // SAFETY: Join the test parent's existing group in this session. A group
+        // leader cannot setsid(), but can setpgid() when it is not a session leader.
+        assert_eq!(unsafe { setpgid(0, getpgid(getppid())) }, 0);
+        fs::write(root.join("group-changed"), "ready")?;
+        std::thread::sleep(Duration::from_secs(8));
+    }
     if case == "leader-exits" { std::process::exit(0); }
     if case == "filter-full" {
         for _ in 0..32 { io::stdout().write_all(&[b'x'; 64 * 1024])?; }

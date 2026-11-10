@@ -341,7 +341,8 @@ impl DGSource {
         if absolute_cache.exists() {
             return Ok(absolute_cache);
         }
-        let _partial = crate::core::process::InterruptedOutput::new(&absolute_cache, cancellation);
+        let mut partial =
+            crate::core::process::InterruptedOutput::new(&absolute_cache, cancellation);
         // The cache is known missing from here on, so this is the only point
         // that can honestly claim indexing is starting.
         if let Some(progress) = progress.as_mut() {
@@ -429,6 +430,7 @@ impl DGSource {
             tracing::debug!("DGIndexNV stderr: {}", captured.trim());
         }
 
+        partial.complete()?;
         Ok(absolute_cache)
     }
 }

@@ -115,7 +115,7 @@ controls.request()?; // Forced: stop feeds, kill owned trees, join workers, reap
 ```
 
 Direct encoder, filter, zone/probe, indexing, and concat APIs also have `_cancel`
-entry points. Fresh jobs reject already-cancelled tokens. Errors retain a typed
+entry points. Fresh jobs do not admit work after cancellation. Errors retain a typed
 `Cancelled::Forced` cause through anyhow context. Existing `Arc<AtomicBool>`
 entry points remain available but cannot request force. Custom `Sequence`
 implementations must override `execute_cancel` to support forced child teardown;
@@ -130,6 +130,12 @@ groups; Windows uses suspended creation and kill-on-close Job Objects (native
 Windows acceptance remains pending). Deliberately escaping a managed group/job
 is not supported. These library APIs do not register signals or change the CLI's
 keyboard, terminal-exit, or exit-code behavior.
+
+Unix hosts must not externally reap managed children or enable `SIGCHLD=SIG_IGN` /
+`SA_NOCLDWAIT` while their guards are active. Auto-reap dispositions are rejected
+before spawn; detected lost ownership is reported without signaling stale IDs.
+This check cannot protect against concurrent external waiters. Use piped or null
+stdin for managed children: inherited terminal input may stop a background group.
 
 ## Developing
 

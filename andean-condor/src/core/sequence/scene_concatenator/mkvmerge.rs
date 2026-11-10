@@ -39,7 +39,7 @@ impl SceneConcatenator {
         cancellation: &Cancellation,
     ) -> Result<()> {
         cancellation.check_admission()?;
-        let _partial = InterruptedOutput::new(output, cancellation);
+        let mut partial = InterruptedOutput::new(output, cancellation);
         #[cfg(windows)]
         const MAXIMUM_CHUNKS_PER_MERGE: usize = usize::MAX;
         #[cfg(not(windows))]
@@ -114,7 +114,8 @@ impl SceneConcatenator {
                 let group_options_path = scratch_directory.join(format!("{group_index:05}.json"));
                 let group_output_path =
                     fix_path(scratch_directory.join(format!("{group_index:05}.mkv")));
-                let _partial = InterruptedOutput::new(Path::new(&group_output_path), cancellation);
+                let mut group_partial =
+                    InterruptedOutput::new(Path::new(&group_output_path), cancellation);
 
                 let group_args = mkvmerge_args(
                     &group_output_path,
@@ -197,6 +198,7 @@ impl SceneConcatenator {
                     error!("{}", error);
                     bail!(error);
                 }
+                group_partial.complete()?;
             }
 
             let chunk_group_options_names = chunk_groups
@@ -275,7 +277,7 @@ impl SceneConcatenator {
             bail!(error);
         }
 
-        Ok(())
+        partial.complete()
     }
 
     /// Streams mkvmerge STDOUT, parse `Progress: N%`, and emit progress
