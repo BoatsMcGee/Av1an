@@ -1646,6 +1646,57 @@ mod tests {
     }
 
     #[test]
+    fn e05_vvenc_default_parameters_inherit_y4m() {
+        let expected = HashMap::from([(
+            "y4m".to_owned(),
+            CLIParameter::Bool {
+                prefix: "--".to_owned(),
+                value: true,
+            },
+        )]);
+        assert_eq!(EncoderBase::VVenC.default_parameters(), expected);
+        let encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+        assert_eq!(encoder.parameters(), &expected);
+    }
+
+    #[test]
+    fn e05_vvenc_default_one_pass_argv_declares_y4m_pipe() {
+        let output = "job space 映像/scene0.vvc";
+        let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, false);
+        encoder.set_append_color_data(false);
+        let argv = encoder
+            .parameters_with_output((1, 1), Path::new(output), &clip_info())
+            .expect("argv");
+        // HashMap option order can vary; input/output pairs must remain intact.
+        assert!(
+            argv == ["-i", "-", "--y4m", "-o", output]
+                || argv == ["-i", "-", "-o", output, "--y4m"],
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn e05_vvenc_y4m_remains_caller_controlled() {
+        let output = "job space 映像/scene0.vvc";
+        for exclude_defaults in [false, true] {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, exclude_defaults);
+            encoder.set_append_color_data(false);
+            if !exclude_defaults {
+                encoder
+                    .parameters_mut()
+                    .insert("y4m".to_owned(), CLIParameter::new_bool("--", false));
+            }
+            assert_eq!(
+                encoder
+                    .parameters_with_output((1, 1), Path::new(output), &clip_info())
+                    .expect("argv"),
+                ["-i", "-", "-o", output],
+                "exclude_defaults={exclude_defaults}"
+            );
+        }
+    }
+
+    #[test]
     fn colour_data_is_appended_by_default() {
         let encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, true);
         let parameters = parameters(&encoder);

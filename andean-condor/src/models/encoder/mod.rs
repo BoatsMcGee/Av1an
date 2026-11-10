@@ -166,7 +166,7 @@ impl EncoderBase {
                 parameters.extend(CLIParameter::new_strings("--", " ", &[("preset", "slow")]));
                 parameters
             },
-            EncoderBase::VVenC => HashMap::new(),
+            EncoderBase::VVenC => CLIParameter::new_bools("--", &[("y4m", true)]),
             EncoderBase::FFmpeg => HashMap::new(),
         }
     }
