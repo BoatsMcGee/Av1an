@@ -389,7 +389,11 @@ impl Encoder {
             Encoder::VPX { options, .. } => {
                 let mut parameters = ["-".to_owned()].to_vec();
                 let mut params = pass_parameters;
-                params.extend(color_parameters);
+                // The generated VPX color map is VP9-only; raw user options still win below.
+                if !matches!(options.get("codec"), Some(CLIParameter::String { value, .. }) if value == "vp8")
+                {
+                    params.extend(color_parameters);
+                }
                 params.extend(options.clone());
                 params.extend(CLIParameter::new_strings(
                     "-",

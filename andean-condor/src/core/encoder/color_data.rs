@@ -1001,8 +1001,8 @@ const VPX_COLOR_SPACE: &[(ColorSpace, &str)] = &[
 
 fn vpx(clip_info: &ClipInfo) -> HashMap<String, CLIParameter> {
     let mut parameters = HashMap::new();
-    // vpxenc's only colour flag is `--color-space`, and it takes matrix
-    // coefficients rather than primaries or a transfer function.
+    // vpxenc's VP9-only `--color-space` takes matrix coefficients rather than
+    // primaries or a transfer function; configured VP8 skips this map in argv.
     insert(
         &mut parameters,
         "color-space",
