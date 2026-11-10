@@ -95,48 +95,52 @@ impl ParallelEncoder {
                                 ftx.send(Cursor::new(headers[&task.index].clone().into_bytes()))?;
                                 // The encoder consumes FFmpeg's regenerated
                                 // header, not the one just sent.
-                                let (frx, filter_stage): FilteredFrames =
+                                let (frx, mut filter_stage): FilteredFrames =
                                     spawn_filter(frx, &task, None, window)?;
                                 let (encode_progress_tx, encode_progress_rx) =
                                     std::sync::mpsc::channel::<EncodeProgress>();
-                                let (encode_result, produce_result) = thread::scope(|s2| {
-                                    let relay_tx = progress_tx.clone();
-                                    let total_passes = task.encoder.total_passes();
-                                    let scene_frames = task.frame_indices.len();
-                                    s2.spawn(move || {
-                                        relay_progress(
-                                            encode_progress_rx,
-                                            &relay_tx,
-                                            total_passes,
-                                            task.original_index,
-                                            scene_frames,
-                                            total_process_frames,
-                                            total_final,
-                                        )
+                                let (encode_result, filter_result, produce_result) =
+                                    thread::scope(|s2| {
+                                        let relay_tx = progress_tx.clone();
+                                        let total_passes = task.encoder.total_passes();
+                                        let scene_frames = task.frame_indices.len();
+                                        s2.spawn(move || {
+                                            relay_progress(
+                                                encode_progress_rx,
+                                                &relay_tx,
+                                                total_passes,
+                                                task.original_index,
+                                                scene_frames,
+                                                total_process_frames,
+                                                total_final,
+                                            )
+                                        });
+                                        let (encoder, temp) = (&task.encoder, &temp_output);
+                                        let encoder_thread = s2.spawn(move || {
+                                            let result = encoder.encode_with_stream(
+                                                frx,
+                                                temp,
+                                                encode_progress_tx,
+                                                clip_info,
+                                            );
+                                            // Cleanup belongs with the consumer: the
+                                            // inline producer may still be blocked.
+                                            let filtered = filter_stage
+                                                .as_mut()
+                                                .map_or(Ok(()), |stage| stage.check());
+                                            (result, filtered)
+                                        });
+                                        // Blocks when the encoder lags.
+                                        let produced =
+                                            reader.y4m_frames(&ftx, &task.frame_indices, window);
+                                        drop(ftx); // EOF for the encoder
+                                        let (encoded, filtered) =
+                                            encoder_thread.join().expect("encoder thread panicked");
+                                        (encoded, filtered, produced)
                                     });
-                                    let (encoder, temp) = (&task.encoder, &temp_output);
-                                    let encoder_thread = s2.spawn(move || {
-                                        encoder.encode_with_stream(
-                                            frx,
-                                            temp,
-                                            encode_progress_tx,
-                                            clip_info,
-                                        )
-                                    });
-                                    // Blocks when the encoder lags.
-                                    let produced =
-                                        reader.y4m_frames(&ftx, &task.frame_indices, window);
-                                    drop(ftx); // EOF for the encoder
-                                    (
-                                        encoder_thread.join().expect("encoder thread panicked"),
-                                        produced,
-                                    )
-                                });
                                 // Prefer the filter's stderr over the encoder
                                 // or producer fallout it causes.
-                                if let Some(stage) = &filter_stage
-                                    && let Err(err) = stage.check()
-                                {
+                                if let Err(err) = filter_result {
                                     let _ = fs::remove_file(&temp_output);
                                     errored.store(true, Ordering::Relaxed);
                                     bail!(
@@ -145,12 +149,25 @@ impl ParallelEncoder {
                                     );
                                 }
                                 // A failed status still needs scene cleanup and the shared stop flag.
-                                let result = encode_result
-                                    .or_else(anyhow::Error::downcast::<EncoderResult>)?;
+                                let result = match encode_result
+                                    .or_else(anyhow::Error::downcast::<EncoderResult>)
+                                {
+                                    Ok(result) => result,
+                                    Err(err) => {
+                                        let _ = fs::remove_file(&temp_output);
+                                        errored.store(true, Ordering::Relaxed);
+                                        return Err(err.context(format!(
+                                            "Scene {} encoder failed",
+                                            task.original_index
+                                        )));
+                                    },
+                                };
                                 let ended = std::time::SystemTime::now();
                                 let bytes = temp_output.metadata().ok().map_or(0, |m| m.len());
                                 let seconds = task.frame_indices.len() as f64 / framerate;
-                                if let Err(e) = produce_result {
+                                if let Err(e) = produce_result
+                                    && result.status.success()
+                                {
                                     errored.store(true, Ordering::Relaxed);
                                     bail!(
                                         "Scene {} frame production failed: {e}",

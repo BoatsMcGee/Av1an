@@ -484,10 +484,11 @@ impl ZoneEncoder {
         let (frames_tx, frames_rx) = crossbeam_channel::bounded::<Cursor<Vec<u8>>>(8);
         // A filtergraph applies to the whole pass, so every scene must agree
         // on it — `differing_field` already rejected the pass otherwise.
-        let (encoder_rx, filter_stage) = match encoder.ffmpeg_filter() {
+        let (encoder_rx, mut filter_stage) = match encoder.ffmpeg_filter() {
             Some(graph) => {
-                let stage = FfmpegFilter::spawn(frames_rx, 8, graph, Arc::new(Mutex::new(None)))?;
-                (stage.receiver(), Some(stage))
+                let mut stage =
+                    FfmpegFilter::spawn(frames_rx, 8, graph, Arc::new(Mutex::new(None)))?;
+                (stage.take_receiver()?, Some(stage))
             },
             None => (frames_rx, None),
         };
@@ -495,12 +496,14 @@ impl ZoneEncoder {
             let encoder = encoder.clone();
             let whole_output = whole_output.clone();
             move || {
-                encoder.encode_with_stream(
+                let encoded = encoder.encode_with_stream(
                     encoder_rx,
                     &whole_output,
                     encode_progress_tx,
                     &clip_info,
-                )
+                );
+                let filtered = filter_stage.as_mut().map_or(Ok(()), |stage| stage.check());
+                (encoded, filtered)
             }
         });
 
@@ -508,9 +511,11 @@ impl ZoneEncoder {
         // responsive: the flag is checked between frames, a full channel
         // blocks only while the encoder lags, and a dead encoder shows up as a
         // failed send.
-        frames_tx.send(header)?;
-        let mut feed_failure = None;
+        let mut feed_failure = frames_tx.send(header).err().map(anyhow::Error::from);
         'feed: for task in &tasks {
+            if feed_failure.is_some() {
+                break;
+            }
             for &index in &task.frame_indices {
                 if cancelled.load(Ordering::Relaxed) {
                     break 'feed;
@@ -531,7 +536,7 @@ impl ZoneEncoder {
         drop(frames_tx); // EOF for the encoder
         drop(reader);
 
-        let encoded = encode_thread.join().expect("zone encoder thread panicked");
+        let (encoded, filtered) = encode_thread.join().expect("zone encoder thread panicked");
         // The relay ends once the encode thread drops its progress sender.
         relay.join().expect("zone progress relay should join")?;
 
@@ -539,9 +544,7 @@ impl ZoneEncoder {
             discard();
             return Ok(vec![None; total_tasks]);
         }
-        if let Some(stage) = &filter_stage
-            && let Err(err) = stage.check()
-        {
+        if let Err(err) = filtered {
             discard();
             bail!("FFmpeg filter failed while zone encoding: {err}");
         }

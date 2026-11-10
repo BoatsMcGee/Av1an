@@ -10,14 +10,17 @@
 //! Memory stays O(window) per worker plus FFmpeg's own buffers.
 
 use std::{
-    io::{Cursor, Read, Write},
+    io::{self, Cursor, Read, Write},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
 };
 
-use anyhow::{Result, bail};
-use crossbeam_channel::{Receiver, Sender};
+use anyhow::{Context, Result, bail};
+use crossbeam_channel::Receiver;
 
 /// Tail of FFmpeg's stderr retained for failure messages.
 const STDERR_TAIL_LIMIT: usize = 8 * 1024;
@@ -27,9 +30,20 @@ const STDOUT_READ_SIZE: usize = 64 * 1024;
 
 /// Handle to a running FFmpeg filter subprocess bridging a frame producer to
 /// a frame consumer.
+///
+/// Keep this handle with the consumer and call [`Self::check`] when it exits,
+/// not after joining a potentially blocked producer. Dropping it also stops
+/// and joins the stage. Only the owned FFmpeg child is stopped, not descendants.
 pub struct FfmpegFilter {
-    receiver: Receiver<Cursor<Vec<u8>>>,
+    receiver: Option<Receiver<Cursor<Vec<u8>>>>,
     failure: Arc<Mutex<Option<String>>>,
+    child: Child,
+    stop: Option<crossbeam_channel::Sender<()>>,
+    input_thread: Option<JoinHandle<io::Result<()>>>,
+    output_thread: Option<JoinHandle<io::Result<()>>>,
+    stderr_thread: Option<JoinHandle<Result<Vec<u8>>>>,
+    output_eof: Arc<AtomicBool>,
+    completed: bool,
 }
 
 impl FfmpegFilter {
@@ -74,48 +88,82 @@ impl FfmpegFilter {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let stdin = child.stdin.take().expect("FFmpeg should have STDIN");
-        let stdout = child.stdout.take().expect("FFmpeg should have STDOUT");
+        let mut stdin = child.stdin.take().expect("FFmpeg should have STDIN");
+        let mut stdout = child.stdout.take().expect("FFmpeg should have STDOUT");
         let stderr = child.stderr.take().expect("FFmpeg should have STDERR");
 
         let (output_tx, output_rx) = crossbeam_channel::bounded::<Cursor<Vec<u8>>>(output_bound);
 
-        // Dropping `stdin` at the end of this thread gives FFmpeg its end of
-        // stream.
-        thread::spawn(move || {
-            let mut stdin = stdin;
-            for chunk in input {
-                if stdin.write_all(chunk.get_ref()).is_err() {
-                    break;
+        // Disconnect wakes both relays even before the first input/output.
+        // Killing the owned child also releases blocked pipe I/O.
+        let (stop_tx, stop_rx) = crossbeam_channel::bounded::<()>(0);
+        let input_stop = stop_rx.clone();
+        let input_thread = thread::spawn(move || {
+            loop {
+                crossbeam_channel::select_biased! {
+                    recv(input_stop) -> _ => return Ok(()),
+                    recv(input) -> chunk => match chunk {
+                        Ok(chunk) => stdin.write_all(chunk.get_ref())?,
+                        Err(_) => return Ok(()),
+                    },
                 }
             }
         });
 
         // FFmpeg can block on a full stderr pipe, so drain it concurrently.
         let stderr_thread = spawn_stderr_drain(stderr);
-        let relay_failure = Arc::clone(&failure);
-        thread::spawn(move || {
-            relay_stdout(child, stdout, &output_tx, stderr_thread, &relay_failure);
+        let output_eof = Arc::new(AtomicBool::new(false));
+        let relay_eof = Arc::clone(&output_eof);
+        let output_thread = thread::spawn(move || {
+            let mut buffer = vec![0_u8; STDOUT_READ_SIZE];
+            loop {
+                match stdout.read(&mut buffer) {
+                    Ok(0) => {
+                        // Publish before dropping the sender: consumer EOF
+                        // distinguishes natural completion from early abort.
+                        relay_eof.store(true, Ordering::Release);
+                        return Ok(());
+                    },
+                    Ok(read) => crossbeam_channel::select_biased! {
+                        recv(stop_rx) -> _ => return Ok(()),
+                        send(output_tx, Cursor::new(buffer[..read].to_vec())) -> sent => {
+                            if sent.is_err() { return Ok(()); }
+                        },
+                    },
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted => {},
+                    Err(err) => return Err(err),
+                }
+            }
         });
 
         Ok(Self {
-            receiver: output_rx,
+            receiver: Some(output_rx),
             failure,
+            child,
+            stop: Some(stop_tx),
+            input_thread: Some(input_thread),
+            output_thread: Some(output_thread),
+            stderr_thread: Some(stderr_thread),
+            output_eof,
+            completed: false,
         })
     }
 
-    /// The filtered Y4M stream. The first chunk carries FFmpeg's regenerated
-    /// Y4M header.
+    /// Transfers the sole output receiver to the consumer, once. The first
+    /// chunk carries FFmpeg's regenerated Y4M header. A second take is an error.
     #[inline]
-    pub fn receiver(&self) -> Receiver<Cursor<Vec<u8>>> {
-        self.receiver.clone()
+    pub fn take_receiver(&mut self) -> Result<Receiver<Cursor<Vec<u8>>>> {
+        self.receiver.take().context("FFmpeg filter output receiver was already taken")
     }
 
-    /// Whether FFmpeg failed. Reports `Err` with FFmpeg's exit status and
-    /// stderr tail once the subprocess has exited; always safe to call after
-    /// the consumer observed end of stream.
+    /// Finishes after the consumer exits, stopping remaining input and joining
+    /// every relay. Early consumer exit intentionally aborts FFmpeg; natural
+    /// failure retains its status and bounded stderr tail.
     #[inline]
-    pub fn check(&self) -> Result<()> {
+    pub fn check(&mut self) -> Result<()> {
+        if !self.completed {
+            self.finish();
+        }
         if let Some(message) = self.is_failed() {
             bail!(message);
         }
@@ -125,86 +173,99 @@ impl FfmpegFilter {
     /// The failure message, if FFmpeg has failed.
     #[inline]
     pub fn is_failed(&self) -> Option<String> {
-        self.failure
-            .lock()
-            .expect("ffmpeg filter failure mutex should acquire lock")
-            .clone()
+        self.failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    fn finish(&mut self) {
+        self.receiver.take();
+        self.stop.take();
+        let mut errors = Vec::new();
+        // A disconnected consumer may already have caused FFmpeg's SIGPIPE
+        // before cleanup runs. Exit status alone cannot identify a real failure.
+        let aborted = !self.output_eof.load(Ordering::Acquire);
+        match self.child.try_wait() {
+            Ok(Some(_)) => {},
+            status => {
+                if let Err(err) = status {
+                    errors.push(format!("checking FFmpeg status failed: {err}"));
+                }
+                if aborted && let Err(err) = self.child.kill() {
+                    errors.push(format!("stopping FFmpeg failed: {err}"));
+                }
+            },
+        }
+        // This stage alone owns/reaps Child. No mutex or completion worker can
+        // prevent stop/kill or race take/drop against a blocking wait.
+        match self.child.wait() {
+            Ok(status) if !status.success() && !aborted => {
+                errors.insert(0, format!("FFmpeg exited with {status}"));
+            },
+            Ok(_) => {},
+            Err(err) => errors.push(format!("waiting on FFmpeg failed: {err}")),
+        }
+        if let Some(worker) = self.input_thread.take() {
+            match worker.join() {
+                Ok(Ok(())) => {},
+                Ok(Err(err)) if aborted && err.kind() == io::ErrorKind::BrokenPipe => {},
+                Ok(Err(err)) => errors.push(format!("writing FFmpeg input failed: {err}")),
+                Err(_) => errors.push("FFmpeg input forwarder panicked".to_owned()),
+            }
+        }
+        if let Some(worker) = self.output_thread.take() {
+            match worker.join() {
+                Ok(Ok(())) => {},
+                Ok(Err(err)) => errors.push(format!("reading FFmpeg output failed: {err}")),
+                Err(_) => errors.push("FFmpeg output relay panicked".to_owned()),
+            }
+        }
+        let tail = match self.stderr_thread.take().map(JoinHandle::join) {
+            Some(Ok(Ok(tail))) => tail,
+            Some(Ok(Err(err))) => {
+                errors.push(format!("reading FFmpeg stderr failed: {err:#}"));
+                Vec::new()
+            },
+            Some(Err(_)) => {
+                errors.push("FFmpeg stderr drain panicked".to_owned());
+                Vec::new()
+            },
+            None => Vec::new(),
+        };
+        if !errors.is_empty() {
+            record_failure(
+                &self.failure,
+                format!("{}{}", errors.join("; "), format_stderr(&tail)),
+            );
+        }
+        self.completed = true;
     }
 }
 
-/// Drains FFmpeg's stdout into `output_tx`, then reaps FFmpeg.
-///
-/// The failure record is written before the sender drops, so a consumer that
-/// observed end of stream is guaranteed to see any failure via
-/// [`FfmpegFilter::check`]. If the consumer disappears first, FFmpeg is killed
-/// instead of reported.
-fn relay_stdout(
-    mut child: Child,
-    mut stdout: impl Read,
-    output_tx: &Sender<Cursor<Vec<u8>>>,
-    stderr_thread: JoinHandle<Vec<u8>>,
-    failure: &Arc<Mutex<Option<String>>>,
-) {
-    let mut buffer = vec![0_u8; STDOUT_READ_SIZE];
-    loop {
-        match stdout.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => {
-                if output_tx.send(Cursor::new(buffer[..read].to_vec())).is_err() {
-                    // The consumer is gone; stop FFmpeg rather than report a
-                    // failure it never had a chance to surface.
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = stderr_thread.join();
-                    return;
-                }
-            },
-            Err(err) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let tail = stderr_thread.join().unwrap_or_default();
-                record_failure(
-                    failure,
-                    format!(
-                        "reading FFmpeg output failed: {err}{}",
-                        format_stderr(&tail)
-                    ),
-                );
-                return;
-            },
+impl Drop for FfmpegFilter {
+    #[inline]
+    fn drop(&mut self) {
+        if !self.completed
+            && let Err(err) = self.check()
+        {
+            tracing::warn!(%err, "FFmpeg filter cleanup failed");
         }
-    }
-
-    let status = match child.wait() {
-        Ok(status) => status,
-        Err(err) => {
-            let tail = stderr_thread.join().unwrap_or_default();
-            record_failure(
-                failure,
-                format!("waiting on FFmpeg failed: {err}{}", format_stderr(&tail)),
-            );
-            return;
-        },
-    };
-    let tail = stderr_thread.join().unwrap_or_default();
-    if !status.success() {
-        record_failure(
-            failure,
-            format!("FFmpeg exited with {status}{}", format_stderr(&tail)),
-        );
     }
 }
 
 /// Drains stderr into a bounded tail, keeping only the last
 /// [`STDERR_TAIL_LIMIT`] bytes so a noisy filter cannot grow memory without
 /// bound.
-fn spawn_stderr_drain(mut stderr: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
+fn spawn_stderr_drain(mut stderr: impl Read + Send + 'static) -> JoinHandle<Result<Vec<u8>>> {
     thread::spawn(move || {
         let mut tail: Vec<u8> = Vec::new();
         let mut buffer = [0_u8; 1024];
         loop {
             match stderr.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {},
+                Err(err) => {
+                    return Err(err)
+                        .with_context(|| format!("FFmpeg stderr tail{}", format_stderr(&tail)));
+                },
                 Ok(read) => {
                     tail.extend_from_slice(&buffer[..read]);
                     if tail.len() > STDERR_TAIL_LIMIT {
@@ -214,13 +275,13 @@ fn spawn_stderr_drain(mut stderr: impl Read + Send + 'static) -> JoinHandle<Vec<
                 },
             }
         }
-        tail
+        Ok(tail)
     })
 }
 
 /// Records `message` as the stage's failure, overwriting any earlier one.
 fn record_failure(failure: &Arc<Mutex<Option<String>>>, message: String) {
-    *failure.lock().expect("ffmpeg filter failure mutex should acquire lock") = Some(message);
+    *failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(message);
 }
 
 /// Formats a stderr tail for appending to a failure message. Returns an empty
@@ -234,6 +295,10 @@ fn format_stderr(tail: &[u8]) -> String {
         format!(":\n{tail}")
     }
 }
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e10_tests;
 
 #[cfg(test)]
 mod tests {
@@ -259,9 +324,9 @@ mod tests {
     fn run_filter(graph: &str, stream: Vec<u8>) -> (Vec<u8>, Result<()>) {
         let (input_tx, input_rx) = crossbeam_channel::bounded(2);
         let failure = Arc::new(Mutex::new(None));
-        let stage =
+        let mut stage =
             FfmpegFilter::spawn(input_rx, 2, graph, failure).expect("FfmpegFilter should spawn");
-        let output_rx = stage.receiver();
+        let output_rx = stage.take_receiver().expect("sole receiver");
 
         let producer = thread::spawn(move || {
             // Feed one chunk per frame to mirror window-streamed producers.

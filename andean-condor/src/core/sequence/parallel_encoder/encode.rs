@@ -48,8 +48,8 @@ pub(super) fn spawn_filter(
                 .and_then(|cells| cells.get(&task.original_index))
                 .cloned()
                 .unwrap_or_else(|| Arc::new(Mutex::new(None)));
-            let stage = FfmpegFilter::spawn(frames_rx, window, graph, failure)?;
-            Ok((stage.receiver(), Some(stage)))
+            let mut stage = FfmpegFilter::spawn(frames_rx, window, graph, failure)?;
+            Ok((stage.take_receiver()?, Some(stage)))
         },
         None => Ok((frames_rx, None)),
     }
@@ -250,21 +250,25 @@ impl ParallelEncoder {
                         task.original_index,
                         temp_output.display()
                     );
-                    let (frames_rx, filter_stage) =
+                    let (frames_rx, mut filter_stage) =
                         spawn_filter(frames_rx, &task, Some(filter_failures), STREAM_WINDOW)?;
                     // Retain failed statuses for scene cleanup and permit release, not other errors.
-                    let result = task
-                        .encoder
-                        .encode_with_stream(frames_rx, &temp_output, encode_progress_tx, &clip_info)
-                        .or_else(anyhow::Error::downcast::<EncoderResult>)?;
+                    let result = task.encoder.encode_with_stream(
+                        frames_rx,
+                        &temp_output,
+                        encode_progress_tx,
+                        &clip_info,
+                    );
+                    // Finalize helpers before inspecting the shared failure cell.
+                    let filter_failed =
+                        filter_stage.as_mut().is_some_and(|stage| stage.check().is_err());
+                    let result = result.or_else(anyhow::Error::downcast::<EncoderResult>)?;
                     let ended = std::time::SystemTime::now();
                     let framerate =
                         *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
                     let scene_seconds = task.frame_indices.len() as f64 * framerate;
                     let bytes = temp_output.metadata().ok().map_or(0, |meta| meta.len());
                     let bitrate = (bytes * 8) as f64 / scene_seconds;
-                    let filter_failed =
-                        filter_stage.as_ref().is_some_and(|stage| stage.is_failed().is_some());
                     finalize_scene(
                         SceneOutcome {
                             temp_output,
