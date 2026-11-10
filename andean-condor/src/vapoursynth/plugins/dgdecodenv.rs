@@ -68,7 +68,7 @@ fn validate_index(path: &Path) -> Result<()> {
     } else {
         &tail
     };
-    let mut order = false;
+    let (mut coded, mut order) = (false, false);
     for line in tail.rsplit(|&byte| byte == b'\n').take(10) {
         let mut fields = line.split(u8::is_ascii_whitespace).filter(|field| !field.is_empty());
         let key = fields.next();
@@ -78,12 +78,13 @@ fn validate_index(path: &Path) -> Result<()> {
         }
         match (key, value) {
             (Some(b"ORDER"), Some(value)) => order = value.parse::<i64>().is_ok(),
-            (Some(b"CODED"), Some(value))
-                if order && value.parse::<u64>().is_ok_and(|frames| frames > 0) =>
-            {
-                return Ok(());
+            (Some(b"CODED"), Some(value)) => {
+                coded = value.parse::<u64>().is_ok_and(|frames| frames > 0);
             },
             _ => {},
+        }
+        if coded && order {
+            return Ok(());
         }
     }
     bail!("missing complete CODED/ORDER footer")
@@ -92,7 +93,7 @@ fn validate_index(path: &Path) -> Result<()> {
 fn existing_index(path: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => {
-            validate_index(path).with_context(|| format!("Invalid existing DGIndexNV index {}; preserved unchanged. Inspect and remove it explicitly, or choose a new cache path", path.display()))?;
+            validate_index(path).with_context(|| format!("Invalid existing DGIndexNV index {}; preserved unchanged. Check the chosen input/index path and select a valid project or input", path.display()))?;
             Ok(true)
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -109,12 +110,12 @@ fn existing_index(path: &Path) -> Result<bool> {
 /// Index generation uses a private directory beside the destination. Successful
 /// exit and structural validation precede atomic, no-clobber publication; errors
 /// or force before commit leave no new reusable index. Committed indices survive
-/// later force. Existing invalid files are preserved:
-/// inspect/remove them explicitly, or choose another cache path. Existing `.dgi`
-/// inputs are validated directly, regardless of the cache alias.
+/// later force. Existing invalid files are preserved: check the chosen input/index
+/// path and select a valid project or input. Existing `.dgi` inputs are validated
+/// directly, regardless of the cache alias.
 ///
 /// Validation checks a regular/nonempty file, `DGIndexNV` in its first line and
-/// numeric `CODED` (positive) / `ORDER` footer records in its final ten lines.
+/// numeric `CODED` (positive) / `ORDER` footer records in either order in its final ten lines.
 /// It does not verify frame tables, media freshness, or every proprietary version.
 /// Filenames need not be UTF-8; only bounded header/footer windows are read.
 ///
@@ -388,8 +389,8 @@ impl DGSource {
     /// Attempt to index a video file using `dgindexnv` or the provided
     /// executable and save the resulting cache file to the provided path or
     /// next to the source file. Reuses only structurally valid existing indices;
-    /// invalid existing data is preserved and must be removed explicitly or a new
-    /// path chosen. An input already ending in `.dgi` is validated directly.
+    /// invalid existing data is preserved; check the chosen input/index path and
+    /// select a valid project or input. An input ending in `.dgi` is validated directly.
     /// Generates privately and publishes without clobbering only after successful
     /// exit, validation and a force-linearized commit. This is not a full DGI parser.
     ///
