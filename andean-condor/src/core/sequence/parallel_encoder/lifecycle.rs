@@ -14,7 +14,6 @@ use anyhow::{Result, anyhow};
 pub(super) struct Stop {
     pub(super) stopped: AtomicBool,
     pub(super) workers: Arc<Semaphore>,
-    pub(super) decoders: Arc<Semaphore>,
     sender: Mutex<Option<crossbeam_channel::Sender<()>>>,
     pub(super) receiver: crossbeam_channel::Receiver<()>,
 }
@@ -25,7 +24,6 @@ impl Stop {
         Self {
             stopped: AtomicBool::new(false),
             workers: Arc::new(Semaphore::new(workers)),
-            decoders: Arc::new(Semaphore::new(workers + 1)),
             sender: Mutex::new(Some(sender)),
             receiver,
         }
@@ -34,8 +32,7 @@ impl Stop {
     pub(super) fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.workers.close();
-        self.decoders.close();
-        // Disconnect broadcasts to all per-scene readiness selectors.
+        // Disconnect broadcasts to every idle worker and job handoff selector.
         self.sender.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         #[cfg(all(test, target_os = "linux"))]
         super::e11_tests::stopped();

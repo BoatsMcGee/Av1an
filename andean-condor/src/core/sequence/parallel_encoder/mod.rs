@@ -27,6 +27,10 @@ mod task;
 #[cfg(target_os = "linux")]
 mod e11_tests;
 
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e28_tests;
+
 pub use error::ParallelEncoderError;
 pub use task::{ParallelEncoderResult, Task};
 

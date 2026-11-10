@@ -20,13 +20,6 @@ pub(super) fn fault(point: &str, scene: usize) -> anyhow::Result<()> {
         return Ok(());
     };
     let root = std::path::PathBuf::from(std::env::var_os("E08_ROOT").expect("fixture root"));
-    if case.starts_with("vs-persist-active") && point == "header" && scene == 2 {
-        // Execute uses scene IDs 0/1: both jobs must be active before lookahead
-        // can compete for a worker, independent of semaphore wakeup order.
-        while !root.join("started-8").exists() {
-            std::thread::yield_now();
-        }
-    }
     if case.starts_with("vs-")
         && point == "header"
         && scene == 8
@@ -42,13 +35,6 @@ pub(super) fn fault(point: &str, scene: usize) -> anyhow::Result<()> {
     {
         // Make scene 7 the failing owner, rather than assuming FIFO wakeups.
         while !root.join("started-7").exists() && !root.join("stop-observed").exists() {
-            std::thread::yield_now();
-        }
-    }
-    if case == "vs-save-active" && point == "header" && scene == 9 {
-        // Fill both active slots before publishing lookahead. Semaphore
-        // fairness is not part of the contract, so do not rely on thread order.
-        while !root.join("started-8").exists() {
             std::thread::yield_now();
         }
     }
@@ -76,11 +62,11 @@ pub(super) fn stopped() {
     }
 }
 
-pub(super) fn joined_error() {
+pub(super) fn collected_error() {
     if std::env::var("E08_CASE").is_ok_and(|case| case.starts_with("vs-persist-active")) {
         let root = std::env::var_os("E08_ROOT").expect("fixture root");
         fs::write(
-            Path::new(&root).join("joined-error"),
+            Path::new(&root).join("collected-error"),
             "original failure collected",
         )
         .expect("join handshake");
@@ -88,16 +74,14 @@ pub(super) fn joined_error() {
 }
 
 pub(super) fn verify_pools(stop: &lifecycle::Stop, workers: usize) {
-    for (pool, expected) in [(&stop.workers, workers), (&stop.decoders, workers + 1)] {
-        let mut returned = 0;
-        while pool.try_acquire().is_some() {
-            returned += 1;
-        }
-        assert_eq!(
-            returned, expected,
-            "every transferred permit returned exactly once after joins"
-        );
+    let mut returned = 0;
+    while stop.workers.try_acquire().is_some() {
+        returned += 1;
     }
+    assert_eq!(
+        returned, workers,
+        "every transferred permit returned exactly once after joins"
+    );
 }
 
 const FAKE: &str = r#"#!/bin/sh
@@ -119,7 +103,7 @@ case "$E08_CASE" in
             while [ ! -f "$root/started-8" ]; do :; done
         elif [ "$scene" = 8 ]; then
             while [ ! -f "$root/stop-observed" ]; do :; done
-            while [ ! -f "$root/joined-error" ]; do :; done
+            while [ ! -f "$root/collected-error" ]; do :; done
         fi ;;
 esac
 if [ "$E08_CASE" = native-early ] || [ "$E08_CASE" = vs-early ]; then
@@ -240,7 +224,7 @@ fn run_child(root: &Path, case: &str, failures: &mut Vec<String>) {
     eprint!("{log}");
 }
 
-fn input(root: &Path, native: bool) -> Input {
+pub(super) fn input(root: &Path, native: bool) -> Input {
     if native {
         let path = root.join("finite.y4m");
         let mut bytes = b"YUV4MPEG2 W64 H64 F24:1 Ip A1:1 C420jpeg\n".to_vec();
@@ -423,6 +407,10 @@ fn persist_success_after_worker_failure(root: &Path, input: Input, fail_save: bo
     assert!(
         !root.join("started-9").exists() && !root.join("started-10").exists(),
         "no queued encoder starts after failure"
+    );
+    assert!(
+        !root.join("decoded-2").exists(),
+        "queued decode never admitted after failure"
     );
     assert_eq!(
         fs::read(scenes_dir.join("00001.264")).expect("successful active output"),
@@ -704,8 +692,8 @@ fn e11_runtime_child() {
             );
             if path == "vs" {
                 assert!(
-                    !root.join("decoded-11").exists(),
-                    "workers+1 lookahead plus the completed job; stop prevents further decode"
+                    !root.join("decoded-9").exists(),
+                    "callback failure stops admission before any queued decode"
                 );
             }
         } else if !matches!(kind, "save" | "save-panic") {
@@ -716,8 +704,8 @@ fn e11_runtime_child() {
         }
         if path == "vs" && !matches!(kind, "save" | "save-panic" | "save-active" | "zero") {
             assert!(
-                !root.join("decoded-9").exists(),
-                "lookahead bounded to workers+1; no queued decode after failure"
+                !root.join("decoded-8").exists(),
+                "workers=1: queued decode never admitted after failure"
             );
         }
         if !matches!(kind, "save" | "save-panic" | "save-active" | "results") {

@@ -95,6 +95,17 @@ impl Semaphore {
     pub fn close(&self) {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).closed = true;
         self.condvar.notify_all();
+        #[cfg(test)]
+        self.waiting.notify_all();
+    }
+
+    /// Test handshake: observe a real blocked owned acquirer, not elapsed time.
+    #[cfg(test)]
+    pub(crate) fn wait_for_waiter(&self) -> bool {
+        let state = self.state.lock().expect("pool state");
+        let state =
+            self.waiting.wait_while(state, |s| s.waiters == 0 && !s.closed).expect("waiter");
+        state.waiters > 0
     }
 }
 

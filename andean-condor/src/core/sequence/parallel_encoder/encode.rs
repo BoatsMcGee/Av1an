@@ -106,6 +106,10 @@ pub(super) fn consume_frames(
     stop: &Stop,
     window: usize,
 ) -> Result<EncoderResult> {
+    #[cfg(all(test, target_os = "linux"))]
+    if let Some(result) = super::e28_tests::consume(task, &frames, temp, stop) {
+        return result;
+    }
     let (frames, mut filter) = spawn_filter(frames, task, None, window)?;
     thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel::<EncodeProgress>();
@@ -233,8 +237,7 @@ impl ParallelEncoder {
         cancelled: Arc<AtomicBool>,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
-        // Streaming inputs take the bounded-memory path; the rest decode one
-        // scene ahead of the workers.
+        // Nonstream VS decoding stays on this thread; both paths bound workers.
         if input.streams_concurrently() {
             return Self::encode_tasks_streaming(
                 input,
@@ -253,71 +256,117 @@ impl ParallelEncoder {
         let stop = Stop::new(workers.into());
         let total_final = AtomicUsize::new(0);
         let total_frames = tasks.iter().map(|task| task.frame_indices.len()).sum();
+        let total_tasks = tasks.len();
         let results = stop.catch_panic("Parallel scheduling", || thread::scope(|scope| {
             // Also covers a thread-spawn panic before the scheduling loop:
             // close admission before std::thread::scope implicitly joins.
             let mut scheduling = stop.guard();
-            let mut pending = Vec::new();
+            // Rendezvous hands an admitted scene directly to an idle worker.
+            // Only admitted scenes own frame channels; queued tasks remain metadata.
+            let (jobs_tx, jobs_rx) = crossbeam_channel::bounded::<(
+                &Task, Receiver<Cursor<Vec<u8>>>, crate::utils::semaphore::Permit, Arc<AtomicBool>
+            )>(0);
             let mut handles = Vec::new();
-            // ponytail: retain one thread per scene; E28 bounds thread creation.
             let setup = stop.catch("Parallel worker setup", || {
-            for task in &tasks {
-                #[cfg(all(test, target_os = "linux"))]
-                if task.index == 1 { super::e11_tests::fault("schedule", 7)?; }
-                let (frames_tx, frames_rx) = crossbeam_channel::unbounded();
-                let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
-                pending.push((task, frames_tx, ready_tx));
+            for worker in 0..usize::from(workers).min(total_tasks) {
                 let (stop, total_final, clip_info, cancelled) =
                     (&stop, &total_final, &clip_info, &cancelled);
+                let jobs_rx = jobs_rx.clone();
                 let progress_tx = progress_tx.clone();
                 let results_tx = stream.results_tx.clone();
                 let finished = Arc::clone(&stream.finished_scenes);
-                handles.push(scope.spawn(move || stop.catch(&format!("Scene {} worker", task.original_index), || {
-                    let mut startup = stop.guard();
+                handles.push(scope.spawn(move || stop.catch_panic(&format!("Parallel worker {worker}"), || {
                     #[cfg(all(test, target_os = "linux"))]
-                    super::e11_tests::fault("gate", task.original_index)?;
-                    startup.success();
-                    let _decoder = crossbeam_channel::select! {
-                        recv(stop.receiver) -> _ => return Ok(None),
-                        recv(ready_rx) -> permit => match permit { Ok(permit) => permit, Err(_) => return Ok(None) },
-                    };
-                    let Some(_worker) = stop.workers.acquire_owned() else { return Ok(None) };
-                    let mut guard = stop.guard();
-                    if stop.stopped(cancelled) { guard.success(); return Ok(None); }
-                    debug!("Encoding Scene {}", task.original_index);
-                    let started = std::time::SystemTime::now();
-                    let temp = TempOutput::new(task.output.with_extension(format!("temp.{}", task.encoder.output_extension())));
-                    let result = consume_frames(task, frames_rx, &temp.path, clip_info, &progress_tx,
-                        total_frames, total_final, stop, STREAM_WINDOW)?;
-                    let ended = std::time::SystemTime::now();
-                    let bytes = temp.path.metadata()?.len();
-                    let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
-                    // Preserve the existing nonstream bitrate calculation (unrelated to E11).
-                    let bitrate = (bytes * 8) as f64 / (task.frame_indices.len() as f64 * framerate);
-                    finalize_scene(SceneOutcome { temp_output: temp.path.clone(), bytes, usable: true },
-                        &task.output, task.original_index, &progress_tx, &stop.stopped)?;
-                    let result = report_result(&results_tx, &finished, ParallelEncoderResult {
-                        scene: task.original_index, started, ended, bytes, bitrate, result,
-                    })?;
-                    guard.success();
-                    Ok(Some(result))
+                    let _worker_count = super::e28_tests::worker_started();
+                    let mut done = Vec::new();
+                    loop {
+                        let (task, frames_rx, _permit, decoded) = crossbeam_channel::select! {
+                            recv(stop.receiver) -> _ => break,
+                            recv(jobs_rx) -> job => match job { Ok(job) => job, Err(_) => break },
+                        };
+                        if stop.stopped(cancelled) { break; }
+                        let result = stop.catch(&format!("Scene {} worker", task.original_index), || {
+                            let mut guard = stop.guard();
+                            #[cfg(all(test, target_os = "linux"))]
+                            super::e11_tests::fault("gate", task.original_index)?;
+                            debug!("Encoding Scene {}", task.original_index);
+                            let started = std::time::SystemTime::now();
+                            let temp = TempOutput::new(task.output.with_extension(format!("temp.{}", task.encoder.output_extension())));
+                            let result = consume_frames(task, frames_rx, &temp.path, clip_info, &progress_tx,
+                                total_frames, total_final, stop, STREAM_WINDOW)?;
+                            // EOF alone is not success: a failed producer can leave
+                            // a codec happily encoding a truncated scene. This is
+                            // scene-local so successful active peers still persist.
+                            if !decoded.load(Ordering::Acquire) {
+                                guard.success();
+                                return Ok(None);
+                            }
+                            let ended = std::time::SystemTime::now();
+                            let bytes = temp.path.metadata()?.len();
+                            let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
+                            // Preserve the existing nonstream bitrate calculation (unrelated to E28).
+                            let bitrate = (bytes * 8) as f64 / (task.frame_indices.len() as f64 * framerate);
+                            finalize_scene(SceneOutcome { temp_output: temp.path.clone(), bytes, usable: true },
+                                &task.output, task.original_index, &progress_tx, &stop.stopped)?;
+                            let result = report_result(&results_tx, &finished, ParallelEncoderResult {
+                                scene: task.original_index, started, ended, bytes, bitrate, result,
+                            })?;
+                            guard.success();
+                            Ok(Some(result))
+                        });
+                        #[cfg(all(test, target_os = "linux"))]
+                        if result.is_err() { super::e11_tests::collected_error(); }
+                        if let Some(result) = result? { done.push((task.index, result)); }
+                    }
+                    Ok(done)
                 })));
             }
+            #[cfg(all(test, target_os = "linux"))]
+            if tasks.len() > 1 { super::e11_tests::fault("schedule", 7)?; }
             Ok(())
             });
+            // Callback errors stop admission immediately, but remain secondary
+            // to a worker's original typed failure collected at join below.
+            let mut persistence_error = None;
+            let mut persist = || {
+                match stop.catch("Scene persistence", || drain_finished_results(stream)) {
+                    Ok(()) => true,
+                    Err(err) => {
+                        retain_error(&mut persistence_error, err);
+                        false
+                    },
+                }
+            };
             let scheduled = stop.catch("Scene decoding/persistence", || {
-                // The iterator owns all pending senders: early exit closes
-                // every unstarted frame/readiness channel before joins.
-                for (task, frames_tx, ready_tx) in pending {
-                    let Some(permit) = stop.decoders.acquire_owned() else {
+                for task in &tasks {
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e28_tests::before_admission(&stop, task);
+                    // Reserve a real worker before creating/decoding its input.
+                    // The worker owns this permit through completion, never reacquires it.
+                    let Some(permit) = stop.workers.acquire_owned() else {
                         break;
                     };
                     if stop.stopped(&cancelled) {
                         break;
                     }
                     let mut guard = stop.guard();
+                    if !persist() { guard.success(); break; }
+                    let (frames_tx, frames_rx) = crossbeam_channel::unbounded();
+                    let decoded = Arc::new(AtomicBool::new(false));
+                    crossbeam_channel::select! {
+                        recv(stop.receiver) -> _ => { guard.success(); break; },
+                        send(jobs_tx, (task, frames_rx, permit, Arc::clone(&decoded))) -> sent => {
+                            if sent.is_err() {
+                                if stop.stopped(&cancelled) { guard.success(); break; }
+                                anyhow::bail!("Scene {} worker handoff disconnected", task.original_index);
+                            }
+                        },
+                    }
+                    if stop.stopped(&cancelled) { guard.success(); break; }
                     #[cfg(all(test, target_os = "linux"))]
                     super::e11_tests::fault("header", task.original_index)?;
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e28_tests::header(task);
                     let header = input.y4m_header(Some(task.frame_indices.len()))?;
                     if let Err(err) = frames_tx.send(Cursor::new(header.into_bytes())) {
                         if stop.stopped(&cancelled) {
@@ -328,7 +377,7 @@ impl ParallelEncoder {
                     }
                     #[cfg(all(test, target_os = "linux"))]
                     super::e11_tests::fault("decode", task.original_index)?;
-                    if let Err(err) = input.y4m_frames(frames_tx, &task.frame_indices) {
+                    if let Err(err) = input.y4m_frames(frames_tx.clone(), &task.frame_indices) {
                         if stop.stopped(&cancelled) {
                             tracing::error!(
                                 "Frame production stopped after worker failure: {err:#}"
@@ -340,45 +389,49 @@ impl ParallelEncoder {
                             err.context(format!("Scene {} frame production", task.original_index))
                         );
                     }
-                    // Ownership transfers to this scene, not the next main-loop
-                    // iteration: decoded lookahead lives until its encoder exits.
-                    if !stop.stopped(&cancelled)
-                        && ready_tx.send(permit).is_err()
-                        && !stop.stopped(&cancelled)
-                    {
-                        anyhow::bail!(
-                            "Scene {} readiness receiver disconnected",
-                            task.original_index
-                        );
-                    }
-                    drain_finished_results(stream)?;
+                    // Publish full production before EOF can reach the consumer.
+                    decoded.store(true, Ordering::Release);
+                    drop(frames_tx);
+                    if !persist() { guard.success(); break; }
                     guard.success();
                 }
-                drain_finished_results(stream)
+                Ok(())
             });
+            // EOF and admission closure precede every join, including decode or
+            // callback failure. No pool-owned sender can keep a consumer alive.
+            drop(jobs_tx);
+            #[cfg(all(test, target_os = "linux"))]
+            super::e28_tests::before_joins();
+            // The final batch can finish after decoding ends. Observe callback
+            // failures before blocking on any still-active peer (as streaming does).
+            while !stop.stopped(&cancelled)
+                && handles.iter().any(|handle| !handle.is_finished())
+            {
+                if !persist() { break; }
+                thread::park_timeout(std::time::Duration::from_millis(10));
+            }
             if stop.stopped(&cancelled) {
                 stop.stop();
             }
             let mut error = setup.err();
             if let Err(err) = scheduled { retain_error(&mut error, err); }
-            let mut results = Vec::with_capacity(handles.len());
+            let mut results = vec![None; total_tasks];
             for handle in handles {
                 match handle.join() {
-                    Ok(Ok(result)) => results.push(result),
+                    Ok(Ok(done)) => {
+                        for (index, result) in done { results[index] = Some(result); }
+                    },
                     Ok(Err(err)) => {
                         stop.stop();
                         retain_error(&mut error, err);
-                        #[cfg(all(test, target_os = "linux"))]
-                        super::e11_tests::joined_error();
-                        results.push(None);
                     },
                     Err(_) => {
                         stop.stop();
                         retain_error(&mut error, anyhow::anyhow!("encoder worker panicked"));
-                        results.push(None);
                     },
                 }
             }
+            if let Some(err) = persistence_error { retain_error(&mut error, err); }
             // Successful active jobs may report after a peer stops scheduling.
             // Persist those results without replacing the original failure.
             if let Err(err) = stop.catch("Scene persistence", || drain_finished_results(stream)) {
