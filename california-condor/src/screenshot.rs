@@ -633,6 +633,73 @@ fn backdate_for_frames(started: &mut Instant, frames: u64, fps: f64) {
     backdate(started, seconds.max(1));
 }
 
+/// A validated resume snapshot; the ~90 FPS calibration is illustrative.
+fn parallel_encoder_fixture(ci: ClipInfo) -> ParallelEncoderApp {
+    let scenes = mock_scenes();
+    let est_bitrate = 3_500_000.0;
+    // Only finished scenes have usable bytes; active scenes have frame progress.
+    let mk_map = |complete_to: usize, active: std::ops::Range<usize>| {
+        scenes
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let len = (s.end_frame - s.start_frame) as u64;
+                let completed = if i < complete_to {
+                    len
+                } else if active.contains(&i) {
+                    len / 2
+                } else {
+                    0
+                };
+                let mut scene = s.clone();
+                scene.sequence_data.parallel_encoder.bytes = (i < complete_to)
+                    .then_some((est_bitrate / 8.0 * (len as f64 / CLIP_FPS)) as u64);
+                (i as u64, (completed, scene))
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let initial_map = mk_map(4, 0..0); // resume point: 4 scenes already done
+    // The later snapshot models completed resume validation. App::new
+    // intentionally clears historical eligibility, so carry this baseline explicitly.
+    let initial_frames: u64 = initial_map.values().map(|(frames, _)| frames).sum();
+    let snapshot_map = mk_map(20, 20..24); // 20 done + 4 active at ~50%
+    let mut app = ParallelEncoderApp::new(4, encoder(), initial_map, ci);
+    let active = snapshot_map
+        .iter()
+        .filter(|(i, _)| (20u64..24).contains(i))
+        .map(|(idx, (processed, s))| {
+            let mut se = SceneEncoder {
+                scene: s.clone(),
+                started: Instant::now(),
+                current_pass: 1,
+                total_passes: 2,
+                frames_processed: *processed,
+                total_frames: (s.end_frame - s.start_frame) as u64,
+            };
+            // Each worker ~24 FPS on its own scene.
+            backdate_for_frames(&mut se.started, *processed, 24.0);
+            (*idx, se)
+        })
+        .collect();
+    let snapshot_completed: u64 = snapshot_map.iter().map(|(_, (c, _))| c).sum();
+    let delta = snapshot_completed.saturating_sub(initial_frames);
+    let (est_bitrate, est_bytes) = ParallelEncoderApp::estimate_size(&snapshot_map, &ci);
+    app.on_snapshot(ParallelEncoderState {
+        scenes: snapshot_map,
+        active_encoders: active,
+        clip_info: ci,
+        completed_scenes_count: 20,
+        estimated_bitrate: est_bitrate,
+        estimated_bytes: est_bytes,
+        validation: None,
+        initial_frames,
+        completed: false,
+    });
+    // Representative aggregate ~90 FPS since the validated resume baseline.
+    backdate_for_frames(&mut app.started, delta, 90.0);
+    app
+}
+
 /// Representative target-quality probe results (one pass per scene), with a
 /// quantizer/score/bitrate that track scene complexity.
 fn tq_passes(scenes: &[Scene<CliSequenceData>]) -> BTreeMap<u64, Vec<QualityPass>> {
@@ -832,68 +899,9 @@ fn tui_screens() -> Vec<Screen> {
         });
     }
 
-    // Parallel Encoder.
-    // A resumed 4-worker encode. `initial_map` is the state at app construction
-    // (4 scenes already done); the snapshot is later, with 20 scenes done and 4
-    // more actively encoding. The progress-bar FPS is derived from the frames
-    // completed between those two points, so it reads as a real ~90 FPS
-    // aggregate.
+    // Parallel Encoder — 20 usable scenes and four active workers after resume.
     {
-        let scenes = mock_scenes();
-        let total: u64 = scenes.iter().map(|s| (s.end_frame - s.start_frame) as u64).sum();
-        // Build a scene->completed map: fully done below `complete_to`,
-        // half-done for the active window, zero otherwise.
-        let mk_map = |complete_to: usize, active: std::ops::Range<usize>| {
-            scenes
-                .iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    let len = (s.end_frame - s.start_frame) as u64;
-                    let completed = if i < complete_to {
-                        len
-                    } else if active.contains(&i) {
-                        len / 2
-                    } else {
-                        0
-                    };
-                    (i as u64, (completed, s.clone()))
-                })
-                .collect::<BTreeMap<_, _>>()
-        };
-        let initial_map = mk_map(4, 0..0); // resume point: 4 scenes already done
-        let snapshot_map = mk_map(20, 20..24); // 20 done + 4 active at ~50%
-        let mut app = ParallelEncoderApp::new(4, encoder(), initial_map, ci);
-        let active = snapshot_map
-            .iter()
-            .filter(|(i, _)| (20u64..24).contains(i))
-            .map(|(idx, (processed, s))| {
-                let mut se = SceneEncoder {
-                    scene: s.clone(),
-                    started: Instant::now(),
-                    current_pass: 1,
-                    total_passes: 2,
-                    frames_processed: *processed,
-                    total_frames: (s.end_frame - s.start_frame) as u64,
-                };
-                // Each worker ~24 FPS on its own scene.
-                backdate_for_frames(&mut se.started, *processed, 24.0);
-                (*idx, se)
-            })
-            .collect();
-        let snapshot_completed: u64 = snapshot_map.iter().map(|(_, (c, _))| c).sum();
-        let delta = snapshot_completed.saturating_sub(app.initial_frames);
-        let est_bitrate = 3_500_000.0; // ~3500 kbps is realistic for 1080p AV1
-        let est_bytes = (est_bitrate / 8.0 * (total as f64 / CLIP_FPS)) as u64;
-        app.on_snapshot(ParallelEncoderState {
-            scenes: snapshot_map,
-            active_encoders: active,
-            clip_info: ci,
-            completed_scenes_count: 20,
-            estimated_bitrate: est_bitrate,
-            estimated_bytes: est_bytes,
-        });
-        // Overall aggregate ~90 FPS across the active workers since resume.
-        backdate_for_frames(&mut app.started, delta, 90.0);
+        let app = parallel_encoder_fixture(ci);
         screens.push(Screen {
             slug: "parallel-encoder",
             command: "encode",
@@ -1288,6 +1296,55 @@ mod tests {
     use ratatui::{style::Color, text::Span};
 
     use super::{ansi_lines, draw_tiling_char};
+    use crate::apps::TuiApp;
+
+    #[test]
+    fn e16a_parallel_fixture_preserves_validated_resume_progress() {
+        let app = super::parallel_encoder_fixture(super::clip_info());
+        let state = app.cached_state();
+        assert_eq!(state.initial_frames, 2054, "four validated resume scenes");
+        assert_eq!(state.completed_scenes_count, 20);
+        assert_eq!(
+            state.active_encoders.keys().copied().collect::<Vec<_>>(),
+            [20, 21, 22, 23]
+        );
+        assert_eq!(state.validation, None);
+        assert!(!state.completed);
+        for (index, (processed, scene)) in &state.scenes {
+            let len = (scene.end_frame - scene.start_frame) as u64;
+            if *index < 20 {
+                assert_eq!(*processed, len);
+                assert!(scene.sequence_data.parallel_encoder.bytes.is_some_and(|bytes| bytes > 0));
+            } else {
+                assert_eq!(scene.sequence_data.parallel_encoder.bytes, None);
+                if let Some(active) = state.active_encoders.get(index) {
+                    assert_eq!(*processed, len / 2);
+                    assert_eq!(active.frames_processed, *processed);
+                    assert_eq!(active.total_frames, len);
+                } else {
+                    assert_eq!(*processed, 0);
+                }
+            }
+        }
+        assert!((state.estimated_bitrate - 3_500_000.0).abs() < 1.0);
+        let buf = super::capture(|frame| app.render(frame));
+        let text: String = buf.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("20/38 Scenes"));
+        assert!(text.contains("Encoding Scenes..."));
+        let fps: f64 = text
+            .split_once("8483/14386 Frames (")
+            .expect("progress includes completed and partially active frames")
+            .1
+            .split_once("FPS)")
+            .expect("aggregate frame rate")
+            .0
+            .parse()
+            .expect("numeric aggregate frame rate");
+        assert!(
+            (89.0..92.0).contains(&fps),
+            "representative resume FPS: {fps}"
+        );
+    }
 
     /// A run of box-drawing or block glyphs must paint every pixel of the
     /// band it belongs to — no gaps between cells — or borders render as
