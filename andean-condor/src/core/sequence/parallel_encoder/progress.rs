@@ -3,9 +3,12 @@ use std::sync::{Mutex, mpsc::Sender};
 use anyhow::Result;
 
 use super::task::{ParallelEncoderResult, ResultStream};
-use crate::core::{
-    encoder::EncodeProgress,
-    sequence::{SequenceCompletion, SequenceStatus, Status, parallel_encoder::DETAILS},
+use crate::{
+    core::{
+        encoder::EncodeProgress,
+        sequence::{SequenceCompletion, SequenceStatus, Status, parallel_encoder::DETAILS},
+    },
+    models::encoder::EncoderPasses,
 };
 
 /// One dispatch's usable logical frames, including validated resume work.
@@ -45,7 +48,7 @@ pub(super) struct AttemptProgress<'a> {
     progress: &'a Progress,
     scene: usize,
     frames: usize,
-    passes: u8,
+    passes: (u8, u8),
     // Only the relay mutates this until it joins; the owner then commits/drops.
     state: Mutex<(u8, usize, usize)>,
     committed: bool,
@@ -57,7 +60,17 @@ impl<'a> AttemptProgress<'a> {
         self.scene
     }
 
-    pub(super) fn new(progress: &'a Progress, scene: usize, frames: usize, passes: u8) -> Self {
+    pub(super) fn new(
+        progress: &'a Progress,
+        scene: usize,
+        frames: usize,
+        passes: EncoderPasses,
+    ) -> Self {
+        // Specific runs one invocation but retains its caller's native pass tuple.
+        let passes = match passes {
+            EncoderPasses::All(total) => (total, total),
+            EncoderPasses::Specific(selected, total) => (selected, total),
+        };
         // Private parallel protocol: `attempt` precedes native records, even
         // with no records. Only this explicit boundary resets the UI panel.
         let _ = progress.tx.send(SequenceStatus::Whole(Status::Processing {
@@ -81,7 +94,7 @@ impl<'a> AttemptProgress<'a> {
     fn report(&self, record: EncodeProgress) -> Result<()> {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (pass, total) = record.pass;
-        if total != self.passes || pass == 0 || pass > total || pass < state.0 {
+        if total != self.passes.1 || pass == 0 || pass > self.passes.0 || pass < state.0 {
             return Ok(());
         }
         if pass > state.0 {
@@ -96,7 +109,7 @@ impl<'a> AttemptProgress<'a> {
             .completed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if pass == self.passes {
+        if pass == self.passes.0 {
             *completed += state.1 - state.2;
             state.2 = state.1;
             self.progress.tx.send(SequenceStatus::Whole(self.progress.parent(*completed)))?;
@@ -208,13 +221,128 @@ mod tests {
 
     use super::{AttemptProgress, Progress, relay_progress};
     use crate::core::{encoder::EncodeProgress, sequence::SequenceStatus};
+    use crate::models::encoder::EncoderPasses;
+
+    fn check_specific_pass(selected: u8) {
+        use crate::models::encoder::{Encoder, EncoderBase, EncoderPasses};
+
+        let mut encoder = Encoder::default_from_base(&EncoderBase::X264, true);
+        *encoder.passes_mut().expect("passes") = EncoderPasses::Specific(selected, 2);
+        let (tx, rx) = channel();
+        let total = Progress::new(tx, 30, 0);
+        {
+            let attempt = AttemptProgress::new(&total, 7, 30, encoder.passes());
+            let (tx, progress_rx) = channel();
+            for frame in [1, 10, 10, 9, 20, usize::MAX] {
+                tx.send(EncodeProgress {
+                    pass: (selected, 2),
+                    frame,
+                    usage: Default::default(),
+                })
+                .expect("native tuple");
+            }
+            drop(tx);
+            relay_progress(progress_rx, &attempt).expect("relay");
+            assert_eq!(
+                *total.completed.lock().expect("total"),
+                30,
+                "configured selected pass contributes absolute deltas"
+            );
+            let panels: Vec<_> = rx
+                .try_iter()
+                .filter_map(|event| match event {
+                    SequenceStatus::Subprocess {
+                        child:
+                            crate::core::sequence::Status::Processing {
+                                completion:
+                                    crate::core::sequence::SequenceCompletion::PassFrames {
+                                        passes,
+                                        frames,
+                                    },
+                                ..
+                            },
+                        ..
+                    } => Some((passes, frames)),
+                    SequenceStatus::Subprocess {
+                        child: crate::core::sequence::Status::Completed { .. },
+                        ..
+                    } => panic!("progress cannot publish"),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                panels,
+                [1, 10, 10, 10, 20, 30].map(|frame| ((selected, 2), (frame, 30)))
+            );
+            for pass in [(0, 2), (selected, 1), (3, 2), (if selected == 1 { 2 } else { 1 }, 2)] {
+                attempt
+                    .report(EncodeProgress {
+                        pass,
+                        frame: 30,
+                        usage: Default::default(),
+                    })
+                    .expect("invalid/stale/unselected tuple");
+            }
+            assert!(
+                rx.try_recv().is_err(),
+                "invalid/stale/unselected tuples do not advance the panel"
+            );
+        }
+        assert_eq!(
+            *total.completed.lock().expect("total"),
+            0,
+            "unpublished selected pass rolls back"
+        );
+        let mut retry = AttemptProgress::new(&total, 7, 30, encoder.passes());
+        retry
+            .report(EncodeProgress {
+                pass: (selected, 2),
+                frame: 10,
+                usage: Default::default(),
+            })
+            .expect("retry progress");
+        assert_eq!(
+            *total.completed.lock().expect("total"),
+            10,
+            "retry begins at a fresh high-water"
+        );
+        retry.commit(42);
+        retry.commit(42);
+        assert_eq!(
+            *total.completed.lock().expect("total"),
+            30,
+            "commit reconciles only the missing frames once"
+        );
+        assert_eq!(
+            rx.try_iter()
+                .filter(|event| matches!(
+                    event,
+                    SequenceStatus::Subprocess {
+                        child: crate::core::sequence::Status::Completed { .. },
+                        ..
+                    }
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn e16_specific_final_pass_keeps_native_tuple_and_logical_credit() {
+        check_specific_pass(2);
+    }
+
+    #[test]
+    fn e16_specific_first_pass_keeps_native_tuple_and_logical_credit() {
+        check_specific_pass(1);
+    }
 
     #[test]
     fn e16_sparse_absolute_relay() {
         let (tx, rx) = channel();
         let (status_tx, status_rx) = channel();
         let total = Progress::new(status_tx, 30, 0);
-        let attempt = AttemptProgress::new(&total, 7, 30, 1);
+        let attempt = AttemptProgress::new(&total, 7, 30, EncoderPasses::All(1));
         for frame in [1, 10, 10, 9, 30] {
             tx.send(EncodeProgress {
                 pass: (1, 1),
@@ -253,7 +381,7 @@ mod tests {
         let (tx, rx): (Sender<EncodeProgress>, Receiver<EncodeProgress>) = channel();
         let (status_tx, status_rx) = std::sync::mpsc::channel();
         let total = Progress::new(status_tx, frames, 0);
-        let attempt = AttemptProgress::new(&total, 7, frames, 1);
+        let attempt = AttemptProgress::new(&total, 7, frames, EncoderPasses::All(1));
 
         for frame in 1..=frames {
             tx.send(EncodeProgress {
@@ -304,7 +432,7 @@ mod tests {
     fn e16_two_scenes_passes_retry_commit_and_zero() {
         let (tx, rx) = channel();
         let total = Progress::new(tx, 60, 0);
-        let mut peer = AttemptProgress::new(&total, 8, 30, 2);
+        let mut peer = AttemptProgress::new(&total, 8, 30, EncoderPasses::All(2));
         let report = |attempt: &AttemptProgress<'_>, pass, frame| {
             attempt
                 .report(EncodeProgress {
@@ -315,7 +443,7 @@ mod tests {
                 .expect("report");
         };
         {
-            let failed = AttemptProgress::new(&total, 7, 30, 2);
+            let failed = AttemptProgress::new(&total, 7, 30, EncoderPasses::All(2));
             report(&failed, (1, 2), 30);
             assert_eq!(*total.completed.lock().expect("total"), 0);
             report(&failed, (2, 2), 10);
@@ -330,14 +458,14 @@ mod tests {
             10,
             "only failed credit removed"
         );
-        let mut retry = AttemptProgress::new(&total, 7, 30, 2);
+        let mut retry = AttemptProgress::new(&total, 7, 30, EncoderPasses::All(2));
         report(&retry, (2, 2), 1);
         assert_eq!(*total.completed.lock().expect("total"), 11);
         peer.commit(42);
         retry.commit(42);
         retry.commit(42);
         assert_eq!(*total.completed.lock().expect("total"), 60);
-        let mut zero = AttemptProgress::new(&total, 9, 0, 1);
+        let mut zero = AttemptProgress::new(&total, 9, 0, EncoderPasses::All(1));
         report(&zero, (1, 1), usize::MAX);
         zero.commit(1);
         assert_eq!(*total.completed.lock().expect("total"), 60);
@@ -368,7 +496,8 @@ mod tests {
             for scene in 0..workers {
                 let count = &count;
                 handles.push(scope.spawn(move || {
-                    let mut attempt = AttemptProgress::new(count, scene, per_worker, 1);
+                    let mut attempt =
+                        AttemptProgress::new(count, scene, per_worker, EncoderPasses::All(1));
                     for frame in 1..=per_worker {
                         attempt
                             .report(EncodeProgress {

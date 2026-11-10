@@ -253,7 +253,7 @@ pub(super) fn encode_attempts<'a>(
             progress,
             task.original_index,
             task.frame_indices.len(),
-            task.encoder.total_passes(),
+            task.encoder.passes(),
         );
         let encoded = encode(&path, &attempt_progress).and_then(|result| {
             stop.cancellation.check_forced()?;
@@ -767,7 +767,12 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let errored = AtomicBool::new(false);
         let progress = Progress::new(tx, 3, 0);
-        let mut attempt = AttemptProgress::new(&progress, 3, 3, 1);
+        let mut attempt = AttemptProgress::new(
+            &progress,
+            3,
+            3,
+            crate::models::encoder::EncoderPasses::All(1),
+        );
 
         finalize_scene(
             SceneOutcome {
@@ -816,7 +821,12 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let errored = AtomicBool::new(false);
         let progress = Progress::new(tx, 1, 0);
-        let mut attempt = AttemptProgress::new(&progress, 1, 1, 1);
+        let mut attempt = AttemptProgress::new(
+            &progress,
+            1,
+            1,
+            crate::models::encoder::EncoderPasses::All(1),
+        );
         let _ = rx.try_iter().count();
 
         finalize_scene(

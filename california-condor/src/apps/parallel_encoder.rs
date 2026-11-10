@@ -5,7 +5,10 @@ use andean_condor::{
         input::clip_info::ClipInfo,
         sequence::{SequenceCompletion, SequenceStatus, Status},
     },
-    models::{encoder::Encoder, scene::Scene},
+    models::{
+        encoder::{Encoder, EncoderPasses},
+        scene::Scene,
+    },
 };
 use ratatui::{
     Frame,
@@ -195,7 +198,11 @@ impl TuiApp for ParallelEncoderApp {
                         active.started = std::time::Instant::now();
                     }
                     active.frames_processed = active.frames_processed.max(current_frame);
-                    if current_pass == total_passes {
+                    let selected_pass = match scene_data.encoder.passes() {
+                        EncoderPasses::All(total) => total,
+                        EncoderPasses::Specific(selected, _) => selected,
+                    };
+                    if current_pass == selected_pass {
                         *completed = (*completed).max(active.frames_processed);
                     }
                     true
@@ -528,7 +535,10 @@ mod tests {
 
     #[test]
     fn e16_first_event_pass_order_and_retry_reset() {
-        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let mut scenes = scenes();
+        *scenes.get_mut(&1).expect("scene").1.encoder.passes_mut().expect("passes") =
+            andean_condor::models::encoder::EncoderPasses::All(2);
+        let mut app = ParallelEncoderApp::new(2, encoder(), scenes, clip_info());
         let state = app.cached_state_mut();
         ParallelEncoderApp::map_progress(progress(0, (1, 1), 10), state);
         assert_eq!(state.scenes[&0].0, 10, "first final-pass record counts");
@@ -546,6 +556,48 @@ mod tests {
         ParallelEncoderApp::map_progress(progress(1, (1, 2), 2), state);
         assert_eq!(state.scenes[&1].0, 0);
         assert_eq!(state.active_encoders[&1].frames_processed, 2);
+    }
+
+    #[test]
+    fn e16_specific_pass_ui_uses_the_scene_model_and_preserves_native_panel() {
+        use andean_condor::models::encoder::EncoderPasses;
+
+        for (passes, native_pass, credited) in [
+            (EncoderPasses::Specific(1, 2), 1, 30),
+            (EncoderPasses::Specific(2, 2), 2, 30),
+            (EncoderPasses::All(2), 1, 0),
+            (EncoderPasses::All(2), 2, 30),
+        ] {
+            let mut scenes = scenes();
+            *scenes.get_mut(&0).expect("scene").1.encoder.passes_mut().expect("passes") = passes;
+            let mut app = ParallelEncoderApp::new(2, encoder(), scenes, clip_info());
+            for frame in [1, 10, 10, 9, 30] {
+                ParallelEncoderApp::map_progress(
+                    progress(0, (native_pass, 2), frame),
+                    app.cached_state_mut(),
+                );
+            }
+            assert_eq!(
+                app.cached_state.scenes[&0].0, credited,
+                "{passes:?}: selected logical pass"
+            );
+            let panel = &app.cached_state.active_encoders[&0];
+            assert_eq!(
+                (
+                    panel.current_pass,
+                    panel.total_passes,
+                    panel.frames_processed
+                ),
+                (native_pass, 2, 30)
+            );
+            let text = screen(&app);
+            assert!(
+                text.contains(&format!("Scene 0 Pass {native_pass}/2")),
+                "{text}"
+            );
+            assert!(!text.contains("Encoding Completed"));
+            assert_eq!(app.cached_state.completed_scenes_count, 0);
+        }
     }
 
     #[test]

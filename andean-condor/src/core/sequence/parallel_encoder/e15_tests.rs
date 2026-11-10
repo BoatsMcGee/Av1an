@@ -617,26 +617,31 @@ fn e15_public_child() {
             })
         });
         let result = if kind.starts_with("direct") || (e16 && matches!(kind, "quiet" | "sparse")) {
-            ParallelEncoder::encode_tasks_with_options(
-                &mut condor.input,
-                1,
-                vec![Task {
-                    original_index: 7,
-                    index: 0,
-                    frame_indices: vec![1, 2, 3],
-                    sub_scenes: None,
-                    encoder: condor.encoder.clone(),
-                    output: output.clone(),
-                }]
-                .into(),
-                tx,
-                token.clone(),
-                ParallelEncoderOptions {
-                    max_tries: if e16 { 1 } else { 3 },
-                    validate_frame_count: true,
-                },
-            )
-            .map(|results| {
+            let tasks = vec![Task {
+                original_index: 7,
+                index: 0,
+                frame_indices: vec![1, 2, 3],
+                sub_scenes: None,
+                encoder: condor.encoder.clone(),
+                output: output.clone(),
+            }]
+            .into();
+            let result = if e16 && matches!(kind, "quiet" | "sparse") {
+                ParallelEncoder::encode_tasks_with_options(
+                    &mut condor.input,
+                    1,
+                    tasks,
+                    tx,
+                    token.clone(),
+                    ParallelEncoderOptions {
+                        max_tries: 1,
+                        validate_frame_count: true,
+                    },
+                )
+            } else {
+                ParallelEncoder::encode_tasks_cancel(&mut condor.input, 1, tasks, tx, token.clone())
+            };
+            result.map(|results| {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].as_ref().expect("direct result").scene, 7);
                 ((), vec![])
