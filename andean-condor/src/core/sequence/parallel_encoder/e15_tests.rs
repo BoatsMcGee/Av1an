@@ -92,13 +92,14 @@ pub(super) fn after_failure(token: &Cancellation) {
 
 const ENCODER: &str = r#"#!/bin/sh
 set -eu
-out= root= stats= pass=1
+out= root= stats= idle= pass=1
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -o) out=$2; shift ;;
         --stats) stats=$2; shift ;;
         --pass) pass=$2; shift ;;
         --e15-root) root=$2; shift ;;
+        --e15-idle) idle=$2; shift ;;
     esac
     shift
 done
@@ -125,11 +126,10 @@ case "$E08_CASE" in
 esac
 if [ "$pass" = 1 ]; then test ! -f "$out"; fi
 case "$E08_CASE" in
-    *force)
+    *force|*force-child-first)
         sleep 30 &
         printf '%s' "$!" > "$root/grandchild"
-        printf '%s' "$$" > "$root/ready"
-        wait ;;
+        exec "$idle" --e18-force-idle "$root" ;;
     *all2-graceful)
         if [ "$pass" = 1 ]; then
             printf '%s' "$$" > "$root/ready"
@@ -168,6 +168,15 @@ cp "$root/fixture" "$out"
 printf 0 > "$root/codec-status-$n"
 case "$E08_CASE" in *publication) printf caller-final > "$root/scenes/00000.264" ;; esac
 "#;
+
+fn read_pid(root: &std::path::Path, file: &str) -> i32 {
+    let pid = fs::read_to_string(root.join(file))
+        .expect("actual child PID")
+        .parse()
+        .expect("complete PID");
+    assert!(pid > 0, "positive child PID");
+    pid
+}
 
 #[test]
 fn e15_saved_budget_and_schema() {
@@ -334,6 +343,7 @@ fn e16_bounded_public_progress_jobs() {
             "exhaust1",
             "exhaust-wrong",
             "force",
+            "force-child-first",
             "publication",
             "peer-exhaust",
             "resume",
@@ -383,6 +393,8 @@ fn e15_public_child() {
     let (path, kind) = rest.split_once('-').expect("path-kind");
     let e16 = kind.starts_with("e16-");
     let kind = kind.strip_prefix("e16-").unwrap_or(kind);
+    let child_first = kind == "force-child-first";
+    let kind = if child_first { "force" } else { kind };
     let warnings = RetryWarnings::default();
     tracing::subscriber::set_global_default(warnings.clone()).expect("isolated child subscriber");
     assert_eq!(
@@ -463,6 +475,14 @@ fn e15_public_child() {
     encoder.parameters_mut().insert(
         "e15-root".into(),
         CLIParameter::new_string("--", " ", root.to_str().expect("UTF8")),
+    );
+    encoder.parameters_mut().insert(
+        "e15-idle".into(),
+        CLIParameter::new_string(
+            "--",
+            " ",
+            root.parent().expect("fixture root").join("watchdog").to_str().expect("UTF8"),
+        ),
     );
     if matches!(kind, "filter" | "filter-only") {
         encoder.set_ffmpeg_filter(Some("null".into()));
@@ -606,8 +626,54 @@ fn e15_public_child() {
                     .expect("release producer");
                     return;
                 }
+                if e16 && kind == "force" {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    while !root.join("ready-opened").exists() {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "readiness writer reached seam"
+                        );
+                        std::thread::yield_now();
+                    }
+                    assert!(!root.join("ready").exists(), "open file is not readiness");
+                    fs::write(
+                        root.join("publish-ready"),
+                        "observer checked unpublished PID",
+                    )
+                    .expect("release readiness writer");
+                }
                 while !root.join("ready").exists() {
                     std::thread::yield_now();
+                }
+                if child_first {
+                    let leader = read_pid(&root, "leader");
+                    let grandchild = read_pid(&root, "grandchild");
+                    // SAFETY: Positive PID from this private fixture's complete handshake.
+                    assert_eq!(unsafe { libc::kill(grandchild, libc::SIGKILL) }, 0);
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+                    loop {
+                        let stat = fs::read_to_string(format!("/proc/{grandchild}/stat"))
+                            .expect("dead grandchild stays unreaped until leader force");
+                        let mut fields =
+                            stat.rsplit_once(')').expect("stat comm").1.split_whitespace();
+                        let state = fields.next().expect("state");
+                        assert_eq!(
+                            fields.next().expect("PPID").parse::<i32>().expect("PPID"),
+                            leader
+                        );
+                        if state == "Z" {
+                            break;
+                        }
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "grandchild exits before leader force"
+                        );
+                        std::thread::yield_now();
+                    }
+                }
+                if kind == "force" {
+                    read_pid(&root, "leader");
+                    read_pid(&root, "grandchild");
                 }
                 token.request().expect("first request");
                 if kind == "force" {
@@ -864,17 +930,14 @@ fn e15_public_child() {
                 error.downcast_ref::<crate::utils::cancellation::Cancelled>(),
                 Some(&crate::utils::cancellation::Cancelled::Forced)
             );
-            let pid: i32 = fs::read_to_string(root.join("grandchild"))
-                .expect("grandchild")
-                .parse()
-                .expect("pid");
+            let pid = read_pid(&root, "grandchild");
             let mut status = 0;
             // SAFETY: Reap the known adopted grandchild, never signal or rescue it.
             assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
             assert!(libc::WIFSIGNALED(status));
             assert_eq!(libc::WTERMSIG(status), libc::SIGKILL);
-            for file in ["ready", "grandchild"] {
-                let pid = fs::read_to_string(root.join(file)).expect("actual child pid");
+            for file in ["leader", "grandchild"] {
+                let pid = read_pid(&root, file);
                 assert!(
                     !std::path::Path::new(&format!("/proc/{pid}")).exists(),
                     "owned process reaped"

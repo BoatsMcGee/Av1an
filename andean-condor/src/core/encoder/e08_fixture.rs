@@ -17,6 +17,32 @@ fn main() -> io::Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(30));
         return Ok(());
     }
+    if args.get(1).is_some_and(|arg| arg == "--e18-force-idle") {
+        use std::{io::BufRead, time::{Duration, Instant}};
+        let root = PathBuf::from(&args[2]);
+        let mut header = String::new();
+        io::stdin().lock().read_line(&mut header)?;
+        assert!(header.starts_with("YUV4MPEG2 ") && header.ends_with('\n'), "actual producer header: {:?}", header);
+        let mut leader = fs::File::create(root.join("leader"))?;
+        if std::env::var("E08_CASE").is_ok_and(|case| case.contains("-e16-force")) {
+            fs::write(root.join("ready-opened"), "PID file open, not initialized")?;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !root.join("publish-ready").exists() {
+                assert!(Instant::now() < deadline, "readiness observer acknowledgement");
+                std::thread::yield_now();
+            }
+        }
+        write!(leader, "{}", std::process::id())?;
+        drop(leader);
+        fs::write(root.join("ready"), "producer header read; complete PIDs")?;
+        // Like --e08-stall, bound emergency lifetime. Never wait/reap: the test
+        // subreaper must receive the grandchild even if it dies before this leader.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < deadline {
+            std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
+        }
+        return Err(io::Error::other("force idle emergency lifetime expired"));
+    }
     let value = |key: &str| args.windows(2).find(|a| a[0] == key).map(|a| a[1].clone());
     let early = value("--e08-exit");
     let marker = value("--e08-marker");

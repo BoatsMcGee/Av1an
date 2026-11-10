@@ -52,6 +52,7 @@ fn e12_bounded_scene_force() {
         "zone-probe",
         "filter-empty",
         "filter-full",
+        "filter-spawn-race",
         "dg",
         "ffmpeg",
         "ffmpeg-existing",
@@ -837,28 +838,37 @@ fn e12_scene_child() {
             }
         }
     });
+    let mut filter_spawn_failed = false;
     let result: Result<()> = if case.starts_with("filter") {
         let (_tx, rx) = crossbeam_channel::bounded(1);
-        let mut stage = FfmpegFilter::spawn_cancel(
+        match FfmpegFilter::spawn_cancel(
             rx,
             1,
             "null",
             Arc::new(std::sync::Mutex::new(None)),
             &cancellation,
-        )
-        .expect("filter");
-        let output = stage.take_receiver().expect("receiver");
-        if case == "filter-full" {
-            while output.is_empty() {
-                thread::yield_now();
-            }
-            fs::write(root.join("full-output"), "bounded output full").expect("full handshake");
-            assert!(cancellation.forced().recv().is_err());
-        } else {
-            let _ = output.recv();
+        ) {
+            Err(error) => {
+                // Force can win registration; still join the controller and reap below.
+                filter_spawn_failed = true;
+                Err(error)
+            },
+            Ok(mut stage) => {
+                let output = stage.take_receiver().expect("receiver");
+                if case == "filter-full" {
+                    while output.is_empty() {
+                        thread::yield_now();
+                    }
+                    fs::write(root.join("full-output"), "bounded output full")
+                        .expect("full handshake");
+                    assert!(cancellation.forced().recv().is_err());
+                } else {
+                    let _ = output.recv();
+                }
+                drop(output);
+                stage.check()
+            },
         }
-        drop(output);
-        stage.check()
     } else if case == "dg" {
         fs::write(root.join("source"), "finite fixture source").expect("source");
         crate::vapoursynth::plugins::dgdecodenv::DGSource::index_video_cancel(
@@ -1085,4 +1095,10 @@ fn e12_scene_child() {
     assert!(!root.join("zone-pass.temp.264").exists());
     assert!(!root.join("Scene Concatenator/00000.mkv").exists());
     reap(&root);
+    if case == "filter-spawn-race" {
+        assert!(
+            filter_spawn_failed,
+            "force won construction, not stage.check()"
+        );
+    }
 }

@@ -167,9 +167,17 @@ impl OwnedProcess {
             }
         }
         #[cfg(all(test, target_os = "linux"))]
-        if std::env::var("E12_CASE").as_deref() == Ok("registration") {
+        if matches!(
+            std::env::var("E12_CASE").as_deref(),
+            Ok("registration" | "filter-spawn-race")
+        ) {
             // Exact race seam: the real child can run, but has not been registered.
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
             while !cancellation.is_forced() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "force reaches registration seam"
+                );
                 std::thread::yield_now();
             }
         }
@@ -227,6 +235,17 @@ impl OwnedProcess {
                 if state.exited().context("Checking owned child without reaping")? {
                     let killed = state.kill(); // Before reap: no stale group ID can be signalled.
                     let status = state.child.wait();
+                    #[cfg(all(test, target_os = "linux"))]
+                    if std::env::var("E08_CASE").is_ok_and(|case| {
+                        case.starts_with("e15-")
+                            && (case.ends_with("force") || case.ends_with("force-child-first"))
+                    }) {
+                        use std::os::unix::process::ExitStatusExt;
+                        assert_eq!(
+                            status.as_ref().expect("force leader reaped").signal(),
+                            Some(libc::SIGKILL)
+                        );
+                    }
                     #[cfg(all(test, target_os = "linux"))]
                     crate::core::encoder::e12_tests::observe_reap(state.child.id());
                     state.armed = false;
