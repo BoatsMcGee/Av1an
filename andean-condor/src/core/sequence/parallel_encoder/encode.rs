@@ -368,6 +368,8 @@ impl ParallelEncoder {
                     Ok(Err(err)) => {
                         stop.stop();
                         retain_error(&mut error, err);
+                        #[cfg(all(test, target_os = "linux"))]
+                        super::e11_tests::joined_error();
                         results.push(None);
                     },
                     Err(_) => {
@@ -377,9 +379,9 @@ impl ParallelEncoder {
                     },
                 }
             }
-            if error.is_none()
-                && let Err(err) = drain_finished_results(stream)
-            {
+            // Successful active jobs may report after a peer stops scheduling.
+            // Persist those results without replacing the original failure.
+            if let Err(err) = stop.catch("Scene persistence", || drain_finished_results(stream)) {
                 stop.stop();
                 retain_error(&mut error, err);
             }

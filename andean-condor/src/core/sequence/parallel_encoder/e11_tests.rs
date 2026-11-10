@@ -20,6 +20,13 @@ pub(super) fn fault(point: &str, scene: usize) -> anyhow::Result<()> {
         return Ok(());
     };
     let root = std::path::PathBuf::from(std::env::var_os("E08_ROOT").expect("fixture root"));
+    if case.starts_with("vs-persist-active") && point == "header" && scene == 2 {
+        // Execute uses scene IDs 0/1: both jobs must be active before lookahead
+        // can compete for a worker, independent of semaphore wakeup order.
+        while !root.join("started-8").exists() {
+            std::thread::yield_now();
+        }
+    }
     if case.starts_with("vs-")
         && point == "header"
         && scene == 8
@@ -69,6 +76,17 @@ pub(super) fn stopped() {
     }
 }
 
+pub(super) fn joined_error() {
+    if std::env::var("E08_CASE").is_ok_and(|case| case.starts_with("vs-persist-active")) {
+        let root = std::env::var_os("E08_ROOT").expect("fixture root");
+        fs::write(
+            Path::new(&root).join("joined-error"),
+            "original failure collected",
+        )
+        .expect("join handshake");
+    }
+}
+
 pub(super) fn verify_pools(stop: &lifecycle::Stop, workers: usize) {
     for (pool, expected) in [(&stop.workers, workers), (&stop.decoders, workers + 1)] {
         let mut returned = 0;
@@ -95,6 +113,15 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 printf started > "$root/started-$scene"
+case "$E08_CASE" in
+    vs-persist-active*)
+        if [ "$scene" = 7 ]; then
+            while [ ! -f "$root/started-8" ]; do :; done
+        elif [ "$scene" = 8 ]; then
+            while [ ! -f "$root/stop-observed" ]; do :; done
+            while [ ! -f "$root/joined-error" ]; do :; done
+        fi ;;
+esac
 if [ "$E08_CASE" = native-early ] || [ "$E08_CASE" = vs-early ]; then
     printf 'E11 early diagnostic' >&2
     exit 42
@@ -110,6 +137,13 @@ cat > "$root/input-$scene"
 printf owned > "$out"
 if [ -n "$stats" ]; then printf owned > "$stats"; fi
 printf complete > "$root/complete-$scene"
+case "$E08_CASE" in
+    vs-persist-active*)
+        if [ "$scene" = 7 ]; then
+            printf 'E11 active peer failure' >&2
+            exit 42
+        fi ;;
+esac
 if [ "$E08_CASE" = native-status ] || [ "$E08_CASE" = vs-status ]; then
     printf 'E11 status diagnostic' >&2
     exit 42
@@ -172,6 +206,8 @@ fn e11_bounded_parallel_shutdown() {
         "native-produce",
         "vs-metric",
         "vs-metric-error",
+        "vs-persist-active",
+        "vs-persist-active-save-error",
     ] {
         run_child(root, case, &mut failures);
     }
@@ -310,6 +346,140 @@ fn metric_callbacks(input: &mut Input, fail: bool) {
     ));
 }
 
+fn persist_success_after_worker_failure(root: &Path, input: Input, fail_save: bool) {
+    use crate::{
+        core::{Condor, output::Output, sequence::Sequence},
+        models::{
+            scene::Scene,
+            sequence::{DefaultSequenceConfig, DefaultSequenceData},
+        },
+    };
+    use std::sync::Mutex;
+
+    fs::write(root.join("fake-encoder"), FAKE).expect("finite encoder fixture");
+    fs::set_permissions(root.join("fake-encoder"), fs::Permissions::from_mode(0o755))
+        .expect("executable");
+    let scenes_dir = root.join("scenes");
+    fs::create_dir_all(&scenes_dir).expect("scenes");
+    fs::write(scenes_dir.join("unrelated.stat"), "sentinel").expect("stats sentinel");
+    let scenes = (0..4)
+        .map(|index| Scene {
+            start_frame: 0,
+            end_frame: 96,
+            sub_scenes: None,
+            encoder: encoder(root, index + 7, "success1"),
+            sequence_data: DefaultSequenceData::default(),
+        })
+        .collect();
+    let saved = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&saved);
+    let mut config = DefaultSequenceConfig::default();
+    config.parallel_encoder.workers = Some(2);
+    config.parallel_encoder.scenes_directory = scenes_dir.clone();
+    let mut condor = Condor::<DefaultSequenceData, DefaultSequenceConfig>::new(
+        input,
+        Output {
+            path: root.join("unused"),
+            tags: HashMap::new(),
+            video_tags: HashMap::new(),
+        },
+        encoder(root, 7, "success1"),
+        scenes,
+        Some(config),
+        Box::new(move |data| {
+            observed.lock().expect("snapshots").push(
+                data.scenes
+                    .iter()
+                    .map(|scene| {
+                        let metadata = &scene.sequence_data.parallel_encoder;
+                        (metadata.bytes, metadata.started_on, metadata.completed_on)
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            if fail_save {
+                anyhow::bail!("e11 secondary save failure");
+            }
+            Ok(())
+        }),
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    let error = ParallelEncoder::default()
+        .execute(&mut condor, tx, Arc::new(AtomicBool::new(false)))
+        .expect_err("peer failure returned only after all active jobs finish");
+    let ParallelEncoderError::EncoderFailed { scene, result } = error
+        .downcast_ref::<ParallelEncoderError>()
+        .expect("original typed failure, not secondary callback error")
+    else {
+        panic!("wrong failure");
+    };
+    assert_eq!(*scene, 0);
+    assert_eq!(result.status.code(), Some(42));
+    assert_eq!(result.stderr.to_string(), "E11 active peer failure");
+    assert!(root.join("stop-observed").exists());
+    assert!(
+        root.join("complete-7").exists() && root.join("complete-8").exists(),
+        "both actual subprocesses completed"
+    );
+    assert!(
+        !root.join("started-9").exists() && !root.join("started-10").exists(),
+        "no queued encoder starts after failure"
+    );
+    assert_eq!(
+        fs::read(scenes_dir.join("00001.264")).expect("successful active output"),
+        b"owned"
+    );
+    for index in [0, 2, 3] {
+        let metadata = &condor.scenes[index].sequence_data.parallel_encoder;
+        assert!(
+            metadata.bytes.is_none()
+                && metadata.started_on.is_none()
+                && metadata.completed_on.is_none(),
+            "failed/queued scene {index} must not be completed"
+        );
+        assert!(!scenes_dir.join(format!("{index:05}.264")).exists());
+    }
+    let metadata = &condor.scenes[1].sequence_data.parallel_encoder;
+    assert_eq!(
+        metadata.bytes,
+        Some(5),
+        "successful active output must retain completion metadata after peer failure"
+    );
+    assert!(metadata.started_on.is_some() && metadata.completed_on.is_some());
+    assert!(metadata.started_on <= metadata.completed_on);
+    let snapshots = saved.lock().expect("saved snapshot");
+    assert_eq!(
+        snapshots.len(),
+        1,
+        "one successful batch; no failed-batch retry or empty callback"
+    );
+    assert_eq!(
+        snapshots[0][1],
+        (Some(5), metadata.started_on, metadata.completed_on)
+    );
+    for index in [0, 2, 3] {
+        assert_eq!(snapshots[0][index], (None, None, None));
+    }
+    let _: Vec<_> = rx.try_iter().collect();
+    assert!(
+        matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ),
+        "all progress relays joined"
+    );
+    assert_eq!(
+        fs::read_dir(&scenes_dir).expect("only final output and sentinel").count(),
+        2
+    );
+    assert_eq!(
+        fs::read_to_string(scenes_dir.join("unrelated.stat")).expect("sentinel"),
+        "sentinel"
+    );
+    eprintln!(
+        "E11 execute active-success: bytes=5, start/completion saved; callback_error={fail_save}, calls=1, typed peer status=42, all joined"
+    );
+}
+
 #[test]
 fn e11_runtime_child() {
     let Some(root) = std::env::var_os("E08_ROOT") else {
@@ -322,6 +492,15 @@ fn e11_runtime_child() {
     let mut input = input(&root, path == "native");
     assert_eq!(input.streams_concurrently(), path == "native");
     assert_eq!(input.clip_info().expect("clip").num_frames, 96);
+    if kind.starts_with("persist-active") {
+        persist_success_after_worker_failure(&root, input, kind.ends_with("save-error"));
+        fs::write(
+            root.join("verified"),
+            "execute persisted successful active work after stop",
+        )
+        .expect("verification");
+        return;
+    }
     if kind.starts_with("metric") {
         metric_callbacks(&mut input, kind == "metric-error");
         fs::write(
