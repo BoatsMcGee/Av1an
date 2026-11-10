@@ -219,11 +219,6 @@ impl EncoderBase {
                 match pass {
                     (1, 1) => parameters,
                     (1, _) => {
-                        parameters.extend(CLIParameter::new_numbers(
-                            "--",
-                            " ",
-                            &[("passes", 2.0), ("pass", 1.0)],
-                        ));
                         parameters.extend(CLIParameter::new_bools("--", &[("quiet", true)]));
                         parameters.extend(CLIParameter::new_strings(
                             "--",
@@ -234,11 +229,6 @@ impl EncoderBase {
                         parameters
                     },
                     (_, _) => {
-                        parameters.extend(CLIParameter::new_numbers(
-                            "--",
-                            " ",
-                            &[("passes", 2.0), ("pass", 2.0)],
-                        ));
                         parameters.extend(CLIParameter::new_bools("--", &[("quiet", true)]));
                         parameters.extend(CLIParameter::new_strings(
                             "--",

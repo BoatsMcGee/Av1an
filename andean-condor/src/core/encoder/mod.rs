@@ -1641,6 +1641,9 @@ pub enum EncoderError {
 mod e01_tests;
 
 #[cfg(test)]
+mod e02_tests;
+
+#[cfg(test)]
 mod tests {
     use av_decoders::{ColorPrimaries, ColorSpace, TransferCharacteristic};
 
