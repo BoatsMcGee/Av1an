@@ -103,13 +103,13 @@ pub(super) fn retain_error(first: &mut Option<anyhow::Error>, next: anyhow::Erro
     }
 }
 
-pub(super) struct TempOutput {
+pub(crate) struct TempOutput {
     pub(super) path: PathBuf,
     owned: bool,
 }
 
 impl TempOutput {
-    pub(super) fn new(path: PathBuf) -> Self {
+    pub(crate) fn new(path: PathBuf) -> Self {
         let owned = !path.exists();
         Self { path, owned }
     }

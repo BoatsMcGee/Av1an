@@ -16,7 +16,7 @@ use std::{
     collections::VecDeque,
     fmt::{self, Write as _},
     fs,
-    io::{BufRead, BufReader, BufWriter, Cursor, Read, Write},
+    io::{BufRead, BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{self, Arc, Mutex, atomic::AtomicBool, mpsc},
     thread,
@@ -628,6 +628,7 @@ impl ZoneEncoder {
                 tasks.make_contiguous(),
                 extension,
                 &cancelled,
+                true,
             ),
             Some(Container::AnnexB) => {
                 let codec = match first.encoder.base() {
@@ -640,6 +641,7 @@ impl ZoneEncoder {
                     tasks.make_contiguous(),
                     extension,
                     &cancelled,
+                    true,
                 )
             },
             None => {
@@ -696,8 +698,19 @@ const IVF_NFRAME_OFFSET: usize = 22;
 /// Splits a whole-pass IVF file into one file per task, each with the shared
 /// 32-byte file header. Returns `(bytes, frames)` per task.
 #[cfg(test)]
-fn split_ivf(whole_output: &Path, tasks: &[Task], extension: &str) -> Result<Vec<(u64, usize)>> {
-    split_ivf_cancel(whole_output, tasks, extension, &Cancellation::default())
+fn split_ivf(
+    whole_output: &Path,
+    tasks: &[Task],
+    extension: &str,
+    validate_frame_count: bool,
+) -> Result<Vec<(u64, usize)>> {
+    split_ivf_cancel(
+        whole_output,
+        tasks,
+        extension,
+        &Cancellation::default(),
+        validate_frame_count,
+    )
 }
 
 fn split_ivf_cancel(
@@ -705,6 +718,7 @@ fn split_ivf_cancel(
     tasks: &[Task],
     extension: &str,
     cancellation: &Cancellation,
+    validate_frame_count: bool,
 ) -> Result<Vec<(u64, usize)>> {
     let mut reader = BufReader::new(
         fs::File::open(whole_output)
@@ -723,6 +737,7 @@ fn split_ivf_cancel(
 
     let mut parts: Vec<(PathBuf, u64, usize)> = Vec::with_capacity(tasks.len());
     let mut partials = Vec::new();
+    let mut outputs = Vec::new();
     for task in tasks {
         cancellation.check_forced()?;
         let expected = task.frame_indices.len();
@@ -731,6 +746,7 @@ fn split_ivf_cancel(
         header[IVF_NFRAME_OFFSET..IVF_NFRAME_OFFSET + 4]
             .copy_from_slice(&(expected as u32).to_le_bytes());
         let temp = task.output.with_extension(format!("temp.{extension}"));
+        outputs.push(super::parallel_encoder::TempOutput::new(temp.clone()));
         partials.push(crate::core::process::InterruptedOutput::new(
             &temp,
             cancellation,
@@ -770,6 +786,7 @@ fn split_ivf_cancel(
     if reader.read(&mut trailing)? != 0 {
         bail!("zone output has more frames than the scenes expect");
     }
+    validate_parts(&parts, tasks, validate_frame_count, cancellation)?;
     cancellation.publish(|| {
         for ((part, _, _), task) in parts.iter().zip(tasks) {
             fs::rename(part, &task.output)
@@ -781,6 +798,7 @@ fn split_ivf_cancel(
         Ok(())
     })?;
     drop(partials);
+    drop(outputs);
     Ok(parts.into_iter().map(|(_, bytes, frames)| (bytes, frames)).collect())
 }
 
@@ -793,6 +811,7 @@ fn split_annexb(
     codec: Codec,
     tasks: &[Task],
     extension: &str,
+    validate_frame_count: bool,
 ) -> Result<Vec<(u64, usize)>> {
     split_annexb_cancel(
         whole_output,
@@ -800,6 +819,7 @@ fn split_annexb(
         tasks,
         extension,
         &Cancellation::default(),
+        validate_frame_count,
     )
 }
 
@@ -809,6 +829,7 @@ fn split_annexb_cancel(
     tasks: &[Task],
     extension: &str,
     cancellation: &Cancellation,
+    validate_frame_count: bool,
 ) -> Result<Vec<(u64, usize)>> {
     let file = fs::File::open(whole_output)
         .with_context(|| format!("failed to open {}", whole_output.display()))?;
@@ -818,30 +839,44 @@ fn split_annexb_cancel(
     let mut prefix_complete = false;
     let mut parts: Vec<(PathBuf, u64, usize)> = Vec::with_capacity(tasks.len());
     let mut temp = tasks[0].output.with_extension(format!("temp.{extension}"));
+    let mut outputs = vec![super::parallel_encoder::TempOutput::new(temp.clone())];
     let mut partials = vec![crate::core::process::InterruptedOutput::new(&temp, cancellation)];
     let mut output = new_part(&temp)?;
     let mut bytes = 0u64;
     let mut frames = 0usize;
     let mut part_index = 0usize;
+    let mut picture_end = 0;
 
     while let Some(segment) = nals.next_segment()? {
         cancellation.check_forced()?;
         let frame_start = is_frame_start(codec, &segment);
         if frame_start && frames == tasks[part_index].frame_indices.len() {
             output.flush()?;
-            parts.push((temp, bytes, frames));
             part_index += 1;
             if part_index >= tasks.len() {
                 bail!("zone output has more frames than the scenes expect");
             }
-            temp = tasks[part_index].output.with_extension(format!("temp.{extension}"));
+            let next_temp = tasks[part_index].output.with_extension(format!("temp.{extension}"));
+            outputs.push(super::parallel_encoder::TempOutput::new(next_temp.clone()));
             partials.push(crate::core::process::InterruptedOutput::new(
-                &temp,
+                &next_temp,
                 cancellation,
             ));
-            output = new_part(&temp)?;
-            output.write_all(&prefix)?;
-            bytes = prefix.len() as u64;
+            let mut next = new_part(&next_temp)?;
+            next.write_all(&prefix)?;
+            // Parameter sets/AUD/prefix SEI before the next picture belong to
+            // that part. Leaving them on the previous part produces a dangling
+            // access unit that decoder-backed validation correctly rejects.
+            // Copy the tail from disk instead of buffering arbitrary NAL metadata.
+            let mut tail = fs::File::open(&temp)?;
+            tail.seek(SeekFrom::Start(picture_end))?;
+            std::io::copy(&mut tail.take(bytes - picture_end), &mut next)?;
+            output.get_ref().set_len(picture_end)?;
+            drop(output);
+            parts.push((temp, picture_end, frames));
+            temp = next_temp;
+            output = next;
+            bytes = prefix.len() as u64 + bytes - picture_end;
             frames = 0;
         }
         if !prefix_complete {
@@ -853,6 +888,13 @@ fn split_annexb_cancel(
         }
         output.write_all(&segment)?;
         bytes += segment.len() as u64;
+        let leading_header = segment.get(3).is_some_and(|header| match codec {
+            Codec::H264 => matches!(header & 0x1F, 6..=9),
+            Codec::H265 => matches!((header >> 1) & 0x3F, 32..=35 | 39),
+        });
+        if !leading_header {
+            picture_end = bytes;
+        }
         if frame_start {
             frames += 1;
         }
@@ -876,6 +918,7 @@ fn split_annexb_cancel(
             );
         }
     }
+    validate_parts(&parts, tasks, validate_frame_count, cancellation)?;
     cancellation.publish(|| {
         for (part, task) in parts.iter().zip(tasks) {
             fs::rename(&part.0, &task.output)
@@ -887,7 +930,22 @@ fn split_annexb_cancel(
         Ok(())
     })?;
     drop(partials);
+    drop(outputs);
     Ok(parts.into_iter().map(|(_, bytes, frames)| (bytes, frames)).collect())
+}
+
+fn validate_parts(
+    parts: &[(PathBuf, u64, usize)],
+    tasks: &[Task],
+    count: bool,
+    token: &Cancellation,
+) -> Result<()> {
+    for ((path, _, _), task) in parts.iter().zip(tasks) {
+        super::parallel_encoder::artifact::protect_existing(&task.output)?;
+        super::parallel_encoder::artifact::validate(path, task.frame_indices.len(), count, token)
+            .with_context(|| format!("Scene {} zone output", task.original_index))?;
+    }
+    Ok(())
 }
 
 #[inline]
@@ -1486,7 +1544,7 @@ mod tests {
                 output: directory.join(format!("part{index}.264")),
             })
             .collect();
-        let split = split_annexb(&whole, Codec::H264, &tasks, "264").expect("split");
+        let split = split_annexb(&whole, Codec::H264, &tasks, "264", true).expect("split");
         assert_eq!(
             split.iter().map(|(_, frames)| *frames).collect::<Vec<_>>(),
             scene_frames.to_vec(),
@@ -1647,7 +1705,7 @@ mod tests {
                 output: directory.join(format!("part{index}.hevc")),
             })
             .collect();
-        let split = split_annexb(&whole, Codec::H265, &tasks, "hevc").expect("split");
+        let split = split_annexb(&whole, Codec::H265, &tasks, "hevc", true).expect("split");
         assert_eq!(
             split.iter().map(|(_, frames)| *frames).collect::<Vec<_>>(),
             scene_frames.to_vec(),
@@ -1801,7 +1859,7 @@ mod tests {
                 output: directory.join(format!("part{index}.ivf")),
             })
             .collect();
-        let split = split_ivf(&directory.join("zone.ivf"), &tasks, "ivf").expect("split");
+        let split = split_ivf(&directory.join("zone.ivf"), &tasks, "ivf", true).expect("split");
         assert_eq!(
             split.iter().map(|(_, frames)| *frames).collect::<Vec<_>>(),
             scene_frames.to_vec(),
@@ -2018,7 +2076,7 @@ mod tests {
                 output: directory.join("scene2.ivf"),
             },
         ];
-        let split = split_ivf(&whole, &tasks, "ivf").expect("split");
+        let split = split_ivf(&whole, &tasks, "ivf", false).expect("split");
         // 32-byte header + frame headers + payloads.
         assert_eq!(
             split,
@@ -2085,7 +2143,7 @@ mod tests {
                 output: directory.join("scene2.264"),
             },
         ];
-        let split = split_annexb(&whole, Codec::H264, &tasks, "264").expect("split");
+        let split = split_annexb(&whole, Codec::H264, &tasks, "264", false).expect("split");
         assert_eq!(
             split.iter().map(|(_, frames)| *frames).collect::<Vec<_>>(),
             vec![2, 3, 1]
@@ -2108,5 +2166,38 @@ mod tests {
         assert_eq!(reassembled, fs::read(&whole).expect("whole"));
         let _ = fs::remove_file(&whole);
         let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn e14_zone_parts_require_decodable_frames_before_publication() {
+        let directory = tempfile::tempdir().expect("zone fixture");
+        let whole = directory.path().join("whole.264");
+        fs::write(&whole, synthetic_h264(3)).expect("structurally splittable but undecodable");
+        let task = Task {
+            original_index: 7,
+            index: 0,
+            frame_indices: vec![0, 1, 2],
+            sub_scenes: None,
+            encoder: x264(20.0),
+            output: directory.path().join("scene.264"),
+        };
+        let result = split_annexb_cancel(
+            &whole,
+            Codec::H264,
+            std::slice::from_ref(&task),
+            "264",
+            &Cancellation::default(),
+            true,
+        );
+        assert!(
+            result.is_err(),
+            "NAL starts alone do not establish decodability"
+        );
+        assert!(!task.output.exists(), "invalid zone part is not published");
+        assert_eq!(
+            fs::read_dir(directory.path()).expect("cleanup").count(),
+            1,
+            "only caller-owned whole file remains"
+        );
     }
 }

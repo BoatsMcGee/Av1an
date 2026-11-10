@@ -367,6 +367,7 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
                     workers: None,
                     scenes_directory: scenes_directory.clone(),
                     input: None,
+                    validate_frame_count: true,
                 },
                 scene_concatenator: SceneConcatenatorConfig {
                     method: ConcatMethod::MKVMerge(Default::default()),

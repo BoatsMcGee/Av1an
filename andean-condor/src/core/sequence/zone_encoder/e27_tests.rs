@@ -284,6 +284,7 @@ fn e27_sequence_runtime_child() {
         let mut config = DefaultSequenceConfig::default();
         config.parallel_encoder.workers = Some(1);
         config.parallel_encoder.scenes_directory = scenes_dir.clone();
+        config.parallel_encoder.validate_frame_count = false; // Scheduler markers, not native output.
         let mut condor = Condor::<DefaultSequenceData, DefaultSequenceConfig>::new(
             input,
             Output {
@@ -295,16 +296,22 @@ fn e27_sequence_runtime_child() {
             scenes,
             Some(config),
             Box::new(move |data| {
-                saved_clone.lock().expect("saved snapshots").push(data.scenes.iter().any(|s| {
-                    s.sequence_data.parallel_encoder.bytes.is_some()
-                        || s.sequence_data.parallel_encoder.completed_on.is_some()
-                }));
+                saved_clone.lock().expect("saved snapshots").push(
+                    data.scenes.iter().skip(usize::from(!serial)).any(|s| {
+                        s.sequence_data.parallel_encoder.bytes.is_some()
+                            || s.sequence_data.parallel_encoder.completed_on.is_some()
+                    }),
+                );
                 Ok(())
             }),
         );
         if !serial {
             fs::write(scenes_dir.join("00000.264"), "preexisting scene")
                 .expect("preexisting final");
+            let data = &mut condor.scenes[0].sequence_data.parallel_encoder;
+            data.bytes = Some(17);
+            data.started_on = Some(10);
+            data.completed_on = Some(20);
         }
         let error = if serial {
             SerialEncoder::new(&scenes_dir).execute(&mut condor, tx, cancelled)
@@ -317,10 +324,20 @@ fn e27_sequence_runtime_child() {
             "failed result must not be persisted as successful"
         );
         assert!(
-            condor.scenes.iter().all(|s| s.sequence_data.parallel_encoder.bytes.is_none()
+            condor.scenes.iter().skip(usize::from(!serial)).all(|s| s
+                .sequence_data
+                .parallel_encoder
+                .bytes
+                .is_none()
                 && s.sequence_data.parallel_encoder.completed_on.is_none())
         );
         if !serial {
+            let data = &condor.scenes[0].sequence_data.parallel_encoder;
+            assert_eq!(
+                (data.bytes, data.started_on, data.completed_on),
+                (Some(17), Some(10), Some(20)),
+                "eligible historical peer is not discarded with current failure"
+            );
             assert_eq!(
                 fs::read_to_string(scenes_dir.join("00000.264")).expect("preexisting final"),
                 "preexisting scene"
@@ -417,7 +434,28 @@ fn e27_sequence_runtime_child() {
         matches!(rx.try_recv(), Err(mpsc::TryRecvError::Disconnected)),
         "all sequence progress senders joined/dropped before return"
     );
-    assert!(!events.iter().any(|event| matches!(event, SequenceStatus::Whole(Status::Processing { completion: SequenceCompletion::Custom { name, .. }, .. }) if name == "size")), "failed scenes must not report successful size");
+    let sizes: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            SequenceStatus::Whole(Status::Processing {
+                id,
+                completion:
+                    SequenceCompletion::Custom {
+                        name, completed, ..
+                    },
+            }) if name == "size" => Some((id.as_str(), *completed)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sizes,
+        if !zone && !serial {
+            vec![("0", 17.0)]
+        } else {
+            vec![]
+        },
+        "only eligible historical scene reports size; failed scenes must not report successful size"
+    );
     fs::write(root.join("verified"), "all assertions ran").expect("verification handshake");
     eprintln!(
         "E27 sequence {case}: returned Err without panic/hang; case-specific diagnostics, ordering, persistence, cleanup and sentinels verified"

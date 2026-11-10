@@ -85,7 +85,8 @@ impl TuiApp for ParallelEncoderApp {
                 {
                     let scene = id.parse::<u64>().expect("Scene index is a number");
                     let bytes = completed as u64;
-                    state.scenes.entry(scene).and_modify(|(_, scene)| {
+                    state.scenes.entry(scene).and_modify(|(completed, scene)| {
+                        *completed = (scene.end_frame - scene.start_frame) as u64;
                         scene.sequence_data.parallel_encoder.bytes = Some(bytes);
                     });
                     state.completed_scenes_count = state
@@ -248,9 +249,15 @@ impl ParallelEncoderApp {
     pub fn new(
         workers: u8,
         encoder: Encoder,
-        scenes: BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
+        mut scenes: BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
         clip_info: ClipInfo,
     ) -> ParallelEncoderApp {
+        // Saved bytes are historical, not evidence about the current file.
+        // The sequence emits size only after validating each resumed/new chunk.
+        for (completed, scene) in scenes.values_mut() {
+            *completed = 0;
+            scene.sequence_data.parallel_encoder.bytes = None;
+        }
         let total_frames =
             scenes.iter().map(|(_, (_, s))| (s.end_frame - s.start_frame) as u64).sum();
 
@@ -461,6 +468,43 @@ mod tests {
 
         assert_eq!(state.completed_scenes_count, 0);
         assert_eq!(state.estimated_bytes, 0);
+    }
+
+    #[test]
+    fn e14_saved_metadata_is_not_eligible_until_runtime_size_validation() {
+        let mut scenes = scenes();
+        for (completed, scene) in scenes.values_mut() {
+            *completed = 100;
+            scene.sequence_data.parallel_encoder.bytes = Some(2_000_000);
+            scene.sequence_data.parallel_encoder.started_on = Some(10);
+            scene.sequence_data.parallel_encoder.completed_on = Some(20);
+        }
+        let mut app = ParallelEncoderApp::new(2, encoder(), scenes, clip_info());
+        let state = app.cached_state_mut();
+        assert_eq!(
+            state.completed_scenes_count, 0,
+            "saved records alone do not validate current files"
+        );
+        assert_eq!(state.estimated_bytes, 0);
+        assert_eq!(
+            state.scenes.values().map(|(frames, _)| frames).sum::<u64>(),
+            0
+        );
+        let event = SequenceStatus::Whole(Status::Processing {
+            id: "1".to_owned(),
+            completion: SequenceCompletion::Custom {
+                name: "size".to_owned(),
+                completed: 1000.0,
+                total: 1000.0,
+            },
+        });
+        assert!(ParallelEncoderApp::map_progress(event, state));
+        assert_eq!(state.completed_scenes_count, 1);
+        assert_eq!(
+            state.scenes[&1].0, 100,
+            "validated resume fills its frame range even without encoder progress"
+        );
+        assert!(state.estimated_bytes > 0);
     }
 
     /// The row a worker panel's title sits on, or `None` when no panel

@@ -260,6 +260,21 @@ impl Benchmarker {
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
         cancelled: &crate::utils::cancellation::Cancellation,
     ) -> Result<BenchmarkResult> {
+        // Each worker-count trial owns fresh outputs, not the previous trial's
+        // files. The parallel dispatcher deliberately refuses existing targets.
+        let attempt = tempfile::tempdir()?;
+        let tasks = tasks
+            .iter()
+            .cloned()
+            .map(|mut task| {
+                task.output = attempt.path().join(format!(
+                    "{}.{}",
+                    task.index,
+                    task.encoder.output_extension()
+                ));
+                task
+            })
+            .collect::<VecDeque<_>>();
         let start_time = Instant::now();
         let frames_completed = sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let frames_completed_clone = Arc::clone(&frames_completed);
@@ -316,7 +331,7 @@ impl Benchmarker {
         let encoded = ParallelEncoder::encode_tasks_cancel(
             input,
             workers,
-            tasks.iter().cloned().collect::<VecDeque<_>>(),
+            tasks,
             encode_progress_tx,
             cancelled.clone(),
         );

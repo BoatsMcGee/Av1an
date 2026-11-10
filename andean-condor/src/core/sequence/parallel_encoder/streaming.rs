@@ -51,6 +51,7 @@ impl ParallelEncoder {
         progress_tx: &std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Cancellation,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
+        validate_frame_count: bool,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
@@ -169,9 +170,14 @@ impl ParallelEncoder {
                                                 (encoded, produced)
                                             });
                                             let result = joined_scene_result(encoded, produced)?;
-                                            let ended = std::time::SystemTime::now();
                                             cancelled.check_forced()?;
-                                            let bytes = temp.path.metadata()?.len();
+                                            let bytes = super::artifact::validate(
+                                                &temp.path,
+                                                task.frame_indices.len(),
+                                                validate_frame_count,
+                                                cancelled,
+                                            )?;
+                                            let ended = std::time::SystemTime::now();
                                             let result = cancelled.publish(|| {
                                                 finalize_scene(
                                                     SceneOutcome {

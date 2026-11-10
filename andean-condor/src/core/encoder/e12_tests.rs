@@ -457,6 +457,7 @@ fn e12_scene_child() {
         let mut config = DefaultSequenceConfig::default();
         config.parallel_encoder.scenes_directory = root.clone();
         config.parallel_encoder.workers = Some(1);
+        config.parallel_encoder.validate_frame_count = false; // Finite ownership markers, not bitstreams.
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let saved = Arc::clone(&callbacks);
         let mut condor = Condor::new(
@@ -937,6 +938,7 @@ fn e12_scene_child() {
         let mut config = DefaultSequenceConfig::default();
         config.parallel_encoder.scenes_directory = root.clone();
         config.parallel_encoder.workers = Some(1);
+        config.parallel_encoder.validate_frame_count = false; // Finite ownership markers, not bitstreams.
         let saved = root.join("saved.json");
         let (progress, _rx) = mpsc::channel();
         if case == "zone" || case == "zone-probe" {

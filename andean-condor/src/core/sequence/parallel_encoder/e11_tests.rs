@@ -360,6 +360,7 @@ fn persist_success_after_worker_failure(root: &Path, input: Input, fail_save: bo
     let mut config = DefaultSequenceConfig::default();
     config.parallel_encoder.workers = Some(2);
     config.parallel_encoder.scenes_directory = scenes_dir.clone();
+    config.parallel_encoder.validate_frame_count = false;
     let mut condor = Condor::<DefaultSequenceData, DefaultSequenceConfig>::new(
         input,
         Output {
@@ -581,6 +582,7 @@ fn e11_runtime_child() {
         tx,
         cancelled.into(),
         &mut stream,
+        false, // Scheduling fixtures publish markers, not codec artifacts.
     );
     let success = matches!(kind, "success1" | "success2" | "multipass" | "cancelled");
     if success {

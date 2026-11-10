@@ -77,30 +77,8 @@ pub(super) fn relay_progress(
             },
         })?;
 
-        if progress.pass.0 != total_passes {
-            continue;
-        }
-        // The scene's final pass reached its last frame.
-        if progress.frame == total_scene_frames {
-            task_progress_tx.send(SequenceStatus::Subprocess {
-                parent: Status::Processing {
-                    id: DETAILS.name.to_owned(),
-                    completion: SequenceCompletion::Frames {
-                        completed: total_final_pass_frames_encoded.load(Ordering::Relaxed) as u64,
-                        total: total_process_frames as u64,
-                    },
-                },
-                child: Status::Completed {
-                    id: scene.to_string(),
-                },
-            })?;
-        }
-        // Every scene's final pass is done.
-        if total_final_pass_frames_encoded.load(Ordering::Relaxed) == total_process_frames {
-            task_progress_tx.send(SequenceStatus::Whole(Status::Completed {
-                id: DETAILS.name.to_owned(),
-            }))?;
-        }
+        // Progress is advisory. Only artifact publication can complete a scene;
+        // a codec can report its last frame and still leave truncated output.
     }
     Ok(())
 }
@@ -140,10 +118,9 @@ mod tests {
         status_rx.iter().collect()
     }
 
-    /// The TUI clears a scene from its active list and advances the pass on
-    /// these events, so dropping them stalls the UI until the sequence ends.
+    /// Even final-frame progress cannot establish artifact eligibility.
     #[test]
-    fn a_finished_scene_and_a_finished_encode_report_completion() {
+    fn a_progress_relay_does_not_report_artifact_completion() {
         let frames = 3_usize;
         let statuses = relay_one_scene(frames);
 
@@ -157,8 +134,8 @@ mod tests {
             )
         });
         assert!(
-            scene_completed,
-            "the scene's final frame must report the scene completed"
+            !scene_completed,
+            "final-frame progress must not complete an unvalidated scene"
         );
 
         let encode_completed = statuses.iter().any(|status| {
@@ -168,8 +145,8 @@ mod tests {
             )
         });
         assert!(
-            encode_completed,
-            "the last scene's final frame must report the encode completed"
+            !encode_completed,
+            "final-frame progress must not complete an unvalidated encode"
         );
     }
 

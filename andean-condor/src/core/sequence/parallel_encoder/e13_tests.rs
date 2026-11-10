@@ -210,7 +210,14 @@ fn e13_public_stream_child() {
         );
         result.map(|_| Vec::new())
     } else {
-        ParallelEncoder::encode_tasks_cancel(&mut input, 1, tasks, tx, Cancellation::default())
+        ParallelEncoder::encode_tasks_with_validation(
+            &mut input,
+            1,
+            tasks,
+            tx,
+            Cancellation::default(),
+            case != "valid",
+        )
     };
     let statuses: Vec<_> = rx.try_iter().collect();
     assert!(

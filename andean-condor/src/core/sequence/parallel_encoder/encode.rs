@@ -79,6 +79,8 @@ pub(super) fn finalize_scene(
     if outcome.usable {
         #[cfg(all(test, target_os = "linux"))]
         super::e11_tests::fault("size", scene)?;
+        super::artifact::protect_existing(output)?;
+        fs::rename(outcome.temp_output, output)?;
         size_tx.send(SequenceStatus::Whole(Status::Processing {
             id: scene.to_string(),
             completion: SequenceCompletion::Custom {
@@ -87,7 +89,19 @@ pub(super) fn finalize_scene(
                 total: outcome.bytes as f64,
             },
         }))?;
-        fs::rename(outcome.temp_output, output)?;
+        size_tx.send(SequenceStatus::Subprocess {
+            parent: Status::Processing {
+                id: super::DETAILS.name.to_owned(),
+                completion: SequenceCompletion::Custom {
+                    name: "size".to_owned(),
+                    completed: outcome.bytes as f64,
+                    total: outcome.bytes as f64,
+                },
+            },
+            child: Status::Completed {
+                id: scene.to_string(),
+            },
+        })?;
     } else {
         let _ = fs::remove_file(&outcome.temp_output);
         encoder_errored.store(true, Ordering::Relaxed);
@@ -238,6 +252,20 @@ impl ParallelEncoder {
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: Cancellation,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        Self::encode_tasks_with_validation(input, workers, tasks, progress_tx, cancelled, true)
+    }
+
+    /// Explicit count-only policy for intentional frame-changing filters.
+    /// Successful encoder status and nonempty regular output remain mandatory.
+    #[inline]
+    pub fn encode_tasks_with_validation(
+        input: &mut Input,
+        workers: u8,
+        tasks: VecDeque<Task>,
+        progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Cancellation,
+        validate_frame_count: bool,
+    ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
         }
@@ -256,6 +284,7 @@ impl ParallelEncoder {
             progress_tx,
             cancelled,
             &mut stream,
+            validate_frame_count,
         )?;
         Ok(results)
     }
@@ -265,6 +294,7 @@ impl ParallelEncoder {
         clippy::needless_pass_by_value,
         reason = "Own the shared token through all worker joins"
     )]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn encode_tasks_with_sender(
         input: &mut Input,
         workers: u8,
@@ -272,6 +302,7 @@ impl ParallelEncoder {
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: Cancellation,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
+        validate_frame_count: bool,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
@@ -290,10 +321,20 @@ impl ParallelEncoder {
                 &progress_tx,
                 &cancelled,
                 stream,
+                validate_frame_count,
             );
             #[cfg(all(test, target_os = "linux"))]
             crate::core::encoder::e12_tests::before_stream_return(&cancelled);
-            return crate::core::encoder::cancellation_result(result, &cancelled);
+            let result = crate::core::encoder::cancellation_result(result, &cancelled);
+            if result.as_ref().is_ok_and(|results| results.iter().all(Option::is_some)) {
+                cancelled.publish(|| {
+                    progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                        id: super::DETAILS.name.to_owned(),
+                    }))?;
+                    Ok(())
+                })?;
+            }
+            return result;
         }
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
@@ -351,9 +392,10 @@ impl ParallelEncoder {
                                 guard.success();
                                 return Ok(None);
                             }
+                              cancelled.check_forced()?;
+                             let bytes = super::artifact::validate(&temp.path, task.frame_indices.len(), validate_frame_count, cancelled)
+                                 .map_err(|error| error.context(format!("Scene {}", task.original_index)))?;
                              let ended = std::time::SystemTime::now();
-                             cancelled.check_forced()?;
-                            let bytes = temp.path.metadata()?.len();
                             let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
                             // Preserve the existing nonstream bitrate calculation (unrelated to E28).
                             let bitrate = (bytes * 8) as f64 / (task.frame_indices.len() as f64 * framerate);
@@ -524,8 +566,17 @@ impl ParallelEncoder {
             scheduling.success();
             error.map_or_else(|| Ok(results), Err)
         }));
+        let results = crate::core::encoder::cancellation_result(results, &cancelled);
+        if results.as_ref().is_ok_and(|results| results.iter().all(Option::is_some)) {
+            cancelled.publish(|| {
+                progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                    id: super::DETAILS.name.to_owned(),
+                }))?;
+                Ok(())
+            })?;
+        }
         drop(progress_tx);
-        crate::core::encoder::cancellation_result(results, &cancelled)
+        results
     }
 }
 

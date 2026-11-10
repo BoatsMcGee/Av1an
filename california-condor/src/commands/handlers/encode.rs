@@ -968,6 +968,7 @@ mod tests {
             }),
             workers: Some(2),
             scenes_directory: temp_abs.join("scenes"),
+            validate_frame_count: true,
         };
         if let Input::VapourSynth {
             filters: main_filters,

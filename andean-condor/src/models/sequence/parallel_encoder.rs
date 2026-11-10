@@ -17,6 +17,14 @@ where
     pub workers: Option<u8>,
     pub scenes_directory: PathBuf,
     pub input: Option<InputModel>,
+    /// Decode-count each completed chunk with ffprobe before publishing/resuming.
+    /// Disable only for intentional frame-changing filters; status and size remain mandatory.
+    #[serde(default = "validate_frame_count_default")]
+    pub validate_frame_count: bool,
+}
+
+fn validate_frame_count_default() -> bool {
+    true
 }
 
 impl Default for ParallelEncoderConfig {
@@ -26,6 +34,7 @@ impl Default for ParallelEncoderConfig {
             workers: None,
             scenes_directory: PathBuf::new(),
             input: None,
+            validate_frame_count: true,
         }
     }
 }

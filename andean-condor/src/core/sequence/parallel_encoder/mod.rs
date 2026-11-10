@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use av1_grain::write_grain_table;
 use tracing::{debug, error};
 
@@ -16,12 +16,17 @@ use crate::{
     },
 };
 
+pub(crate) mod artifact;
 mod encode;
 mod error;
 mod lifecycle;
 mod progress;
 mod streaming;
 mod task;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e14_tests;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
@@ -36,6 +41,7 @@ mod e13_tests;
 mod e28_tests;
 
 pub use error::ParallelEncoderError;
+pub(super) use lifecycle::TempOutput;
 pub use task::{ParallelEncoderResult, Task};
 
 /// Frames each streaming worker keeps requested ahead and queued for its
@@ -87,6 +93,10 @@ where
         // Ensure all the scene encoders are validated
         for scene in &condor.scenes {
             scene.encoder.validate()?;
+        }
+
+        if condor.sequence_config.parallel_encoder()?.validate_frame_count {
+            which::which("ffprobe").context("Frame-count validation requires ffprobe on PATH")?;
         }
 
         Ok(((), warnings))
@@ -189,32 +199,95 @@ where
             return Ok(((), warnings));
         }
 
-        let tasks = condor
-            .scenes
-            .iter()
-            .enumerate()
-            .filter(|(index, scene)| {
-                let output = scenes_directory.join(format!(
-                    "{}.{}",
-                    Self::scene_id(*index),
-                    scene.encoder.output_extension()
-                ));
-                !output.exists()
-            })
-            .enumerate()
-            .map(|(index, (original_index, scene))| Task {
+        let mut tasks = std::collections::VecDeque::new();
+        let mut resumed = Vec::new();
+        let mut resume_error = None;
+        let mut metadata_changed = false;
+        for (original_index, scene) in condor.scenes.iter_mut().enumerate() {
+            let output = scenes_directory.join(format!(
+                "{}.{}",
+                Self::scene_id(original_index),
+                scene.encoder.output_extension()
+            ));
+            let data = scene.sequence_data.get_parallel_encoder_mut()?;
+            let recorded =
+                data.bytes.is_some() || data.started_on.is_some() || data.completed_on.is_some();
+            let present = match output.symlink_metadata() {
+                Ok(_) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                // Let the validator reject unreadable candidates through the same
+                // metadata-withdrawal/save path as corrupt and missing chunks.
+                Err(_) => true,
+            };
+            if present || recorded {
+                let eligible = (|| -> Result<u64> {
+                    ensure!(
+                        data.bytes.is_some_and(|bytes| bytes > 0)
+                            && data
+                                .started_on
+                                .zip(data.completed_on)
+                                .is_some_and(|(start, end)| start <= end),
+                        "artifact has no usable saved completed encoding record"
+                    );
+                    artifact::validate(
+                        &output,
+                        (scene.start_frame..scene.end_frame).len(),
+                        config.validate_frame_count,
+                        &cancelled,
+                    )
+                })();
+                match eligible {
+                    Ok(bytes) => {
+                        metadata_changed |= data.bytes != Some(bytes);
+                        data.bytes = Some(bytes);
+                        resumed.push((original_index, bytes));
+                    },
+                    Err(error) if cancelled.is_forced() => return Err(error),
+                    Err(error) => {
+                        *data = Default::default();
+                        metadata_changed |= recorded;
+                        lifecycle::retain_error(&mut resume_error, error.context(format!("Scene {original_index} cannot resume {}; file preserved. Recompute in a new job or move the existing chunk aside and clear its saved completion record", output.display())));
+                    },
+                }
+                continue;
+            }
+            tasks.push_back(Task {
                 original_index,
-                index,
+                index: tasks.len(),
                 frame_indices: (scene.start_frame..scene.end_frame).collect::<Vec<_>>(),
                 sub_scenes: scene.sub_scenes.clone(),
                 encoder: scene.encoder.clone(),
-                output: scenes_directory.join(format!(
-                    "{}.{}",
-                    Self::scene_id(original_index),
-                    scene.encoder.output_extension()
-                )),
-            })
-            .collect::<std::collections::VecDeque<_>>();
+                output,
+            });
+        }
+        if metadata_changed {
+            let saved = (condor.save_callback)(condor.as_data());
+            if let Err(error) = saved {
+                lifecycle::retain_error(
+                    &mut resume_error,
+                    error.context("Saving artifact eligibility metadata"),
+                );
+            }
+        }
+        if let Some(error) = resume_error {
+            return Err(error);
+        }
+        for (scene, bytes) in resumed {
+            cancelled.publish(|| {
+                progress_tx.send(SequenceStatus::Whole(Status::Processing {
+                    id: scene.to_string(),
+                    completion: SequenceCompletion::Custom {
+                        name: "size".to_owned(),
+                        completed: bytes as f64,
+                        total: bytes as f64,
+                    },
+                }))?;
+                Ok(())
+            })?;
+        }
+        if tasks.is_empty() {
+            return Ok(((), warnings));
+        }
 
         let Condor {
             input: condor_input,
@@ -278,6 +351,7 @@ where
             progress_tx,
             cancelled,
             &mut stream,
+            config.validate_frame_count,
         );
 
         if let Err(e) = encoder_thread {
