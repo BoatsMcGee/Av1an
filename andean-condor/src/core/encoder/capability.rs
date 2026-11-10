@@ -9,6 +9,14 @@ use std::{
 use crate::models::encoder::EncoderBase;
 use crate::{core::process::OwnedProcess, utils::cancellation::Cancellation};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+#[cfg(test)]
+#[cfg(unix)]
+#[path = "e20_tests.rs"]
+mod e20_tests;
+
 /// Capabilities that need to be checked per encoder binary
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EncoderCapability {
@@ -132,7 +140,8 @@ fn svt_av1_supports_quarter_step_crf(executable: &Path, cancellation: &Cancellat
 ///
 /// Returns `false` on any failure.
 fn probe_zoning(encoder_base: EncoderBase, executable: &Path, cancellation: &Cancellation) -> bool {
-    let (args, bit_depth, zone_file) = match encoder_base {
+    // Declare scratch before the process owner so it survives even an early-return Drop/reap.
+    let (args, bit_depth, _zone_dir) = match encoder_base {
         EncoderBase::X264 => (
             vec![
                 "-".to_owned(),
@@ -157,8 +166,14 @@ fn probe_zoning(encoder_base: EncoderBase, executable: &Path, cancellation: &Can
             None,
         ),
         EncoderBase::X265 => {
-            let path = std::env::temp_dir()
-                .join(format!("av1an-zone-probe-{}.zonefile", std::process::id()));
+            let mut scratch = tempfile::Builder::new();
+            scratch.prefix("av1an-zone-probe-");
+            #[cfg(unix)]
+            scratch.permissions(std::fs::Permissions::from_mode(0o700));
+            let Ok(dir) = scratch.tempdir() else {
+                return false;
+            };
+            let path = dir.path().join("probe.zonefile");
             if std::fs::write(&path, "0 --crf 30\n").is_err() {
                 return false;
             }
@@ -180,12 +195,18 @@ fn probe_zoning(encoder_base: EncoderBase, executable: &Path, cancellation: &Can
                     crate::core::encoder::NULL_OUTPUT.to_owned(),
                 ],
                 8,
-                Some(path),
+                Some(dir),
             )
         },
         EncoderBase::SVTAV1 => {
-            let path = std::env::temp_dir()
-                .join(format!("av1an-zone-probe-{}.config", std::process::id()));
+            let mut scratch = tempfile::Builder::new();
+            scratch.prefix("av1an-zone-probe-");
+            #[cfg(unix)]
+            scratch.permissions(std::fs::Permissions::from_mode(0o700));
+            let Ok(dir) = scratch.tempdir() else {
+                return false;
+            };
+            let path = dir.path().join("probe.config");
             // Config files are keyed on the option's descriptive name, and the
             // colon separates name from value.
             if std::fs::write(&path, "Zones : 0,0,30\nForceKeyFrames : 0f\n").is_err() {
@@ -217,7 +238,7 @@ fn probe_zoning(encoder_base: EncoderBase, executable: &Path, cancellation: &Can
                     path.display().to_string(),
                 ],
                 10,
-                Some(path),
+                Some(dir),
             )
         },
         _ => return false,
@@ -232,9 +253,6 @@ fn probe_zoning(encoder_base: EncoderBase, executable: &Path, cancellation: &Can
         cancellation,
     );
     let Ok(mut child) = spawned else {
-        if let Some(path) = &zone_file {
-            let _ = std::fs::remove_file(path);
-        }
         return false;
     };
 
@@ -242,11 +260,7 @@ fn probe_zoning(encoder_base: EncoderBase, executable: &Path, cancellation: &Can
         let _ = generate_y4m_stream(stdin, 320, 240, bit_depth);
     }
 
-    let success = child.wait().is_ok_and(|status| status.success());
-    if let Some(path) = &zone_file {
-        let _ = std::fs::remove_file(path);
-    }
-    success
+    child.wait().is_ok_and(|status| status.success())
 }
 
 /// Reads the container from the encoded bytes.
@@ -351,8 +365,13 @@ fn probe_container(key: &BinaryKey, cancellation: &Cancellation) -> Option<Conta
     if key.encoder_base != EncoderBase::SVTAV1 {
         return None;
     }
-    let path =
-        std::env::temp_dir().join(format!("av1an-container-probe-{}.out", std::process::id()));
+    // Outlive help/encode owners, including Drop on errors, and the output read below.
+    let mut scratch = tempfile::Builder::new();
+    scratch.prefix("av1an-container-probe-");
+    #[cfg(unix)]
+    scratch.permissions(std::fs::Permissions::from_mode(0o700));
+    let dir = scratch.tempdir().ok()?;
+    let path = dir.path().join("probe.out");
     let mut args = vec![
         "-i".to_owned(),
         "stdin".to_owned(),
@@ -385,12 +404,9 @@ fn probe_container(key: &BinaryKey, cancellation: &Cancellation) -> Option<Conta
         let _ = generate_y4m_stream(stdin, 320, 240, 10);
     }
     if !child.wait().is_ok_and(|status| status.success()) {
-        let _ = std::fs::remove_file(&path);
         return None;
     }
-    let container = std::fs::read(&path).ok().as_deref().and_then(detect_container);
-    let _ = std::fs::remove_file(&path);
-    container
+    std::fs::read(&path).ok().as_deref().and_then(detect_container)
 }
 
 /// Checks if encoder supports capability and caches the result
