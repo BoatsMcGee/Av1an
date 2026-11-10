@@ -31,7 +31,7 @@ Each encoder ships with Condor defaults (merged with `--params`):
 | `avm`   | `--threads=8 --cpu-used=6 --qp=30 --kf-max-dist=9999 --end-usage=q`       |
 | `x264`  | `--crf 25 --scenecut 0 --preset slow --keyint infinite --stitchable`      |
 | `x265`  | `--crf 25 --level-idc 5 --keyint -1 --scenecut 0 -D 10 --y4m --preset slow` |
-| `vvenc` | none                                                                     |
+| `vvenc` | `--y4m`                                                                  |
 | `ffmpeg` | none                                                                    |
 
 Target Quality (`--tq-params`) additionally strips psychovisual parameters (e.g. film-grain tables) for metric accuracy.
