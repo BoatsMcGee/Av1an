@@ -90,6 +90,14 @@ Only frontend-supported totals are accepted: `1` or `2`, with `avm` limited to
 settings require VBR (`--rc 1`) and preset `<= 9`; CRF/CQP and CBR are single-pass.
 See [settings validation](../configuration/condor/encoder.md#settings-validation).
 
+Automatic two-pass encoding of a streamed input first saves the complete
+uncompressed Y4M stream in the job's output area, then replays that same temporary
+file for each pass with bounded input buffers. Allow disk space for **one full
+uncompressed Y4M stream per active two-pass attempt**, plus output and statistics.
+The spool is reused across passes and freed on completion or error. Capture must
+finish before the first encoder starts: this trades disk I/O and startup latency
+for bounded replay memory. One-pass encoding remains fully streaming.
+
 ### Default
 
 If not specified, `2` for `aom` and `vpx` encoders, otherwise `1`. `aom` and `vpx` benefit from two-pass mode even with constant quality mode.

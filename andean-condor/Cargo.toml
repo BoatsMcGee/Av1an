@@ -48,6 +48,7 @@ serde_json = "1.0.148"
 simdutf8 = "0.1.5"
 strum = { version = "0.28", features = ["derive"] }
 sysinfo = "0.39"
+tempfile = { workspace = true }
 textwrap = "0.16.2"
 thiserror = "2.0.17"
 tracing = { workspace = true }
@@ -62,9 +63,6 @@ ort = { version = "=2.0.0-rc.12", features = ["directml"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 ort = { version = "=2.0.0-rc.12", features = ["coreml"] }
-
-[dev-dependencies]
-tempfile = { workspace = true }
 
 [features]
 default = []

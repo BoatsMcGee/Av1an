@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fmt::Display,
     io::{Cursor, Write},
     path::{Path, PathBuf},
@@ -32,6 +32,7 @@ pub mod capability;
 pub mod color_data;
 pub mod parse;
 pub(crate) mod pipes;
+mod spool;
 pub mod string_or_bytes;
 pub use capability::{Container, EncoderCapability};
 pub use parse::*;
@@ -761,6 +762,9 @@ impl Encoder {
     /// For isolated manual attempts, call `encode_pass_with_stream` with a shared context.
     /// Stops after the first failed pass, once its workers have joined.
     /// A nonzero exit without worker errors returns an `EncoderResult` error.
+    /// Automatic multipass streams first capture one uncompressed Y4M spool under
+    /// the output parent, then replay bounded chunks. Allow disk space for the full
+    /// stream per active attempt; capture completes before encoding starts.
     pub fn encode_with_stream(
         &self,
         frames_rx: crossbeam_channel::Receiver<Cursor<Vec<u8>>>,
@@ -769,11 +773,6 @@ impl Encoder {
         clip_info: &ClipInfo,
     ) -> Result<EncoderResult> {
         self.validate()?;
-        let stats = if matches!(self.passes(), EncoderPasses::All(total) if total > 1) {
-            Some(PassStatistics::new(output)?)
-        } else {
-            None
-        };
         match self.passes() {
             EncoderPasses::All(1) => {
                 let _ = progress_tx.send(EncodeProgress {
@@ -806,48 +805,26 @@ impl Encoder {
                 )?)
             },
             EncoderPasses::All(total) => {
-                let mut frame_senders: BTreeMap<u8, crossbeam_channel::Sender<Cursor<Vec<u8>>>> =
-                    BTreeMap::new();
-                let mut frame_receivers = BTreeMap::new();
-                for pass in 1..=total {
-                    let (frame_sender, frame_receiver) =
-                        crossbeam_channel::unbounded::<Cursor<Vec<u8>>>();
-                    frame_senders.insert(pass, frame_sender);
-                    frame_receivers.insert(pass, frame_receiver);
-                }
-                let mut result = EncoderResult {
-                    encoder: self.base(),
-                    parameters: self.parameters_with_output((1, total), output, clip_info)?,
-                    status: std::process::ExitStatus::default(),
-                    stdout: StringOrBytes::from(Vec::new()),
-                    stderr: StringOrBytes::from(Vec::new()),
-                };
-                thread::spawn(move || -> Result<()> {
-                    for frame in frames_rx {
-                        for frame_sender in frame_senders.values() {
-                            frame_sender.send(frame.clone())?;
-                        }
-                    }
-                    Ok(())
-                });
-                for pass in 1..=total {
+                let stats = PassStatistics::new(output)?;
+                let file = spool::create(
+                    stats.base().parent().context("Statistics need a parent")?,
+                    output,
+                )?;
+                spool::encode(file, frames_rx, output, total, |pass, frames_rx| {
                     let _ = progress_tx.send(EncodeProgress {
                         pass: (pass, total),
                         frame: 0,
                         usage: EncodeResourceUsage::default(),
                     });
-                    let frames_rx = frame_receivers.remove(&pass).expect("receiver exists");
-                    let progress_tx = progress_tx.clone();
-                    result = self.encode_pass_with_stream(
+                    self.encode_pass_with_stream(
                         (pass, total),
                         frames_rx,
                         output,
-                        progress_tx,
+                        progress_tx.clone(),
                         clip_info,
-                        stats.as_ref(),
-                    )?;
-                }
-                Ok(result)
+                        Some(&stats),
+                    )
+                })
             },
         }
     }
@@ -1523,6 +1500,10 @@ mod e08_tests;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod e27_tests;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e09_tests;
 
 #[cfg(test)]
 mod tests {
