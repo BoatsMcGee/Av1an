@@ -144,7 +144,7 @@ fn main() -> io::Result<()> {
     }
     if !case.starts_with("filter") && output != PathBuf::from("/dev/null") && !output.exists() { fs::write(output, "interrupted")?; }
     let mut grandchild = Command::new(std::env::current_exe()?).arg("grandchild").spawn()?;
-    if case == "mid-production" {
+    if case == "mid-production" || case == "stdin-full" {
         io::stdout().write_all(b"E12 mid stdout\xff\n")?;
         io::stdout().flush()?;
         io::stderr().write_all(b"E12 mid stderr\xfe\n")?;

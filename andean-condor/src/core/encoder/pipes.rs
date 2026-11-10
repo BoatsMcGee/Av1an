@@ -221,8 +221,16 @@ pub struct EncoderProcessError {
 impl Display for EncoderProcessError {
     #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A rejected invocation closes stdin; report the codec, not its broken pipe, first.
+        let failed = self.result.as_ref().filter(|result| !result.status.success());
+        if let Some(result) = failed {
+            writeln!(f, "{result}")?;
+        }
         for error in &self.failures {
             writeln!(f, "{error:#}")?;
+        }
+        if failed.is_some() {
+            return Ok(());
         }
         if let Some(result) = &self.result {
             Display::fmt(result, f)
@@ -268,6 +276,63 @@ mod tests {
             }
             assert!(!self.panic, "injected reader panic");
             Err(io::Error::other("injected reader error"))
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn e13_process_display_prioritizes_failed_codec_but_retains_io_and_raw_bytes() {
+        use std::os::unix::process::ExitStatusExt;
+        for status in [Some(42), Some(0), None] {
+            let result = status.map(|code| EncoderResult {
+                encoder: EncoderBase::X264,
+                parameters: vec!["--bad-flag".into()],
+                status: std::process::ExitStatus::from_raw(code << 8),
+                stdout: b"stdout\xff".to_vec().into(),
+                stderr: b"codec rejected flag\xfe".to_vec().into(),
+            });
+            let error = EncoderProcessError {
+                result,
+                stdout: b"stdout\xff".to_vec().into(),
+                stderr: b"codec rejected flag\xfe".to_vec().into(),
+                failures: vec![
+                    anyhow::Error::from(io::Error::from(io::ErrorKind::BrokenPipe))
+                        .context("Writing encoder STDIN"),
+                ],
+            };
+            let text = error.to_string();
+            if status == Some(42) {
+                assert!(text.starts_with("Encoder ("), "{text}");
+                assert!(
+                    text.find("42").expect("status")
+                        < text.find("Writing encoder STDIN").expect("worker failure")
+                );
+            } else {
+                assert!(
+                    text.starts_with("Writing encoder STDIN"),
+                    "IO is primary without a failed child: {text}"
+                );
+            }
+            assert!(text.contains("broken pipe"), "{text}");
+            assert!(
+                matches!(&error.stderr, StringOrBytes::Bytes(bytes) if bytes == b"codec rejected flag\xfe")
+            );
+            let source = std::error::Error::source(&error);
+            if let Some(code) = status {
+                assert_eq!(
+                    source
+                        .expect("typed result source")
+                        .downcast_ref::<EncoderResult>()
+                        .expect("result")
+                        .status
+                        .code(),
+                    Some(code)
+                );
+            } else {
+                assert!(source.is_none());
+                assert!(text.contains("Encoder status unavailable"));
+                assert!(!text.contains("exit status:"), "no fabricated status");
+            }
         }
     }
 

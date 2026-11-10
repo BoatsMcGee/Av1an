@@ -29,6 +29,10 @@ mod e11_tests;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]
+mod e13_tests;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod e28_tests;
 
 pub use error::ParallelEncoderError;

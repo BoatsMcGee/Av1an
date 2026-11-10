@@ -1,7 +1,7 @@
 //! Bounded frame streaming; active finite jobs finish on admission shutdown.
 use std::{collections::VecDeque, io::Cursor, sync::atomic::AtomicUsize, thread};
 
-use crate::utils::cancellation::Cancellation;
+use crate::utils::cancellation::{Cancellation, Cancelled};
 use anyhow::Result;
 
 use super::{
@@ -11,7 +11,32 @@ use super::{
     lifecycle::{Stop, TempOutput, retain_error},
     task::{ParallelEncoderResult, ResultStream, Task},
 };
-use crate::core::{input::Input, sequence::SequenceStatus};
+use crate::core::{encoder::EncoderResult, input::Input, sequence::SequenceStatus};
+
+/// Merge only after the consumer (including filter/relays) and producer have joined.
+pub(super) fn joined_scene_result(
+    encoded: Result<EncoderResult>,
+    produced: Result<()>,
+) -> Result<EncoderResult> {
+    match (encoded, produced) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(encoded), Err(produced)) => {
+            // A closed receiver is fallout; an actual decode failure explains truncated input.
+            let (primary, secondary) = if produced
+                .is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>()
+                || produced.is::<Cancelled>()
+                || encoded.downcast_ref::<Cancelled>() == Some(&Cancelled::Forced)
+            {
+                (encoded, produced)
+            } else {
+                (produced, encoded)
+            };
+            let context = format!("{primary:#}\nSecondary scene failure: {secondary:#}");
+            Err(primary.context(context))
+        },
+    }
+}
 
 impl ParallelEncoder {
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -140,20 +165,7 @@ impl ParallelEncoder {
                                                 });
                                                 (encoded, produced)
                                             });
-                                            let mut error = None;
-                                            let result = match encoded {
-                                                Ok(result) => Some(result),
-                                                Err(err) => {
-                                                    retain_error(&mut error, err);
-                                                    None
-                                                },
-                                            };
-                                            if let Err(err) = produced {
-                                                retain_error(&mut error, err);
-                                            }
-                                            if let Some(err) = error {
-                                                return Err(err);
-                                            }
+                                            let result = joined_scene_result(encoded, produced)?;
                                             let ended = std::time::SystemTime::now();
                                             cancelled.check_forced()?;
                                             let bytes = temp.path.metadata()?.len();
@@ -177,8 +189,7 @@ impl ParallelEncoder {
                                                     bitrate: (bytes * 8) as f64
                                                         / (task.frame_indices.len() as f64
                                                             / framerate),
-                                                    result: result
-                                                        .expect("successful consumer result"),
+                                                    result,
                                                 };
                                                 results_tx.send(result.clone())?;
                                                 finished.release();

@@ -118,6 +118,35 @@ fn e12_bounded_scene_force() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+#[test]
+fn e13_bounded_force_with_full_producer_retains_raw_diagnostics() {
+    let dir = tempfile::tempdir().expect("fixture");
+    let root = dir.path();
+    fs::write(root.join("fake.rs"), include_str!("e12_fixture.rs")).expect("source");
+    e02_tests::run_bounded(
+        Command::new("rustc").arg(root.join("fake.rs")).arg("-o").arg(root.join("fake")),
+        &root.join("rustc.log"),
+    );
+    let output = Command::new(root.join("fake"))
+        .arg("supervise")
+        .arg(std::env::current_exe().expect("test binary"))
+        .arg(root)
+        .arg("stdin-full")
+        .output()
+        .expect("bounded force supervisor");
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("test result: ok. 1 passed;"), "{text}");
+    assert!(
+        text.lines().any(|line| line == "E12 case=stdin-full selected=true rescued=0"),
+        "{text}"
+    );
+}
+
 fn wait_file(root: &Path, name: &str) {
     while !root.join(name).exists() {
         thread::yield_now();
@@ -1002,7 +1031,7 @@ fn e12_scene_child() {
                 "forced encoder diagnostics/status must remain typed: {error:#}"
             );
         }
-        if case == "mid-production" {
+        if case == "mid-production" || case == "stdin-full" {
             let diagnostic = error
                 .chain()
                 .find_map(|cause| cause.downcast_ref::<EncoderResult>())
