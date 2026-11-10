@@ -22,17 +22,20 @@ pub(super) fn joined_scene_result(
         (Ok(result), Ok(())) => Ok(result),
         (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
         (Err(encoded), Err(produced)) => {
-            // A closed receiver is fallout; an actual decode failure explains truncated input.
-            let (primary, secondary) = if produced
-                .is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>()
+            // A closed receiver is fallout, not an independent source failure.
+            if produced.is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>()
                 || produced.is::<Cancelled>()
-                || encoded.downcast_ref::<Cancelled>() == Some(&Cancelled::Forced)
             {
-                (encoded, produced)
-            } else {
-                (produced, encoded)
-            };
-            let context = format!("{primary:#}\nSecondary scene failure: {secondary:#}");
+                return Err(encoded);
+            }
+            let (primary, secondary) =
+                if encoded.downcast_ref::<Cancelled>() == Some(&Cancelled::Forced) {
+                    (encoded, produced)
+                } else {
+                    (produced, encoded)
+                };
+            // anyhow renders the primary chain itself; only repeat its outer label here.
+            let context = format!("{primary}\nSecondary scene failure: {secondary:#}");
             Err(primary.context(context))
         },
     }

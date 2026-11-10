@@ -290,12 +290,10 @@ fn e13_public_stream_child() {
                 "E13 invalid encoder flag"
             };
             assert!(codec.stderr.to_string().contains(marker), "{text}");
-            if matches!(case, "early" | "badflag" | "execute") {
-                assert!(
-                    text.contains("frame production: sending on a disconnected channel"),
-                    "actual producer disconnect retained: {text}"
-                );
-            }
+            assert!(
+                !text.contains("sending on a disconnected channel"),
+                "producer fallout must not add diagnostic noise: {text}"
+            );
             let codec_position = text.find("Encoder (").expect("encoder diagnostic");
             for symptom in
                 ["Broken pipe", "Writing encoder STDIN", "sending on a disconnected channel"]
@@ -373,11 +371,7 @@ fn e13_joined_priority_retains_primary_types_and_returned_secondary_context() {
         result_in(&merged).expect("typed codec").status.code(),
         Some(42)
     );
-    assert!(
-        merged
-            .to_string()
-            .contains("Secondary scene failure: sending on a disconnected channel")
-    );
+    assert!(!format!("{merged:#}").contains("sending on a disconnected channel"));
 
     let merged =
         streaming::joined_scene_result(Err(encoded()), Err(decode())).expect_err("decode primary");
@@ -386,14 +380,16 @@ fn e13_joined_priority_retains_primary_types_and_returned_secondary_context() {
         io::ErrorKind::InvalidData
     );
     assert_eq!(merged.root_cause().to_string(), "E13 decoder cause");
-    let text = merged.to_string();
+    let text = format!("{merged:#}");
+    assert!(text.starts_with("Scene 7 frame production"), "{text}");
     assert!(
-        text.find("E13 decoder cause").expect("source diagnostic")
-            < text.find("E13 codec cause").expect("returned secondary")
+        text.contains("E13 decoder cause") && text.contains("E13 codec cause"),
+        "{text}"
     );
     assert!(text.contains("Scene 7") && text.contains("42"), "{text}");
 
     let forced = anyhow::Error::from(codec()).context(Cancelled::Forced);
+    let baseline = [format!("{forced:#}"), format!("{forced:?}")];
     let merged =
         streaming::joined_scene_result(Err(forced), Err(decode())).expect_err("force primary");
     assert_eq!(merged.downcast_ref::<Cancelled>(), Some(&Cancelled::Forced));
@@ -402,6 +398,19 @@ fn e13_joined_priority_retains_primary_types_and_returned_secondary_context() {
         Some(42)
     );
     assert!(merged.to_string().contains("E13 decoder cause"));
+    for (baseline, rendered) in
+        baseline.into_iter().zip([format!("{merged:#}"), format!("{merged:?}")])
+    {
+        assert_eq!(
+            rendered.matches("E13 codec cause").count(),
+            baseline.matches("E13 codec cause").count(),
+            "forced primary is not copied into context: {rendered}"
+        );
+        assert!(
+            rendered.contains("Scene 7 frame production") && rendered.contains("E13 decoder cause"),
+            "genuine producer failure retained under force: {rendered}"
+        );
+    }
 
     let merged = streaming::joined_scene_result(Ok(codec()), Err(decode()))
         .expect_err("source without consumer failure");
@@ -412,4 +421,130 @@ fn e13_joined_priority_retains_primary_types_and_returned_secondary_context() {
             .is::<ParallelEncoderError>()
     );
     assert!(streaming::joined_scene_result(Ok(codec()), Ok(())).is_ok());
+}
+
+#[test]
+fn e13_fallout_keeps_anyhow_alternate_and_debug_consumer_baseline() {
+    use crate::utils::cancellation::Cancelled;
+    use std::{io, os::unix::process::ExitStatusExt};
+    let mut differences = Vec::new();
+    for kind in ["send", "graceful", "forced"] {
+        let producer = match kind {
+            "send" => {
+                anyhow::Error::from(crossbeam_channel::SendError(std::io::Cursor::new(vec![
+                    0_u8,
+                ])))
+            },
+            "graceful" => Cancelled::Graceful.into(),
+            _ => Cancelled::Forced.into(),
+        }
+        .context("Scene 7 frame production");
+        let codec = EncoderResult {
+            encoder: EncoderBase::X264,
+            parameters: vec!["--bad-flag".into()],
+            status: std::process::ExitStatus::from_raw(42 << 8),
+            stdout: "E13 M1 unique stdout marker".to_owned().into(),
+            stderr: "E13 M1 unique stderr marker".to_owned().into(),
+        };
+        let consumer = anyhow::Error::from(EncoderProcessError {
+            stdout: codec.stdout.clone(),
+            stderr: codec.stderr.clone(),
+            result: Some(codec),
+            failures: vec![
+                anyhow::Error::from(io::Error::from(io::ErrorKind::BrokenPipe))
+                    .context("Writing encoder STDIN"),
+            ],
+        })
+        .context("Scene 7 consumer");
+        let baseline = [format!("{consumer:#}"), format!("{consumer:?}")];
+        let original_root = consumer.root_cause().to_string();
+        let merged = streaming::joined_scene_result(Err(consumer), Err(producer))
+            .expect_err("original consumer failure");
+        assert!(merged.is::<EncoderProcessError>());
+        assert_eq!(
+            result_in(&merged).expect("typed codec").status.code(),
+            Some(42)
+        );
+        assert_eq!(merged.root_cause().to_string(), original_root);
+        for ((style, baseline), rendered) in ["alternate", "Debug"]
+            .into_iter()
+            .zip(baseline)
+            .zip([format!("{merged:#}"), format!("{merged:?}")])
+        {
+            for marker in ["E13 M1 unique stdout marker", "E13 M1 unique stderr marker"] {
+                let before = baseline.matches(marker).count();
+                let after = rendered.matches(marker).count();
+                assert!(before > 0, "non-vacuous consumer baseline");
+                if after != before {
+                    differences.push(format!(
+                        "{kind}/{style}: {marker}: baseline={before}, joined={after}"
+                    ));
+                }
+            }
+            if rendered != baseline {
+                differences.push(format!(
+                    "{kind}/{style}: fallout changed original consumer rendering"
+                ));
+            }
+        }
+    }
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
+}
+
+#[test]
+fn e13_genuine_secondary_keeps_nested_primary_cause_once_in_anyhow_rendering() {
+    use std::{io, os::unix::process::ExitStatusExt};
+    let producer = anyhow::Error::from(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "E13 M1 unique inner decode cause",
+    ))
+    .context("E13 M1 decode operation")
+    .context("Scene 7 frame production");
+    let baseline = [format!("{producer:#}"), format!("{producer:?}")];
+    let consumer = anyhow::Error::from(EncoderResult {
+        encoder: EncoderBase::X264,
+        parameters: vec![],
+        status: std::process::ExitStatus::from_raw(42 << 8),
+        stdout: "E13 M1 secondary stdout marker".to_owned().into(),
+        stderr: "E13 M1 secondary stderr marker".to_owned().into(),
+    })
+    .context("Scene 7 consumer");
+    let merged = streaming::joined_scene_result(Err(consumer), Err(producer))
+        .expect_err("genuine double failure");
+    assert_eq!(
+        merged.downcast_ref::<io::Error>().expect("original typed source").kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(
+        merged.root_cause().to_string(),
+        "E13 M1 unique inner decode cause"
+    );
+    assert!(merged.to_string().starts_with("Scene 7 frame production"));
+    let mut differences = Vec::new();
+    for ((style, baseline), rendered) in ["alternate", "Debug"]
+        .into_iter()
+        .zip(baseline)
+        .zip([format!("{merged:#}"), format!("{merged:?}")])
+    {
+        for marker in [
+            "E13 M1 secondary stdout marker",
+            "E13 M1 secondary stderr marker",
+            "Scene 7 consumer",
+            "E13 M1 decode operation",
+        ] {
+            assert!(
+                rendered.contains(marker),
+                "{style}: both genuine diagnostics returned: {rendered}"
+            );
+        }
+        let before = baseline.matches("E13 M1 unique inner decode cause").count();
+        let after = rendered.matches("E13 M1 unique inner decode cause").count();
+        assert_eq!(before, 1, "literal source cause baseline");
+        if after != before {
+            differences.push(format!(
+                "{style}: inner decode cause baseline={before}, joined={after}"
+            ));
+        }
+    }
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
