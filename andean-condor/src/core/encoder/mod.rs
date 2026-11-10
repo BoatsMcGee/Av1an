@@ -13,7 +13,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use av1_grain::{GrainTableSegment, NoiseGenArgs, TransferFunction, generate_photon_noise_params};
 use cfg_if::cfg_if;
 use nom::AsBytes;
@@ -37,6 +37,90 @@ pub use parse::*;
 pub use string_or_bytes::StringOrBytes;
 
 const NULL_OUTPUT: &str = if cfg!(windows) { "nul" } else { "/dev/null" };
+
+/// Statistics shared by every pass of one attempt. Clones keep owned files alive.
+///
+/// Use `new(output)` for isolated, automatically cleaned statistics, or `external(base)`
+/// for caller-owned files. Keep this context across direct per-pass calls; never create
+/// a separate context for pass two. Native path overrides remain caller-owned.
+#[derive(Clone, Debug)]
+pub struct PassStatistics {
+    base: PathBuf,
+    _directory: Option<Arc<StatisticsDirectory>>,
+}
+
+#[derive(Debug)]
+struct StatisticsDirectory(PathBuf);
+
+impl Drop for StatisticsDirectory {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+            tracing::warn!(path = %self.0.display(), %error, "Could not remove pass statistics");
+        }
+    }
+}
+
+impl PassStatistics {
+    /// Creates a uniquely owned directory under the output's absolute parent.
+    /// The parent must already exist. Errors do not start an encoder process.
+    #[inline]
+    pub fn new(output: &Path) -> Result<Self> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let output = absolute_file_path(output)?;
+        let parent = output.parent().context("Output needs a parent directory")?;
+        loop {
+            let directory = parent.join(format!(
+                ".av1an-stats-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            // RATIONALE: Atomic create (not exists + create_dir_all) establishes ownership.
+            match builder.create(&directory) {
+                Ok(()) => {
+                    return Ok(Self {
+                        base: directory
+                            .join(output.file_stem().context("Output needs a basename")?),
+                        _directory: Some(Arc::new(StatisticsDirectory(directory))),
+                    });
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Creating pass statistics under {}", parent.display())
+                    });
+                },
+            }
+        }
+    }
+
+    /// Uses a caller-owned base without creating or deleting any files.
+    #[inline]
+    pub fn external(base: &Path) -> Result<Self> {
+        Ok(Self {
+            base: absolute_file_path(base)?,
+            _directory: None,
+        })
+    }
+
+    /// Absolute base; the encoder appends its native statistics/analysis suffix.
+    #[inline]
+    pub fn base(&self) -> &Path {
+        &self.base
+    }
+}
+
+fn absolute_file_path(path: &Path) -> Result<PathBuf> {
+    let text = path.to_str().context("Encoder paths must be UTF-8")?;
+    anyhow::ensure!(!text.contains('\0'), "Encoder paths cannot contain NUL");
+    anyhow::ensure!(path.file_name().is_some(), "Encoder path needs a basename");
+    std::path::absolute(path).with_context(|| format!("Resolving encoder path {}", path.display()))
+}
 
 impl Encoder {
     #[inline]
@@ -93,21 +177,39 @@ impl Encoder {
     }
 
     #[inline]
+    /// Builds argv without creating files. The output-derived statistics base is
+    /// caller-owned and shared across calls; use `parameters_with_stats` for isolation.
     pub fn parameters_with_output(
         &self,
         pass: (u8, u8),
-        output: &PathBuf,
+        output: &Path,
         clip_info: &ClipInfo,
     ) -> Result<Vec<String>> {
         self.validate_settings()?;
         self.validate_pass_settings(pass)?;
-        let output_path = output.to_str().expect("Output path should exist");
-        let first_pass_file_name = output
-            .file_stem()
-            .expect("Output path is a file with an extension")
-            .to_str()
-            .expect("Output path is not empty");
-        let pass_parameters = self.base().pass_parameters(pass, first_pass_file_name)?;
+        let base = absolute_file_path(output)?.with_extension("");
+        self.parameters_with_stats(pass, output, clip_info, &base)
+    }
+
+    /// Builds argv using an explicit shared statistics base; does not own or create it.
+    /// User-provided native statistics options override this generated base unchanged.
+    #[inline]
+    pub fn parameters_with_stats(
+        &self,
+        pass: (u8, u8),
+        output: &Path,
+        clip_info: &ClipInfo,
+        stats_base: &Path,
+    ) -> Result<Vec<String>> {
+        self.validate_settings()?;
+        self.validate_pass_settings(pass)?;
+        absolute_file_path(output)?;
+        let output_path = output.to_str().context("Encoder output must be UTF-8")?;
+        let stats_base = absolute_file_path(stats_base)?;
+        let pass_parameters = self.base().pass_parameters(
+            pass,
+            stats_base.to_str().context("Statistics base must be UTF-8")?,
+        )?;
         let color_parameters = if self.append_color_data() {
             color_data::color_parameters(self.base(), clip_info)
         } else {
@@ -423,16 +525,23 @@ impl Encoder {
         })
     }
 
+    /// Automatic multi-pass attempts own isolated statistics. `Specific` reuses
+    /// caller-owned output-derived files; use a shared context for isolated manual passes.
     #[inline]
     pub fn encode_with_input(
         &self,
         input: &mut Input,
-        output: &PathBuf,
+        output: &Path,
         start_frame: usize,
         end_frame: usize,
         progress_tx: mpsc::Sender<EncodeProgress>,
     ) -> Result<EncoderResult> {
         self.validate_settings()?;
+        let stats = if matches!(self.passes(), EncoderPasses::All(total) if total > 1) {
+            Some(PassStatistics::new(output)?)
+        } else {
+            None
+        };
         match self.passes() {
             EncoderPasses::All(1) => Ok(self.encode_pass_with_input(
                 input,
@@ -441,6 +550,7 @@ impl Encoder {
                 end_frame,
                 (1, 1),
                 progress_tx,
+                None,
             )?),
             EncoderPasses::Specific(current, total) => Ok(self.encode_pass_with_input(
                 input,
@@ -449,6 +559,7 @@ impl Encoder {
                 end_frame,
                 (current, total),
                 progress_tx,
+                None,
             )?),
             EncoderPasses::All(total) => {
                 let clip_info = input.clip_info()?;
@@ -468,6 +579,7 @@ impl Encoder {
                         end_frame,
                         (pass, total),
                         progress_tx,
+                        stats.as_ref(),
                     )?;
                 }
 
@@ -476,18 +588,26 @@ impl Encoder {
         }
     }
 
+    /// Encodes one pass. Reuse the same `PassStatistics` for all passes of an attempt.
+    /// `None` uses caller-owned output-derived files (no automatic cleanup/isolation).
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn encode_pass_with_input(
         &self,
         input: &mut Input,
-        output: &PathBuf,
+        output: &Path,
         start_frame: usize,
         end_frame: usize,
         pass: (u8, u8),
         progress_tx: mpsc::Sender<EncodeProgress>,
+        stats: Option<&PassStatistics>,
     ) -> Result<EncoderResult> {
         self.validate_settings()?;
         self.validate_pass_settings(pass)?;
+        let stats_base = stats.map_or_else(
+            || absolute_file_path(output).map(|p| p.with_extension("")),
+            |s| Ok(s.base().to_path_buf()),
+        )?;
         // TODO:
         // - Report mapped errors
         // - Report CPU, memory, disk usage - Performance testing required
@@ -496,12 +616,13 @@ impl Encoder {
         static BUFFER_CAPACITY: usize = 128;
         let base_encoder = self.base();
         let clip_info = input.clip_info()?;
+        let parameters = self.parameters_with_stats(pass, output, &clip_info, &stats_base)?;
         let y4m_header = input.y4m_header(Some(end_frame - start_frame))?;
         let mut reader = input.frame_reader()?;
 
         let mut system = sysinfo::System::new();
         let mut encoder = Command::new(self.executable())
-            .args(self.parameters_with_output(pass, output, &clip_info)?)
+            .args(&parameters)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -518,6 +639,12 @@ impl Encoder {
 
         let mut stdin = encoder.stdin.take().expect("Encoder should have STDIN");
         let stderr = encoder.stderr.take().expect("Encoder should have STDERR");
+        let stats = stats.cloned();
+        let encoder_output_thread = thread::spawn(move || {
+            // Keep owned statistics until the child is reaped, even on an early input error.
+            let _stats = stats;
+            encoder.wait_with_output()
+        });
 
         let encoder_stderr_thread = thread::spawn(move || -> Result<_> {
             let mut reader = BufReader::new(stderr);
@@ -614,12 +741,14 @@ impl Encoder {
             .map_err(|_| anyhow::Error::msg("Failed to join STDERR thread"))?
             .ok();
 
-        let encoder_output = encoder.wait_with_output().expect("Encoder should finish");
+        let encoder_output = encoder_output_thread
+            .join()
+            .map_err(|_| anyhow::anyhow!("Failed to join encoder wait thread"))??;
         let encode_duration = decode_start_time.elapsed();
 
         let encoder_result = EncoderResult {
             encoder: self.base(),
-            parameters: self.parameters_with_output(pass, output, &clip_info)?,
+            parameters,
             status: encoder_output.status,
             stdout: StringOrBytes::from(encoder_output.stdout),
             stderr: stderr_output.lock().expect("mutex should acquire lock").clone().into(),
@@ -642,14 +771,22 @@ impl Encoder {
     }
 
     #[inline]
+    /// Runs all requested passes with one isolated, owned statistics context.
+    /// `Specific` is caller-managed: it reuses output-derived statistics without cleanup.
+    /// For isolated manual attempts, call `encode_pass_with_stream` with a shared context.
     pub fn encode_with_stream(
         &self,
         frames_rx: crossbeam_channel::Receiver<Cursor<Vec<u8>>>,
-        output: &PathBuf,
+        output: &Path,
         progress_tx: mpsc::Sender<EncodeProgress>,
         clip_info: &ClipInfo,
     ) -> Result<EncoderResult> {
         self.validate_settings()?;
+        let stats = if matches!(self.passes(), EncoderPasses::All(total) if total > 1) {
+            Some(PassStatistics::new(output)?)
+        } else {
+            None
+        };
         match self.passes() {
             EncoderPasses::All(1) => {
                 progress_tx.send(EncodeProgress {
@@ -663,6 +800,7 @@ impl Encoder {
                     output,
                     progress_tx,
                     clip_info,
+                    None,
                 )?)
             },
             EncoderPasses::Specific(current, total) => {
@@ -677,6 +815,7 @@ impl Encoder {
                     output,
                     progress_tx,
                     clip_info,
+                    None,
                 )?)
             },
             EncoderPasses::All(total) => {
@@ -718,6 +857,7 @@ impl Encoder {
                         output,
                         progress_tx,
                         clip_info,
+                        stats.as_ref(),
                     )?;
                 }
                 Ok(result)
@@ -726,16 +866,26 @@ impl Encoder {
     }
 
     #[inline]
+    /// Encodes a manual pass; keep `stats` across calls through the final pass.
+    /// `None` retains caller-owned output-derived statistics. Explicit native path
+    /// overrides are never cleaned. For VVenC `All(1)` plus native `--pass N`, provide
+    /// `--rcstatsfile` yourself: the frontend `(1, 1)` tuple generates no stats option.
     pub fn encode_pass_with_stream(
         &self,
         pass: (u8, u8),
         frames_rx: crossbeam_channel::Receiver<Cursor<Vec<u8>>>,
-        output: &PathBuf,
+        output: &Path,
         progress_tx: mpsc::Sender<EncodeProgress>,
         clip_info: &ClipInfo,
+        stats: Option<&PassStatistics>,
     ) -> Result<EncoderResult> {
         self.validate_settings()?;
         self.validate_pass_settings(pass)?;
+        let stats_base = stats.map_or_else(
+            || absolute_file_path(output).map(|p| p.with_extension("")),
+            |s| Ok(s.base().to_path_buf()),
+        )?;
+        let parameters = self.parameters_with_stats(pass, output, clip_info, &stats_base)?;
         // TODO:
         // - Report mapped errors
         // - Report CPU, memory, disk usage - Done-ish
@@ -748,7 +898,7 @@ impl Encoder {
         // println!("Encoding with params: {:?}", self.parameters(pass,
         // output)); let mut system = sysinfo::System::new();
         let mut encoder = Command::new(self.executable())
-            .args(self.parameters_with_output(pass, output, clip_info)?)
+            .args(&parameters)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -905,7 +1055,9 @@ impl Encoder {
             Ok(())
         });
 
+        let stats = stats.cloned();
         let encoder_output_thread = thread::spawn(move || -> Result<_> {
+            let _stats = stats;
             let encoder_output = encoder.wait_with_output().expect("Encoder should finish");
             Ok(encoder_output)
         });
@@ -927,7 +1079,7 @@ impl Encoder {
 
         let encoder_result = EncoderResult {
             encoder: self.base(),
-            parameters: self.parameters_with_output(pass, output, clip_info)?,
+            parameters,
             status: encoder_output.status,
             stdout: StringOrBytes::from(encoder_output.stdout),
             stderr: stderr_output.lock().expect("mutex should acquire lock").clone().into(),
@@ -1486,6 +1638,9 @@ pub enum EncoderError {
 }
 
 #[cfg(test)]
+mod e01_tests;
+
+#[cfg(test)]
 mod tests {
     use av_decoders::{ColorPrimaries, ColorSpace, TransferCharacteristic};
 
@@ -1590,7 +1745,7 @@ mod tests {
             if route == "input" {
                 encoder.encode_with_input(&mut input, &output, 0, 1, tx)
             } else {
-                encoder.encode_pass_with_input(&mut input, &output, 0, 1, pass, tx)
+                encoder.encode_pass_with_input(&mut input, &output, 0, 1, pass, tx, None)
             }
         } else {
             let (_sender, receiver) = crossbeam_channel::unbounded();
@@ -1598,7 +1753,7 @@ mod tests {
             let result = if route == "stream" || route == "vvenc-stream" {
                 encoder.encode_with_stream(receiver, &output, tx, &clip_info())
             } else {
-                encoder.encode_pass_with_stream(pass, receiver, &output, tx, &clip_info())
+                encoder.encode_pass_with_stream(pass, receiver, &output, tx, &clip_info(), None)
             };
             drop(_sender);
             result
@@ -1625,7 +1780,7 @@ mod tests {
         assert!(error.to_string().contains("pass"), "{error:#}");
     }
 
-    fn clip_info() -> ClipInfo {
+    pub(super) fn clip_info() -> ClipInfo {
         ClipInfo {
             num_frames: 24,
             format_info: crate::core::input::pixel_format::PixelFormat::VapourSynth {

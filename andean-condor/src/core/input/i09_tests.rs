@@ -315,7 +315,7 @@ fn i09_actual_encoder_pass_builds_one_graph() {
     let output = directory.path().join("pass.264");
     let (progress, _receiver) = mpsc::channel();
     encoder
-        .encode_pass_with_input(&mut input, &output, 0, 4, (1, 1), progress)
+        .encode_pass_with_input(&mut input, &output, 0, 4, (1, 1), progress, None)
         .expect("actual finite encoder pass");
     assert_eq!(
         decoded(&output),

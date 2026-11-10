@@ -171,11 +171,13 @@ impl EncoderBase {
         }
     }
 
+    /// Pure argv parameters. `stats_base` is a full shared base, without the native
+    /// statistics suffix; no files are created, rewritten, or owned here.
     #[inline]
     pub fn pass_parameters(
         &self,
         pass: (u8, u8),
-        first_pass_file_name: &str,
+        stats_base: &str,
     ) -> Result<HashMap<String, CLIParameter>, EncoderSettingsError> {
         self.validate_pass(pass)?;
         Ok(match self {
@@ -191,11 +193,7 @@ impl EncoderBase {
                         ));
                         parameters.insert(
                             "fpf".to_owned(),
-                            CLIParameter::new_string(
-                                "--",
-                                "=",
-                                &format!("{}.log", first_pass_file_name),
-                            ),
+                            CLIParameter::new_string("--", "=", &format!("{}.log", stats_base)),
                         );
 
                         parameters
@@ -208,11 +206,7 @@ impl EncoderBase {
                         ));
                         parameters.insert(
                             "fpf".to_owned(),
-                            CLIParameter::new_string(
-                                "--",
-                                "=",
-                                &format!("{}.log", first_pass_file_name),
-                            ),
+                            CLIParameter::new_string("--", "=", &format!("{}.log", stats_base)),
                         );
 
                         parameters
@@ -234,7 +228,7 @@ impl EncoderBase {
                         parameters.extend(CLIParameter::new_strings(
                             "--",
                             " ",
-                            &[("first-pass", &format!("{}.stat", first_pass_file_name))],
+                            &[("first-pass", &format!("{}.stat", stats_base))],
                         ));
 
                         parameters
@@ -249,7 +243,7 @@ impl EncoderBase {
                         parameters.extend(CLIParameter::new_strings(
                             "--",
                             " ",
-                            &[("second-pass", &format!("{}.stat", first_pass_file_name))],
+                            &[("second-pass", &format!("{}.stat", stats_base))],
                         ));
 
                         parameters
@@ -274,7 +268,7 @@ impl EncoderBase {
                         parameters.extend(CLIParameter::new_strings(
                             "--",
                             "=",
-                            &[("fpf", &format!("{}.log", first_pass_file_name))],
+                            &[("fpf", &format!("{}.log", stats_base))],
                         ));
 
                         parameters
@@ -288,7 +282,7 @@ impl EncoderBase {
                         parameters.extend(CLIParameter::new_strings(
                             "--",
                             "=",
-                            &[("fpf", &format!("{}.log", first_pass_file_name))],
+                            &[("fpf", &format!("{}.log", stats_base))],
                         ));
 
                         parameters
@@ -309,11 +303,7 @@ impl EncoderBase {
 
                         parameters.insert(
                             "stats".to_owned(),
-                            CLIParameter::new_string(
-                                "-",
-                                " ",
-                                &format!("{}.stat", first_pass_file_name),
-                            ),
+                            CLIParameter::new_string("-", " ", &format!("{}.stat", stats_base)),
                         );
 
                         parameters
@@ -327,11 +317,7 @@ impl EncoderBase {
 
                         parameters.insert(
                             "stats".to_owned(),
-                            CLIParameter::new_string(
-                                "-",
-                                " ",
-                                &format!("{}.stat", first_pass_file_name),
-                            ),
+                            CLIParameter::new_string("-", " ", &format!("{}.stat", stats_base)),
                         );
 
                         parameters
@@ -350,11 +336,7 @@ impl EncoderBase {
                         ));
                         parameters.insert(
                             "fpf".to_owned(),
-                            CLIParameter::new_string(
-                                "--",
-                                "=",
-                                &format!("{}.log", first_pass_file_name),
-                            ),
+                            CLIParameter::new_string("--", "=", &format!("{}.log", stats_base)),
                         );
 
                         parameters
@@ -367,11 +349,7 @@ impl EncoderBase {
                         ));
                         parameters.insert(
                             "fpf".to_owned(),
-                            CLIParameter::new_string(
-                                "--",
-                                "=",
-                                &format!("{}.log", first_pass_file_name),
-                            ),
+                            CLIParameter::new_string("--", "=", &format!("{}.log", stats_base)),
                         );
 
                         parameters
@@ -388,7 +366,7 @@ impl EncoderBase {
                         parameters.extend(CLIParameter::new_strings(
                             "--",
                             " ",
-                            &[("stats", &format!("{}.log", first_pass_file_name))],
+                            &[("stats", &format!("{}.log", stats_base))],
                         ));
 
                         parameters
@@ -398,7 +376,7 @@ impl EncoderBase {
                         parameters.extend(CLIParameter::new_strings(
                             "--",
                             " ",
-                            &[("stats", &format!("{}.log", first_pass_file_name))],
+                            &[("stats", &format!("{}.log", stats_base))],
                         ));
 
                         parameters
@@ -419,10 +397,10 @@ impl EncoderBase {
                             " ",
                             &[
                                 ("log-level", "error"),
-                                ("stats", &format!("{}.log", first_pass_file_name)),
+                                ("stats", &format!("{}.log", stats_base)),
                                 (
                                     "analysis-reuse-file",
-                                    &format!("{}_analysis.dat", first_pass_file_name),
+                                    &format!("{}_analysis.dat", stats_base),
                                 ),
                             ],
                         ));
@@ -438,10 +416,10 @@ impl EncoderBase {
                             " ",
                             &[
                                 ("log-level", "error"),
-                                ("stats", &format!("{}.log", first_pass_file_name)),
+                                ("stats", &format!("{}.log", stats_base)),
                                 (
                                     "analysis-reuse-file",
-                                    &format!("{}_analysis.dat", first_pass_file_name),
+                                    &format!("{}_analysis.dat", stats_base),
                                 ),
                             ],
                         ));
@@ -465,7 +443,7 @@ impl EncoderBase {
                         parameters.extend(CLIParameter::new_strings(
                             "--",
                             " ",
-                            &[("rcstatsfile", &format!("{}.json", first_pass_file_name))],
+                            &[("rcstatsfile", &format!("{}.json", stats_base))],
                         ));
 
                         parameters
@@ -480,7 +458,7 @@ impl EncoderBase {
                         parameters.extend(CLIParameter::new_strings(
                             "--",
                             " ",
-                            &[("rcstatsfile", &format!("{}.json", first_pass_file_name))],
+                            &[("rcstatsfile", &format!("{}.json", stats_base))],
                         ));
 
                         parameters
