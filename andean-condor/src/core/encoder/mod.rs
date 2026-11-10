@@ -586,7 +586,7 @@ impl Encoder {
                     stdout: StringOrBytes::from(Vec::new()),
                     stderr: StringOrBytes::from(Vec::new()),
                 };
-                for pass in 1..total {
+                for pass in 1..=total {
                     let progress_tx = progress_tx.clone();
                     result = self.encode_pass_with_input(
                         input,
@@ -1499,6 +1499,10 @@ mod e04_tests;
 #[cfg(test)]
 #[cfg(unix)]
 mod e06_tests;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e07_tests;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]

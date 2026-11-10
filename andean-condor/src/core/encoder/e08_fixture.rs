@@ -93,7 +93,11 @@ fn watchdog(args: &[String]) -> io::Result<()> {
     }
     let case = &args[4];
     let mut child = Command::new(&args[2])
-        .args(["--exact", "core::encoder::e08_tests::e08_runtime_child", "--nocapture"])
+        .args([
+            "--exact",
+            args.get(5).map_or("core::encoder::e08_tests::e08_runtime_child", String::as_str),
+            "--nocapture",
+        ])
         .env("E08_ROOT", &args[3])
         .env("E08_CASE", case)
         .process_group(0)
