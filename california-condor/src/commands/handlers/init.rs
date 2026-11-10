@@ -53,7 +53,12 @@ pub fn init_handler(
     append_color_data: bool,
     target_metric: Option<&QualityMetricBase>,
     target: Option<f64>,
+    max_tries: Option<u32>,
 ) -> Result<()> {
+    anyhow::ensure!(
+        max_tries != Some(0),
+        "max_tries must be at least 1 total attempt"
+    );
     let cwd = std::env::current_dir()?;
     let input = path_abs::PathAbs::new(input_path)?.as_path().to_path_buf();
     let output = path_abs::PathAbs::new(output_path)?.as_path().to_path_buf();
@@ -91,7 +96,15 @@ pub fn init_handler(
     if let Some(filters) = filters {
         apply_input_filters(&mut configuration.condor.input, filters)?;
     }
-    configure_parallel_encoder(&mut configuration, None, None, None, None, workers)?;
+    configure_parallel_encoder(
+        &mut configuration,
+        None,
+        None,
+        None,
+        None,
+        workers,
+        max_tries,
+    )?;
     configure_target_quality(
         &mut configuration,
         None,
@@ -571,6 +584,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         )
         .expect("init_handler should succeed");
 
@@ -675,6 +689,7 @@ mod tests {
             true,
             Some(&QualityMetricBase::SSIMULACRA2),
             Some(75.0),
+            None,
         )
         .expect("init_handler should succeed");
 
@@ -715,6 +730,7 @@ mod tests {
             None,
             None,
             false,
+            None,
             None,
             None,
         )
@@ -791,6 +807,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
             None,
         );

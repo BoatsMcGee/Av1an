@@ -59,7 +59,12 @@ pub fn start_handler(
     minimum_quantizer: Option<u8>,
     maximum_quantizer: Option<u8>,
     target_profile: Option<&QualityProfile>,
+    max_tries: Option<u32>,
 ) -> Result<(Configuration, PathBuf)> {
+    anyhow::ensure!(
+        max_tries != Some(0),
+        "max_tries must be at least 1 total attempt"
+    );
     if config_path.is_some_and(|p| !p.exists()) && (input_path.is_none() || output_path.is_none()) {
         let err = CondorCliError::NoConfigOrInputOrOutput;
         error!("{}", err);
@@ -179,7 +184,15 @@ pub fn start_handler(
         None,
         None,
     )?;
-    configure_parallel_encoder(&mut configuration, None, None, None, None, workers)?;
+    configure_parallel_encoder(
+        &mut configuration,
+        None,
+        None,
+        None,
+        None,
+        workers,
+        max_tries,
+    )?;
     // configure_benchmarker(
     //     &mut configuration,
     //     input_path.filter(|_| config_already_existed),
@@ -297,6 +310,7 @@ mod tests {
             None,
             None,
             Some(&output),
+            None,
             None,
             None,
             None,
@@ -528,6 +542,7 @@ mod tests {
             Some(4),
             Some(35),
             Some(&QualityProfile::Slow),
+            None,
         )
         .expect("start_handler should succeed");
 
@@ -734,6 +749,7 @@ mod tests {
             Some(4),
             Some(35),
             Some(&QualityProfile::Slow),
+            None,
         )
         .expect("start_handler should succeed");
 
@@ -895,6 +911,7 @@ mod tests {
             Some(4),
             Some(25),
             Some(&QualityProfile::Standard),
+            None,
         )
         .expect("start_handler should succeed");
 
@@ -1010,6 +1027,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .expect("start_handler should succeed");
 
@@ -1038,6 +1056,7 @@ mod tests {
             None,
             None,
             Some(&output),
+            None,
             None,
             None,
             None,

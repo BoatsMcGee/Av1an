@@ -19,7 +19,7 @@ use std::{collections::HashMap, os::unix::fs::PermissionsExt, process::Command};
 const FAKE: &str = r#"#!/bin/sh
 set -eu
 argv=$(printf '%s\n' "$@")
-pass=1 total=1 stats= records= scene= partial=
+pass=1 total=1 stats= records= scene= partial= out=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --pass) pass=$2; total=2; shift ;;
@@ -27,6 +27,7 @@ while [ "$#" -gt 0 ]; do
         --e27-records) records=$2; shift ;;
         --e27-scene) scene=$2; shift ;;
         --e27-partial) partial=$2; shift ;;
+        -o) out=$2; shift ;;
     esac
     shift
 done
@@ -37,6 +38,12 @@ if [ "$E08_CASE" = zone-worker ]; then
 else
     cat > "$records/input.y4m"
 fi
+case "$E08_CASE" in
+    parallel-*)
+        # Per-scene attempts own private paths; never fabricate a legacy caller temp.
+        if [ "$out" = /dev/null ]; then partial="$stats.partial"; else partial=$out; fi ;;
+esac
+printf '%s' "$partial" > "$records/partial-path"
 printf partial > "$partial"
 if [ -n "$stats" ]; then
     [ -d "${stats%/*}" ]
@@ -283,6 +290,7 @@ fn e27_sequence_runtime_child() {
         let saved_clone = Arc::clone(&saved);
         let mut config = DefaultSequenceConfig::default();
         config.parallel_encoder.workers = Some(1);
+        config.parallel_encoder.max_tries = 1; // One-attempt failed-status/pass-order control.
         config.parallel_encoder.scenes_directory = scenes_dir.clone();
         config.parallel_encoder.validate_frame_count = false; // Scheduler markers, not native output.
         let mut condor = Condor::<DefaultSequenceData, DefaultSequenceConfig>::new(
@@ -413,18 +421,22 @@ fn e27_sequence_runtime_child() {
             !temp_output.exists(),
             "owned failed temporary output removed"
         );
+        if let Ok(path) = fs::read_to_string(root.join("partial-path")) {
+            assert!(
+                !Path::new(&path).exists(),
+                "actual owned codec partial removed after joins"
+            );
+        }
     }
     assert!(
         !scenes_dir.join("zone.qpfile").exists(),
         "owned zone file removed"
     );
-    assert!(
-        !fs::read_dir(&scenes_dir).expect("listing").any(|e| e
-            .expect("entry")
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".av1an-stats-"))
-    );
+    assert!(!fs::read_dir(&scenes_dir).expect("listing").any(|entry| {
+        let name = entry.expect("entry").file_name();
+        let name = name.to_string_lossy();
+        name.starts_with(".av1an-stats-") || name.starts_with(".av1an-attempt-")
+    }));
     assert_eq!(
         fs::read_to_string(&sentinel).expect("stats sentinel"),
         "unrelated stats"

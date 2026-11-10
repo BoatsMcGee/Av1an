@@ -15,6 +15,10 @@ where
     Self: SequenceConfigHandler,
 {
     pub workers: Option<u8>,
+    /// Total scene attempts including the initial attempt (not additional retries).
+    #[serde(default = "max_tries_default")]
+    #[schemars(range(min = 1))]
+    pub max_tries: u32,
     pub scenes_directory: PathBuf,
     pub input: Option<InputModel>,
     /// Decode-count each completed chunk with ffprobe before publishing/resuming.
@@ -27,11 +31,16 @@ fn validate_frame_count_default() -> bool {
     true
 }
 
+fn max_tries_default() -> u32 {
+    3
+}
+
 impl Default for ParallelEncoderConfig {
     #[inline]
     fn default() -> Self {
         Self {
             workers: None,
+            max_tries: max_tries_default(),
             scenes_directory: PathBuf::new(),
             input: None,
             validate_frame_count: true,
@@ -40,6 +49,16 @@ impl Default for ParallelEncoderConfig {
 }
 
 impl ParallelEncoderConfig {
+    /// Offline settings validation; never opens a source or resolves an executable.
+    #[inline]
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.max_tries >= 1,
+            "max_tries must be at least 1 total attempt"
+        );
+        Ok(())
+    }
+
     #[inline]
     pub fn new(scenes_directory: &Path) -> Self {
         Self {

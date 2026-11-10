@@ -168,6 +168,7 @@ fn e13_public_stream_child() {
         let encoder = encoder(&root, "early");
         let mut config = DefaultSequenceConfig::default();
         config.parallel_encoder.workers = Some(1);
+        config.parallel_encoder.max_tries = 1; // One-attempt causal diagnostic control.
         config.parallel_encoder.scenes_directory = scenes.clone();
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let saved = Arc::clone(&callbacks);
@@ -210,13 +211,16 @@ fn e13_public_stream_child() {
         );
         result.map(|_| Vec::new())
     } else {
-        ParallelEncoder::encode_tasks_with_validation(
+        ParallelEncoder::encode_tasks_with_options(
             &mut input,
             1,
             tasks,
             tx,
             Cancellation::default(),
-            case != "valid",
+            ParallelEncoderOptions {
+                max_tries: 1,
+                validate_frame_count: case != "valid",
+            },
         )
     };
     let statuses: Vec<_> = rx.try_iter().collect();

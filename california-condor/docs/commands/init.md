@@ -20,6 +20,7 @@ Creating a configuration needs `INPUT` and `OUTPUT`; the `info`, `set` and `rese
 | [Concatenation](#concatenation---concat)                     | `--concat`        | [`CONCAT`](../types/concatenation.md)  | `mkvmerge`             |
 | [Discard](#discard---discard)                               | `--discard`       | [String List](#discard---discard)      | nothing                |
 | [Workers](#workers--w---workers)                            | `-w`, `--workers` | Integer   | Benchmarker decides    |
+| [Total attempts](encode.md#total-attempts---max-tries)       | `--max-tries`      | Integer ≥1 | `3`                    |
 | [Encoder](#encoder--e---encoder)                             | `-e`, `--encoder` | [`ENCODER`](../types/encoder.md) | `svt-av1`              |
 | [Encoder Parameters](#encoder-parameters---params)          | `--params`        | [String](../types/encoder-params.md)    | Based on Encoder       |
 | [Photon Noise](#photon-noise---photon-noise)                | `--photon-noise`  | [Integer](../types/photon-noise.md)   |                        |

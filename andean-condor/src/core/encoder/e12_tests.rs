@@ -457,6 +457,7 @@ fn e12_scene_child() {
         let mut config = DefaultSequenceConfig::default();
         config.parallel_encoder.scenes_directory = root.clone();
         config.parallel_encoder.workers = Some(1);
+        config.parallel_encoder.max_tries = 1; // Preserve the original direct-stream cancellation control.
         config.parallel_encoder.validate_frame_count = false; // Finite ownership markers, not bitstreams.
         let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let saved = Arc::clone(&callbacks);
@@ -938,6 +939,7 @@ fn e12_scene_child() {
         let mut config = DefaultSequenceConfig::default();
         config.parallel_encoder.scenes_directory = root.clone();
         config.parallel_encoder.workers = Some(1);
+        config.parallel_encoder.max_tries = 1; // Mid-production handshakes require direct streaming, not capture.
         config.parallel_encoder.validate_frame_count = false; // Finite ownership markers, not bitstreams.
         let saved = root.join("saved.json");
         let (progress, _rx) = mpsc::channel();

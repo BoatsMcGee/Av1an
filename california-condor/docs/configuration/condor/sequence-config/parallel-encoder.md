@@ -5,6 +5,7 @@
 | Field | Type | Required | Default | Description |
 | ----- | ---- | -------- | ------- | ----------- |
 | `workers` | Integer (u8) or null | Yes | `null` | Worker count. `null` means Benchmarker decides. CLI `-w`/`--workers` |
+| `max_tries` | Integer (u32, ≥1) | No | `3` | Total attempts per scene including the initial attempt. CLI `--max-tries`. |
 | `scenes_directory` | String (path) | Yes | `<temp>/scenes` | Directory for per-scene encodes |
 | `input` | Input object or null | Yes | `null` | Override input. Same shape as [condor.input](../input.md) |
 | `validate_frame_count` | Boolean | No | `true` | Decode-count completed chunks with `ffprobe` before publishing or resuming. Set `false` only for filters intentionally changing the frame count. |
@@ -39,11 +40,27 @@ Frame buffering is chosen from the input:
 - Video inputs and BestSource, FFMS2, or L-SMASH VapourSynth imports stream frames to each worker as it encodes, keeping a few frames in memory per worker.
 - DGDecNV imports and nonstreaming VapourSynth scripts wait for a free worker before decoding each scene. Queued scenes are not decoded; an admitted scene can still buffer its frames.
 
+With `max_tries > 1`, nonstreaming scenes first capture one anonymous uncompressed
+Y4M disk spool under the scenes directory, then replay it in bounded chunks.
+Allow disk space for one full scene per active worker, plus any multipass spool.
+`max_tries = 1` keeps direct streaming. Concurrent inputs reread the scene instead.
+Each attempt starts all passes with fresh owned output/statistics and filter state;
+only validated successful output is published and saved. Explicit native statistics
+path overrides remain caller-owned and cannot be cleaned automatically.
+
+Only native encoder/filter failures and failed new-output validation retry. Invalid
+settings, source/spool errors, publication/save failures and worker panics stop the
+scene. Cancellation prevents replacement attempts; Graceful lets active passes
+finish, while Force interrupts them. The last error retains scene/attempt context.
+The saved budget also covers individual Target Quality probes and worker discovery,
+not whole-zone batches or serial stages.
+
 Example:
 
 ```json
 {
     "workers": null,
+    "max_tries": 3,
     "scenes_directory": "./a1b2c3d4/scenes",
     "input": null,
     "validate_frame_count": true

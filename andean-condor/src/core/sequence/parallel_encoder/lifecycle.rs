@@ -60,18 +60,24 @@ impl Stop {
     /// Scope boundaries already contain contextual worker errors; preserve
     /// them while converting scheduling/spawn panics after shutdown and joins.
     pub(super) fn catch_panic<T>(&self, context: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
-        let result = catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let result = self.attempt(context, f);
+        if result.is_err() {
+            self.stop();
+        }
+        result
+    }
+
+    /// An ordinary attempt failure is local; panics always close admission.
+    pub(super) fn attempt<T>(&self, context: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+            self.stop();
             let message = panic
                 .downcast_ref::<&str>()
                 .copied()
                 .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
                 .unwrap_or("non-string panic");
             Err(anyhow!("{context} panicked: {message}"))
-        });
-        if result.is_err() {
-            self.stop();
-        }
-        result
+        })
     }
 }
 

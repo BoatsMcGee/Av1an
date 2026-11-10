@@ -5,10 +5,10 @@ use crate::utils::cancellation::{Cancellation, Cancelled};
 use anyhow::Result;
 
 use super::{
-    ParallelEncoder,
-    encode::{SceneOutcome, consume_frames, finalize_scene},
+    ParallelEncoder, ParallelEncoderOptions,
+    encode::{SceneOutcome, consume_frames, encode_attempts, finalize_scene},
     error::ParallelEncoderError,
-    lifecycle::{Stop, TempOutput, retain_error},
+    lifecycle::{Stop, retain_error},
     task::{ParallelEncoderResult, ResultStream, Task},
 };
 use crate::core::{encoder::EncoderResult, input::Input, sequence::SequenceStatus};
@@ -51,7 +51,7 @@ impl ParallelEncoder {
         progress_tx: &std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Cancellation,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
-        validate_frame_count: bool,
+        options: ParallelEncoderOptions,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
@@ -107,81 +107,82 @@ impl ParallelEncoder {
                                     let task_result = stop.catch(
                                         &format!("Scene {} worker", task.original_index),
                                         || {
-                                            let temp = TempOutput::new(task.output.with_extension(
-                                                format!("temp.{}", task.encoder.output_extension()),
-                                            ));
                                             let started = std::time::SystemTime::now();
-                                            let (tx, rx) =
-                                                crossbeam_channel::bounded::<Cursor<Vec<u8>>>(
-                                                    window,
-                                                );
-                                            tx.send(Cursor::new(
-                                                headers[&task.index].clone().into_bytes(),
-                                            ))?;
-                                            let (encoded, produced) = thread::scope(|inner| {
-                                                let (task, temp) = (&task, &temp.path);
-                                                let encoder = inner.spawn(move || {
-                                                    stop.catch(
-                                                        &format!(
-                                                            "Scene {} consumer",
-                                                            task.original_index
-                                                        ),
-                                                        || {
-                                                            consume_frames(
-                                                                task,
-                                                                rx,
-                                                                temp,
-                                                                clip_info,
-                                                                progress_tx,
-                                                                total_frames,
-                                                                total_final,
-                                                                stop,
-                                                                window,
-                                                            )
-                                                        },
-                                                    )
-                                                });
-                                                let produced = stop.catch(
-                                                    &format!(
-                                                        "Scene {} frame production",
-                                                        task.original_index
-                                                    ),
-                                                    || {
-                                                        #[cfg(all(test, target_os = "linux"))]
-                                                        super::e11_tests::fault(
-                                                            "produce",
-                                                            task.original_index,
-                                                        )?;
-                                                        reader.y4m_frames_cancel(
-                                                            &tx,
-                                                            &task.frame_indices,
-                                                            window,
-                                                            cancelled,
-                                                        )
-                                                    },
-                                                );
-                                                drop(tx); // EOF before joining the consumer and its filter/relays.
-                                                let encoded = encoder.join().unwrap_or_else(|_| {
-                                                    Err(anyhow::anyhow!(
-                                                        "Scene {} encoder panicked",
-                                                        task.original_index
-                                                    ))
-                                                });
-                                                (encoded, produced)
-                                            });
-                                            let result = joined_scene_result(encoded, produced)?;
-                                            cancelled.check_forced()?;
-                                            let bytes = super::artifact::validate(
-                                                &temp.path,
-                                                task.frame_indices.len(),
-                                                validate_frame_count,
-                                                cancelled,
-                                            )?;
+                                            let attempt =
+                                                encode_attempts(&task, options, stop, |temp| {
+                                                    let (tx, rx) = crossbeam_channel::bounded::<
+                                                        Cursor<Vec<u8>>,
+                                                    >(
+                                                        window
+                                                    );
+                                                    tx.send(Cursor::new(
+                                                        headers[&task.index].clone().into_bytes(),
+                                                    ))?;
+                                                    let (encoded, produced) =
+                                                        thread::scope(|inner| {
+                                                            let task = &task;
+                                                            let encoder = inner.spawn(move || {
+                                                                stop.attempt(
+                                                                    &format!(
+                                                                        "Scene {} consumer",
+                                                                        task.original_index
+                                                                    ),
+                                                                    || {
+                                                                        consume_frames(
+                                                                            task,
+                                                                            rx,
+                                                                            temp,
+                                                                            clip_info,
+                                                                            progress_tx,
+                                                                            total_frames,
+                                                                            total_final,
+                                                                            stop,
+                                                                            window,
+                                                                        )
+                                                                    },
+                                                                )
+                                                            });
+                                                            let produced = stop.attempt(
+                                                                &format!(
+                                                                    "Scene {} frame production",
+                                                                    task.original_index
+                                                                ),
+                                                                || {
+                                                                    #[cfg(all(
+                                                                        test,
+                                                                        target_os = "linux"
+                                                                    ))]
+                                                                    super::e11_tests::fault(
+                                                                        "produce",
+                                                                        task.original_index,
+                                                                    )?;
+                                                                    reader.y4m_frames_cancel(
+                                                                        &tx,
+                                                                        &task.frame_indices,
+                                                                        window,
+                                                                        cancelled,
+                                                                    )
+                                                                },
+                                                            );
+                                                            drop(tx); // EOF before joining the consumer and its filter/relays.
+                                                            let encoded = encoder
+                                                                .join()
+                                                                .unwrap_or_else(|_| {
+                                                                    Err(anyhow::anyhow!(
+                                                                        "Scene {} encoder panicked",
+                                                                        task.original_index
+                                                                    ))
+                                                                });
+                                                            (encoded, produced)
+                                                        });
+                                                    joined_scene_result(encoded, produced)
+                                                })?;
+                                            let bytes = attempt.bytes;
                                             let ended = std::time::SystemTime::now();
                                             let result = cancelled.publish(|| {
                                                 finalize_scene(
                                                     SceneOutcome {
-                                                        temp_output: temp.path.clone(),
+                                                        temp_output: attempt.path.clone(),
                                                         bytes,
                                                         usable: true,
                                                     },
@@ -198,7 +199,7 @@ impl ParallelEncoder {
                                                     bitrate: (bytes * 8) as f64
                                                         / (task.frame_indices.len() as f64
                                                             / framerate),
-                                                    result,
+                                                    result: attempt.result.clone(),
                                                 };
                                                 results_tx.send(result.clone())?;
                                                 finished.release();

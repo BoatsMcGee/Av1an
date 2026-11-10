@@ -15,9 +15,9 @@ use crossbeam_channel::Receiver;
 use tracing::debug;
 
 use super::{
-    ParallelEncoder, STREAM_WINDOW,
+    ParallelEncoder, ParallelEncoderOptions, STREAM_WINDOW,
     error::ParallelEncoderError,
-    lifecycle::{Stop, TempOutput, retain_error},
+    lifecycle::{Stop, retain_error},
     progress::{drain_finished_results, relay_progress},
     task::{ParallelEncoderResult, ResultStream, Task},
 };
@@ -153,7 +153,7 @@ pub(super) fn consume_frames(
                 },
             )
         });
-        let encoded = stop.catch(&format!("Scene {} encoder", task.original_index), || {
+        let encoded = stop.attempt(&format!("Scene {} encoder", task.original_index), || {
             #[cfg(all(test, target_os = "linux"))]
             super::e11_tests::fault("worker", task.original_index)?;
             let result = task
@@ -170,32 +170,26 @@ pub(super) fn consume_frames(
             super::e28_tests::consumer_closed("encoder");
             result
         });
-        if !encoded.as_ref().is_ok_and(|result| result.status.success()) {
-            stop.stop();
-        }
         let filtered = filter.as_mut().map_or(Ok(()), |stage| stage.check()).map_err(|err| {
-            err.context(format!(
+            err.context(RetryableAttempt).context(format!(
                 "FFmpeg filter failed while encoding scene {}",
                 task.original_index
             ))
         });
         #[cfg(all(test, target_os = "linux"))]
         super::e28_tests::consumer_closed("filter");
-        if filtered.is_err() {
-            stop.stop();
-        }
         let relayed = relay.join().unwrap_or_else(|_| {
             Err(anyhow::anyhow!(
                 "Scene {} progress relay panicked",
                 task.original_index
             ))
         });
-        // The filter's diagnostic explains truncated-input fallout best.
-        let mut error = if cancellation.is_forced() {
+        let filter_error = if cancellation.is_forced() {
             None
         } else {
             filtered.err()
         };
+        let mut error = None;
         let result = match encoded {
             Ok(result) if result.status.success() => Some(result),
             Ok(result) => {
@@ -214,6 +208,14 @@ pub(super) fn consume_frames(
                 None
             },
         };
+        if let Some(filtered) = filter_error {
+            // Explain truncated-input fallout without discarding typed codec/raw diagnostics.
+            // A filter error must not turn a configuration or worker fault into a retry.
+            error = Some(match error {
+                Some(encoded) => encoded.context(format!("{filtered:#}")),
+                None => filtered,
+            });
+        }
         if let Err(err) = relayed {
             retain_error(&mut error, err);
         }
@@ -222,6 +224,101 @@ pub(super) fn consume_frames(
         }
         Ok(result.expect("successful encode retained its result"))
     })
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Scene attempt failed")]
+struct RetryableAttempt;
+
+/// All attempt owners join inside `encode`; only the successful private output escapes.
+pub(super) struct EncodedAttempt {
+    _directory: tempfile::TempDir,
+    pub(super) path: std::path::PathBuf,
+    pub(super) result: EncoderResult,
+    pub(super) bytes: u64,
+}
+
+fn retryable(error: &anyhow::Error) -> bool {
+    error.is::<RetryableAttempt>()
+        || matches!(
+            error.downcast_ref::<ParallelEncoderError>(),
+            Some(ParallelEncoderError::EncoderFailed { .. })
+        )
+        || error.is::<EncoderResult>()
+        || error
+            .downcast_ref::<crate::core::encoder::EncoderProcessError>()
+            .is_some_and(|error| {
+                // A pipe/process IO failure can retry, not an arbitrary worker panic/cause.
+                error.failures.iter().all(|cause| {
+                    cause.is::<std::io::Error>() || cause.is::<crossbeam_channel::RecvError>()
+                })
+            })
+}
+
+pub(super) fn encode_attempts(
+    task: &Task,
+    options: ParallelEncoderOptions,
+    stop: &Stop,
+    mut encode: impl FnMut(&std::path::Path) -> Result<EncoderResult>,
+) -> Result<EncodedAttempt> {
+    let terminal_error = |error: anyhow::Error| {
+        if stop.cancellation.is_cancelled() && !stop.cancellation.is_forced() {
+            error.context(crate::utils::cancellation::Cancelled::Graceful)
+        } else {
+            error
+        }
+    };
+    let mut last = None;
+    for attempt in 1..=options.max_tries {
+        if attempt > 1 && stop.stopped(&stop.cancellation) {
+            return Err(terminal_error(
+                last.expect("replacement attempts retain their preceding failure"),
+            ));
+        }
+        stop.cancellation.check_forced()?;
+        let directory = tempfile::Builder::new()
+            .prefix(".av1an-attempt-")
+            .tempdir_in(task.output.parent().unwrap_or_else(|| std::path::Path::new(".")))?;
+        let path = directory.path().join(format!("scene.{}", task.encoder.output_extension()));
+        let encoded = encode(&path).and_then(|result| {
+            stop.cancellation.check_forced()?;
+            let bytes = super::artifact::validate(
+                &path,
+                task.frame_indices.len(),
+                options.validate_frame_count,
+                &stop.cancellation,
+            )
+            .map_err(|error| error.context(RetryableAttempt))?;
+            Ok((result, bytes))
+        });
+        match encoded {
+            Ok((result, bytes)) => {
+                return Ok(EncodedAttempt {
+                    _directory: directory,
+                    path,
+                    result,
+                    bytes,
+                });
+            },
+            Err(error) => {
+                // Cleanup follows joins, and precedes even the retry-admission check.
+                drop(directory);
+                #[cfg(all(test, target_os = "linux"))]
+                super::e15_tests::after_failure(&stop.cancellation);
+                let again = retryable(&error)
+                    && attempt < options.max_tries
+                    && !stop.stopped(&stop.cancellation);
+                last = Some(error.context(format!(
+                    "Scene {} attempt {attempt}/{}",
+                    task.original_index, options.max_tries
+                )));
+                if !again {
+                    return Err(terminal_error(last.take().expect("last failed attempt")));
+                }
+            },
+        }
+    }
+    unreachable!("dispatch validates a positive total attempt budget")
 }
 
 /// Sends a scene's result to the persistence channel and returns it.
@@ -247,7 +344,8 @@ impl ParallelEncoder {
         Self::encode_tasks_cancel(input, workers, tasks, progress_tx, cancelled.into())
     }
 
-    /// Force-capable public dispatcher; all active worker owners join before return.
+    /// Force-capable dispatcher, defaulting to three total attempts per scene.
+    /// All active worker owners join before return.
     #[inline]
     pub fn encode_tasks_cancel(
         input: &mut Input,
@@ -261,6 +359,7 @@ impl ParallelEncoder {
 
     /// Explicit count-only policy for intentional frame-changing filters.
     /// Successful encoder status and nonempty regular output remain mandatory.
+    /// Retains the default of three total attempts per scene.
     #[inline]
     pub fn encode_tasks_with_validation(
         input: &mut Input,
@@ -269,6 +368,31 @@ impl ParallelEncoder {
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: Cancellation,
         validate_frame_count: bool,
+    ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        Self::encode_tasks_with_options(
+            input,
+            workers,
+            tasks,
+            progress_tx,
+            cancelled,
+            ParallelEncoderOptions {
+                validate_frame_count,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Explicit attempt/count policy. Non-replayable scenes with more than one
+    /// attempt capture one anonymous Y4M disk spool before the first encode.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    pub fn encode_tasks_with_options(
+        input: &mut Input,
+        workers: u8,
+        tasks: VecDeque<Task>,
+        progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
+        cancelled: Cancellation,
+        options: ParallelEncoderOptions,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
@@ -288,7 +412,7 @@ impl ParallelEncoder {
             progress_tx,
             cancelled,
             &mut stream,
-            validate_frame_count,
+            options,
         )?;
         Ok(results)
     }
@@ -306,11 +430,15 @@ impl ParallelEncoder {
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: Cancellation,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
-        validate_frame_count: bool,
+        options: ParallelEncoderOptions,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
         }
+        anyhow::ensure!(
+            options.max_tries >= 1,
+            "max_tries must be at least 1 total attempt"
+        );
         cancelled.check_forced()?;
         if cancelled.is_cancelled() {
             return Ok(vec![None; tasks.len()]);
@@ -321,7 +449,12 @@ impl ParallelEncoder {
             })?;
         }
         if !tasks.is_empty() {
-            super::artifact::preflight(validate_frame_count)?;
+            super::artifact::preflight(options.validate_frame_count)?;
+            if tasks.iter().any(|task| task.encoder.ffmpeg_filter().is_some())
+                && which::which("ffmpeg").is_err()
+            {
+                anyhow::bail!(ParallelEncoderError::FfmpegNotFound);
+            }
         }
         // Nonstream VS decoding stays on this thread; both paths bound workers.
         if input.streams_concurrently() {
@@ -333,7 +466,7 @@ impl ParallelEncoder {
                 &progress_tx,
                 &cancelled,
                 stream,
-                validate_frame_count,
+                options,
             );
             #[cfg(all(test, target_os = "linux"))]
             crate::core::encoder::e12_tests::before_stream_return(&cancelled);
@@ -394,9 +527,24 @@ impl ParallelEncoder {
                             super::e11_tests::fault("gate", task.original_index)?;
                             debug!("Encoding Scene {}", task.original_index);
                             let started = std::time::SystemTime::now();
-                            let temp = TempOutput::new(task.output.with_extension(format!("temp.{}", task.encoder.output_extension())));
-                            let result = consume_frames(task, frames_rx, &temp.path, clip_info, &progress_tx,
-                                total_frames, total_final, stop, STREAM_WINDOW)?;
+                             let mut direct = Some(frames_rx);
+                             let mut spool = if options.max_tries > 1 {
+                                 let mut file = crate::core::encoder::spool::create(task.output.parent().unwrap_or_else(|| std::path::Path::new(".")), &task.output)?;
+                                 crate::core::encoder::spool::capture(&mut file, direct.take().expect("initial scene feed"), &task.output, cancelled)?;
+                                 if !decoded.load(Ordering::Acquire) {
+                                     guard.success();
+                                     return Ok(None);
+                                 }
+                                 Some(file)
+                             } else { None };
+                             let attempt = encode_attempts(task, options, stop, |path| {
+                                 let consume = |frames| consume_frames(task, frames, path, clip_info, &progress_tx,
+                                     total_frames, total_final, stop, STREAM_WINDOW);
+                                 spool.as_mut().map_or_else(
+                                     || consume(direct.take().expect("one direct attempt")),
+                                     |file| crate::core::encoder::spool::replay_cancel(file, &task.output, cancelled, consume),
+                                 )
+                             })?;
                             // EOF alone is not success: a failed producer can leave
                             // a codec happily encoding a truncated scene. This is
                             // scene-local so successful active peers still persist.
@@ -405,17 +553,16 @@ impl ParallelEncoder {
                                 return Ok(None);
                             }
                               cancelled.check_forced()?;
-                             let bytes = super::artifact::validate(&temp.path, task.frame_indices.len(), validate_frame_count, cancelled)
-                                 .map_err(|error| error.context(format!("Scene {}", task.original_index)))?;
+                              let bytes = attempt.bytes;
                              let ended = std::time::SystemTime::now();
                             let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
                             // Preserve the existing nonstream bitrate calculation (unrelated to E28).
                             let bitrate = (bytes * 8) as f64 / (task.frame_indices.len() as f64 * framerate);
                              let result = cancelled.publish(|| {
-                             finalize_scene(SceneOutcome { temp_output: temp.path.clone(), bytes, usable: true },
+                              finalize_scene(SceneOutcome { temp_output: attempt.path.clone(), bytes, usable: true },
                                  &task.output, task.original_index, &progress_tx, &stop.stopped)?;
                              let result = report_result(&results_tx, &finished, ParallelEncoderResult {
-                                 scene: task.original_index, started, ended, bytes, bitrate, result,
+                                  scene: task.original_index, started, ended, bytes, bitrate, result: attempt.result.clone(),
                              })?;
                              Ok(result)
                              })?;

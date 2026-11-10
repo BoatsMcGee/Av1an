@@ -400,6 +400,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) =
@@ -491,6 +492,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
             None,
         )

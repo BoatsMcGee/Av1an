@@ -25,6 +25,9 @@ pub mod handlers;
 pub mod help_text;
 pub mod version;
 
+#[cfg(test)]
+mod e15_tests;
+
 #[derive(Debug, ClapParser)]
 #[command(
     name = "condor",
@@ -82,6 +85,8 @@ pub struct CondorCli {
     /// The amount of encoder processes to use at once
     #[arg(long, short('w'), value_name = "Workers", help = HELP_WORKERS_SHORT, long_help = HELP_WORKERS)]
     pub workers: Option<u8>,
+    #[arg(long, value_parser = value_parser!(u32).range(1..), help = HELP_MAX_TRIES)]
+    pub max_tries: Option<u32>,
     #[arg(long, short('e'), value_name = "Encoder", help = HELP_ENCODER_SHORT, long_help = HELP_ENCODER)]
     pub encoder: Option<EncoderMethod>,
     #[arg(long, value_name = "Passes", help = HELP_PASSES_SHORT, long_help = HELP_PASSES)]
@@ -205,6 +210,8 @@ pub enum Commands {
         /// The amount of encoder processes to use at once
         #[arg(long, short('w'), value_name = "Workers", help = HELP_WORKERS_SHORT, long_help = HELP_WORKERS)]
         workers: Option<u8>,
+        #[arg(long, value_parser = value_parser!(u32).range(1..), help = HELP_MAX_TRIES)]
+        max_tries: Option<u32>,
         #[arg(long, short('e'), value_name = "Encoder", help = HELP_ENCODER_SHORT, long_help = HELP_ENCODER)]
         encoder: Option<EncoderMethod>,
         #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_PARAMS_SHORT, long_help = HELP_PARAMS)]
@@ -443,6 +450,8 @@ pub enum Commands {
         /// The amount of encoder processes to use at once
         #[arg(long, short('w'), value_name = "Workers", help = HELP_WORKERS_SHORT, long_help = HELP_WORKERS)]
         workers: Option<u8>,
+        #[arg(long, value_parser = value_parser!(u32).range(1..), help = HELP_MAX_TRIES)]
+        max_tries: Option<u32>,
         #[arg(long, short('e'), value_name = "Encoder", help = HELP_ENCODER_SHORT, long_help = HELP_ENCODER)]
         encoder: Option<EncoderMethod>,
         #[arg(long, value_name = "Passes", help = HELP_PASSES_SHORT, long_help = HELP_PASSES)]

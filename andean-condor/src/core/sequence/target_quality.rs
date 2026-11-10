@@ -433,7 +433,7 @@ where
                 Ok(())
             });
 
-            let probed = Self::probe_pass_with_validation(
+            let probed = Self::probe_pass_with_options(
                 pass,
                 target_quality_directory,
                 &config,
@@ -444,7 +444,10 @@ where
                 tasks.as_slice(),
                 pass_progress_tx,
                 &cancelled,
-                parallel_encoder_config.validate_frame_count,
+                super::parallel_encoder::ParallelEncoderOptions {
+                    max_tries: parallel_encoder_config.max_tries,
+                    validate_frame_count: parallel_encoder_config.validate_frame_count,
+                },
             );
             let relayed = crate::core::encoder::pipes::join_worker(
                 relay,
@@ -828,6 +831,44 @@ impl TargetQuality {
         cancellation: &crate::utils::cancellation::Cancellation,
         validate_frame_count: bool,
     ) -> Result<(Vec<Task>, Vec<anyhow::Error>)> {
+        Self::probe_pass_with_options(
+            pass,
+            target_quality_directory,
+            config,
+            input,
+            metric_input,
+            workers,
+            concat_method,
+            tasks,
+            progress_tx,
+            cancellation,
+            super::parallel_encoder::ParallelEncoderOptions {
+                validate_frame_count,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Explicit per-scene policy; whole-zone batches still make one attempt.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[inline]
+    pub fn probe_pass_with_options(
+        pass: u8,
+        target_quality_directory: &Path,
+        config: &TargetQualityConfig,
+        input: &mut Input,
+        metric_input: Option<&mut Input>,
+        workers: u8,
+        concat_method: &ConcatMethod,
+        tasks: &[Task],
+        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        cancellation: &crate::utils::cancellation::Cancellation,
+        options: super::parallel_encoder::ParallelEncoderOptions,
+    ) -> Result<(Vec<Task>, Vec<anyhow::Error>)> {
+        anyhow::ensure!(
+            options.max_tries >= 1,
+            "max_tries must be at least 1 total attempt"
+        );
         cancellation.check_forced()?;
         if cancellation.is_cancelled() {
             return Ok((Vec::new(), Vec::new()));
@@ -835,7 +876,7 @@ impl TargetQuality {
         for task in tasks {
             task.encoder.validate()?;
         }
-        super::parallel_encoder::artifact::preflight(validate_frame_count)?;
+        super::parallel_encoder::artifact::preflight(options.validate_frame_count)?;
         let warnings: Vec<anyhow::Error> = vec![];
         let temporal = metrics::scene_temporal(&config.metric);
         let scenes: Vec<_> = tasks.iter().map(|task| task.frame_indices.as_slice()).collect();
@@ -946,15 +987,15 @@ impl TargetQuality {
                 plan,
                 encode_progress_tx,
                 cancellation.clone(),
-                validate_frame_count,
+                options.validate_frame_count,
             ),
-            None => ParallelEncoder::encode_tasks_with_validation(
+            None => ParallelEncoder::encode_tasks_with_options(
                 input,
                 workers,
                 encode_tasks.iter().cloned().collect::<VecDeque<_>>(),
                 encode_progress_tx,
                 cancellation.clone(),
-                validate_frame_count,
+                options,
             ),
         };
         let relayed = crate::core::encoder::pipes::join_worker(

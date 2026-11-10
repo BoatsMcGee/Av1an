@@ -181,6 +181,7 @@ impl Configuration {
 
     /// Checks global and per-scene encoders before CLI edits are saved or workers start.
     pub(crate) fn validate_encoder_settings(&self) -> Result<()> {
+        self.condor.sequence_config.parallel_encoder.validate()?;
         self.condor.encoder.validate_settings()?;
         for scene in &self.condor.scenes {
             scene.encoder.validate_settings()?;
@@ -190,6 +191,9 @@ impl Configuration {
 
     #[inline]
     pub fn save_data(data: &Configuration, path: &Path) -> Result<(), ConfigError> {
+        data.condor.sequence_config.parallel_encoder.validate().map_err(|error| {
+            ConfigError::Save(std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
+        })?;
         let mut buffer = vec![];
         let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
         let mut serializer = serde_json::Serializer::with_formatter(&mut buffer, formatter);
@@ -221,6 +225,7 @@ impl Configuration {
         &self,
         save_callback: SaveCallback<CliSequenceData, CliSequenceConfig>,
     ) -> Result<Condor<CliSequenceData, CliSequenceConfig>> {
+        self.condor.sequence_config.parallel_encoder.validate()?;
         // The input carries its own filters, so every input kind is opened the
         // same way — and opened once here, so the `Input` every later phase
         // reads through `condor.input` is the one indexed here.

@@ -25,6 +25,7 @@ $ condor --config-file ./config.json --skip-scd
 | [Concatenation](#concatenation---concat)                           | `--concat`            | [`CONCAT`](../types/concatenation.md)    | `mkvmerge`             |
 | [Discard](#discard---discard)                                     | `--discard`           | [String List](#discard---discard)        | nothing                |
 | [Workers](#workers--w---workers)                                  | `-w`, `--workers`     | Integer     | Benchmarker decides    |
+| [Total attempts](encode.md#total-attempts---max-tries)               | `--max-tries`          | Integer ≥1  | Saved value, else `3`   |
 | [Encoder](#encoder--e---encoder)                                   | `-e`, `--encoder`     | [`ENCODER`](../types/encoder.md)     | `svt-av1`              |
 | [Passes](#passes---passes)                                        | `--passes`            | Integer     | `2` for aom/vpx, else `1` |
 | [Encoder Parameters](#encoder-parameters---params)                | `--params`            | [String](../types/encoder-params.md)      | Based on Encoder       |

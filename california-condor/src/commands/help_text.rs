@@ -498,3 +498,5 @@ Defaults to **ssimulacra2**.
 "#;
 
 pub const HELP_QUALITY_CHECK_METRIC_SHORT: &str = short_help(HELP_QUALITY_CHECK_METRIC);
+pub const HELP_MAX_TRIES: &str =
+    "Total attempts per scene including the initial attempt (default: 3 for new jobs)";

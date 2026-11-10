@@ -14,6 +14,7 @@ $ condor encode -i input.mp4 -e svt-av1 -w 4 --params "--preset 4" --photon-nois
 | [Filters](#filters---filters)                         | `--filters`       | [Filters](../types/filters.md)     | `resize:scaler=bicubic;format=yuv420p10le` |
 | [VapourSynth Arguments](#vapoursynth-arguments---vs-args) | `--vs-args`   | [String List](../types/vs-args.md) |                        |
 | [Workers](#workers--w---workers)                      | `-w`, `--workers` | Integer     | Benchmarker decides    |
+| [Total attempts](#total-attempts---max-tries)           | `--max-tries`      | Integer ≥1  | Saved value, else `3`   |
 | [Encoder](#encoder--e---encoder)                       | `-e`, `--encoder` | [`ENCODER`](../types/encoder.md)   | `svt-av1`              |
 | [Passes](#passes---passes)                            | `--passes`        | Integer     | `2` for aom/vpx, else `1` |
 | [Encoder Parameters](#encoder-parameters---params)    | `--params`        | [String](../types/encoder-params.md)      | Based on Encoder       |
@@ -60,6 +61,22 @@ The amount of encoder processes to use at once.
 ### Default
 
 If not specified, Benchmarker is used to determine the optimal number of workers.
+
+## Total attempts `--max-tries`
+
+Maximum total attempts per scene, including the initial attempt, not additional
+retries. Defaults to `3` for new jobs and missing saved fields. Omitting the flag
+preserves a saved custom value. Available on root/start, `init`, and `encode`.
+Nonstreaming retries use extra disk space; see [retry and buffering policy](../configuration/condor/sequence-config/parallel-encoder.md).
+
+```bash
+condor encode --max-tries 2
+condor encode info max-tries
+condor encode set max-tries 5
+condor encode reset max-tries
+```
+
+Resetting this field or the whole encode section restores `3`.
 
 ## Encoder `-e`, `--encoder`
 

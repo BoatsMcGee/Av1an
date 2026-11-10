@@ -179,13 +179,16 @@ where
             })
             .collect();
 
-        let mut previous_result = Self::benchmark_workers_with_validation(
+        let mut previous_result = Self::benchmark_workers_with_options(
             input,
             1,
             tasks.as_slice(),
             &progress_tx,
             &cancelled,
-            parallel_encoder_config.validate_frame_count,
+            super::parallel_encoder::ParallelEncoderOptions {
+                max_tries: parallel_encoder_config.max_tries,
+                validate_frame_count: parallel_encoder_config.validate_frame_count,
+            },
         )?;
         #[cfg(all(test, target_os = "linux"))]
         super::parallel_encoder::e14_r1_tests::finish_fixed_batch(&cancelled);
@@ -195,13 +198,16 @@ where
             if cancelled.is_cancelled() {
                 break;
             }
-            let current_result = Self::benchmark_workers_with_validation(
+            let current_result = Self::benchmark_workers_with_options(
                 input,
                 previous_result.workers + 1,
                 tasks.as_slice(),
                 &progress_tx,
                 &cancelled,
-                parallel_encoder_config.validate_frame_count,
+                super::parallel_encoder::ParallelEncoderOptions {
+                    max_tries: parallel_encoder_config.max_tries,
+                    validate_frame_count: parallel_encoder_config.validate_frame_count,
+                },
             )?;
             cancelled.check_forced()?;
             if cancelled.is_cancelled() {
@@ -290,10 +296,37 @@ impl Benchmarker {
         cancelled: &crate::utils::cancellation::Cancellation,
         validate_frame_count: bool,
     ) -> Result<BenchmarkResult> {
+        Self::benchmark_workers_with_options(
+            input,
+            workers,
+            tasks,
+            progress_tx,
+            cancelled,
+            super::parallel_encoder::ParallelEncoderOptions {
+                validate_frame_count,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// A fixed trial with explicit per-scene total-attempt/count policy.
+    #[inline]
+    pub fn benchmark_workers_with_options(
+        input: &mut Input,
+        workers: u8,
+        tasks: &[ParallelEncodeTask],
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &crate::utils::cancellation::Cancellation,
+        options: super::parallel_encoder::ParallelEncoderOptions,
+    ) -> Result<BenchmarkResult> {
+        anyhow::ensure!(
+            options.max_tries >= 1,
+            "max_tries must be at least 1 total attempt"
+        );
         for task in tasks {
             task.encoder.validate()?;
         }
-        super::parallel_encoder::artifact::preflight(validate_frame_count)?;
+        super::parallel_encoder::artifact::preflight(options.validate_frame_count)?;
         // Each worker-count trial owns fresh outputs, not the previous trial's
         // files. The parallel dispatcher deliberately refuses existing targets.
         let directory = tasks
@@ -366,13 +399,13 @@ impl Benchmarker {
             Ok(())
         });
 
-        let encoded = ParallelEncoder::encode_tasks_with_validation(
+        let encoded = ParallelEncoder::encode_tasks_with_options(
             input,
             workers,
             tasks,
             encode_progress_tx,
             cancelled.clone(),
-            validate_frame_count,
+            options,
         );
         let relayed =
             crate::core::encoder::pipes::join_worker(relay, "Joining worker-probe progress");

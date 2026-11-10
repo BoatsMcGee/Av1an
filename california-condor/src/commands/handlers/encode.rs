@@ -41,6 +41,7 @@ pub fn encode_handler(
     photon_noise: Option<u32>,
     chroma_noise: Option<u32>,
     ffmpeg_filter: Option<&str>,
+    max_tries: Option<u32>,
 ) -> Result<(Configuration, PathBuf)> {
     let (mut configuration, config_path) = load_configuration(config_path)?;
 
@@ -62,6 +63,7 @@ pub fn encode_handler(
         filters,
         vs_args,
         workers,
+        max_tries,
     )?;
 
     configuration.validate_encoder_settings()?;
@@ -78,7 +80,13 @@ pub fn configure_parallel_encoder(
     filters: Option<&[VapourSynthFilter]>,
     vs_args: Option<&[String]>,
     workers: Option<u8>,
+    max_tries: Option<u32>,
 ) -> Result<()> {
+    let mut candidate = configuration.condor.sequence_config.parallel_encoder.clone();
+    if let Some(value) = max_tries {
+        candidate.max_tries = value;
+    }
+    candidate.validate()?;
     // `--filters` describes the input being encoded, not the parallel encoder's
     // own override, so it always applies to the main input. Applying it
     // first lets an override built below inherit the filters via
@@ -118,6 +126,7 @@ pub fn configure_parallel_encoder(
     if let Some(workers) = workers {
         configuration.condor.sequence_config.parallel_encoder.workers = Some(workers);
     }
+    configuration.condor.sequence_config.parallel_encoder.max_tries = candidate.max_tries;
 
     Ok(())
 }
@@ -214,6 +223,8 @@ pub fn configure_encoder(
 /// `info` and `reset` keys of `sequence_config.parallel_encoder` and `encoder`.
 #[derive(Debug, Clone, Subcommand)]
 pub enum EncodeKey {
+    /// Total attempts per scene including the initial attempt.
+    MaxTries,
     /// How many encoder processes run at once.
     Workers,
     /// The input Parallel Encoder reads instead of the main input.
@@ -240,6 +251,11 @@ pub enum EncodeKey {
 /// Settings `condor encode set` can change.
 #[derive(Debug, Clone, Subcommand)]
 pub enum EncodeSet {
+    /// Total attempts per scene including the initial attempt.
+    MaxTries {
+        #[arg(value_parser = value_parser!(u32).range(1..))]
+        value: u32,
+    },
     /// How many encoder processes run at once.
     Workers {
         #[arg(value_parser = value_parser!(u8).range(1..), value_name = "Workers")]
@@ -328,6 +344,7 @@ impl EncodeCrud {
             args.filters.as_deref(),
             args.vs_args.as_deref(),
             None,
+            None,
         )?;
         if let Some(toggle) = args.stream_concurrently {
             if configuration.condor.sequence_config.parallel_encoder.input.is_none() {
@@ -363,6 +380,7 @@ impl ConfigCommand for EncodeCrud {
                 "encoder": serde_json::to_value(encoder)?,
             }),
             Some(EncodeKey::Workers) => serde_json::to_value(parallel.workers)?,
+            Some(EncodeKey::MaxTries) => serde_json::to_value(parallel.max_tries)?,
             Some(EncodeKey::Input) => serde_json::to_value(&parallel.input)?,
             Some(EncodeKey::ScenesDirectory) => serde_json::to_value(&parallel.scenes_directory)?,
             Some(EncodeKey::Encoder) => serde_json::to_value(encoder)?,
@@ -377,6 +395,13 @@ impl ConfigCommand for EncodeCrud {
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         match set {
+            EncodeSet::MaxTries { value } => {
+                let mut candidate = configuration.condor.sequence_config.parallel_encoder.clone();
+                candidate.max_tries = *value;
+                candidate.validate()?;
+                configuration.condor.sequence_config.parallel_encoder = candidate;
+                PropertyChange::new("max-tries", value)
+            },
             EncodeSet::Workers { value } => {
                 configuration.condor.sequence_config.parallel_encoder.workers = Some(*value);
                 PropertyChange::new(
@@ -508,6 +533,7 @@ impl ConfigCommand for EncodeCrud {
                 // `scenes_directory` is derived from --temp; keep it in place.
                 let parallel = &mut configuration.condor.sequence_config.parallel_encoder;
                 parallel.workers = None;
+                parallel.max_tries = ParallelEncoderConfig::default().max_tries;
                 parallel.input = None;
                 candidate = Encoder::default();
                 (
@@ -526,6 +552,11 @@ impl ConfigCommand for EncodeCrud {
                         configuration.condor.sequence_config.parallel_encoder.workers,
                     )?,
                 )
+            },
+            Some(EncodeKey::MaxTries) => {
+                let value = ParallelEncoderConfig::default().max_tries;
+                configuration.condor.sequence_config.parallel_encoder.max_tries = value;
+                ("max-tries", serde_json::to_value(value)?)
             },
             Some(EncodeKey::Input) => {
                 configuration.condor.sequence_config.parallel_encoder.input = None;
@@ -594,7 +625,12 @@ impl ConfigCommand for EncodeCrud {
         };
         if !matches!(
             key,
-            Some(EncodeKey::Workers | EncodeKey::Input | EncodeKey::ScenesDirectory)
+            Some(
+                EncodeKey::Workers
+                    | EncodeKey::MaxTries
+                    | EncodeKey::Input
+                    | EncodeKey::ScenesDirectory
+            )
         ) {
             candidate.validate_settings()?;
             configuration.condor.encoder = candidate;
@@ -877,11 +913,13 @@ mod tests {
             true,
             None,
             None,
+            None,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = encode_handler(
             // Simulate default directory to avoid changing CWD
             Some(&config_path),
+            None,
             None,
             None,
             None,
@@ -969,6 +1007,7 @@ mod tests {
             workers: Some(2),
             scenes_directory: temp_abs.join("scenes"),
             validate_frame_count: true,
+            max_tries: 3,
         };
         if let Input::VapourSynth {
             filters: main_filters,
@@ -998,6 +1037,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = encode_handler(
@@ -1014,6 +1054,7 @@ mod tests {
             Some("--speed 10"),
             Some(1600),
             Some(400),
+            None,
             None,
         )
         .expect("encode_handler should succeed");
@@ -1065,6 +1106,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         )
         .expect("init_handler should succeed");
 
@@ -1089,6 +1131,7 @@ mod tests {
             None,
             None,
             Some(&custom_filters),
+            None,
             None,
             None,
             None,

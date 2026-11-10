@@ -364,6 +364,7 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
                 },
                 speed_scaler: SpeedScalerConfig::default(),
                 parallel_encoder: ParallelEncoderConfig {
+                    max_tries: 3,
                     workers: None,
                     scenes_directory: scenes_directory.clone(),
                     input: None,

@@ -44,9 +44,30 @@ mod e13_tests;
 #[cfg(target_os = "linux")]
 mod e28_tests;
 
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e15_tests;
+
 pub use error::ParallelEncoderError;
 pub(super) use lifecycle::TempOutput;
 pub use task::{ParallelEncoderResult, Task};
+
+/// Per-scene dispatch policy. A try includes every pass and output validation.
+#[derive(Clone, Copy, Debug)]
+pub struct ParallelEncoderOptions {
+    pub max_tries: u32,
+    pub validate_frame_count: bool,
+}
+
+impl Default for ParallelEncoderOptions {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            max_tries: 3,
+            validate_frame_count: true,
+        }
+    }
+}
 
 /// Frames each streaming worker keeps requested ahead and queued for its
 /// encoder. 4-8 measured as fast as larger windows with less memory.
@@ -79,6 +100,8 @@ where
     ) -> Result<((), Vec<anyhow::Error>)> {
         let warnings = vec![];
 
+        condor.sequence_config.parallel_encoder()?.validate()?;
+
         if condor.sequence_config.parallel_encoder()?.workers.is_some_and(|w| w == 0) {
             bail!(ParallelEncoderError::NoWorkers);
         }
@@ -110,6 +133,7 @@ where
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        condor.sequence_config.parallel_encoder()?.validate()?;
         let mut warnings = vec![];
 
         // Ensure scenes is not empty
@@ -185,6 +209,7 @@ where
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: crate::utils::cancellation::Cancellation,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        condor.sequence_config.parallel_encoder()?.validate()?;
         cancelled.check_forced()?;
         if cancelled.is_cancelled() {
             return Ok(((), Vec::new()));
@@ -380,7 +405,10 @@ where
             progress_tx,
             cancelled,
             &mut stream,
-            config.validate_frame_count,
+            ParallelEncoderOptions {
+                max_tries: config.max_tries,
+                validate_frame_count: config.validate_frame_count,
+            },
         );
 
         if let Err(e) = encoder_thread {
@@ -389,7 +417,6 @@ where
         }
 
         progress::drain_finished_results(&mut stream)?;
-        on_results(Vec::new())?;
 
         Ok(((), warnings))
     }

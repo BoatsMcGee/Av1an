@@ -459,16 +459,22 @@ fn e28_runtime_child() {
                 tx,
                 Arc::new(AtomicBool::new(false)).into(),
                 &mut stream,
-                false, // Synthetic fixed-pool checks do not encode bitstreams.
+                ParallelEncoderOptions {
+                    max_tries: 1,
+                    validate_frame_count: false,
+                }, // Fixed-pool one-attempt control.
             )
         } else {
-            ParallelEncoder::encode_tasks_with_validation(
+            ParallelEncoder::encode_tasks_with_options(
                 &mut input,
                 workers,
                 tasks,
                 tx,
                 Arc::new(AtomicBool::new(false)).into(),
-                false,
+                ParallelEncoderOptions {
+                    max_tries: 1,
+                    validate_frame_count: false,
+                },
             )
         };
         if let Some(controller) = controller {
@@ -650,13 +656,16 @@ fn disconnect_child(root: &Path, case: &str, p: &Probe) {
     fs::write(root.join("unrelated.stat"), "stats sentinel").expect("stats sentinel");
     fs::write(root.join("preexisting.264"), "final sentinel").expect("final sentinel");
     let (tx, rx) = std::sync::mpsc::channel();
-    let result = ParallelEncoder::encode_tasks_with_validation(
+    let result = ParallelEncoder::encode_tasks_with_options(
         &mut input,
         1,
         tasks,
         tx,
         Arc::new(AtomicBool::new(false)).into(),
-        false,
+        ParallelEncoderOptions {
+            max_tries: 1,
+            validate_frame_count: false,
+        },
     );
     let state = DISCONNECT.get().expect("race probe").state.lock().expect("state");
     if case.starts_with("cancel-") {

@@ -14,7 +14,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 const CHUNK_BYTES: usize = 64 * 1024;
 const WINDOW: usize = 2;
 
-pub(super) fn create(parent: &Path, output: &Path) -> Result<File> {
+pub(crate) fn create(parent: &Path, output: &Path) -> Result<File> {
     tempfile::tempfile_in(parent).with_context(|| {
         format!(
             "Creating Y4M replay spool for {} under {}",
@@ -50,6 +50,21 @@ pub(super) fn encode_cancel<T>(
     cancellation: &Cancellation,
     mut encode: impl FnMut(u8, Receiver<Cursor<Vec<u8>>>) -> Result<T>,
 ) -> Result<T> {
+    capture(&mut file, frames, output, cancellation)?;
+    let mut result = replay_cancel(&mut file, output, cancellation, |rx| encode(1, rx))?;
+    for pass in 2..=total {
+        result = replay_cancel(&mut file, output, cancellation, |rx| encode(pass, rx))?;
+    }
+    Ok(result)
+}
+
+/// Capture once; the owning producer must additionally confirm successful decoding.
+pub(crate) fn capture(
+    file: &mut impl Write,
+    frames: Receiver<Cursor<Vec<u8>>>,
+    output: &Path,
+    cancellation: &Cancellation,
+) -> Result<()> {
     loop {
         let frame = crossbeam_channel::select_biased! {
             recv(cancellation.forced()) -> _ => return Err(Cancelled::Forced.into()),
@@ -75,11 +90,7 @@ pub(super) fn encode_cancel<T>(
     #[cfg(all(test, target_os = "linux"))]
     super::e09_tests::observe_flush();
 
-    let mut result = replay_cancel(&mut file, output, cancellation, |rx| encode(1, rx))?;
-    for pass in 2..=total {
-        result = replay_cancel(&mut file, output, cancellation, |rx| encode(pass, rx))?;
-    }
-    Ok(result)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -91,7 +102,7 @@ pub(super) fn replay<T>(
     replay_cancel(file, output, &Cancellation::default(), encode)
 }
 
-fn replay_cancel<T>(
+pub(crate) fn replay_cancel<T>(
     file: &mut (impl Read + Seek + Send),
     output: &Path,
     cancellation: &Cancellation,
@@ -108,10 +119,20 @@ fn replay_cancel<T>(
         let feed = producer
             .join()
             .map_err(|_| anyhow::anyhow!("Y4M replay worker panicked for {}", output.display()));
-        // Preserve the original encoder failure and its raw diagnostics, not SendError.
-        let result = result?;
-        feed??;
-        Ok(result)
+        match feed.and_then(std::convert::identity) {
+            Ok(()) => result,
+            // A disconnected consumer is fallout, but real spool IO is terminal.
+            Err(error)
+                if error.is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>()
+                    || error.is::<Cancelled>() =>
+            {
+                result.and_then(|_| Err(error))
+            },
+            Err(error) => Err(match result {
+                Ok(_) => error,
+                Err(encoded) => error.context(format!("Secondary encoder failure: {encoded:#}")),
+            }),
+        }
     })
 }
 

@@ -36,7 +36,7 @@ pub mod capability;
 pub mod color_data;
 pub mod parse;
 pub(crate) mod pipes;
-mod spool;
+pub(crate) mod spool;
 
 #[cfg(test)]
 #[cfg(target_os = "linux")]

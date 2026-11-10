@@ -107,6 +107,7 @@ fn run() -> anyhow::Result<()> {
             concat,
             discard,
             workers,
+            max_tries,
             encoder,
             params,
             photon_noise,
@@ -136,6 +137,7 @@ fn run() -> anyhow::Result<()> {
                 !disable_color_data,
                 target_metric.as_ref(),
                 target,
+                max_tries,
             )?;
         },
         Some(Commands::DetectScenes {
@@ -316,6 +318,7 @@ fn run() -> anyhow::Result<()> {
             filters,
             vs_args,
             workers,
+            max_tries,
             encoder,
             passes,
             params,
@@ -340,6 +343,7 @@ fn run() -> anyhow::Result<()> {
                 photon_noise,
                 chroma_noise,
                 ffmpeg_filter.as_deref(),
+                max_tries,
             )?;
 
             run_encoder(&configuration, &save_file)?;
@@ -422,6 +426,7 @@ fn run() -> anyhow::Result<()> {
                 cli.minimum_quantizer,
                 cli.maximum_quantizer,
                 cli.target_profile.as_ref(),
+                cli.max_tries,
             )?;
 
             if let Some(zones) = &cli.zones {

@@ -246,6 +246,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = scale_speed_handler(Some(&config_path), None, None)
@@ -305,6 +306,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = scale_speed_handler(
@@ -361,6 +363,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
             None,
         )
@@ -429,6 +432,7 @@ mod tests {
             None,
             None,
             true,
+            None,
             None,
             None,
         )

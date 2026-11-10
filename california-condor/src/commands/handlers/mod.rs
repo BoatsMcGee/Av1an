@@ -445,6 +445,7 @@ mod tests {
                 Some(std::slice::from_ref(&invalid)),
                 None,
                 Some(2),
+                None,
             )
             .expect_err("native override cannot represent explicit format");
             assert!(error.to_string().contains(format.to_pix_fmt_string()));
