@@ -36,6 +36,121 @@ struct Probe {
 
 static PROBE: OnceLock<Probe> = OnceLock::new();
 
+#[derive(Default)]
+struct DisconnectState {
+    worker_checked: bool,
+    cancelled: bool,
+    produced: bool,
+    scheduled: bool,
+    frame_send_error: bool,
+}
+
+struct Disconnect {
+    case: String,
+    root: std::path::PathBuf,
+    state: Mutex<DisconnectState>,
+    changed: Condvar,
+}
+
+static DISCONNECT: OnceLock<Disconnect> = OnceLock::new();
+
+pub(super) fn worker_received() {
+    if let Some(p) = DISCONNECT.get().filter(|p| p.case == "cancel-before-worker") {
+        let state = p.state.lock().expect("state");
+        drop(
+            p.changed
+                .wait_while(state, |s| !s.cancelled)
+                .expect("cancel before worker check"),
+        );
+    }
+}
+
+pub(super) fn worker_admitted() {
+    if let Some(p) = DISCONNECT.get() {
+        p.state.lock().expect("state").worker_checked = true;
+        p.changed.notify_all();
+    }
+}
+
+pub(super) fn after_handoff(cancelled: &AtomicBool) {
+    let Some(p) = DISCONNECT.get().filter(|p| p.case.starts_with("cancel-")) else {
+        return;
+    };
+    let state = p.state.lock().expect("state");
+    let mut state = p
+        .changed
+        .wait_while(state, |s| p.case == "cancel-handoff" && !s.worker_checked)
+        .expect("worker passed stop check");
+    cancelled.store(true, Ordering::SeqCst);
+    state.cancelled = true;
+    p.changed.notify_all();
+}
+
+pub(super) fn before_header() {
+    if let Some(p) = DISCONNECT
+        .get()
+        .filter(|p| p.case == "codec-disconnect" || p.case.starts_with("decode-primary"))
+    {
+        // The real process has closed stdin before its writer sees this header.
+        while !p.root.join("stdin-closed").exists() {
+            std::thread::yield_now();
+        }
+    }
+}
+
+pub(super) fn before_frames(stop: &lifecycle::Stop) {
+    if let Some(p) = DISCONNECT
+        .get()
+        .filter(|p| p.case == "codec-disconnect" || p.case.starts_with("decode-primary"))
+    {
+        while !p.root.join("consumer-closed").exists() {
+            std::thread::yield_now();
+        }
+        if p.case == "decode-primary-stopped" {
+            stop.stop();
+        }
+    }
+}
+
+pub(super) fn consumer_closed(point: &str) {
+    let Some(p) = DISCONNECT.get().filter(|p| {
+        (point == "encoder"
+            && (p.case == "codec-disconnect" || p.case.starts_with("decode-primary")))
+            || (point == "filter" && p.case == "filter-disconnect")
+    }) else {
+        return;
+    };
+    // Delay only error notification, after real codec/filter receivers and
+    // helpers have closed. Let the actual producer observe its own send error.
+    fs::write(p.root.join("consumer-closed"), "receivers closed").expect("closed handshake");
+    let state = p.state.lock().expect("state");
+    drop(
+        p.changed
+            .wait_while(state, |s| !s.scheduled)
+            .expect("producer failure collected before worker notification"),
+    );
+}
+
+pub(super) fn producer_returned(result: &Result<()>) {
+    if let Some(p) = DISCONNECT.get() {
+        let mut state = p.state.lock().expect("state");
+        state.produced = true;
+        state.frame_send_error = result
+            .as_ref()
+            .is_err_and(|err| err.is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>());
+        p.changed.notify_all();
+    }
+}
+
+pub(super) fn scheduled_finished() {
+    if let Some(p) = DISCONNECT.get() {
+        let mut state = p.state.lock().expect("state");
+        assert!(state.produced || p.case.starts_with("cancel-"));
+        state.scheduled = true;
+        p.changed.notify_all();
+    }
+}
+
 pub(super) struct WorkerCount(&'static Probe);
 
 pub(super) fn worker_started() -> Option<WorkerCount> {
@@ -162,6 +277,12 @@ fn e28_bounded_dispatch_runtime() {
         "public1",
         "public3",
         "public8",
+        "codec-disconnect",
+        "filter-disconnect",
+        "cancel-handoff",
+        "cancel-before-worker",
+        "decode-primary",
+        "decode-primary-stopped",
     ] {
         let job = root.join(case);
         fs::create_dir_all(&job).expect("job");
@@ -209,9 +330,18 @@ fn e28_runtime_child() {
         "public1" => (1, 5),
         "public3" => (3, 5),
         "public8" => (8, 5),
+        "codec-disconnect"
+        | "filter-disconnect"
+        | "cancel-handoff"
+        | "cancel-before-worker"
+        | "decode-primary"
+        | "decode-primary-stopped" => (1, 2),
         _ => panic!("unknown case"),
     };
-    let synthetic = !case.starts_with("public");
+    let disconnect = case.ends_with("disconnect")
+        || case.starts_with("cancel-")
+        || case.starts_with("decode-primary");
+    let synthetic = !case.starts_with("public") && !disconnect;
     let handshake = matches!(case, "admission" | "failure" | "save");
     let failure = case == "failure";
     let save_failure = case == "save";
@@ -236,6 +366,15 @@ fn e28_runtime_child() {
             .is_ok()
     );
     let p = PROBE.get().expect("probe");
+    if disconnect {
+        disconnect_child(&root, case, p);
+        fs::write(
+            root.join("verified"),
+            "actual consumer diagnostic/cancel/decode checks passed",
+        )
+        .expect("verified");
+        return;
+    }
     let mut input = e11_tests::input(&root, false);
     assert!(
         !input.streams_concurrently(),
@@ -433,4 +572,197 @@ fn e28_runtime_child() {
         "bounded actual dispatch, identities and joins checked",
     )
     .expect("verified");
+}
+
+fn disconnect_child(root: &Path, case: &str, p: &Probe) {
+    use crate::{
+        core::{encoder::EncoderProcessError, input::Input},
+        models::input::{Input as InputModel, VapourSynthScriptSource},
+    };
+    assert!(
+        DISCONNECT
+            .set(Disconnect {
+                case: case.to_owned(),
+                root: root.to_owned(),
+                state: Mutex::new(DisconnectState::default()),
+                changed: Condvar::new(),
+            })
+            .is_ok()
+    );
+    let early = case == "codec-disconnect" || case.starts_with("decode-primary");
+    let codec = root.join("codec");
+    let body = if early {
+        "exec 0<&-\nprintf 'E28 early codec diagnostic' >&2\nprintf closed > \"$E08_ROOT/stdin-closed\"\nexit 42\n"
+    } else if case == "filter-disconnect" {
+        "cat > \"$E08_ROOT/input.y4m\"\nprintf owned > \"$out\"\n"
+    } else {
+        "cat > \"$E08_ROOT/input.y4m\"\nif [ ! -s \"$E08_ROOT/input.y4m\" ]; then printf 'E28 empty admitted input' >&2; exit 84; fi\nprintf owned > \"$out\"\n"
+    };
+    fs::write(&codec, format!("#!/bin/sh\nset -eu\nprintf 'started\\n' >> \"$E08_ROOT/codec-starts\"\nout=\nwhile [ \"$#\" -gt 0 ]; do\nif [ \"$1\" = -o ]; then shift; out=$1; fi\nshift\ndone\n{body}")).expect("finite codec");
+    fs::set_permissions(&codec, fs::Permissions::from_mode(0o755)).expect("codec executable");
+    let script = root.join("disconnect.vpy");
+    let eval = if case.starts_with("decode-primary") {
+        "    if n == 1: raise RuntimeError('e28 actual VS frame decode failure')\n".to_owned()
+    } else if case == "filter-disconnect" {
+        format!(
+            "    if n == 32:\n        Path({:?}).write_text('producer has frames remaining')\n        while not Path({:?}).exists(): pass\n",
+            root.join("frame-blocked"),
+            root.join("consumer-closed")
+        )
+    } else {
+        String::new()
+    };
+    fs::write(&script, format!("import vapoursynth as vs\nfrom pathlib import Path\ncore = vs.core\nclip = core.std.BlankClip(width=64, height=64, length=96, format=vs.YUV420P8, fpsnum=24, fpsden=1)\ndef gate(n):\n{eval}    return clip\ncore.std.FrameEval(clip, gate).set_output()\n")).expect("real VS script");
+    let mut input = Input::from_data(&InputModel::VapourSynthScript {
+        source: VapourSynthScriptSource::Path(script),
+        variables: Default::default(),
+        index: 0,
+        filters: vec![],
+        stream_concurrently: false,
+    })
+    .expect("actual nonstream VS");
+    assert!(!input.streams_concurrently());
+    let tasks = (0..2)
+        .map(|index| {
+            let mut encoder = Encoder::default_from_base(&EncoderBase::X264, true);
+            encoder.set_append_color_data(false);
+            encoder.set_executable(Some(codec.clone()));
+            *encoder.passes_mut().expect("passes") = EncoderPasses::All(1);
+            if case == "filter-disconnect" {
+                encoder.set_ffmpeg_filter(Some("e28_no_such_filter".to_owned()));
+            }
+            Task {
+                index,
+                original_index: 7 + index * 3,
+                frame_indices: if case.starts_with("decode-primary") {
+                    vec![1]
+                } else {
+                    (0..96).collect()
+                },
+                sub_scenes: None,
+                encoder,
+                output: root.join(format!("{index}.264")),
+            }
+        })
+        .collect();
+    fs::write(root.join("unrelated.stat"), "stats sentinel").expect("stats sentinel");
+    fs::write(root.join("preexisting.264"), "final sentinel").expect("final sentinel");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let result =
+        ParallelEncoder::encode_tasks(&mut input, 1, tasks, tx, Arc::new(AtomicBool::new(false)));
+    let state = DISCONNECT.get().expect("race probe").state.lock().expect("state");
+    if case.starts_with("cancel-") {
+        let results = result.expect("graceful handoff cancellation is not an empty-codec failure");
+        assert_eq!(results.len(), 2);
+        assert!(results[1].is_none());
+        if case == "cancel-handoff" {
+            assert_eq!(
+                results[0].as_ref().expect("active admitted job finishes").scene,
+                7
+            );
+            assert_eq!(
+                fs::read(root.join("0.264")).expect("active output"),
+                b"owned"
+            );
+            let bytes = fs::read(root.join("input.y4m")).expect("nonempty real codec input");
+            assert!(bytes.starts_with(b"YUV4MPEG2 "));
+            assert_eq!(bytes.windows(6).filter(|w| *w == b"FRAME\n").count(), 96);
+        } else {
+            assert!(
+                results[0].is_none(),
+                "worker observing stop before consume skips cleanly"
+            );
+        }
+    } else {
+        let error = result.expect_err("actual consumer/decode failure");
+        let diagnostic = format!("{error:#}");
+        assert!(
+            !error.is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>(),
+            "consumer/decode diagnostic must beat frame disconnect: {diagnostic}"
+        );
+        if case.starts_with("decode-primary") {
+            assert!(
+                !state.frame_send_error,
+                "actual decoder failure, not a channel fault"
+            );
+            assert!(
+                diagnostic.contains("e28 actual VS frame decode failure"),
+                "{diagnostic}"
+            );
+            assert!(
+                diagnostic.contains("Scene 7 frame production"),
+                "{diagnostic}"
+            );
+        } else {
+            assert!(
+                state.frame_send_error,
+                "real producer observed a typed frame SendError before worker notification"
+            );
+            if case == "codec-disconnect" {
+                assert!(
+                    error.downcast_ref::<EncoderProcessError>().is_some(),
+                    "real STDIN worker error retained: {diagnostic}"
+                );
+                let encoded = error
+                    .chain()
+                    .find_map(|e| e.downcast_ref::<EncoderResult>())
+                    .expect("typed encoder result retained");
+                assert_eq!(encoded.status.code(), Some(42));
+                assert_eq!(encoded.stderr.to_string(), "E28 early codec diagnostic");
+            } else {
+                assert!(
+                    root.join("frame-blocked").exists(),
+                    "producer held with frames remaining"
+                );
+                assert!(
+                    diagnostic.contains("FFmpeg filter failed while encoding scene 7")
+                        && diagnostic.contains("e28_no_such_filter"),
+                    "{diagnostic}"
+                );
+            }
+        }
+        eprintln!(
+            "E28 {case}: real frame_send={}, returned primary: {diagnostic}",
+            state.frame_send_error
+        );
+        assert!(!root.join("0.264").exists(), "failed scene not finalized");
+    }
+    assert_eq!(p.spawned.load(Ordering::SeqCst), 1);
+    assert_eq!(p.maximum.load(Ordering::SeqCst), 1);
+    assert_eq!(p.live.load(Ordering::SeqCst), 0, "actual worker joined");
+    assert_eq!(
+        p.headers.lock().expect("headers")[1],
+        0,
+        "queued scene never decoded"
+    );
+    assert!(!root.join("1.264").exists());
+    let starts = fs::read_to_string(root.join("codec-starts")).unwrap_or_default();
+    assert_eq!(
+        starts.lines().count(),
+        usize::from(case != "cancel-before-worker"),
+        "no queued/empty codec starts"
+    );
+    let _: Vec<_> = rx.try_iter().collect();
+    assert!(
+        matches!(
+            rx.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ),
+        "all progress relays joined"
+    );
+    assert!(!fs::read_dir(root).expect("files").any(|e| {
+        let name = e.expect("entry").file_name().to_string_lossy().into_owned();
+        name.contains(".temp.") || name.starts_with(".av1an-")
+    }));
+    assert_eq!(
+        fs::read_to_string(root.join("unrelated.stat")).expect("sentinel"),
+        "stats sentinel"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("preexisting.264")).expect("sentinel"),
+        "final sentinel"
+    );
+    eprintln!(
+        "E28 {case}: spawned/max/live=1/1/0, all joined, queued header=0, sentinels retained"
+    );
 }

@@ -134,9 +134,13 @@ pub(super) fn consume_frames(
         let encoded = stop.catch(&format!("Scene {} encoder", task.original_index), || {
             #[cfg(all(test, target_os = "linux"))]
             super::e11_tests::fault("worker", task.original_index)?;
-            task.encoder
+            let result = task
+                .encoder
                 .encode_with_stream(frames, temp, tx, clip_info)
-                .or_else(anyhow::Error::downcast::<EncoderResult>)
+                .or_else(anyhow::Error::downcast::<EncoderResult>);
+            #[cfg(all(test, target_os = "linux"))]
+            super::e28_tests::consumer_closed("encoder");
+            result
         });
         if !encoded.as_ref().is_ok_and(|result| result.status.success()) {
             stop.stop();
@@ -147,6 +151,8 @@ pub(super) fn consume_frames(
                 task.original_index
             ))
         });
+        #[cfg(all(test, target_os = "linux"))]
+        super::e28_tests::consumer_closed("filter");
         if filtered.is_err() {
             stop.stop();
         }
@@ -284,7 +290,11 @@ impl ParallelEncoder {
                             recv(stop.receiver) -> _ => break,
                             recv(jobs_rx) -> job => match job { Ok(job) => job, Err(_) => break },
                         };
+                        #[cfg(all(test, target_os = "linux"))]
+                        super::e28_tests::worker_received();
                         if stop.stopped(cancelled) { break; }
+                        #[cfg(all(test, target_os = "linux"))]
+                        super::e28_tests::worker_admitted();
                         let result = stop.catch(&format!("Scene {} worker", task.original_index), || {
                             let mut guard = stop.guard();
                             #[cfg(all(test, target_os = "linux"))]
@@ -362,11 +372,16 @@ impl ParallelEncoder {
                             }
                         },
                     }
-                    if stop.stopped(&cancelled) { guard.success(); break; }
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e28_tests::after_handoff(&cancelled);
+                    // The worker owns the stop check after handoff. If it has
+                    // started, graceful cancellation must still feed its input.
                     #[cfg(all(test, target_os = "linux"))]
                     super::e11_tests::fault("header", task.original_index)?;
                     #[cfg(all(test, target_os = "linux"))]
                     super::e28_tests::header(task);
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e28_tests::before_header();
                     let header = input.y4m_header(Some(task.frame_indices.len()))?;
                     if let Err(err) = frames_tx.send(Cursor::new(header.into_bytes())) {
                         if stop.stopped(&cancelled) {
@@ -377,8 +392,15 @@ impl ParallelEncoder {
                     }
                     #[cfg(all(test, target_os = "linux"))]
                     super::e11_tests::fault("decode", task.original_index)?;
-                    if let Err(err) = input.y4m_frames(frames_tx.clone(), &task.frame_indices) {
-                        if stop.stopped(&cancelled) {
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e28_tests::before_frames(&stop);
+                    let produced = input.y4m_frames(frames_tx.clone(), &task.frame_indices);
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e28_tests::producer_returned(&produced);
+                    if let Err(err) = produced {
+                        if stop.stopped(&cancelled)
+                            && err.is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>()
+                        {
                             tracing::error!(
                                 "Frame production stopped after worker failure: {err:#}"
                             );
@@ -397,6 +419,8 @@ impl ParallelEncoder {
                 }
                 Ok(())
             });
+            #[cfg(all(test, target_os = "linux"))]
+            super::e28_tests::scheduled_finished();
             // EOF and admission closure precede every join, including decode or
             // callback failure. No pool-owned sender can keep a consumer alive.
             drop(jobs_tx);
@@ -414,7 +438,16 @@ impl ParallelEncoder {
                 stop.stop();
             }
             let mut error = setup.err();
-            if let Err(err) = scheduled { retain_error(&mut error, err); }
+            // A consumer can close its receiver before reporting its diagnostic.
+            // Defer only that typed disconnect; real header/decode errors stay primary.
+            let mut frame_send_error = None;
+            if let Err(err) = scheduled {
+                if err.is::<crossbeam_channel::SendError<Cursor<Vec<u8>>>>() {
+                    frame_send_error = Some(err);
+                } else {
+                    retain_error(&mut error, err);
+                }
+            }
             let mut results = vec![None; total_tasks];
             for handle in handles {
                 match handle.join() {
@@ -438,6 +471,7 @@ impl ParallelEncoder {
                 stop.stop();
                 retain_error(&mut error, err);
             }
+            if let Some(err) = frame_send_error { retain_error(&mut error, err); }
             #[cfg(all(test, target_os = "linux"))]
             super::e11_tests::verify_pools(&stop, workers.into());
             scheduling.success();

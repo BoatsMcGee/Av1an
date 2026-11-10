@@ -11,7 +11,7 @@
 Frame buffering is chosen from the input:
 
 - Video inputs and BestSource, FFMS2, or L-SMASH VapourSynth imports stream frames to each worker as it encodes, keeping a few frames in memory per worker.
-- DGDecNV imports and VapourSynth scripts decode one scene ahead of the workers.
+- DGDecNV imports and nonstreaming VapourSynth scripts wait for a free worker before decoding each scene. Queued scenes are not decoded; an admitted scene can still buffer its frames.
 
 Example:
 
