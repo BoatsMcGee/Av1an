@@ -236,15 +236,18 @@ impl OwnedProcess {
                     let killed = state.kill(); // Before reap: no stale group ID can be signalled.
                     let status = state.child.wait();
                     #[cfg(all(test, target_os = "linux"))]
-                    if std::env::var("E08_CASE").is_ok_and(|case| {
-                        case.starts_with("e15-")
-                            && (case.ends_with("force") || case.ends_with("force-child-first"))
-                    }) {
+                    if let Some(root) = std::env::var_os("E08_ROOT").map(std::path::PathBuf::from)
+                        && let Some(pid) = std::fs::read_to_string(root.join("leader"))
+                            .ok()
+                            .and_then(|pid| pid.parse::<u32>().ok())
+                        && pid > 0
+                        && pid == state.child.id()
+                    {
                         use std::os::unix::process::ExitStatusExt;
-                        assert_eq!(
-                            status.as_ref().expect("force leader reaped").signal(),
-                            Some(libc::SIGKILL)
-                        );
+                        // A worker panic can become Forced; the joined caller must check this record.
+                        let signal = status.as_ref().ok().and_then(|status| status.signal());
+                        std::fs::write(root.join("leader-signal"), format!("{pid} {signal:?}"))
+                            .expect("record known fixture leader signal");
                     }
                     #[cfg(all(test, target_os = "linux"))]
                     crate::core::encoder::e12_tests::observe_reap(state.child.id());

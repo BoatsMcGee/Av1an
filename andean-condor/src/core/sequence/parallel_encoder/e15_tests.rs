@@ -913,6 +913,10 @@ fn e15_public_child() {
         }
         if kind == "capture-force" {
             assert_eq!(calls, 0);
+            assert!(
+                !root.join("leader-signal").exists(),
+                "capture spawned no leader"
+            );
             assert_eq!(
                 error.downcast_ref::<crate::utils::cancellation::Cancelled>(),
                 Some(&crate::utils::cancellation::Cancelled::Forced)
@@ -943,6 +947,12 @@ fn e15_public_child() {
                     "owned process reaped"
                 );
             }
+            let leader = read_pid(&root, "leader");
+            assert_eq!(
+                fs::read_to_string(root.join("leader-signal")).expect("known leader reap evidence"),
+                format!("{leader} Some({})", libc::SIGKILL),
+                "known leader SIGKILL after owner joins"
+            );
         }
         if kind == "publication" {
             assert_eq!(fs::read(&output).expect("existing final"), b"caller-final");
