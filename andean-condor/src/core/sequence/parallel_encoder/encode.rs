@@ -11,18 +11,19 @@ use std::{
 
 use anyhow::Result;
 use crossbeam_channel::Receiver;
-use tracing::{debug, trace};
+use tracing::debug;
 
 use super::{
     ParallelEncoder, STREAM_WINDOW,
     error::ParallelEncoderError,
-    progress::{drain_finished_results, first_filter_failure, relay_progress},
+    lifecycle::{Stop, TempOutput, retain_error},
+    progress::{drain_finished_results, relay_progress},
     task::{ParallelEncoderResult, ResultStream, Task},
 };
 use crate::{
     core::{
         encoder::{EncodeProgress, EncoderResult},
-        input::Input,
+        input::{Input, clip_info::ClipInfo},
         sequence::{SequenceCompletion, SequenceStatus, Status, ffmpeg_filter::FfmpegFilter},
     },
     utils::semaphore::Semaphore,
@@ -73,6 +74,8 @@ pub(super) fn finalize_scene(
     encoder_errored: &AtomicBool,
 ) -> Result<()> {
     if outcome.usable {
+        #[cfg(all(test, target_os = "linux"))]
+        super::e11_tests::fault("size", scene)?;
         size_tx.send(SequenceStatus::Whole(Status::Processing {
             id: scene.to_string(),
             completion: SequenceCompletion::Custom {
@@ -87,6 +90,96 @@ pub(super) fn finalize_scene(
         encoder_errored.store(true, Ordering::Relaxed);
     }
     Ok(())
+}
+
+/// The consumer owns filter cleanup and joins the progress relay even when
+/// encoding fails. A producer may still be blocked on the filter's input.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn consume_frames(
+    task: &Task,
+    frames: Receiver<Cursor<Vec<u8>>>,
+    temp: &std::path::Path,
+    clip_info: &ClipInfo,
+    progress_tx: &std::sync::mpsc::Sender<SequenceStatus>,
+    total_frames: usize,
+    total_final: &AtomicUsize,
+    stop: &Stop,
+    window: usize,
+) -> Result<EncoderResult> {
+    let (frames, mut filter) = spawn_filter(frames, task, None, window)?;
+    thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel::<EncodeProgress>();
+        let relay = scope.spawn(move || {
+            stop.catch(
+                &format!("Scene {} progress relay", task.original_index),
+                || {
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e11_tests::fault("relay", task.original_index)?;
+                    relay_progress(
+                        rx,
+                        progress_tx,
+                        task.encoder.total_passes(),
+                        task.original_index,
+                        task.frame_indices.len(),
+                        total_frames,
+                        total_final,
+                    )
+                },
+            )
+        });
+        let encoded = stop.catch(&format!("Scene {} encoder", task.original_index), || {
+            #[cfg(all(test, target_os = "linux"))]
+            super::e11_tests::fault("worker", task.original_index)?;
+            task.encoder
+                .encode_with_stream(frames, temp, tx, clip_info)
+                .or_else(anyhow::Error::downcast::<EncoderResult>)
+        });
+        if !encoded.as_ref().is_ok_and(|result| result.status.success()) {
+            stop.stop();
+        }
+        let filtered = filter.as_mut().map_or(Ok(()), |stage| stage.check()).map_err(|err| {
+            err.context(format!(
+                "FFmpeg filter failed while encoding scene {}",
+                task.original_index
+            ))
+        });
+        if filtered.is_err() {
+            stop.stop();
+        }
+        let relayed = relay.join().unwrap_or_else(|_| {
+            Err(anyhow::anyhow!(
+                "Scene {} progress relay panicked",
+                task.original_index
+            ))
+        });
+        // The filter's diagnostic explains truncated-input fallout best.
+        let mut error = filtered.err();
+        let result = match encoded {
+            Ok(result) if result.status.success() => Some(result),
+            Ok(result) => {
+                retain_error(
+                    &mut error,
+                    ParallelEncoderError::EncoderFailed {
+                        scene: task.original_index,
+                        result,
+                    }
+                    .into(),
+                );
+                None
+            },
+            Err(err) => {
+                retain_error(&mut error, err);
+                None
+            },
+        };
+        if let Err(err) = relayed {
+            retain_error(&mut error, err);
+        }
+        if let Some(err) = error {
+            return Err(err);
+        }
+        Ok(result.expect("successful encode retained its result"))
+    })
 }
 
 /// Sends a scene's result to the persistence channel and returns it.
@@ -109,6 +202,9 @@ impl ParallelEncoder {
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        if workers == 0 {
+            anyhow::bail!(ParallelEncoderError::NoWorkers);
+        }
         let (results_tx, results_rx) = crossbeam_channel::unbounded();
         let mut on_results = |_results: Vec<ParallelEncoderResult>| -> Result<()> { Ok(()) };
         let mut stream = ResultStream {
@@ -150,227 +246,151 @@ impl ParallelEncoder {
                 stream,
             );
         }
-        let (task_tx, task_rx) = crossbeam_channel::unbounded();
-        let mut frames_senders = BTreeMap::new();
-        let mut frames_receivers = BTreeMap::new();
-        let mut encoder_semaphores = BTreeMap::new();
-        // One failure cell per scene, filled by that scene's filter subprocess.
-        let filter_failures: BTreeMap<usize, Arc<Mutex<Option<String>>>> = tasks
-            .iter()
-            .filter(|task| task.encoder.ffmpeg_filter().is_some())
-            .map(|task| (task.original_index, Arc::new(Mutex::new(None))))
-            .collect();
-        let total_tasks = tasks.len();
-        let total_process_frames = tasks.iter().fold(0, |acc, task| acc + task.frame_indices.len());
-        for task in tasks.iter() {
-            let index = task.index;
-            task_tx.send(task.clone())?;
-            let (ftx, rtx) = crossbeam_channel::unbounded();
-            frames_senders.insert(index, ftx);
-            frames_receivers.insert(index, rtx);
-            encoder_semaphores.insert(index, Arc::new(Semaphore::new(0)));
+        if workers == 0 {
+            anyhow::bail!(ParallelEncoderError::NoWorkers);
         }
-        drop(task_tx);
-        let encoder_errored = Arc::new(AtomicBool::new(false));
         let clip_info = input.clip_info()?;
-
-        thread::scope(|s| -> Result<_> {
-            let total_final_pass_frames_encoded = Arc::new(AtomicUsize::new(0));
-            let worker_semaphore = Arc::new(Semaphore::new(workers.into()));
-            let decoder_semaphore = Arc::new(Semaphore::new(usize::from(workers) + 1));
-            let frame_receivers = Arc::new(Mutex::new(frames_receivers));
-            let mut encoder_threads = Vec::new();
-            let cancelled = Arc::new(cancelled);
-
-            for _ in 0..total_tasks {
-                let total_final_pass_frames_encoded = Arc::clone(&total_final_pass_frames_encoded);
-                let cancelled = Arc::clone(&cancelled);
-                let filter_failures = &filter_failures;
-                let task_rx = task_rx.clone();
-                let frame_receivers = Arc::clone(&frame_receivers);
-                let task_progress_tx = progress_tx.clone();
-                let size_tx = progress_tx.clone();
-                let task = task_rx.recv()?;
-                let total_passes = task.encoder.total_passes();
-                let total_scene_frames = task.frame_indices.len();
-                let worker_semaphore = Arc::clone(&worker_semaphore);
-                let decoder_semaphore_clone = Arc::clone(&decoder_semaphore);
-                let encoder_semaphore =
-                    encoder_semaphores.get(&task.index).expect("encoder_semaphore exists");
-                let encoder_semaphore_clone: Arc<Semaphore> = Arc::clone(encoder_semaphore);
-                let encoder_errored = Arc::clone(&encoder_errored);
-                let finished_scenes = Arc::clone(&stream.finished_scenes);
+        let stop = Stop::new(workers.into());
+        let total_final = AtomicUsize::new(0);
+        let total_frames = tasks.iter().map(|task| task.frame_indices.len()).sum();
+        let results = stop.catch_panic("Parallel scheduling", || thread::scope(|scope| {
+            // Also covers a thread-spawn panic before the scheduling loop:
+            // close admission before std::thread::scope implicitly joins.
+            let mut scheduling = stop.guard();
+            let mut pending = Vec::new();
+            let mut handles = Vec::new();
+            // ponytail: retain one thread per scene; E28 bounds thread creation.
+            let setup = stop.catch("Parallel worker setup", || {
+            for task in &tasks {
+                #[cfg(all(test, target_os = "linux"))]
+                if task.index == 1 { super::e11_tests::fault("schedule", 7)?; }
+                let (frames_tx, frames_rx) = crossbeam_channel::unbounded();
+                let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+                pending.push((task, frames_tx, ready_tx));
+                let (stop, total_final, clip_info, cancelled) =
+                    (&stop, &total_final, &clip_info, &cancelled);
+                let progress_tx = progress_tx.clone();
                 let results_tx = stream.results_tx.clone();
-
-                let encoder_thread = s.spawn(move || -> Result<Option<ParallelEncoderResult>> {
-                    let mut fr_lock =
-                        frame_receivers.lock().expect("frame_receivers mutex should acquire lock");
-                    let frames_rx = fr_lock.remove(&task.index).expect("should have frames_rx)");
-                    drop(fr_lock);
-                    let (encode_progress_tx, encode_progress_rx) =
-                        std::sync::mpsc::channel::<EncodeProgress>();
-
-                    // Held until the decoder starts, so encoders do not all
-                    // launch at creation.
-                    encoder_semaphore_clone.acquire();
-                    trace!(
-                        "Scene {} Encoder waiting for a free Worker",
-                        task.original_index
-                    );
-                    // Caps active encoders at the worker limit.
-                    let worker_id = worker_semaphore.acquire();
-                    if cancelled.load(Ordering::Relaxed) || encoder_errored.load(Ordering::Relaxed)
-                    {
-                        // Let the decoder exit.
-                        worker_semaphore.release();
-                        decoder_semaphore_clone.release();
-                        return Ok(None);
-                    }
-                    debug!(
-                        "Encoding Scene {} with Worker {}",
-                        task.original_index, worker_id
-                    );
+                let finished = Arc::clone(&stream.finished_scenes);
+                handles.push(scope.spawn(move || stop.catch(&format!("Scene {} worker", task.original_index), || {
+                    let mut startup = stop.guard();
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e11_tests::fault("gate", task.original_index)?;
+                    startup.success();
+                    let _decoder = crossbeam_channel::select! {
+                        recv(stop.receiver) -> _ => return Ok(None),
+                        recv(ready_rx) -> permit => match permit { Ok(permit) => permit, Err(_) => return Ok(None) },
+                    };
+                    let Some(_worker) = stop.workers.acquire_owned() else { return Ok(None) };
+                    let mut guard = stop.guard();
+                    if stop.stopped(cancelled) { guard.success(); return Ok(None); }
+                    debug!("Encoding Scene {}", task.original_index);
                     let started = std::time::SystemTime::now();
-                    s.spawn(move || -> Result<()> {
-                        relay_progress(
-                            encode_progress_rx,
-                            &task_progress_tx,
-                            total_passes,
-                            task.original_index,
-                            total_scene_frames,
-                            total_process_frames,
-                            &total_final_pass_frames_encoded,
-                        )
-                    });
-                    let temp_output = task
-                        .output
-                        .with_extension(format!("temp.{}", task.encoder.output_extension()));
-                    trace!(
-                        "Encoding Scene {} to {}",
-                        task.original_index,
-                        temp_output.display()
-                    );
-                    let (frames_rx, mut filter_stage) =
-                        spawn_filter(frames_rx, &task, Some(filter_failures), STREAM_WINDOW)?;
-                    // Retain failed statuses for scene cleanup and permit release, not other errors.
-                    let result = task.encoder.encode_with_stream(
-                        frames_rx,
-                        &temp_output,
-                        encode_progress_tx,
-                        &clip_info,
-                    );
-                    // Finalize helpers before inspecting the shared failure cell.
-                    let filter_failed =
-                        filter_stage.as_mut().is_some_and(|stage| stage.check().is_err());
-                    let result = result.or_else(anyhow::Error::downcast::<EncoderResult>)?;
+                    let temp = TempOutput::new(task.output.with_extension(format!("temp.{}", task.encoder.output_extension())));
+                    let result = consume_frames(task, frames_rx, &temp.path, clip_info, &progress_tx,
+                        total_frames, total_final, stop, STREAM_WINDOW)?;
                     let ended = std::time::SystemTime::now();
-                    let framerate =
-                        *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
-                    let scene_seconds = task.frame_indices.len() as f64 * framerate;
-                    let bytes = temp_output.metadata().ok().map_or(0, |meta| meta.len());
-                    let bitrate = (bytes * 8) as f64 / scene_seconds;
-                    finalize_scene(
-                        SceneOutcome {
-                            temp_output,
-                            bytes,
-                            usable: result.status.success() && !filter_failed,
-                        },
-                        &task.output,
-                        task.original_index,
-                        &size_tx,
-                        &encoder_errored,
-                    )?;
-                    debug!(
-                        "Encoded Scene {} in {} seconds yielding {} bytes",
-                        task.original_index,
-                        ended.duration_since(started)?.as_secs(),
-                        bytes
-                    );
-                    worker_semaphore.release(); // Release for next worker
-                    decoder_semaphore_clone.release(); // Release for next decoder
-                    let parallel_result = report_result(
-                        &results_tx,
-                        &finished_scenes,
-                        ParallelEncoderResult {
-                            scene: task.original_index,
-                            started,
-                            ended,
-                            bytes,
-                            bitrate,
-                            result,
-                        },
-                    )?;
-                    Ok(Some(parallel_result))
-                });
-
-                encoder_threads.push(encoder_thread);
+                    let bytes = temp.path.metadata()?.len();
+                    let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
+                    // Preserve the existing nonstream bitrate calculation (unrelated to E11).
+                    let bitrate = (bytes * 8) as f64 / (task.frame_indices.len() as f64 * framerate);
+                    finalize_scene(SceneOutcome { temp_output: temp.path.clone(), bytes, usable: true },
+                        &task.output, task.original_index, &progress_tx, &stop.stopped)?;
+                    let result = report_result(&results_tx, &finished, ParallelEncoderResult {
+                        scene: task.original_index, started, ended, bytes, bitrate, result,
+                    })?;
+                    guard.success();
+                    Ok(Some(result))
+                })));
             }
-
-            let mut decode_error: Option<anyhow::Error> = None;
-            for task in tasks {
-                // Bounds how far ahead the decoder runs.
-                decoder_semaphore.acquire();
-                if !cancelled.load(Ordering::Relaxed) && !encoder_errored.load(Ordering::Relaxed) {
-                    debug!("Decoding Scene {}", task.original_index);
-                    let frames_tx =
-                        frames_senders.remove(&task.index).expect("should have frames_tx");
-                    let y4m_header = input.y4m_header(Some(task.frame_indices.len()))?;
-                    let decode_result = (|| -> Result<()> {
-                        frames_tx.send(Cursor::new(Vec::from(y4m_header.as_bytes())))?;
-                        input.y4m_frames(frames_tx, &task.frame_indices)?;
-                        Ok(())
-                    })();
-                    if let Err(err) = decode_result {
-                        // Remaining encoders exit on the flag rather than wait
-                        // for frames that will never arrive.
-                        encoder_errored.store(true, Ordering::Relaxed);
-                        decode_error = Some(err);
-                    }
-                }
-                encoder_semaphores
-                    .get(&task.index)
-                    .expect("should have encoder_semaphore")
-                    .release();
-
-                drain_finished_results(stream)?;
-            }
-
-            drain_finished_results(stream)?;
-
-            let encoder_results = encoder_threads
-                .into_iter()
-                .map(|result| {
-                    result
-                        .join()
-                        .expect("should join encoder thread")
-                        .expect("should join encoder_thread")
-                })
-                .collect::<Vec<_>>();
-            drop(progress_tx);
-
-            // The filter's stderr explains the failure better than the encoder
-            // or decoder fallout it causes.
-            if let Some((scene, message)) = first_filter_failure(&filter_failures) {
-                anyhow::bail!("FFmpeg filter failed while encoding scene {scene}: {message}");
-            }
-
-            let first_error = encoder_results.iter().find(|maybe_result| {
-                maybe_result.as_ref().is_some_and(|result| !result.result.status.success())
+            Ok(())
             });
-            if let Some(Some(first_error)) = first_error {
-                let err = ParallelEncoderError::EncoderFailed {
-                    scene: first_error.scene,
-                    result: first_error.result.clone(),
-                };
-                tracing::error!("{}", err);
-                anyhow::bail!(err);
+            let scheduled = stop.catch("Scene decoding/persistence", || {
+                // The iterator owns all pending senders: early exit closes
+                // every unstarted frame/readiness channel before joins.
+                for (task, frames_tx, ready_tx) in pending {
+                    let Some(permit) = stop.decoders.acquire_owned() else {
+                        break;
+                    };
+                    if stop.stopped(&cancelled) {
+                        break;
+                    }
+                    let mut guard = stop.guard();
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e11_tests::fault("header", task.original_index)?;
+                    let header = input.y4m_header(Some(task.frame_indices.len()))?;
+                    if let Err(err) = frames_tx.send(Cursor::new(header.into_bytes())) {
+                        if stop.stopped(&cancelled) {
+                            guard.success();
+                            break;
+                        }
+                        return Err(err.into());
+                    }
+                    #[cfg(all(test, target_os = "linux"))]
+                    super::e11_tests::fault("decode", task.original_index)?;
+                    if let Err(err) = input.y4m_frames(frames_tx, &task.frame_indices) {
+                        if stop.stopped(&cancelled) {
+                            tracing::error!(
+                                "Frame production stopped after worker failure: {err:#}"
+                            );
+                            guard.success();
+                            break;
+                        }
+                        return Err(
+                            err.context(format!("Scene {} frame production", task.original_index))
+                        );
+                    }
+                    // Ownership transfers to this scene, not the next main-loop
+                    // iteration: decoded lookahead lives until its encoder exits.
+                    if !stop.stopped(&cancelled)
+                        && ready_tx.send(permit).is_err()
+                        && !stop.stopped(&cancelled)
+                    {
+                        anyhow::bail!(
+                            "Scene {} readiness receiver disconnected",
+                            task.original_index
+                        );
+                    }
+                    drain_finished_results(stream)?;
+                    guard.success();
+                }
+                drain_finished_results(stream)
+            });
+            if stop.stopped(&cancelled) {
+                stop.stop();
             }
-            if let Some(decode_error) = decode_error {
-                anyhow::bail!(decode_error);
+            let mut error = setup.err();
+            if let Err(err) = scheduled { retain_error(&mut error, err); }
+            let mut results = Vec::with_capacity(handles.len());
+            for handle in handles {
+                match handle.join() {
+                    Ok(Ok(result)) => results.push(result),
+                    Ok(Err(err)) => {
+                        stop.stop();
+                        retain_error(&mut error, err);
+                        results.push(None);
+                    },
+                    Err(_) => {
+                        stop.stop();
+                        retain_error(&mut error, anyhow::anyhow!("encoder worker panicked"));
+                        results.push(None);
+                    },
+                }
             }
-
-            Ok(encoder_results)
-        })
+            if error.is_none()
+                && let Err(err) = drain_finished_results(stream)
+            {
+                stop.stop();
+                retain_error(&mut error, err);
+            }
+            #[cfg(all(test, target_os = "linux"))]
+            super::e11_tests::verify_pools(&stop, workers.into());
+            scheduling.success();
+            error.map_or_else(|| Ok(results), Err)
+        }));
+        drop(progress_tx);
+        drop(cancelled);
+        results
     }
 }
 

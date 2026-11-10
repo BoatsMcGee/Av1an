@@ -18,9 +18,14 @@ use crate::{
 
 mod encode;
 mod error;
+mod lifecycle;
 mod progress;
 mod streaming;
 mod task;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e11_tests;
 
 pub use error::ParallelEncoderError;
 pub use task::{ParallelEncoderResult, Task};
@@ -253,13 +258,13 @@ where
             &mut stream,
         );
 
-        progress::drain_finished_results(&mut stream)?;
-        on_results(Vec::new())?;
-
         if let Err(e) = encoder_thread {
             error!("{}", e);
             return Err(e);
         }
+
+        progress::drain_finished_results(&mut stream)?;
+        on_results(Vec::new())?;
 
         Ok(((), warnings))
     }

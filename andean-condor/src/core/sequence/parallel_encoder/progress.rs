@@ -1,10 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::Result;
 
@@ -21,18 +15,6 @@ use crate::core::{
 #[inline]
 pub(super) fn count_frame(count: &AtomicUsize) -> usize {
     count.fetch_add(1, Ordering::Relaxed) + 1
-}
-
-/// The first recorded FFmpeg filter failure, keyed by scene, if any.
-pub(super) fn first_filter_failure(
-    failures: &BTreeMap<usize, Arc<Mutex<Option<String>>>>,
-) -> Option<(usize, String)> {
-    failures.iter().find_map(|(&scene, cell)| {
-        cell.lock()
-            .expect("ffmpeg filter failure mutex should acquire lock")
-            .clone()
-            .map(|message| (scene, message))
-    })
 }
 
 /// Drains any finished scene results from the channel and forwards them to

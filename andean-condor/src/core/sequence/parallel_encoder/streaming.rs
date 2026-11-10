@@ -1,36 +1,24 @@
-//! Streaming parallel encoding with bounded memory.
-//!
-//! Each of `workers` threads reads from its own `FrameSource` and streams
-//! frames to its encoder through a bounded channel, so resident raw frames stay
-//! bounded by roughly 2 * window * workers regardless of scene length.
-
+//! Bounded frame streaming; active finite jobs finish on admission shutdown.
 use std::{
     collections::VecDeque,
-    fs,
     io::Cursor,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize},
     thread,
 };
 
-use anyhow::{Result, bail};
-use tracing::{debug, error};
+use anyhow::Result;
 
 use super::{
     ParallelEncoder,
-    encode::{FilteredFrames, SceneOutcome, finalize_scene, spawn_filter},
+    encode::{SceneOutcome, consume_frames, finalize_scene},
     error::ParallelEncoderError,
-    progress::relay_progress,
+    lifecycle::{Stop, TempOutput, retain_error},
     task::{ParallelEncoderResult, ResultStream, Task},
 };
-use crate::core::{
-    encoder::{EncodeProgress, EncoderResult},
-    input::Input,
-    sequence::SequenceStatus,
-};
+use crate::core::{input::Input, sequence::SequenceStatus};
 
 impl ParallelEncoder {
-    #[allow(clippy::too_many_lines)]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     pub(super) fn encode_tasks_streaming(
         input: &mut Input,
         workers: u8,
@@ -40,203 +28,220 @@ impl ParallelEncoder {
         cancelled: &AtomicBool,
         stream: &mut ResultStream<'_, impl FnMut(Vec<ParallelEncoderResult>) -> Result<()>>,
     ) -> Result<Vec<Option<ParallelEncoderResult>>> {
+        if workers == 0 {
+            anyhow::bail!(ParallelEncoderError::NoWorkers);
+        }
         let total_tasks = tasks.len();
-        let workers = usize::from(workers.max(1)).min(total_tasks.max(1));
+        let workers = usize::from(workers).min(total_tasks.max(1));
+        let window = window.max(1);
         let clip_info = input.clip_info()?;
         let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
-        let total_process_frames: usize = tasks.iter().map(|t| t.frame_indices.len()).sum();
+        let total_frames = tasks.iter().map(|task| task.frame_indices.len()).sum();
         let headers = tasks
             .iter()
-            .map(|t| Ok((t.index, input.y4m_header(Some(t.frame_indices.len()))?)))
+            .map(|task| {
+                Ok((
+                    task.index,
+                    input.y4m_header(Some(task.frame_indices.len()))?,
+                ))
+            })
             .collect::<Result<std::collections::HashMap<_, _>>>()?;
         let sources = input.frame_sources(workers)?;
-
-        let (task_tx, task_rx) = crossbeam_channel::unbounded::<Task>();
+        let (task_tx, task_rx) = crossbeam_channel::unbounded();
         for task in tasks {
             task_tx.send(task)?;
         }
         drop(task_tx);
-        let errored = AtomicBool::new(false);
+        let stop = Stop::new(workers);
         let total_final = AtomicUsize::new(0);
-        let results_tx = stream.results_tx.clone();
-
-        let worker_outputs =
-            thread::scope(|s| -> Result<Vec<Vec<(usize, ParallelEncoderResult)>>> {
-                let mut handles = Vec::with_capacity(workers);
-                for (worker_id, source) in sources.into_iter().enumerate() {
-                    let task_rx = task_rx.clone();
-                    let results_tx = results_tx.clone();
-                    let progress_tx = progress_tx.clone();
-                    let (headers, errored, cancelled, total_final, clip_info) =
-                        (&headers, &errored, &cancelled, &total_final, &clip_info);
-                    handles.push(s.spawn(
-                        move || -> Result<Vec<(usize, ParallelEncoderResult)>> {
-                            // Native decoders must be opened on the reading
-                            // thread.
-                            let mut reader = source.open()?;
-                            let mut done = Vec::new();
-                            while let Ok(task) = task_rx.recv() {
-                                if cancelled.load(Ordering::Relaxed)
-                                    || errored.load(Ordering::Relaxed)
-                                {
-                                    break;
-                                }
-                                debug!(
-                                    "Worker {} encoding Scene {}",
-                                    worker_id, task.original_index
-                                );
-                                let started = std::time::SystemTime::now();
-                                let temp_output = task.output.with_extension(format!(
-                                    "temp.{}",
-                                    task.encoder.output_extension()
-                                ));
-                                let (ftx, frx) =
-                                    crossbeam_channel::bounded::<Cursor<Vec<u8>>>(window);
-                                ftx.send(Cursor::new(headers[&task.index].clone().into_bytes()))?;
-                                // The encoder consumes FFmpeg's regenerated
-                                // header, not the one just sent.
-                                let (frx, mut filter_stage): FilteredFrames =
-                                    spawn_filter(frx, &task, None, window)?;
-                                let (encode_progress_tx, encode_progress_rx) =
-                                    std::sync::mpsc::channel::<EncodeProgress>();
-                                let (encode_result, filter_result, produce_result) =
-                                    thread::scope(|s2| {
-                                        let relay_tx = progress_tx.clone();
-                                        let total_passes = task.encoder.total_passes();
-                                        let scene_frames = task.frame_indices.len();
-                                        s2.spawn(move || {
-                                            relay_progress(
-                                                encode_progress_rx,
-                                                &relay_tx,
-                                                total_passes,
+        stop.catch_panic("Streaming scheduling", || {
+            thread::scope(|scope| {
+                let mut scheduling = stop.guard();
+                let mut handles = Vec::new();
+                let setup = stop.catch("Streaming worker setup", || {
+                    for (worker, source) in sources.into_iter().enumerate() {
+                        let task_rx = task_rx.clone();
+                        let results_tx = stream.results_tx.clone();
+                        let finished = std::sync::Arc::clone(&stream.finished_scenes);
+                        let (stop, headers, total_final, clip_info) =
+                            (&stop, &headers, &total_final, &clip_info);
+                        handles.push(scope.spawn(move || {
+                            let mut scene = None;
+                            let result = stop.catch(&format!("Streaming worker {worker}"), || {
+                                let mut guard = stop.guard();
+                                #[cfg(all(test, target_os = "linux"))]
+                                super::e11_tests::fault("open", 7)?;
+                                let mut reader = source.open()?;
+                                let mut done = Vec::new();
+                                while !stop.stopped(cancelled) {
+                                    let Ok(task) = task_rx.recv() else { break };
+                                    if stop.stopped(cancelled) {
+                                        break;
+                                    }
+                                    scene = Some(task.original_index);
+                                    let task_result = stop.catch(
+                                        &format!("Scene {} worker", task.original_index),
+                                        || {
+                                            let temp = TempOutput::new(task.output.with_extension(
+                                                format!("temp.{}", task.encoder.output_extension()),
+                                            ));
+                                            let started = std::time::SystemTime::now();
+                                            let (tx, rx) =
+                                                crossbeam_channel::bounded::<Cursor<Vec<u8>>>(
+                                                    window,
+                                                );
+                                            tx.send(Cursor::new(
+                                                headers[&task.index].clone().into_bytes(),
+                                            ))?;
+                                            let (encoded, produced) = thread::scope(|inner| {
+                                                let (task, temp) = (&task, &temp.path);
+                                                let encoder = inner.spawn(move || {
+                                                    stop.catch(
+                                                        &format!(
+                                                            "Scene {} consumer",
+                                                            task.original_index
+                                                        ),
+                                                        || {
+                                                            consume_frames(
+                                                                task,
+                                                                rx,
+                                                                temp,
+                                                                clip_info,
+                                                                progress_tx,
+                                                                total_frames,
+                                                                total_final,
+                                                                stop,
+                                                                window,
+                                                            )
+                                                        },
+                                                    )
+                                                });
+                                                let produced = stop.catch(
+                                                    &format!(
+                                                        "Scene {} frame production",
+                                                        task.original_index
+                                                    ),
+                                                    || {
+                                                        #[cfg(all(test, target_os = "linux"))]
+                                                        super::e11_tests::fault(
+                                                            "produce",
+                                                            task.original_index,
+                                                        )?;
+                                                        reader.y4m_frames(
+                                                            &tx,
+                                                            &task.frame_indices,
+                                                            window,
+                                                        )
+                                                    },
+                                                );
+                                                drop(tx); // EOF before joining the consumer and its filter/relays.
+                                                let encoded = encoder.join().unwrap_or_else(|_| {
+                                                    Err(anyhow::anyhow!(
+                                                        "Scene {} encoder panicked",
+                                                        task.original_index
+                                                    ))
+                                                });
+                                                (encoded, produced)
+                                            });
+                                            let mut error = None;
+                                            let result = match encoded {
+                                                Ok(result) => Some(result),
+                                                Err(err) => {
+                                                    retain_error(&mut error, err);
+                                                    None
+                                                },
+                                            };
+                                            if let Err(err) = produced {
+                                                retain_error(&mut error, err);
+                                            }
+                                            if let Some(err) = error {
+                                                return Err(err);
+                                            }
+                                            let ended = std::time::SystemTime::now();
+                                            let bytes = temp.path.metadata()?.len();
+                                            finalize_scene(
+                                                SceneOutcome {
+                                                    temp_output: temp.path.clone(),
+                                                    bytes,
+                                                    usable: true,
+                                                },
+                                                &task.output,
                                                 task.original_index,
-                                                scene_frames,
-                                                total_process_frames,
-                                                total_final,
-                                            )
-                                        });
-                                        let (encoder, temp) = (&task.encoder, &temp_output);
-                                        let encoder_thread = s2.spawn(move || {
-                                            let result = encoder.encode_with_stream(
-                                                frx,
-                                                temp,
-                                                encode_progress_tx,
-                                                clip_info,
-                                            );
-                                            // Cleanup belongs with the consumer: the
-                                            // inline producer may still be blocked.
-                                            let filtered = filter_stage
-                                                .as_mut()
-                                                .map_or(Ok(()), |stage| stage.check());
-                                            (result, filtered)
-                                        });
-                                        // Blocks when the encoder lags.
-                                        let produced =
-                                            reader.y4m_frames(&ftx, &task.frame_indices, window);
-                                        drop(ftx); // EOF for the encoder
-                                        let (encoded, filtered) =
-                                            encoder_thread.join().expect("encoder thread panicked");
-                                        (encoded, filtered, produced)
-                                    });
-                                // Prefer the filter's stderr over the encoder
-                                // or producer fallout it causes.
-                                if let Err(err) = filter_result {
-                                    let _ = fs::remove_file(&temp_output);
-                                    errored.store(true, Ordering::Relaxed);
-                                    bail!(
-                                        "FFmpeg filter failed while encoding scene {}: {err}",
-                                        task.original_index
-                                    );
+                                                progress_tx,
+                                                &stop.stopped,
+                                            )?;
+                                            let result = ParallelEncoderResult {
+                                                scene: task.original_index,
+                                                started,
+                                                ended,
+                                                bytes,
+                                                bitrate: (bytes * 8) as f64
+                                                    / (task.frame_indices.len() as f64 / framerate),
+                                                result: result.expect("successful consumer result"),
+                                            };
+                                            results_tx.send(result.clone())?;
+                                            finished.release();
+                                            Ok(result)
+                                        },
+                                    )?;
+                                    done.push((task.index, task_result));
                                 }
-                                // A failed status still needs scene cleanup and the shared stop flag.
-                                let result = match encode_result
-                                    .or_else(anyhow::Error::downcast::<EncoderResult>)
-                                {
-                                    Ok(result) => result,
-                                    Err(err) => {
-                                        let _ = fs::remove_file(&temp_output);
-                                        errored.store(true, Ordering::Relaxed);
-                                        return Err(err.context(format!(
-                                            "Scene {} encoder failed",
-                                            task.original_index
-                                        )));
-                                    },
-                                };
-                                let ended = std::time::SystemTime::now();
-                                let bytes = temp_output.metadata().ok().map_or(0, |m| m.len());
-                                let seconds = task.frame_indices.len() as f64 / framerate;
-                                if let Err(e) = produce_result
-                                    && result.status.success()
-                                {
-                                    errored.store(true, Ordering::Relaxed);
-                                    bail!(
-                                        "Scene {} frame production failed: {e}",
-                                        task.original_index
-                                    );
-                                }
-                                finalize_scene(
-                                    SceneOutcome {
-                                        temp_output,
-                                        bytes,
-                                        usable: result.status.success(),
-                                    },
-                                    &task.output,
-                                    task.original_index,
-                                    &progress_tx,
-                                    errored,
-                                )?;
-                                let parallel_result = ParallelEncoderResult {
-                                    scene: task.original_index,
-                                    started,
-                                    ended,
-                                    bytes,
-                                    bitrate: (bytes * 8) as f64 / seconds,
-                                    result,
-                                };
-                                let _ = results_tx.send(parallel_result.clone());
-                                done.push((task.index, parallel_result));
-                            }
-                            Ok(done)
-                        },
-                    ));
+                                guard.success();
+                                Ok(done)
+                            });
+                            result.map_err(|err| {
+                                err.context(scene.map_or_else(
+                                    || format!("Streaming worker {worker}"),
+                                    |scene| format!("Scene {scene} on streaming worker {worker}"),
+                                ))
+                            })
+                        }));
+                    }
+                    Ok(())
+                });
+                // The public stream retains a sender: completion is determined by
+                // handles, not channel disconnection. Callback failure stops NOW,
+                // before any blocking join, rather than letting workers drain tasks.
+                let persisted = stop.catch("Scene persistence", || {
+                    loop {
+                        super::progress::drain_finished_results(stream)?;
+                        if handles.iter().all(thread::ScopedJoinHandle::is_finished) {
+                            break;
+                        }
+                        thread::park_timeout(std::time::Duration::from_millis(10));
+                    }
+                    super::progress::drain_finished_results(stream)
+                });
+                let mut error = setup.err();
+                if let Err(err) = persisted {
+                    retain_error(&mut error, err);
                 }
-                drop(results_tx);
-
-                // Persist results as they arrive.
-                loop {
-                    match stream.results_rx.recv_timeout(std::time::Duration::from_millis(200)) {
-                        Ok(result) => (stream.on_results)(vec![result])?,
-                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                            if handles.iter().all(|h| h.is_finished()) {
-                                while let Ok(result) = stream.results_rx.try_recv() {
-                                    (stream.on_results)(vec![result])?;
-                                }
-                                break;
+                if stop.stopped(cancelled) {
+                    stop.stop();
+                }
+                let mut ordered = vec![None; total_tasks];
+                for handle in handles {
+                    match handle.join() {
+                        Ok(Ok(results)) => {
+                            for (index, result) in results {
+                                ordered[index] = Some(result);
                             }
                         },
-                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                        Ok(Err(err)) => {
+                            stop.stop();
+                            retain_error(&mut error, err);
+                        },
+                        Err(_) => {
+                            stop.stop();
+                            retain_error(&mut error, anyhow::anyhow!("Streaming worker panicked"));
+                        },
                     }
                 }
-                handles
-                    .into_iter()
-                    .map(|h| h.join().map_err(|_| anyhow::anyhow!("encoder worker panicked"))?)
-                    .collect()
-            })?;
-
-        let mut ordered: Vec<Option<ParallelEncoderResult>> = vec![None; total_tasks];
-        for (index, result) in worker_outputs.into_iter().flatten() {
-            if let Some(slot) = ordered.get_mut(index) {
-                *slot = Some(result);
-            }
-        }
-        if let Some(failed) = ordered.iter().flatten().find(|r| !r.result.status.success()) {
-            let err = ParallelEncoderError::EncoderFailed {
-                scene: failed.scene,
-                result: failed.result.clone(),
-            };
-            error!("{}", err);
-            bail!(err);
-        }
-        Ok(ordered)
+                #[cfg(all(test, target_os = "linux"))]
+                super::e11_tests::verify_pools(&stop, workers);
+                scheduling.success();
+                error.map_or_else(|| Ok(ordered), Err)
+            })
+        })
     }
 }
