@@ -288,4 +288,18 @@ pub enum SceneConcatenatorError {
         stdout: String,
         stderr: String,
     },
+    #[error("No scene files to concatenate")]
+    NoSceneFiles,
+    #[error("Scene {scene} is truncated: {needed} more bytes are needed")]
+    TruncatedScene { scene: usize, needed: usize },
+    #[error("Scene {scene} contains an unexpected stream: {stream}")]
+    UnexpectedStream { scene: usize, stream: String },
+    #[error("Scene {scene} produced an unexpected demuxer event: {event}")]
+    UnexpectedEvent { scene: usize, event: String },
+    #[error("Failed to demux scene {scene}: {source}")]
+    DemuxFailed {
+        scene:  usize,
+        #[source]
+        source: av_format::error::Error,
+    },
 }
