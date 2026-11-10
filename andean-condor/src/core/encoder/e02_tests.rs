@@ -60,7 +60,7 @@ fn e02_rav1e_exact_pass_parameters_and_argv() {
     }
 }
 
-fn run_bounded(command: &mut Command, log: &Path) -> String {
+pub(super) fn run_bounded(command: &mut Command, log: &Path) -> String {
     let file = fs::File::create(log).expect("log");
     let mut child = command
         .stdout(file.try_clone().expect("log clone"))

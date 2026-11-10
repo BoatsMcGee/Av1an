@@ -40,7 +40,7 @@ fn e01_parameters_keep_full_job_paths_and_native_suffixes() {
             (EncoderBase::AOM, "--fpf", "--fpf", ".log"),
             (EncoderBase::VPX, "--fpf", "--fpf", ".log"),
             (EncoderBase::RAV1E, "--first-pass", "--second-pass", ".stat"),
-            (EncoderBase::SVTAV1, "-stats", "-stats", ".stat"),
+            (EncoderBase::SVTAV1, "--stats", "--stats", ".stat"),
             (EncoderBase::X264, "--stats", "--stats", ".log"),
             (EncoderBase::X265, "--stats", "--stats", ".log"),
             (

@@ -293,7 +293,7 @@ impl EncoderBase {
 
                         parameters.insert(
                             "stats".to_owned(),
-                            CLIParameter::new_string("-", " ", &format!("{}.stat", stats_base)),
+                            CLIParameter::new_string("--", " ", &format!("{}.stat", stats_base)),
                         );
 
                         parameters
@@ -307,7 +307,7 @@ impl EncoderBase {
 
                         parameters.insert(
                             "stats".to_owned(),
-                            CLIParameter::new_string("-", " ", &format!("{}.stat", stats_base)),
+                            CLIParameter::new_string("--", " ", &format!("{}.stat", stats_base)),
                         );
 
                         parameters
