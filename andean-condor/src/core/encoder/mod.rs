@@ -1,11 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Display,
-    io::{BufRead, BufReader, Cursor, Write},
+    io::{Cursor, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicU64, Ordering},
         mpsc::{self},
     },
@@ -31,9 +31,12 @@ use crate::{
 pub mod capability;
 pub mod color_data;
 pub mod parse;
+pub(crate) mod pipes;
 pub mod string_or_bytes;
 pub use capability::{Container, EncoderCapability};
 pub use parse::*;
+pub use pipes::EncoderProcessError;
+use pipes::{PassWorkers, progress_reader, spawn_reader};
 pub use string_or_bytes::StringOrBytes;
 
 const NULL_OUTPUT: &str = if cfg!(windows) { "nul" } else { "/dev/null" };
@@ -613,14 +616,12 @@ impl Encoder {
         // - Report CPU, memory, disk usage - Performance testing required
         // - Support cancellation
 
-        static BUFFER_CAPACITY: usize = 128;
         let base_encoder = self.base();
         let clip_info = input.clip_info()?;
         let parameters = self.parameters_with_stats(pass, output, &clip_info, &stats_base)?;
         let y4m_header = input.y4m_header(Some(end_frame - start_frame))?;
         let mut reader = input.frame_reader()?;
 
-        let mut system = sysinfo::System::new();
         let mut encoder = Command::new(self.executable())
             .args(&parameters)
             .stdin(Stdio::piped())
@@ -632,74 +633,38 @@ impl Encoder {
         // Data produced and consumed throughout
         let mut frames_decoded = 0;
         let frames_encoded = Arc::new(AtomicU64::new(0));
-        let frames_encoded_clone = Arc::clone(&frames_encoded);
-        let stderr_output = Arc::new(Mutex::new(String::with_capacity(BUFFER_CAPACITY)));
-        let stderr_output_clone = Arc::clone(&stderr_output);
         let (frame_tx, frame_rx) = mpsc::channel();
 
         let mut stdin = encoder.stdin.take().expect("Encoder should have STDIN");
+        let stdout = encoder.stdout.take().expect("Encoder should have STDOUT");
         let stderr = encoder.stderr.take().expect("Encoder should have STDERR");
+        let encoder_stdout_thread = spawn_reader(
+            stdout,
+            progress_reader(
+                base_encoder,
+                pass,
+                progress_tx.clone(),
+                true,
+                Arc::clone(&frames_encoded),
+                None,
+            ),
+        );
+        let encoder_stderr_thread = spawn_reader(
+            stderr,
+            progress_reader(
+                base_encoder,
+                pass,
+                progress_tx,
+                false,
+                Arc::clone(&frames_encoded),
+                Some(pid),
+            ),
+        );
         let stats = stats.cloned();
         let encoder_output_thread = thread::spawn(move || {
             // Keep owned statistics until the child is reaped, even on an early input error.
             let _stats = stats;
-            encoder.wait_with_output()
-        });
-
-        let encoder_stderr_thread = thread::spawn(move || -> Result<_> {
-            let mut reader = BufReader::new(stderr);
-            let mut buf = Vec::with_capacity(BUFFER_CAPACITY);
-
-            loop {
-                match reader.read_until(b'\r', &mut buf) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let line = buf.clone();
-                        system.refresh_all();
-                        let usage = system.process(sysinfo::Pid::from_u32(pid)).map_or_else(
-                            || EncodeResourceUsage {
-                                cpu: 0.0,
-                                memory: 0,
-                            },
-                            |process| EncodeResourceUsage {
-                                cpu: process.cpu_usage(),
-                                memory: process.memory(),
-                            },
-                        );
-
-                        if let Ok(line) = simdutf8::basic::from_utf8(&line) {
-                            // This needs to be done before
-                            // parse_encoded_frames, as it potentially
-                            // mutates the string - Not sure if this applies
-                            // anymore -Boats
-                            let mut stderr_output_lock =
-                                stderr_output_clone.lock().expect("mutex should acquire lock");
-                            stderr_output_lock.push_str(line);
-                            stderr_output_lock.push('\n');
-
-                            if let Some(latest_frame) =
-                                Encoder::parse_encoded_frames_base(&base_encoder, line)
-                                && latest_frame > frames_encoded_clone.load(Ordering::Relaxed)
-                            {
-                                frames_encoded_clone.store(latest_frame, Ordering::Relaxed);
-
-                                progress_tx
-                                    .send(EncodeProgress {
-                                        pass,
-                                        frame: latest_frame as usize,
-                                        usage,
-                                    })
-                                    .map_err(|_| anyhow::Error::msg("Failed to send progress"))?;
-                            }
-                        }
-
-                        buf.clear();
-                    },
-                    Err(e) => return Err(e.into()),
-                }
-            }
-
-            Ok(())
+            Ok(encoder.wait_with_output()?)
         });
 
         let encoder_stdin_thread = thread::spawn(move || -> Result<()> {
@@ -723,38 +688,29 @@ impl Encoder {
 
         // Decode frames in main thread
         let decode_start_time = Instant::now();
-        for index in start_frame..end_frame {
-            let frame = reader.y4m_frame(index)?;
-            frames_decoded += 1;
-            frame_tx.send(frame.into_inner())?;
-        }
+        let feed_result = (|| -> Result<()> {
+            for index in start_frame..end_frame {
+                let frame = reader
+                    .y4m_frame(index)
+                    .with_context(|| format!("Decoding encoder input frame {index}"))?;
+                frames_decoded += 1;
+                frame_tx.send(frame.into_inner()).context("Sending encoder input frame")?;
+            }
+            Ok(())
+        })();
+        // EOF must reach a waiting writer even when decoding or sending failed.
+        drop(frame_tx);
         let decode_duration = decode_start_time.elapsed();
-
-        // drop(stdin_tx);
-        // drop(stderr_tx);
-        encoder_stdin_thread
-            .join()
-            .map_err(|_| anyhow::Error::msg("Failed to join STDIN thread"))?
-            .ok();
-        encoder_stderr_thread
-            .join()
-            .map_err(|_| anyhow::Error::msg("Failed to join STDERR thread"))?
-            .ok();
-
-        let encoder_output = encoder_output_thread
-            .join()
-            .map_err(|_| anyhow::anyhow!("Failed to join encoder wait thread"))??;
+        let encoder_result = PassWorkers {
+            stdin: encoder_stdin_thread,
+            stdout: encoder_stdout_thread,
+            stderr: encoder_stderr_thread,
+            wait: encoder_output_thread,
+        }
+        .finish(base_encoder, parameters, feed_result)?;
         let encode_duration = decode_start_time.elapsed();
 
-        let encoder_result = EncoderResult {
-            encoder: self.base(),
-            parameters,
-            status: encoder_output.status,
-            stdout: StringOrBytes::from(encoder_output.stdout),
-            stderr: stderr_output.lock().expect("mutex should acquire lock").clone().into(),
-        };
-
-        if !encoder_output.status.success() {
+        if !encoder_result.status.success() {
             return Err(encoder_result.into());
         }
 
@@ -789,11 +745,11 @@ impl Encoder {
         };
         match self.passes() {
             EncoderPasses::All(1) => {
-                progress_tx.send(EncodeProgress {
+                let _ = progress_tx.send(EncodeProgress {
                     pass: (1, 1),
                     frame: 0,
                     usage: EncodeResourceUsage::default(),
-                })?;
+                });
                 Ok(self.encode_pass_with_stream(
                     (1, 1),
                     frames_rx,
@@ -804,11 +760,11 @@ impl Encoder {
                 )?)
             },
             EncoderPasses::Specific(current, total) => {
-                progress_tx.send(EncodeProgress {
+                let _ = progress_tx.send(EncodeProgress {
                     pass: (current, total),
                     frame: 0,
                     usage: EncodeResourceUsage::default(),
-                })?;
+                });
                 Ok(self.encode_pass_with_stream(
                     (current, total),
                     frames_rx,
@@ -844,11 +800,11 @@ impl Encoder {
                     Ok(())
                 });
                 for pass in 1..=total {
-                    progress_tx.send(EncodeProgress {
+                    let _ = progress_tx.send(EncodeProgress {
                         pass: (pass, total),
                         frame: 0,
                         usage: EncodeResourceUsage::default(),
-                    })?;
+                    });
                     let frames_rx = frame_receivers.remove(&pass).expect("receiver exists");
                     let progress_tx = progress_tx.clone();
                     result = self.encode_pass_with_stream(
@@ -891,9 +847,7 @@ impl Encoder {
         // - Report CPU, memory, disk usage - Done-ish
         // - Support cancellation
 
-        static BUFFER_CAPACITY: usize = 128;
         let base_encoder = self.base();
-        let base_encoder_clone = base_encoder;
 
         // println!("Encoding with params: {:?}", self.parameters(pass,
         // output)); let mut system = sysinfo::System::new();
@@ -907,143 +861,26 @@ impl Encoder {
 
         // Data produced and consumed throughout
         let frames_encoded = Arc::new(AtomicU64::new(0));
-        let frames_encoded_clone = Arc::clone(&frames_encoded);
-        let stdout_frames_encoded_clone = Arc::clone(&frames_encoded);
-        let stdout_output = Arc::new(Mutex::new(String::with_capacity(BUFFER_CAPACITY)));
-        let stdout_output_clone = Arc::clone(&stdout_output);
-        let stderr_output = Arc::new(Mutex::new(String::with_capacity(BUFFER_CAPACITY)));
-        let stderr_output_clone = Arc::clone(&stderr_output);
 
         let mut stdin = encoder.stdin.take().expect("Encoder should have STDIN");
-        let stdout = encoder.stdout.take().expect("Encoder should have STDOUT"); // For AVM progress only
+        let stdout = encoder.stdout.take().expect("Encoder should have STDOUT");
         let stderr = encoder.stderr.take().expect("Encoder should have STDERR");
 
-        let progress_tx_clone = progress_tx.clone();
-        let encoder_stdout_thread = thread::spawn(move || -> Result<_> {
-            if !matches!(base_encoder_clone, EncoderBase::AVM) {
-                return Ok(());
-            }
-
-            let mut reader = BufReader::new(stdout);
-            let mut buf = Vec::with_capacity(BUFFER_CAPACITY);
-            let mut count = 0;
-
-            loop {
-                match reader.read_until(b'\r', &mut buf) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let line = buf.clone();
-                        let usage = EncodeResourceUsage {
-                            cpu: 0.0,
-                            memory: 0,
-                        };
-
-                        if let Ok(line) = simdutf8::basic::from_utf8(&line) {
-                            // This needs to be done before parse_encoded_frames, as it potentially
-                            // mutates the string - Not sure if this applies anymore -Boats
-                            let mut stdout_output_lock =
-                                stdout_output_clone.lock().expect("mutex should acquire lock");
-                            // println!("STDOUT: {}", line);
-                            stdout_output_lock.push_str(line);
-                            stdout_output_lock.push('\n');
-
-                            // if let Some(latest_frame) =
-                            //     Encoder::parse_encoded_frames_base(&base_encoder_clone, line)
-                            //     && latest_frame
-                            //         > stdout_frames_encoded_clone.load(Ordering::Relaxed)
-                            // {
-                            if line.contains("POC:") {
-                                count += 1;
-                                let latest_frame = count;
-                                stdout_frames_encoded_clone.store(latest_frame, Ordering::Relaxed);
-
-                                progress_tx_clone
-                                    .send(EncodeProgress {
-                                        pass,
-                                        frame: latest_frame as usize,
-                                        usage,
-                                    })
-                                    .map_err(|_| anyhow::Error::msg("Failed to send progress"))?;
-                            }
-                        }
-
-                        buf.clear();
-                    },
-                    Err(e) => return Err(e.into()),
-                }
-            }
-
-            Ok(())
-        });
-
-        let encoder_stderr_thread = thread::spawn(move || -> Result<_> {
-            let mut reader = BufReader::new(stderr);
-            let mut buf = Vec::with_capacity(BUFFER_CAPACITY);
-
-            loop {
-                match reader.read_until(b'\r', &mut buf) {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let line = buf.clone();
-                        // let pid = sysinfo::Pid::from_u32(pid);
-                        // let refresh_kind =
-                        //     sysinfo::ProcessRefreshKind::nothing().
-                        // with_cpu().with_memory();
-                        // system.refresh_processes_specifics(
-                        //     sysinfo::ProcessesToUpdate::Some(&[pid]),
-                        //     true,
-                        //     refresh_kind,
-                        // );
-                        // let usage = system.process(pid).map_or_else(
-                        //     || EncodeResourceUsage {
-                        //         cpu:    0.0,
-                        //         memory: 0,
-                        //     },
-                        //     |process| EncodeResourceUsage {
-                        //         cpu:    process.cpu_usage(),
-                        //         memory: process.memory(),
-                        //     },
-                        // );
-                        let usage = EncodeResourceUsage {
-                            cpu: 0.0,
-                            memory: 0,
-                        };
-
-                        if let Ok(line) = simdutf8::basic::from_utf8(&line) {
-                            // This needs to be done before
-                            // parse_encoded_frames, as it potentially
-                            // mutates the string - Not sure if this applies
-                            // anymore -Boats
-                            let mut stderr_output_lock =
-                                stderr_output_clone.lock().expect("mutex should acquire lock");
-                            // println!("STDERR: {}", line);
-                            stderr_output_lock.push_str(line);
-                            stderr_output_lock.push('\n');
-
-                            if let Some(latest_frame) =
-                                Encoder::parse_encoded_frames_base(&base_encoder, line)
-                                && latest_frame > frames_encoded_clone.load(Ordering::Relaxed)
-                            {
-                                frames_encoded_clone.store(latest_frame, Ordering::Relaxed);
-
-                                progress_tx
-                                    .send(EncodeProgress {
-                                        pass,
-                                        frame: latest_frame as usize,
-                                        usage,
-                                    })
-                                    .map_err(|_| anyhow::Error::msg("Failed to send progress"))?;
-                            }
-                        }
-
-                        buf.clear();
-                    },
-                    Err(e) => return Err(e.into()),
-                }
-            }
-
-            Ok(())
-        });
+        let encoder_stdout_thread = spawn_reader(
+            stdout,
+            progress_reader(
+                base_encoder,
+                pass,
+                progress_tx.clone(),
+                true,
+                Arc::clone(&frames_encoded),
+                None,
+            ),
+        );
+        let encoder_stderr_thread = spawn_reader(
+            stderr,
+            progress_reader(base_encoder, pass, progress_tx, false, frames_encoded, None),
+        );
 
         let encoder_stdin_thread = thread::spawn(move || -> Result<()> {
             for frame in frames_rx {
@@ -1058,34 +895,15 @@ impl Encoder {
         let stats = stats.cloned();
         let encoder_output_thread = thread::spawn(move || -> Result<_> {
             let _stats = stats;
-            let encoder_output = encoder.wait_with_output().expect("Encoder should finish");
-            Ok(encoder_output)
+            Ok(encoder.wait_with_output()?)
         });
-        encoder_stdin_thread
-            .join()
-            .map_err(|_| anyhow::Error::msg("Failed to join STDIN thread"))?
-            .ok();
-        encoder_stdout_thread
-            .join()
-            .map_err(|_| anyhow::Error::msg("Failed to join STDOUT thread"))?
-            .ok();
-        encoder_stderr_thread
-            .join()
-            .map_err(|_| anyhow::Error::msg("Failed to join STDERR thread"))?
-            .ok();
-        let encoder_output = encoder_output_thread
-            .join()
-            .map_err(|_| anyhow::Error::msg("Failed to join STDOUT thread"))??;
-
-        let encoder_result = EncoderResult {
-            encoder: self.base(),
-            parameters,
-            status: encoder_output.status,
-            stdout: StringOrBytes::from(encoder_output.stdout),
-            stderr: stderr_output.lock().expect("mutex should acquire lock").clone().into(),
-        };
-
-        Ok(encoder_result)
+        PassWorkers {
+            stdin: encoder_stdin_thread,
+            stdout: encoder_stdout_thread,
+            stderr: encoder_stderr_thread,
+            wait: encoder_output_thread,
+        }
+        .finish(base_encoder, parameters, Ok(()))
     }
 
     #[inline]
@@ -1648,6 +1466,10 @@ mod e03_tests;
 
 #[cfg(test)]
 mod e04_tests;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e08_tests;
 
 #[cfg(test)]
 mod tests {

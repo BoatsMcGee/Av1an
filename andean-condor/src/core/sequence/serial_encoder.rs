@@ -12,7 +12,7 @@ use thiserror::Error;
 use crate::{
     core::{
         Condor,
-        encoder::EncodeProgress,
+        encoder::{EncodeProgress, pipes::join_worker},
         input::Input,
         sequence::{Sequence, SequenceDetails, SequenceStatus},
     },
@@ -161,65 +161,87 @@ where
                 );
                 // "Progress: {}/{} frames, {:.2} fps, {:.2} s remaining",
                 // frames_encoded, total_frames, fps, eta.as_secs_f64()
-
-                // Expect a report for every frame
-                if reports.len() == total_frames {
-                    break;
-                }
             }
 
             Ok(())
         });
 
-        for (index, scene) in &mut condor.scenes.iter_mut().enumerate() {
-            let scene_encoder = scene.encoder.clone();
-            let progress_tx_clone = progress_tx.clone();
-            let scene_id = SerialEncoder::scene_id(index);
-            let extension = encoder.output_extension();
-            let output = self.scenes_directory.join(format!("{}.{}", scene_id, extension));
+        let scenes_result = (|| -> Result<()> {
+            for (index, scene) in &mut condor.scenes.iter_mut().enumerate() {
+                let scene_encoder = scene.encoder.clone();
+                let progress_tx_clone = progress_tx.clone();
+                let scene_id = SerialEncoder::scene_id(index);
+                let extension = encoder.output_extension();
+                let output = self.scenes_directory.join(format!("{}.{}", scene_id, extension));
+                let y4m_header = input.y4m_header(Some(scene.end_frame - scene.start_frame))?;
 
-            let (scene_progress_tx, scene_progress_rx) = sync::mpsc::channel();
-            // let (frames_tx, frames_rx) = sync::mpsc::channel();
-            let (frames_tx, frames_rx) = crossbeam_channel::unbounded();
+                let (scene_progress_tx, scene_progress_rx) = sync::mpsc::channel();
+                // let (frames_tx, frames_rx) = sync::mpsc::channel();
+                let (frames_tx, frames_rx) = crossbeam_channel::unbounded();
 
-            let scene_progress_thread = thread::spawn(move || -> Result<()> {
-                for progress in scene_progress_rx {
-                    progress_tx_clone.send(progress)?;
-                }
+                let scene_progress_thread = thread::spawn(move || -> Result<()> {
+                    relay_progress(scene_progress_rx, progress_tx_clone);
+                    Ok(())
+                });
 
-                Ok(())
-            });
+                let encoder_thread = thread::spawn(move || -> Result<()> {
+                    scene_encoder.encode_with_stream(
+                        frames_rx,
+                        &output,
+                        scene_progress_tx,
+                        &clip_info,
+                    )?;
 
-            let encoder_thread = thread::spawn(move || -> Result<()> {
-                scene_encoder.encode_with_stream(
-                    frames_rx,
-                    &output,
-                    scene_progress_tx,
-                    &clip_info,
-                )?;
+                    Ok(())
+                });
 
-                Ok(())
-            });
+                let feed = (|| -> Result<()> {
+                    frames_tx.send(Cursor::new(Vec::from(y4m_header.as_bytes())))?;
+                    let frame_indices = (scene.start_frame..scene.end_frame).collect::<Vec<_>>();
+                    input.y4m_frames(frames_tx, &frame_indices)
+                })();
+                let encoded = join_worker(encoder_thread, "Joining serial scene encoder");
+                let relayed =
+                    join_worker(scene_progress_thread, "Joining serial scene progress relay");
+                serial_results([encoded, feed, relayed])?;
+            }
+            Ok(())
+        })();
 
-            let y4m_header = input.y4m_header(Some(scene.end_frame - scene.start_frame))?;
-            frames_tx.send(Cursor::new(Vec::from(y4m_header.as_bytes())))?;
-            let frame_indices = (scene.start_frame..scene.end_frame).collect::<Vec<_>>();
-            input.y4m_frames(frames_tx, &frame_indices)?;
-
-            let _ = encoder_thread
-                .join()
-                .map_err(|_| anyhow::anyhow!("Failed to join encoder thread"))?;
-            let _ = scene_progress_thread
-                .join()
-                .map_err(|_| anyhow::anyhow!("Failed to join scene thread"))?;
-        }
-
-        let _ = progress_thread
-            .join()
-            .map_err(|_| anyhow::anyhow!("Failed to join progress report thread"))?;
+        // Reports are observations, not one-per-frame; only channel EOF ends collection.
+        drop(progress_tx);
+        let reported = join_worker(progress_thread, "Joining serial progress report worker");
+        serial_results([scenes_result, reported])?;
 
         Ok(((), warnings))
     }
+}
+
+fn relay_progress(
+    source: sync::mpsc::Receiver<EncodeProgress>,
+    destination: sync::mpsc::Sender<EncodeProgress>,
+) {
+    let mut destination = Some(destination);
+    for progress in source {
+        if let Some(sender) = &destination
+            && sender.send(progress).is_err()
+        {
+            destination = None;
+        }
+    }
+}
+
+fn serial_results(results: impl IntoIterator<Item = Result<()>>) -> Result<()> {
+    let mut error: Option<anyhow::Error> = None;
+    for result in results {
+        if let Err(next) = result {
+            error = Some(match error {
+                Some(previous) => previous.context(format!("Additional serial failure: {next:#}")),
+                None => next,
+            });
+        }
+    }
+    error.map_or(Ok(()), Err)
 }
 
 impl SerialEncoder {
@@ -244,4 +266,47 @@ impl SerialEncoder {
 pub enum SerialEncoderError {
     #[error("No scenes found")]
     NoScenes,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn e08_serial_relay_drains_zero_few_many_and_multipass_reports_after_disconnect() {
+        for count in [0, 1, 9, 18] {
+            let (source, rx) = sync::mpsc::sync_channel(0);
+            let (sink, disconnected) = sync::mpsc::channel();
+            drop(disconnected);
+            let relay = thread::spawn(move || {
+                relay_progress(rx, sink);
+                Ok(())
+            });
+            for frame in 0..count {
+                source
+                    .send(EncodeProgress {
+                        pass: (1, 2),
+                        frame,
+                        usage: Default::default(),
+                    })
+                    .expect("relay keeps draining after downstream disconnect");
+            }
+            drop(source);
+            join_worker(relay, "serial relay regression").expect("relay joined at EOF");
+        }
+    }
+
+    #[test]
+    fn e08_serial_inner_errors_preserve_all_causes() {
+        let error = serial_results([
+            Err(anyhow::anyhow!("encode failure")),
+            Err(anyhow::anyhow!("decode failure")),
+            Err(anyhow::anyhow!("relay failure")),
+        ])
+        .expect_err("inner errors cannot be discarded");
+        let text = format!("{error:#}");
+        for cause in ["encode failure", "decode failure", "relay failure"] {
+            assert!(text.contains(cause), "{text}");
+        }
+    }
 }
