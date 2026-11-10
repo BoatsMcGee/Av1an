@@ -24,6 +24,18 @@ fn main() -> io::Result<()> {
     if early.is_none() {
         io::copy(&mut io::stdin(), &mut io::sink())?;
     }
+    if args.iter().any(|arg| arg == "--e26-progress") {
+        // VVenC's stdout stats are distinct from stderr diagnostics and AVM POC records.
+        io::stdout().write_all(b"noise frame= 700\r\nPOC: 0\nvvenc [info]: stats:  frame= 60 fps= 2.9 avg_fps= 2.9 bitrate= 29173.77 kbps avg_bitrate= 29173.77 kbps elapsed= 0\rvvenc [info]: stats: frame=bad fps= 999\nbad\xff\r\nvvenc [info]: stats: 75.0%% frame= 90/120 fps= 2.9 avg_fps= 2.9 bitrate= 29173.77 kbps avg_bitrate= 29173.77 kbps elapsed= 1\nvvenc [info]: stats: frame=90\rvvenc [info]: stats: frame=30\n")?;
+        io::stderr().write_all(b"diagnostic\xfe\r\nvvenc [info]: stats: frame=900 fps= 999\n")?;
+        for _ in 0..512 {
+            io::stdout().write_all(&[b'o'; 1024])?;
+            io::stderr().write_all(&[b'e'; 1024])?;
+        }
+        io::stdout().write_all(b"\nvvenc [info]: stats: frame=120 fps= 2.9\rvvenc [info]: stats: frame=120 fps= 2.9")?;
+        io::stderr().write_all(b"\r\nstderr tail")?;
+        return Ok(());
+    }
     if let Some(records) = value("--e08-progress") {
         for frame in 1..=records.parse::<usize>().unwrap() {
             writeln!(io::stderr(), "{frame}/4 frames\r")?;

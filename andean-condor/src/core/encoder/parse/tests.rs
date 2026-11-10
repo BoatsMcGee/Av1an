@@ -1,5 +1,80 @@
 use crate::core::encoder::parse::*;
 
+#[test]
+fn e26_vvenc_keyed_stats_reach_public_parser_and_dispatcher() {
+    use crate::core::encoder::Encoder;
+
+    // Stats.h at a455d51e335c97b40eeea7bb90e3ad52b84c6e83 emits both forms.
+    for (line, expected) in [
+        (
+            "vvenc [info]: stats:  frame= 60 fps= 2.9 avg_fps= 2.9 bitrate= 29173.77 kbps avg_bitrate= 29173.77 kbps elapsed= 0",
+            60,
+        ),
+        (
+            "vvenc [info]: stats: 50.0%% frame= 60/120 fps= 2.9 avg_fps= 2.9 bitrate= 29173.77 kbps avg_bitrate= 29173.77 kbps elapsed= 0",
+            60,
+        ),
+        (
+            "vvenc [info]: stats:\t fps= 900 elapsed= 1\tframe=\t60/120\tavg_fps= 901\r\n",
+            60,
+        ),
+        ("vvenc [info]: stats: frame=60 fps= 900", 60),
+        ("vvenc [info]: stats: fps= 900 frame=60/120", 60),
+        ("vvenc [info]: stats: frame=0", 0),
+        ("vvenc [info]: stats: frame=60/0", 60),
+        ("vvenc [info]: stats: frame=60/1", 60),
+        (
+            "vvenc [info]: stats: frame=18446744073709551615/18446744073709551615",
+            u64::MAX,
+        ),
+    ] {
+        assert_eq!(parse_vvc_frames(line), Some(expected), "parser: {line:?}");
+        assert_eq!(
+            Encoder::parse_encoded_frames_base(&EncoderBase::VVenC, line),
+            Some(expected),
+            "dispatcher: {line:?}"
+        );
+    }
+}
+
+#[test]
+fn e26_vvenc_rejects_malformed_counts_and_non_stats_noise() {
+    use crate::core::encoder::Encoder;
+
+    for line in [
+        "",
+        "60",
+        "frame= 60",
+        "noise frame= 60 fps= 900",
+        "vvenc [info]: frame= 60",
+        "vvenc [warning]: stats: frame= 60",
+        "vvenc [info]: stats: fps= 900 elapsed= 60",
+        "vvenc [info]: stats: notframe= 60 fps= 900",
+        "vvenc [info]: stats: frame=",
+        "vvenc [info]: stats: frame= fps= 900",
+        "vvenc [info]: stats: frame= -60",
+        "vvenc [info]: stats: frame= +60",
+        "vvenc [info]: stats: frame= 60.0",
+        "vvenc [info]: stats: frame= 60x",
+        "vvenc [info]: stats: frame= 18446744073709551616",
+        "vvenc [info]: stats: frame= 60/18446744073709551616",
+        "vvenc [info]: stats: frame= /120",
+        "vvenc [info]: stats: frame= 60/",
+        "vvenc [info]: stats: frame= 60/noise",
+        "vvenc [info]: stats: frame= 60/-120",
+        "vvenc [info]: stats: frame= 60/+120",
+        "vvenc [info]: stats: frame= 60/120/240",
+        "vvenc [info]: stats: frame= 60//120",
+    ] {
+        assert_eq!(parse_vvc_frames(line), None, "parser: {line:?}");
+        assert_eq!(
+            Encoder::parse_encoded_frames_base(&EncoderBase::VVenC, line),
+            None,
+            "dispatcher: {line:?}"
+        );
+    }
+}
+
 // #[test]
 // fn valid_params_works() {
 //     use std::borrow::Borrow;

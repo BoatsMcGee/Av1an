@@ -86,12 +86,15 @@ pub(super) fn progress_reader(
     let mut count = 0;
     let mut system = pid.map(|pid| (pid, sysinfo::System::new()));
     move |line| {
-        let latest = if stdout {
-            if base != EncoderBase::AVM || !line.contains("POC:") {
+        let latest = if stdout && base == EncoderBase::AVM {
+            if !line.contains("POC:") {
                 return;
             }
             count += 1;
             count
+        } else if stdout != (base == EncoderBase::VVenC) {
+            // VVenC stats use stdout; other keyed progress stays on stderr.
+            return;
         } else if let Some(latest) = Encoder::parse_encoded_frames_base(&base, line) {
             if latest <= frames.load(Ordering::Relaxed) {
                 return;

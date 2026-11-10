@@ -29,15 +29,7 @@ fn diagnostics(result: &EncoderResult, dropped_after_first: bool) {
 
 #[test]
 fn e08_bounded_runtime() {
-    let temp = tempfile::tempdir().expect("fixture");
-    let root = temp.path();
-    fs::write(root.join("fake.rs"), include_str!("e08_fixture.rs")).expect("fixture source");
-    e02_tests::run_bounded(
-        Command::new("rustc").arg(root.join("fake.rs")).arg("-o").arg(root.join("fake")),
-        &root.join("rustc.log"),
-    );
-    let mut failed = Vec::new();
-    for case in [
+    bounded_runtime(&[
         "stream",
         "avm",
         "drop-after-first",
@@ -56,7 +48,24 @@ fn e08_bounded_runtime() {
         "serialdecode",
         "serialencode",
         "watchdog",
-    ] {
+    ]);
+}
+
+#[test]
+fn e26_vvenc_bounded_public_input_and_stream_progress() {
+    bounded_runtime(&["vvenc-input", "vvenc-stream"]);
+}
+
+fn bounded_runtime(cases: &[&str]) {
+    let temp = tempfile::tempdir().expect("fixture");
+    let root = temp.path();
+    fs::write(root.join("fake.rs"), include_str!("e08_fixture.rs")).expect("fixture source");
+    e02_tests::run_bounded(
+        Command::new("rustc").arg(root.join("fake.rs")).arg("-o").arg(root.join("fake")),
+        &root.join("rustc.log"),
+    );
+    let mut failed = Vec::new();
+    for &case in cases {
         let log_path = root.join(format!("{case}.log"));
         let file = fs::File::create(&log_path).expect("log");
         let status = Command::new(root.join("fake"))
@@ -107,6 +116,10 @@ fn e08_runtime_child() {
     };
     let root = PathBuf::from(root);
     let case = std::env::var("E08_CASE").expect("case");
+    if case.starts_with("vvenc-") {
+        vvenc_case(&root, &case);
+        return;
+    }
     if case == "watchdog" {
         let mut descendant = Command::new(root.join("fake"))
             .arg("--e08-stall")
@@ -237,6 +250,55 @@ fn e08_runtime_child() {
     if let Some(observer) = observer {
         observer.join().expect("observer joined");
     }
+}
+
+fn vvenc_case(root: &Path, case: &str) {
+    let mut encoder = Encoder::default_from_base(&EncoderBase::VVenC, true);
+    encoder.set_executable(Some(root.join("fake")));
+    encoder.set_append_color_data(false);
+    encoder
+        .parameters_mut()
+        .insert("e26-progress".into(), CLIParameter::new_bool("--", true));
+    let (tx, rx) = mpsc::channel();
+    let output = root.join(format!("{case}.266"));
+    let input_path = case == "vvenc-input";
+    let result = if input_path {
+        let script = root.join("vvenc.vpy");
+        fs::write(&script, "from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=64,height=64,length=1,format=YUV420P8).set_output()\n").expect("finite input");
+        let mut input = Input::from_data(&crate::models::input::Input::VapourSynthScript {
+            source: crate::models::input::VapourSynthScriptSource::Path(script),
+            variables: HashMap::new(),
+            index: 0,
+            filters: vec![],
+            stream_concurrently: false,
+        }).expect("input");
+        encoder.encode_with_input(&mut input, &output, 0, 1, tx)
+    } else {
+        let (frames, receiver) = crossbeam_channel::unbounded();
+        frames.send(Cursor::new(vec![0; 64])).expect("finite stream");
+        drop(frames);
+        encoder.encode_with_stream(receiver, &output, tx, &tests::clip_info())
+    }.expect("public VVenC encode");
+    assert!(result.status.success());
+    assert_eq!(
+        rx.into_iter().map(|p| (p.pass, p.frame)).collect::<Vec<_>>(),
+        if input_path {
+            vec![((1, 1), 60), ((1, 1), 90), ((1, 1), 120)]
+        } else {
+            vec![((1, 1), 0), ((1, 1), 60), ((1, 1), 90), ((1, 1), 120)]
+        },
+        "only increasing stdout stats, with the existing stream start event"
+    );
+    let mut stdout = b"noise frame= 700\r\nPOC: 0\nvvenc [info]: stats:  frame= 60 fps= 2.9 avg_fps= 2.9 bitrate= 29173.77 kbps avg_bitrate= 29173.77 kbps elapsed= 0\rvvenc [info]: stats: frame=bad fps= 999\nbad\xff\r\nvvenc [info]: stats: 75.0%% frame= 90/120 fps= 2.9 avg_fps= 2.9 bitrate= 29173.77 kbps avg_bitrate= 29173.77 kbps elapsed= 1\nvvenc [info]: stats: frame=90\rvvenc [info]: stats: frame=30\n".to_vec();
+    stdout.extend(vec![b'o'; 512 * 1024]);
+    stdout.extend_from_slice(
+        b"\nvvenc [info]: stats: frame=120 fps= 2.9\rvvenc [info]: stats: frame=120 fps= 2.9",
+    );
+    let mut stderr = b"diagnostic\xfe\r\nvvenc [info]: stats: frame=900 fps= 999\n".to_vec();
+    stderr.extend(vec![b'e'; 512 * 1024]);
+    stderr.extend_from_slice(b"\r\nstderr tail");
+    assert_eq!(bytes(&result.stdout), stdout);
+    assert_eq!(bytes(&result.stderr), stderr);
 }
 
 fn serial_case(root: &Path, case: &str, mut encoder: Encoder) {

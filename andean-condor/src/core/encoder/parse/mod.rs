@@ -267,14 +267,24 @@ pub fn parse_x26x_frames(s: &str) -> Option<u64> {
 
 #[inline]
 pub fn parse_vvc_frames(s: &str) -> Option<u64> {
-    // vvenc [info]: stats:  frame=   60 fps=   2.9 avg_fps=   2.9 bitrate=
-    // 29173.77 kbps avg_bitrate= 29173.77 kbps elapsed= 0
-    const VVENC_PREFIX: &str = "vvenc [info]: stats:  frame=";
-    if !s.starts_with(VVENC_PREFIX) {
+    // Known totals add a percentage before frame=N/total; fps is not a frame count.
+    let mut fields = s.strip_prefix("vvenc [info]: stats:")?.split_ascii_whitespace();
+    let value = fields.find_map(|field| field.strip_prefix("frame="))?;
+    let value = if value.is_empty() {
+        fields.next()?
+    } else {
+        value
+    };
+    if !value.bytes().all(|byte| byte.is_ascii_digit() || byte == b'/') {
         return None;
     }
-
-    s.split_ascii_whitespace().nth(5).and_then(|s| s.parse().ok())
+    let frame = if let Some((frame, total)) = value.split_once('/') {
+        total.parse::<u64>().ok()?;
+        frame
+    } else {
+        value
+    };
+    frame.parse().ok()
 }
 
 #[inline]
