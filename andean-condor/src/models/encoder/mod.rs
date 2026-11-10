@@ -457,7 +457,7 @@ impl EncoderBase {
             EncoderBase::X264 => "264",
             EncoderBase::X265 => "hevc",
             EncoderBase::VVenC => "266",
-            EncoderBase::FFmpeg => ".mkv",
+            EncoderBase::FFmpeg => "mkv",
         }
     }
 
@@ -1186,6 +1186,26 @@ mod tests {
             let json = serde_json::to_string(&encoder).expect("encoder serializes");
             let restored: Encoder = serde_json::from_str(&json).expect("encoder deserializes");
             assert!(!restored.append_color_data(), "{base}");
+        }
+    }
+
+    /// Scene files must be named `{id}.{extension}`.
+    #[test]
+    fn output_extensions_carry_no_leading_dot() {
+        for base in [
+            EncoderBase::AOM,
+            EncoderBase::RAV1E,
+            EncoderBase::VPX,
+            EncoderBase::SVTAV1,
+            EncoderBase::AVM,
+            EncoderBase::X264,
+            EncoderBase::X265,
+            EncoderBase::VVenC,
+            EncoderBase::FFmpeg,
+        ] {
+            let extension = base.output_extension();
+            assert!(!extension.starts_with('.'), "{base} reports {extension}");
+            assert!(!extension.is_empty(), "{base} reports no extension");
         }
     }
 }
