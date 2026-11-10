@@ -99,10 +99,9 @@ where
 
     #[inline]
     pub fn save_data(save_file: &Path, data: &CondorModel<Data, Config>) -> Result<()> {
-        let save_file_ext = save_file.extension();
-        let save_file_temp = save_file_ext.map_or_else(
+        let save_file_temp = save_file.extension().map_or_else(
             || save_file.with_extension("temp"),
-            |extension| save_file.with_extension(format!(".temp.{}", extension.to_string_lossy())),
+            |extension| save_file.with_extension(format!("temp.{}", extension.to_string_lossy())),
         );
         let mut buffer = vec![];
         let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
@@ -307,4 +306,86 @@ pub enum SequenceType {
     Validation,
     Initialization,
     Processing,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The temp file is written next to the save file and renamed onto it, so
+    /// its name must not collide with the save file itself and must not leave a
+    /// stray dot behind.
+    #[test]
+    fn the_temp_save_file_keeps_the_original_extension() {
+        let save_file = Path::new("condor.json");
+        let temp = save_file.extension().map_or_else(
+            || save_file.with_extension("temp"),
+            |extension| save_file.with_extension(format!("temp.{}", extension.to_string_lossy())),
+        );
+
+        assert_eq!(temp, Path::new("condor.temp.json"));
+        assert_ne!(
+            temp, save_file,
+            "the temp file must not overwrite the save file"
+        );
+    }
+
+    /// A save file with no extension still gets a temp file, and one with
+    /// several dots keeps only its last extension replaced.
+    #[test]
+    fn the_temp_save_file_handles_paths_without_or_with_extra_dots() {
+        let temp_of = |path: &str| {
+            let path = Path::new(path);
+            path.extension().map_or_else(
+                || path.with_extension("temp"),
+                |extension| path.with_extension(format!("temp.{}", extension.to_string_lossy())),
+            )
+        };
+
+        assert_eq!(temp_of("condor"), Path::new("condor.temp"));
+        assert_eq!(temp_of("a.b.json"), Path::new("a.b.temp.json"));
+        assert_eq!(
+            temp_of("dir.d/condor.json"),
+            Path::new("dir.d/condor.temp.json")
+        );
+    }
+
+    /// A round trip through `save_data` leaves the save file readable and no
+    /// temp file behind.
+    #[test]
+    fn saving_removes_the_temp_file() {
+        let directory = tempfile::tempdir().expect("create a temp directory");
+        let save_file = directory.path().join("condor.json");
+        let data = CondorModel::<DefaultSequenceData, DefaultSequenceConfig> {
+            input:           crate::models::input::Input::Video {
+                path:          "input.mkv".into(),
+                import_method: crate::models::input::ImportMethod::FFMS2 {
+                    index:      None,
+                    cache_path: None,
+                },
+                filters:       Vec::new(),
+            },
+            output:          crate::models::output::Output {
+                path:       "output.mkv".into(),
+                tags:       std::collections::HashMap::new(),
+                video_tags: std::collections::HashMap::new(),
+            },
+            encoder:         Encoder::default(),
+            scenes:          Vec::new(),
+            sequence_config: DefaultSequenceConfig::default(),
+        };
+
+        Condor::<DefaultSequenceData, DefaultSequenceConfig>::save_data(&save_file, &data)
+            .expect("save the data");
+
+        assert!(save_file.exists(), "the save file should exist");
+        assert!(
+            !directory.path().join("condor.temp.json").exists(),
+            "the temp file should have been renamed away"
+        );
+        assert!(
+            !directory.path().join("condor..temp.json").exists(),
+            "no double-dot temp file should be left behind"
+        );
+    }
 }

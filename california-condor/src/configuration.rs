@@ -213,7 +213,10 @@ impl Configuration {
         if let Some(directory) = directory {
             std::fs::create_dir_all(directory).map_err(ConfigError::Save)?;
         }
-        let temp_path = path.with_extension("temp");
+        let temp_path = path.extension().map_or_else(
+            || path.with_extension("temp"),
+            |extension| path.with_extension(format!("temp.{}", extension.to_string_lossy())),
+        );
         std::fs::write(&temp_path, &buffer).map_err(ConfigError::Save)?;
         std::fs::rename(&temp_path, path).map_err(ConfigError::Save)?;
         Ok(())
@@ -603,4 +606,26 @@ pub enum ConfigError {
     Serialize(#[from] serde_json::Error),
     #[error("Failed to save config file: {0}")]
     Save(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The temp file is renamed onto the save file, so its name must not
+    /// collide with the save file itself and must not leave a stray dot.
+    #[test]
+    fn the_temp_config_file_keeps_the_original_extension() {
+        let temp_of = |path: &str| {
+            let path = Path::new(path);
+            path.extension().map_or_else(
+                || path.with_extension("temp"),
+                |extension| path.with_extension(format!("temp.{}", extension.to_string_lossy())),
+            )
+        };
+
+        assert_eq!(temp_of("condor.json"), Path::new("condor.temp.json"));
+        assert_eq!(temp_of("condor"), Path::new("condor.temp"));
+        assert_eq!(temp_of("a.b.json"), Path::new("a.b.temp.json"));
+    }
 }
