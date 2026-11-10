@@ -934,13 +934,17 @@ impl Encoder {
             let _stats = stats;
             Ok(encoder.wait_with_output()?)
         });
-        PassWorkers {
+        let encoder_result = PassWorkers {
             stdin: encoder_stdin_thread,
             stdout: encoder_stdout_thread,
             stderr: encoder_stderr_thread,
             wait: encoder_output_thread,
         }
-        .finish(base_encoder, parameters, Ok(()))
+        .finish(base_encoder, parameters, Ok(()))?;
+        if !encoder_result.status.success() {
+            return Err(encoder_result.into());
+        }
+        Ok(encoder_result)
     }
 
     #[inline]
@@ -1507,6 +1511,10 @@ mod e07_tests;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
 mod e08_tests;
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod e27_tests;
 
 #[cfg(test)]
 mod tests {

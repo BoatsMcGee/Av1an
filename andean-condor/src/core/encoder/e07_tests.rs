@@ -82,14 +82,14 @@ fn bounded(case: &str) {
     eprint!("{log}");
 }
 
-fn value<'a>(argv: &'a [String], key: &str) -> &'a str {
+pub(super) fn value<'a>(argv: &'a [String], key: &str) -> &'a str {
     &argv
         .windows(2)
         .find(|args| args[0] == key)
         .unwrap_or_else(|| panic!("missing {key}: {argv:?}"))[1]
 }
 
-fn check_input(input: &mut Input) -> ClipInfo {
+pub(super) fn check_input(input: &mut Input) -> ClipInfo {
     let info = input.clip_info().expect("clip info");
     assert_eq!(info.num_frames, 5);
     assert_eq!(
@@ -100,7 +100,7 @@ fn check_input(input: &mut Input) -> ClipInfo {
     info
 }
 
-fn expected_y4m() -> Vec<u8> {
+pub(super) fn expected_y4m() -> Vec<u8> {
     let mut bytes = HEADER.as_bytes().to_vec();
     for luma in [48, 80, 112] {
         bytes.extend_from_slice(b"FRAME\n");
@@ -110,7 +110,7 @@ fn expected_y4m() -> Vec<u8> {
     bytes
 }
 
-fn frames(input: &mut Input) -> crossbeam_channel::Receiver<Cursor<Vec<u8>>> {
+pub(super) fn frames(input: &mut Input) -> crossbeam_channel::Receiver<Cursor<Vec<u8>>> {
     let (tx, rx) = crossbeam_channel::unbounded();
     let header = input.y4m_header(Some(3)).expect("stream header");
     let mut bytes = header.as_bytes().to_vec();

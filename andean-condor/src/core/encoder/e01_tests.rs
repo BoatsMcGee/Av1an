@@ -505,9 +505,10 @@ fi
             .parameters_mut()
             .insert("e01-fail".into(), CLIParameter::new_number("--", " ", 1.0));
         let output = root.join("job one 映像/failure.264");
-        let result = failing
+        let error = failing
             .encode_with_stream(frames(), &output, progress.clone(), &tests::clip_info())
-            .expect("existing status-return API");
+            .expect_err("failed pass status propagates");
+        let result = error.downcast_ref::<EncoderResult>().expect("failed pass diagnostics");
         assert_eq!(result.status.code(), Some(42));
         assert!(!Path::new(&value(&result.parameters, "--stats")).parent().expect("dir").exists());
 
