@@ -2,6 +2,164 @@ use super::{e02_tests::run_bounded, *};
 use std::fs;
 
 #[test]
+fn e23_aom_default_keyframe_flag_respects_false_removal_and_excluded_defaults() {
+    for mode in ["default", "false", "removed", "excluded"] {
+        let mut encoder = Encoder::default_from_base(&EncoderBase::AOM, mode == "excluded");
+        match mode {
+            "false" => {
+                encoder
+                    .parameters_mut()
+                    .insert("disable-kf".into(), CLIParameter::new_bool("--", false));
+            },
+            "removed" => {
+                encoder.parameters_mut().remove("disable-kf");
+            },
+            _ => {},
+        }
+        for pass in [(1, 1), (1, 2), (2, 2)] {
+            *encoder.passes_mut().expect("passes") = EncoderPasses::All(pass.1);
+            let before = encoder.clone();
+            for argv in [
+                encoder.parameters_with_output(pass, Path::new("out.ivf"), &tests::clip_info()),
+                encoder.parameters_with_stats(
+                    pass,
+                    Path::new("out.ivf"),
+                    &tests::clip_info(),
+                    Path::new("stats"),
+                ),
+            ] {
+                let argv = argv.expect("production argv");
+                assert_eq!(
+                    argv.iter().filter(|arg| arg.starts_with("--disable-kf")).count(),
+                    usize::from(mode == "default"),
+                    "{mode} {pass:?}: {argv:?}"
+                );
+                assert_eq!(
+                    argv.contains(&"--kf-max-dist=9999".to_owned()),
+                    mode != "excluded",
+                    "{mode} {pass:?}: {argv:?}"
+                );
+            }
+            assert_eq!(encoder, before, "argv must not override caller options");
+        }
+    }
+}
+
+#[test]
+fn e23_installed_aom_scene_default_has_only_initial_decoded_keyframe() {
+    let temp = tempfile::tempdir().expect("fixture");
+    let root = temp.path();
+    let aom = which::which("aomenc").expect("install aomenc to run the native regression");
+    let ffprobe = which::which("ffprobe").expect("install ffprobe to verify decoded keyframes");
+    let help = run_bounded(Command::new(&aom).arg("--help"), &root.join("help.log"));
+    assert!(help.contains("--disable-kf"));
+    eprintln!(
+        "E23 installed {}: {}",
+        aom.display(),
+        help.lines()
+            .find(|line| line.contains("AOMedia Project AV1 Encoder"))
+            .expect("version")
+    );
+    let mut clip = tests::clip_info();
+    clip.num_frames = 32;
+    clip.resolution = (64, 64);
+    clip.format_info = crate::core::input::pixel_format::PixelFormat::VapourSynth { bit_depth: 8 };
+    let mut y4m = b"YUV4MPEG2 W64 H64 F24:1 Ip A1:1 C420jpeg\n".to_vec();
+    // A hard cut from flat luma to a checkerboard must not split an already cut scene.
+    for frame in 0..32 {
+        y4m.extend_from_slice(b"FRAME\n");
+        for y in 0..64 {
+            for x in 0..64 {
+                y4m.push(if frame < 16 {
+                    32
+                } else if (x / 8 + y / 8) % 2 == 0 {
+                    64
+                } else {
+                    224
+                });
+            }
+        }
+        y4m.extend(vec![128; 64 * 64 / 2]);
+    }
+    let input = root.join("internal-cut.y4m");
+    fs::write(&input, y4m).expect("finite Y4M");
+    for user_enabled in [true, false] {
+        let name = if user_enabled {
+            "user-enabled"
+        } else {
+            "default"
+        };
+        let output = root.join(format!("{name}.ivf"));
+        let mut encoder = Encoder::default_from_base(&EncoderBase::AOM, false);
+        *encoder.passes_mut().expect("passes") = EncoderPasses::All(1);
+        encoder.set_append_color_data(false);
+        encoder
+            .parameters_mut()
+            .insert("ivf".into(), CLIParameter::new_bool("--", true));
+        if user_enabled {
+            encoder
+                .parameters_mut()
+                .insert("disable-kf".into(), CLIParameter::new_bool("--", false));
+            encoder.parameters_mut().insert(
+                "kf-max-dist".into(),
+                CLIParameter::new_number("--", "=", 4.0),
+            );
+        }
+        let argv = encoder.parameters_with_output((1, 1), &output, &clip).expect("production argv");
+        eprintln!("E23 {name} production argv: {argv:?}");
+        run_bounded(
+            Command::new(&aom).args(&argv).stdin(fs::File::open(&input).expect("input")),
+            &root.join(format!("{name}-encode.log")),
+        );
+        let probe = run_bounded(
+            Command::new(&ffprobe)
+                .args([
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_frames",
+                    "-show_entries",
+                    "frame=key_frame",
+                    "-of",
+                    "csv=p=0",
+                ])
+                .arg(&output)
+                .stdin(Stdio::null()),
+            &root.join(format!("{name}-probe.log")),
+        );
+        let frames: Vec<u8> = probe
+            .lines()
+            .map(|line| line.parse().expect("decoded key_frame flag"))
+            .collect();
+        assert_eq!(frames.len(), 32, "{name}: {probe}");
+        assert!(frames.iter().all(|flag| *flag <= 1), "{probe}");
+        let keyframes: Vec<_> = frames
+            .iter()
+            .enumerate()
+            .filter_map(|(index, flag)| (*flag == 1).then_some(index))
+            .collect();
+        eprintln!(
+            "E23 {name}: {} decoded frames, keyframe indices {keyframes:?}",
+            frames.len()
+        );
+        if user_enabled {
+            assert_eq!(keyframes.first(), Some(&0));
+            assert!(
+                keyframes.len() > 1,
+                "positive oracle must see additional keyframes"
+            );
+        } else {
+            assert_eq!(
+                keyframes,
+                [0],
+                "already cut scenes must not gain automatic keyframes"
+            );
+        }
+    }
+}
+
+#[test]
 fn e22_vpx_color_argv_respects_codec_metadata_and_native_overrides() {
     use av_decoders::ColorSpace;
 

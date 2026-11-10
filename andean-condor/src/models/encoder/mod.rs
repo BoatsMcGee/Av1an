@@ -76,6 +76,7 @@ impl EncoderBase {
                         ("kf-max-dist", 9999.0),
                     ],
                 );
+                parameters.insert("disable-kf".to_owned(), CLIParameter::new_bool("--", true));
                 parameters.insert(
                     "end-usage".to_owned(),
                     CLIParameter::new_string("--", "=", "q"),
