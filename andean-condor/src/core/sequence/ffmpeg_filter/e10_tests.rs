@@ -20,7 +20,65 @@ use crate::{
         sequence::{DefaultSequenceConfig, DefaultSequenceData},
     },
 };
-use std::{collections::HashMap, fs, os::unix::fs::PermissionsExt, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::Path,
+    time::{Duration, Instant},
+};
+
+fn thread_count() -> usize {
+    fs::read_dir("/proc/self/task").expect("threads").count()
+}
+
+// Linux can wake a native join before unlinking the exiting task from /proc.
+// This observation barrier runs after owned joins; it cannot replace them.
+fn wait_for_thread_count(
+    before: usize,
+    timeout: Duration,
+    mut count: impl FnMut() -> usize,
+) -> Result<usize, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let after = count();
+        if after == before {
+            return Ok(after);
+        }
+        if Instant::now() >= deadline {
+            let tasks: Vec<_> = fs::read_dir("/proc/self/task")
+                .expect("threads")
+                .map(|entry| {
+                    let entry = entry.expect("task");
+                    (
+                        entry.file_name(),
+                        fs::read_to_string(entry.path().join("stat")),
+                    )
+                })
+                .collect();
+            return Err(format!(
+                "thread teardown deadline: before={before}, after={after}; TIDs/stat={tasks:?}"
+            ));
+        }
+        thread::yield_now();
+    }
+}
+
+#[test]
+fn e10a_thread_census_waits_for_transition() {
+    let mut observations = [3, 3, 2].into_iter();
+    assert_eq!(
+        wait_for_thread_count(2, Duration::from_secs(5), || observations
+            .next()
+            .expect("census"))
+        .expect("observe teardown after logical join"),
+        2
+    );
+    assert!(
+        observations.next().is_none(),
+        "must observe the transition, not skip the census"
+    );
+}
 
 #[test]
 fn e10_bounded_filter_lifecycle() {
@@ -112,7 +170,7 @@ fn native_input(root: &Path) -> Input {
 }
 
 fn direct_drop(case: &str) {
-    let before = fs::read_dir("/proc/self/task").expect("threads").count();
+    let before = thread_count();
     let (tx, rx) = crossbeam_channel::bounded(1);
     let mut stage = FfmpegFilter::spawn(rx, 1, "null", Arc::new(Mutex::new(None))).expect("filter");
     let output = stage.take_receiver().expect("sole receiver");
@@ -164,18 +222,15 @@ fn direct_drop(case: &str) {
         drop(stage);
         producer.join().expect("upstream unblocked and joined");
     }
-    let after = fs::read_dir("/proc/self/task").expect("threads").count();
-    assert_eq!(
-        after, before,
-        "all filter relay workers joined before Drop returns"
-    );
+    let after = wait_for_thread_count(before, Duration::from_secs(5), thread_count)
+        .expect("all filter relay workers joined before Drop returns");
     eprintln!(
         "E10 direct {case}: relay threads before={before}, after={after}; producer disconnected"
     );
 }
 
 fn controls() {
-    let before = fs::read_dir("/proc/self/task").expect("threads").count();
+    let before = thread_count();
     for (graph, dimensions, chroma) in [
         ("null", "W8 H8", "C420"),
         ("crop=6:6", "W6 H6", "C420"),
@@ -217,13 +272,38 @@ fn controls() {
             "owned FFmpeg reaped"
         );
     }
-    assert_eq!(
-        fs::read_dir("/proc/self/task").expect("threads").count(),
-        before
-    );
+    wait_for_thread_count(before, Duration::from_secs(5), thread_count)
+        .expect("all naturally completed filter relays joined");
     eprintln!(
         "E10 real FFmpeg null/crop/10-bit: 12 frames each, regenerated dimensions/chroma/fps; 3 relays joined per stage"
     );
+
+    // Keep a real extra worker alive until the census has rejected it.
+    let (release, wait) = crossbeam_channel::bounded::<()>(0);
+    let (ready, started) = crossbeam_channel::bounded(1);
+    let worker = thread::spawn(move || {
+        ready
+            .send(fs::read_link("/proc/thread-self").expect("native worker TID"))
+            .expect("ready");
+        let _ = wait.recv_timeout(Duration::from_secs(10));
+    });
+    let tid = started.recv_timeout(Duration::from_secs(5)).expect("live worker ready");
+    let rejected = wait_for_thread_count(before, Duration::from_millis(25), thread_count);
+    let still_live = !worker.is_finished();
+    drop(release);
+    worker.join().expect("negative-control worker released and joined");
+    assert!(
+        still_live,
+        "negative control must stay LIVE through the census deadline"
+    );
+    let diagnostic = rejected.expect_err("a persistent LIVE worker must fail the bounded census");
+    assert!(
+        diagnostic.contains(tid.file_name().expect("TID").to_string_lossy().as_ref()),
+        "{diagnostic}"
+    );
+    wait_for_thread_count(before, Duration::from_secs(5), thread_count)
+        .expect("negative-control cleanup");
+    eprintln!("E10a LIVE-worker negative control rejected and released: {diagnostic}");
 }
 
 fn relay_faults() {
