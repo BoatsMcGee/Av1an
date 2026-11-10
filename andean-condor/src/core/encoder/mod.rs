@@ -1647,6 +1647,9 @@ mod e02_tests;
 mod e03_tests;
 
 #[cfg(test)]
+mod e04_tests;
+
+#[cfg(test)]
 mod tests {
     use av_decoders::{ColorPrimaries, ColorSpace, TransferCharacteristic};
 

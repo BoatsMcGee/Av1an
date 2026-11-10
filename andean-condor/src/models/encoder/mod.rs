@@ -184,7 +184,14 @@ impl EncoderBase {
             EncoderBase::AOM => {
                 let mut parameters = HashMap::new();
                 match pass {
-                    (1, 1) => parameters,
+                    (1, 1) => {
+                        // aomenc defaults to two passes, but piped stdin cannot rewind.
+                        parameters.insert(
+                            "passes".to_owned(),
+                            CLIParameter::new_number("--", "=", 1.0),
+                        );
+                        parameters
+                    },
                     (1, _) => {
                         parameters.extend(CLIParameter::new_numbers(
                             "--",
