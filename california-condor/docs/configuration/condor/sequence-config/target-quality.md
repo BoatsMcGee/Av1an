@@ -5,14 +5,25 @@
 | Field | Type | Required | Default | Description |
 | ----- | ---- | -------- | ------- | ----------- |
 | `metric` | Object | Yes | `{ "SSIMULACRA2": { "target_range": [74.0, 76.0], "resolution": null, "threads": null } }` | One key: `VMAF`, `SSIMULACRA2`, `BUTTERAUGLI`, `XPSNR`, `CVVDP`. CLI `--metric` |
-| `maximum_probes` | Integer (u8) | Yes | `4` | Max probes per scene |
-| `quantizer_range` | Array `[u32, u32]` | Yes | Per-encoder (see [condor.encoder](../encoder.md)) | `[min, max]`. CLI `--min-q`/`--max-q` |
+| `maximum_probes` | Integer (u8) | Yes | `4` | Positive max probes per scene (`1..=255`) |
+| `quantizer_range` | Array `[u32, u32]` | Yes | Per-encoder (see [condor.encoder](../encoder.md)) | `[min, max]`, `min ≤ max`; both endpoints must pass encoder settings checks. CLI `--min-q`/`--max-q` |
 | `interpolators` | Array `[string, string]` | Yes | `["FritschCarlson", "Pchip"]` | Interpolation methods: `"Linear"`, `"Quadratic"`, `"Natural"`, `"FritschCarlson"`, `"Pchip"`, `"Catmull"`, `"Akima"`, `"CubicPolynomial"` |
 | `input` | Input object or null | Yes | `null` | Override encode input. Same shape as [condor.input](../input.md) |
 | `metric_input` | Input object or null | Yes | `null` | Override metric reference input |
 | `probing` | Object | Yes | `{ "encoder_options": null, "strategy": "Whole", "statistic": "Mean" }` | Probe strategy + statistic. CLI `--profile` presets |
 
 `metric` variants (all carry `target_range: [f64, f64]`):
+
+Target endpoints must be finite and ordered (`min ≤ max`); equal target and quantizer
+bounds are allowed. Saves and Target Quality preflight validate the global encoder
+and every scene's own encoder using the effective probe options. A non-null
+`probing.encoder_options` replaces, rather than merges with, scene options; probes
+also omit the existing psychovisual settings and FFmpeg filter.
+
+These are offline settings checks, not executable, native bit-depth or capability
+checks. FFmpeg's arbitrary native codecs have no universal CRF range here. Invalid
+loaded JSON can be inspected, explicitly repaired, or disabled with `target-quality
+reset`, but cannot be saved or admitted to Target Quality work unchanged.
 
 - `VMAF`: `{ "target_range": [94.0, 96.0], "resolution": [w, h] or null, "scaler": <string>, "threads": <usize>, "model": <path> or null, "features": ["default"|"weighted"|"neg"|"motionless"|"uhd"] }`
 - `SSIMULACRA2`: `{ "target_range": [74.0, 76.0], "resolution": [w, h] or null, "threads": <u8> or null }` (default)

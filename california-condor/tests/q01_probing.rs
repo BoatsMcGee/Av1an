@@ -264,7 +264,9 @@ mod tests {
                         .expect("QC")
                         .input = Some(bad_input);
                     let path = temp.path().join("condor.json");
-                    configuration.save(&path).expect("save loaded fixture");
+                    // Simulate malformed hand-edited JSON, bypassing validated saves.
+                    std::fs::write(&path, serde_json::to_vec(&configuration).expect("JSON"))
+                        .expect("save loaded fixture");
                     let before = std::fs::read(&path).expect("snapshot");
                     let configuration =
                         Configuration::load(&path).expect("load").expect("saved fixture");

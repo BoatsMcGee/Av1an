@@ -88,11 +88,7 @@ where
     ) -> Result<((), Vec<anyhow::Error>)> {
         let warnings = vec![];
 
-        if let Some(config) = condor.sequence_config.target_quality()? {
-            for scene in &condor.scenes {
-                config.probing.strategy.validate_range(scene.start_frame, scene.end_frame)?;
-            }
-        }
+        Self::validate_config(condor)?;
         // Ensure all the scene encoders are validated
         for scene in &condor.scenes {
             scene.encoder.validate()?;
@@ -123,9 +119,7 @@ where
         let Some(config) = config else {
             return Ok(((), warnings));
         };
-        for scene in &condor.scenes {
-            config.probing.strategy.validate_range(scene.start_frame, scene.end_frame)?;
-        }
+        Self::validate_config(condor)?;
         let input = if let Some(input) = self.input.as_mut() {
             input
         } else if let Some(input_model) = &parallel_encoder_config.input {
@@ -210,6 +204,7 @@ where
             return Ok(((), warnings));
         }
         let config = config.clone().expect("TargetQualityConfig is Some");
+        Self::validate_config(condor)?;
         let scene_frame_indices = condor
             .scenes
             .iter()
@@ -252,16 +247,7 @@ where
                 .enumerate()
                 .map(|(index, (scene, frame_indices))| {
                     let frame_indices = frame_indices.clone();
-                    let mut encoder = scene.encoder.clone();
-                    if let Some(parameters) = config.probing.encoder_options.as_ref() {
-                        encoder.parameters_mut().clear();
-                        encoder.parameters_mut().extend(parameters.clone());
-                    }
-                    // Probes are scored against the unfiltered reference, so a
-                    // filter would corrupt the metric the same way it does for
-                    // Quality Check. The final encode still filters.
-                    encoder.set_ffmpeg_filter(None);
-                    let encoder = Self::remove_psychovisual_parameters(&encoder);
+                    let encoder = config.probe_encoder(&scene.encoder);
                     let output = pass_directory.join(format!(
                         "{}.{}",
                         ParallelEncoder::scene_id(index),
@@ -574,6 +560,31 @@ where
 
 impl TargetQuality {
     pub const DETAILS: SequenceDetails = DETAILS;
+
+    /// Pure admission check shared with the TUI before it opens override inputs.
+    /// Disabled/empty stages do no probing; cancellation is checked by their callers first.
+    #[inline]
+    pub fn validate_config<DataHandler, ConfigHandler>(
+        condor: &Condor<DataHandler, ConfigHandler>,
+    ) -> Result<()>
+    where
+        DataHandler: SequenceDataHandler,
+        ConfigHandler: SequenceConfigHandler + TargetQualityConfigHandler,
+    {
+        if condor.scenes.is_empty() {
+            return Ok(());
+        }
+        if let Some(config) = condor.sequence_config.target_quality()? {
+            config.validate(&condor.encoder)?;
+            for (index, scene) in condor.scenes.iter().enumerate() {
+                config
+                    .validate(&scene.encoder)
+                    .map_err(|error| anyhow::anyhow!("Target Quality scene {index}: {error:#}"))?;
+                config.probing.strategy.validate_range(scene.start_frame, scene.end_frame)?;
+            }
+        }
+        Ok(())
+    }
 
     fn quantizer_score_history(
         config: &TargetQualityConfig,

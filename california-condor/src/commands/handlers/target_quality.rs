@@ -86,6 +86,14 @@ pub fn configure_target_quality(
     maximum_quantizer: Option<u8>,
     profile: Option<&QualityProfile>,
 ) -> Result<()> {
+    if let Some(target) = target
+        && !target.is_finite()
+    {
+        return Err(TargetQualityConfigError::TargetNotFinite.into());
+    }
+    let mut candidate = configuration.clone();
+    let original = configuration;
+    let configuration = &mut candidate;
     // Initialize target quality if it doesn't exist yet
     if configuration.condor.sequence_config.target_quality.is_none() && target.is_some() {
         configuration.condor.sequence_config.target_quality = Some(TargetQualityConfig {
@@ -236,6 +244,9 @@ pub fn configure_target_quality(
         }
     }
 
+    configuration.validate_target_quality()?;
+    original.condor.sequence_config.target_quality =
+        candidate.condor.sequence_config.target_quality;
     Ok(())
 }
 
@@ -334,7 +345,7 @@ pub enum TargetQualitySet {
         #[arg(value_name = "Probes")]
         value: u8,
     },
-    /// The quantizers the search may probe.
+    /// The encoder-valid quantizers the search may probe (equal bounds allowed).
     QuantizerRange {
         /// Lowest and highest quantizer, as one `MIN-MAX` value (`18-30`).
         #[arg(value_name = "MIN-MAX", value_parser = parse_quantizer_range)]
@@ -422,18 +433,6 @@ impl TargetQualityCrud {
             .expect("target quality was just created")
     }
 
-    /// Rejects Target Quality settings the search could not honour, before
-    /// anything is written.
-    fn validate(quality: &TargetQualityConfig) -> Result<(), TargetQualityConfigError> {
-        if quality.maximum_probes == 0 {
-            return Err(TargetQualityConfigError::MaximumProbesNotPositive);
-        }
-        if quality.quantizer_range.0 > quality.quantizer_range.1 {
-            return Err(TargetQualityConfigError::QuantizerRangeInverted);
-        }
-        Ok(())
-    }
-
     /// Restores the metric's default acceptable range, undoing *set target*.
     pub(crate) fn reset_target_range(metric: &mut QualityMetric) {
         let (minimum, maximum) = default_target_range(metric);
@@ -499,9 +498,11 @@ impl ConfigCommand for TargetQualityCrud {
         })
     }
 
-    fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
+    fn apply(original: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
+        let mut candidate = original.clone();
+        let configuration = &mut candidate;
         Self::section_mut(configuration);
-        match set {
+        let change = match set {
             TargetQualitySet::Metric { metric } => {
                 configure_target_quality(
                     configuration,
@@ -516,7 +517,6 @@ impl ConfigCommand for TargetQualityCrud {
                     None,
                     None,
                 )?;
-                Self::validate(Self::section_mut(configuration))?;
                 PropertyChange::new("metric", &Self::section_mut(configuration).metric)
             },
             TargetQualitySet::Target { value } => {
@@ -536,7 +536,6 @@ impl ConfigCommand for TargetQualityCrud {
                     None,
                     None,
                 )?;
-                Self::validate(Self::section_mut(configuration))?;
                 PropertyChange::new(
                     "target",
                     Self::section_mut(configuration).metric.target_range(),
@@ -544,7 +543,6 @@ impl ConfigCommand for TargetQualityCrud {
             },
             TargetQualitySet::MaximumProbes { value } => {
                 Self::section_mut(configuration).maximum_probes = *value;
-                Self::validate(Self::section_mut(configuration))?;
                 PropertyChange::new(
                     "maximum-probes",
                     Self::section_mut(configuration).maximum_probes,
@@ -552,7 +550,6 @@ impl ConfigCommand for TargetQualityCrud {
             },
             TargetQualitySet::QuantizerRange { range } => {
                 Self::section_mut(configuration).quantizer_range = *range;
-                Self::validate(Self::section_mut(configuration))?;
                 PropertyChange::new(
                     "quantizer-range",
                     Self::section_mut(configuration).quantizer_range,
@@ -574,7 +571,6 @@ impl ConfigCommand for TargetQualityCrud {
                     .unwrap_or_else(|| configuration.condor.input.clone());
                 Self::section_mut(configuration).input =
                     Some(apply_input_override(configuration, &existing, args)?);
-                Self::validate(Self::section_mut(configuration))?;
                 PropertyChange::new("input", &Self::section_mut(configuration).input)
             },
             TargetQualitySet::MetricInput { args } => {
@@ -630,19 +626,25 @@ impl ConfigCommand for TargetQualityCrud {
                     &Self::section_mut(configuration).probing.encoder_options,
                 )
             },
-        }
+        }?;
+        configuration.validate_target_quality()?;
+        *original = candidate;
+        Ok(change)
     }
 
     fn restore(
-        configuration: &mut Configuration,
+        original: &mut Configuration,
         key: Option<&Self::Key>,
     ) -> Result<Option<PropertyChange>> {
+        let mut candidate = original.clone();
+        let configuration = &mut candidate;
         if configuration.condor.sequence_config.target_quality.is_none() {
             warn!("Target Quality is not configured; nothing to reset.");
             return Ok(None);
         }
         if key.is_none() {
             configuration.condor.sequence_config.target_quality = None;
+            *original = candidate;
             return Ok(Some(PropertyChange {
                 property: "section".to_owned(),
                 value: Value::Null,
@@ -713,10 +715,13 @@ impl ConfigCommand for TargetQualityCrud {
                 )
             },
         };
-        Ok(Some(PropertyChange {
+        let change = PropertyChange {
             property: property.to_owned(),
             value,
-        }))
+        };
+        configuration.validate_target_quality()?;
+        *original = candidate;
+        Ok(Some(change))
     }
 }
 

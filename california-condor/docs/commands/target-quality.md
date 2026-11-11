@@ -54,7 +54,7 @@ Parameters for the video encoder used in Target Quality. Passed directly to the 
 
 ### Examples
 
-- `> condor target-quality --params "--preset 2 --crf 24 --aq-mode 0"`
+- `> condor target-quality --params "--preset 2 --crf 24 --aq-mode 2"`
 
 ## Metric `--metric`
 
@@ -75,7 +75,7 @@ If not specified, `ssimulacra2` is used.
 
 ## Target `--target`
 
-The quality metric score that Target Quality will aim for.
+The finite quality metric score that Target Quality will aim for.
 
 ### Examples
 
@@ -92,6 +92,16 @@ Default depends on the specified encoder (`--encoder`).
 ## Maximum Quantizer `--max-q`
 
 The highest quantizer for Target Quality to try when searching for the optimal quantizer.
+
+The merged minimum and maximum must be ordered; equal bounds are valid. Both are
+checked against the global and each scene's encoder settings with effective probe
+options before saving or opening inputs. These pure checks do not establish native
+bit-depth/capability support or impose a universal FFmpeg codec CRF range.
+
+For rav1e the creation defaults are `50..140`, so `--target 75 --max-q 40` is
+rejected; add `--min-q 20` to request `20..40`. Explicit flags are applied before
+validation so they can repair invalid saved settings. Failed edits leave saved
+bytes unchanged, and `target-quality reset` can disable an invalid section offline.
 
 ### Default
 
@@ -118,7 +128,7 @@ If not specified, `standard` is used.
 - `set metric METRIC` — the quality metric the search measures (same values as `--metric`). Switching the metric resets its target range.
 - `set target SCORE` — folds the score into the metric's acceptable range; `reset target` restores the metric's default range.
 - `set maximum-probes N` — probes a scene may take (`≥ 1`).
-- `set quantizer-range MIN-MAX` — the quantizers the search may probe, as one value (`18-30`); rejected unless `MIN ≤ MAX`.
+- `set quantizer-range MIN-MAX` — the quantizers the search may probe, as one value (`18-30`); requires `MIN ≤ MAX` and encoder-valid endpoints (equal bounds allowed).
 - `set interpolators BELOW ABOVE` — the spline methods used below and above a probe value (`linear`, `quadratic`, `natural`, `fritsch-carlson`, `pchip`, `catmull`, `akima`, `cubic-polynomial`).
 - `set strategy KIND [FRAMES]` — the probing strategy: `whole`, `skip FRAMES`, or `subset [--position start|middle|end] [--length-frames N | --length-percent P]` (same values as `quality-check set strategy`).
 - `set statistic KIND [VALUE] …` — how probe scores become one result: `mean`, `median`, `harmonic`, `percentile PERCENT` (or `--percentile P`), `standard-deviation-distance SIGMA` (or `--sigma S`), `mode`, `minimum`, `maximum`, `root-mean-square`.

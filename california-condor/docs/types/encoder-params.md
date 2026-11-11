@@ -7,7 +7,7 @@ Raw encoder CLI strings merged with Condor defaults. Used by `--params` and `--t
 Quoted string passed directly to the encoder binary. Repeat semantics: single string per flag.
 
 ```bash
-$ condor encode --params "--preset 2 --crf 24 --aq-mode 0"
+$ condor encode --params "--preset 2 --crf 24 --aq-mode 2"
 $ condor encode --params "--cpu-used=3 --cq-level=30 --tune=ssim"
 $ condor encode --params "--crf 18 --preset slow --tune film"
 ```

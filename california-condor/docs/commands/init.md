@@ -148,7 +148,7 @@ Parameters for the video encoder (`--encoder`). Passed directly to the encoder b
 
 ### Examples
 
-- `> condor init input.mp4 output.mkv --params "--preset 2 --crf 24 --aq-mode 0"`
+- `> condor init input.mp4 output.mkv --params "--preset 2 --crf 24 --aq-mode 2"`
 - `> condor init input.mp4 output.mkv --params "--cpu-used=3 --cq-level=30 --tune=ssim"`
 
 ## Photon Noise `--photon-noise`

@@ -181,6 +181,7 @@ impl Configuration {
 
     /// Checks global and per-scene encoders before CLI edits are saved or workers start.
     pub(crate) fn validate_encoder_settings(&self) -> Result<()> {
+        self.validate_target_quality()?;
         self.condor.sequence_config.parallel_encoder.validate()?;
         self.condor.encoder.validate_settings()?;
         for scene in &self.condor.scenes {
@@ -189,8 +190,24 @@ impl Configuration {
         Ok(())
     }
 
+    /// Checks loaded or edited Target Quality without opening inputs or resolving binaries.
+    pub(crate) fn validate_target_quality(&self) -> Result<()> {
+        if let Some(quality) = &self.condor.sequence_config.target_quality {
+            quality.validate(&self.condor.encoder)?;
+            for (index, scene) in self.condor.scenes.iter().enumerate() {
+                quality
+                    .validate(&scene.encoder)
+                    .map_err(|error| anyhow::anyhow!("Target Quality scene {index}: {error:#}"))?;
+            }
+        }
+        Ok(())
+    }
+
     #[inline]
     pub fn save_data(data: &Configuration, path: &Path) -> Result<(), ConfigError> {
+        data.validate_target_quality().map_err(|error| {
+            ConfigError::Save(std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
+        })?;
         data.condor.sequence_config.parallel_encoder.validate().map_err(|error| {
             ConfigError::Save(std::io::Error::new(std::io::ErrorKind::InvalidInput, error))
         })?;
@@ -225,6 +242,7 @@ impl Configuration {
         &self,
         save_callback: SaveCallback<CliSequenceData, CliSequenceConfig>,
     ) -> Result<Condor<CliSequenceData, CliSequenceConfig>> {
+        self.validate_target_quality()?;
         self.condor.sequence_config.parallel_encoder.validate()?;
         // The input carries its own filters, so every input kind is opened the
         // same way — and opened once here, so the `Input` every later phase

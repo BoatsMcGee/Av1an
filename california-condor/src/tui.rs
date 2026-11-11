@@ -382,6 +382,11 @@ pub fn run_target_quality_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
+    andean_condor::utils::cancellation::Cancellation::from(Arc::clone(&cancelled)).check()?;
+    if condor.scenes.is_empty() || condor.sequence_config.target_quality.is_none() {
+        return Ok(());
+    }
+    TargetQuality::validate_config(condor)?;
     debug!("Instantiating Target Quality Input");
     let (target_quality_input, clip_info) = if let Some(Some(input)) =
         &condor.sequence_config.target_quality.as_ref().map(|tq| tq.input.clone())
