@@ -83,11 +83,12 @@ does not stop the search: untested steps strictly inside the current bracket tak
 priority, with an untested configured boundary available after the interior is
 exhausted. Probing stops on a target hit, exhausted bracket, or maximum probe count.
 
-The final scene quantizer is always measured: the highest quantizer within the
-acceptable target range, or, if none qualifies, the measurement closest to the
-target midpoint (ties prefer the higher quantizer). This fallback does not mean
-the target was achieved; an unmeasured next prediction is never used as the final
-quantizer.
+For scenes with accepted measurements, Target Quality selects a measured quantizer:
+the highest quantizer within the acceptable target range, or, if none qualifies,
+the measurement closest to the target midpoint (ties prefer the higher quantizer).
+This fallback does not mean the target was achieved; Target Quality never selects
+an unmeasured next prediction. Scenes without accepted measurements keep their
+configured quantizer. Later bitrate optimization may change the selected quantizer.
 
 ### Examples
 

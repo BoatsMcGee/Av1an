@@ -430,17 +430,6 @@ where
 
                 let quantizer_score_history =
                     Self::quantizer_score_history(&config, &completed_task.passes);
-                let next_quantizer = Self::next_probe_quantizer(
-                    &config,
-                    &completed_task.encoder,
-                    &quantizer_score_history,
-                    &cancelled,
-                )?;
-                trace!(
-                    ?next_quantizer,
-                    "Next untested probe (not a measured final quantizer)"
-                );
-
                 let final_quantizer =
                     Self::measured_quantizer(&config.metric, &quantizer_score_history)
                         .ok_or(TargetQualityError::QualityMeasurementFailed)?;
@@ -2116,7 +2105,7 @@ mod tests {
             },
             ..Default::default()
         };
-        for (name, exit, expected, post_expected) in
+        for (name, exit, expected, next_expected) in
             [("quarter", 0, Some(26.5), Some(26.25)), ("integer", 1, None, None)]
         {
             let path = temp.path().join(name);
@@ -2137,8 +2126,8 @@ mod tests {
             let completed = [(26.0, 76.05), (27.0, 67.5), (26.5, 74.0)];
             assert_eq!(
                 TargetQuality::next_probe_quantizer(&config, &encoder, &completed, &cancellation)
-                    .expect("same post-pass path"),
-                post_expected
+                    .expect("updated-history admission"),
+                next_expected
             );
             assert_eq!(
                 std::fs::read(path.with_extension("calls")).expect("capability invocation"),
@@ -2178,12 +2167,44 @@ mod tests {
                 input::{ImportMethod, Input as InputModel},
                 scene::Scene,
                 sequence::{
-                    DefaultSequenceConfig, DefaultSequenceData,
-                    parallel_encoder::ParallelEncoderConfig, scene_concatenator::ConcatMethod,
-                    target_quality::TargetQualityConfig,
+                    DefaultSequenceConfig, SequenceDataHandler,
+                    parallel_encoder::ParallelEncoderConfig,
+                    scene_concatenator::ConcatMethod,
+                    target_quality::{
+                        TargetQualityConfig, TargetQualityData, TargetQualityDataHandler,
+                    },
                 },
             },
+            utils::cancellation::{Cancellation, Cancelled},
         };
+        #[derive(Clone, Default, serde::Serialize)]
+        struct AcceptedData {
+            target_quality: TargetQualityData,
+            #[serde(skip)]
+            handoff: Option<(
+                crossbeam_channel::Sender<()>,
+                crossbeam_channel::Receiver<()>,
+            )>,
+        }
+        impl SequenceDataHandler for AcceptedData {}
+        impl TargetQualityDataHandler for AcceptedData {
+            fn get_target_quality(&self) -> anyhow::Result<&TargetQualityData> {
+                Ok(&self.target_quality)
+            }
+            fn get_target_quality_mut(&mut self) -> anyhow::Result<&mut TargetQualityData> {
+                // This existing data-handler boundary runs after probe_pass accepts
+                // real measurements. Pause only the armed test run, not production.
+                if let Some((accepted, resume)) = self.handoff.take() {
+                    accepted
+                        .send_timeout((), std::time::Duration::from_secs(10))
+                        .expect("accepted handoff");
+                    resume
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .expect("forced handoff");
+                }
+                Ok(&mut self.target_quality)
+            }
+        }
         let temp = tempfile::tempdir().expect("fixture");
         let source = temp.path().join("source.mkv");
         let generated = std::process::Command::new("ffmpeg")
@@ -2292,8 +2313,8 @@ mod tests {
             end_frame: 4,
             sub_scenes: None,
             encoder: encoder.clone(),
-            sequence_data: DefaultSequenceData {
-                target_quality: crate::models::sequence::target_quality::TargetQualityData {
+            sequence_data: AcceptedData {
+                target_quality: TargetQualityData {
                     passes: task.passes,
                 },
                 ..Default::default()
@@ -2375,7 +2396,7 @@ mod tests {
         )));
 
         // Also stop at the maximum immediately after an initial measurement:
-        // the next prediction exists but is unmeasured and must never be final.
+        // an unmeasured next candidate must never become final.
         let one_probe = temp.path().join("one-probe");
         std::fs::create_dir_all(one_probe.join("Target Quality/1/Scene Concatenator"))
             .expect("scratch");
@@ -2393,6 +2414,67 @@ mod tests {
             scene.encoder.quantizer(),
             Some(28.0),
             "never finalize the next unmeasured prediction after max probes"
+        );
+
+        let forced_probe = temp.path().join("forced-after-measurement");
+        std::fs::create_dir_all(forced_probe.join("Target Quality/1/Scene Concatenator"))
+            .expect("forced scratch");
+        condor.sequence_config.parallel_encoder.scenes_directory = forced_probe;
+        condor.scenes[0].sequence_data.target_quality.passes.clear();
+        condor.scenes[0].encoder.set_quantizer(20.0);
+        let before_saves = saved.lock().expect("saved").len();
+        let cancellation = Cancellation::default();
+        let force = cancellation.clone();
+        let (accepted_tx, accepted_rx) = crossbeam_channel::bounded(0);
+        let (resume_tx, resume_rx) = crossbeam_channel::bounded(0);
+        condor.scenes[0].sequence_data.handoff = Some((accepted_tx, resume_rx));
+        let (tx, rx) = sync::mpsc::channel();
+        let progress = std::thread::spawn(move || {
+            // Buffered progress alone cannot locate the cancellation window.
+            // Rendezvous at accepted-history attachment after real Compare completes.
+            while let Ok(status) = rx.recv_timeout(std::time::Duration::from_secs(10)) {
+                if matches!(status, SequenceStatus::Subprocess { child: Status::Completed { id }, .. } if id == "Compare")
+                {
+                    accepted_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .expect("accepted measurement");
+                    force.request().expect("graceful after measurement");
+                    force.request().expect("forced after measurement");
+                    resume_tx
+                        .send_timeout((), std::time::Duration::from_secs(10))
+                        .expect("resume accepted pass");
+                    // Keep the real UI receiver alive until execute drops every sender.
+                    for _ in rx {}
+                    return;
+                }
+            }
+            panic!("real comparison never completed");
+        });
+        let error = sequence
+            .execute_cancel(&mut condor, tx, cancellation)
+            .expect_err("force still propagates");
+        progress.join().expect("progress handoff");
+        assert_eq!(error.downcast_ref::<Cancelled>(), Some(&Cancelled::Forced));
+        let snapshots = saved.lock().expect("saved");
+        assert_eq!(
+            snapshots.len(),
+            before_saves + 1,
+            "accepted measurement must be saved before reporting Forced"
+        );
+        let persisted = &snapshots.last().expect("forced snapshot")[0];
+        assert_eq!(persisted.sequence_data.target_quality.passes.len(), 1);
+        assert_eq!(
+            persisted.sequence_data.target_quality.passes[0].scores.len(),
+            4
+        );
+        assert_eq!(
+            persisted.sequence_data.target_quality.passes[0].quantizer,
+            28.0
+        );
+        assert_eq!(
+            persisted.encoder.quantizer(),
+            Some(28.0),
+            "save the measured final quantizer, not the old configured q"
         );
     }
 
