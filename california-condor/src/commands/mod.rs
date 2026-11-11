@@ -365,7 +365,7 @@ pub enum Commands {
         filters: Option<Vec<VapourSynthFilter>>,
         #[arg(long, value_name = "VapourSynth Arguments", help = HELP_VS_ARGS_SHORT, long_help = HELP_VS_ARGS)]
         vs_args: Option<Vec<String>>,
-        #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_PARAMS_SHORT, long_help = HELP_PARAMS)]
+        #[arg(long, value_name = "Encoder Parameters", allow_hyphen_values = true, help = HELP_PROBE_PARAMS_SHORT, long_help = HELP_PROBE_PARAMS)]
         params: Option<String>,
         #[arg(long, value_name = "Metric", help = HELP_TARGET_METRIC_SHORT, long_help = HELP_TARGET_METRIC)]
         metric: Option<QualityMetric>,

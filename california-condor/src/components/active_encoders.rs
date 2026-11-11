@@ -22,7 +22,8 @@ use crate::{
 pub struct ActiveEncoders<'a> {
     pub color: Color,
     pub workers: u8,
-    pub parent_encoder: Encoder,
+    /// Visible header reference; mixed headers have none and show full worker options.
+    pub parent_encoder: Option<Encoder>,
     pub active_scenes: &'a BTreeMap<u64, SceneEncoder>,
 }
 
@@ -58,10 +59,10 @@ impl Widget for ActiveEncoders<'_> {
             let active_worker_areas = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
                 .split(worker_area_inner);
 
-            // Same-codec panels show differences; cross-codec options stay complete.
+            // Only a visible same-codec reference can account for hidden options.
             let encoder_info = EncoderInfo::new(
                 scene_encoder.scene.encoder.clone(),
-                Some(self.parent_encoder.clone()),
+                self.parent_encoder.clone(),
             );
             encoder_info.generate(false).render(active_worker_areas[0], buf);
 
@@ -91,13 +92,13 @@ impl<'a> ActiveEncoders<'a> {
     pub fn new(
         color: Color,
         workers: u8,
-        parent_encoder: Encoder,
+        parent_encoder: impl Into<Option<Encoder>>,
         active_scenes: &'a BTreeMap<u64, SceneEncoder>,
     ) -> Self {
         Self {
             color,
             workers,
-            parent_encoder,
+            parent_encoder: parent_encoder.into(),
             active_scenes,
         }
     }

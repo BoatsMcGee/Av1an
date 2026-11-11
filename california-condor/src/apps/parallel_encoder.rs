@@ -289,7 +289,7 @@ impl TuiApp for ParallelEncoderApp {
         let active_encoders = ActiveEncoders::new(
             main,
             self.workers,
-            self.encoder.clone(),
+            actual_encoder.cloned(),
             &self.cached_state.active_encoders,
         );
         frame.render_widget(active_encoders, layout[1]);
@@ -607,6 +607,93 @@ mod tests {
             assert!(body.contains(name), "worker codec missing: {body}");
         }
         assert_eq!(body.matches("--preset").count(), 2, "{body}");
+    }
+
+    #[test]
+    fn c05_m1_mixed_same_codec_workers_show_full_parameters_without_a_visible_reference() {
+        use andean_condor::models::encoder::cli_parameter::CLIParameter;
+
+        let mut global = encoder();
+        global
+            .parameters_mut()
+            .insert("preset".into(), CLIParameter::new_number("--", " ", 9.0));
+        global
+            .parameters_mut()
+            .insert("lp".into(), CLIParameter::new_number("--", " ", 3.0));
+        let mut scene_map = scenes();
+        for (_, scene) in scene_map.values_mut() {
+            scene.encoder = global.clone();
+        }
+        scene_map.get_mut(&0).unwrap().1.encoder.set_quantizer(17.0);
+        scene_map.get_mut(&1).unwrap().1.encoder.set_quantizer(21.0);
+        let mut app = ParallelEncoderApp::new(2, global, scene_map, clip_info());
+        for index in [0, 1] {
+            ParallelEncoderApp::map_progress(progress(index, (1, 1), 10), &mut app.cached_state);
+        }
+        let screen = screen(&app);
+        let header = screen.lines().take(8).collect::<Vec<_>>().join("\n");
+        let workers = screen.lines().skip(8).collect::<Vec<_>>().join("\n");
+        assert!(header.contains("Mixed encoders"), "{header}");
+        assert!(!header.contains("--preset"), "{header}");
+        for parameter in ["--preset 9", "--lp 3"] {
+            assert_eq!(
+                workers.matches(parameter).count(),
+                2,
+                "both workers need their shared settings: {workers}"
+            );
+        }
+        for quantizer in ["--crf 17", "--crf 21"] {
+            assert!(workers.contains(quantizer), "{workers}");
+        }
+        assert_eq!(
+            workers.matches("Scalable Video Technology for AV1").count(),
+            2,
+            "{workers}"
+        );
+        assert!(workers.contains("Scene 0 Pass 1/1"), "{workers}");
+        assert!(workers.contains("Scene 1 Pass 1/1"), "{workers}");
+    }
+
+    #[test]
+    fn c05_m1_uniform_workers_diff_only_against_the_visible_actual_header() {
+        use andean_condor::models::encoder::cli_parameter::CLIParameter;
+
+        let global = encoder();
+        let mut actual = global.clone();
+        actual.set_quantizer(17.0);
+        actual
+            .parameters_mut()
+            .insert("preset".into(), CLIParameter::new_number("--", " ", 9.0));
+        actual
+            .parameters_mut()
+            .insert("lp".into(), CLIParameter::new_number("--", " ", 3.0));
+        let mut scene_map = scenes();
+        for (_, scene) in scene_map.values_mut() {
+            scene.encoder = actual.clone();
+        }
+        let mut app = ParallelEncoderApp::new(2, global, scene_map, clip_info());
+        for index in [0, 1] {
+            ParallelEncoderApp::map_progress(progress(index, (1, 1), 10), &mut app.cached_state);
+        }
+        let screen = screen(&app);
+        let header = screen.lines().take(8).collect::<Vec<_>>().join("\n");
+        let workers = screen.lines().skip(8).collect::<Vec<_>>().join("\n");
+        assert!(
+            header.contains("Scalable Video Technology for AV1"),
+            "{header}"
+        );
+        for parameter in ["--preset 9", "--lp 3", "--crf 17"] {
+            assert!(header.contains(parameter), "{header}");
+            assert!(
+                !workers.contains(parameter),
+                "only the visible actual header is the diff reference: {workers}"
+            );
+        }
+        assert_eq!(
+            workers.matches("---").count(),
+            2,
+            "uniform workers stay compact: {workers}"
+        );
     }
 
     #[test]

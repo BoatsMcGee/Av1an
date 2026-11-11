@@ -226,6 +226,20 @@ Examples:"#,
 );
 pub const HELP_PARAMS_SHORT: &str = short_help(HELP_PARAMS);
 
+pub const HELP_PROBE_PARAMS: &str = r#"Encoder option override for Target Quality probes.
+
+Replaces each scene's encoder options during probes, including existing scenes.
+Known psychovisual parameters are omitted. This override does not replace the final
+scene encoder options; Target Quality still selects the final quantizer.
+
+When no probe option override is configured, probes use each scene's own encoder options.
+
+Examples:
+- `--params "--preset 8 --crf 30"`
+- `--params "--cpu-used=8 --cq-level=30"`
+"#;
+pub const HELP_PROBE_PARAMS_SHORT: &str = short_help(HELP_PROBE_PARAMS);
+
 pub const HELP_TQ_PARAMS: &str = concat!(
     r#"Parameters for the video encoder (*--encoder*) used in Target Quality.
 

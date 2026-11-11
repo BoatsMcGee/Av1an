@@ -272,4 +272,52 @@ mod tests {
         }
         assert_eq!(fs::read(chunk).unwrap(), b"historical chunk");
     }
+
+    #[test]
+    fn c05_m1_probe_params_long_help_explains_existing_scene_probe_overrides_not_global_reset() {
+        let temp = tempfile::tempdir().expect("help working directory");
+        for args in [
+            vec!["target-quality", "--help", "--verbose"],
+            vec!["encode", "--help", "--verbose"],
+            vec!["--help", "--verbose"],
+        ] {
+            let output = run(&temp, &args);
+            assert!(output.status.success(), "{args:?}: {output:?}");
+            let stdout = String::from_utf8(output.stdout).expect("help text");
+            let help = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+            if args[0] == "target-quality" {
+                assert!(
+                    !help.contains("condor scenes all reset encoder"),
+                    "probe options apply to existing scenes: {help}"
+                );
+                assert!(!help.contains("future scenes"), "{help}");
+                assert!(
+                    help.contains("Replaces each scene's encoder options during probes"),
+                    "{help}"
+                );
+                assert!(
+                    help.contains("This override does not replace the final scene encoder options"),
+                    "{help}"
+                );
+                assert!(help.contains("psychovisual"), "{help}");
+                assert!(
+                    help.contains("--params \"--preset 8 --crf 30\""),
+                    "examples use the subcommand's flag: {help}"
+                );
+                assert!(
+                    !help.contains("--tq-params"),
+                    "examples must use this subcommand's flag: {help}"
+                );
+            } else {
+                assert!(
+                    help.contains("condor scenes all reset encoder"),
+                    "global encoder guidance must remain: {help}"
+                );
+                assert!(
+                    help.contains("Global parameter edits leave existing scenes unchanged"),
+                    "{help}"
+                );
+            }
+        }
+    }
 }
