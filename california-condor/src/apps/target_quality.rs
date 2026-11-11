@@ -17,13 +17,17 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::Color,
     text::Line,
-    widgets::{Axis, Block, Chart, Dataset},
+    widgets::{Axis, Block, Chart, Dataset, Paragraph},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     apps::{SharedProgress, TuiApp},
-    components::{encoder_info::EncoderInfo, input_info::InputInfo, progress_bar::ProgressBar},
+    components::{
+        encoder_info::{EncoderInfo, representative_encoder},
+        input_info::InputInfo,
+        progress_bar::ProgressBar,
+    },
     configuration::CliSequenceData,
 };
 #[derive(Clone)]
@@ -37,6 +41,7 @@ pub struct TargetQualityState {
 
 pub struct TargetQualityApp {
     pub encoder: Encoder,
+    encoder_summary: Option<Encoder>,
     pub clip_info: ClipInfo,
     pub pass_started: std::time::Instant,
     /// The stopped clock of a pass whose frames are all done, held so the
@@ -246,7 +251,14 @@ impl TuiApp for TargetQualityApp {
         let top_info = Block::bordered()
             .border_type(ratatui::widgets::BorderType::Rounded)
             .title(Line::from("Input").centered())
-            .title_bottom(Line::from(self.encoder.base().friendly_name()).centered());
+            .title_bottom(
+                Line::from(
+                    self.encoder_summary
+                        .as_ref()
+                        .map_or("Mixed encoders", |encoder| encoder.base().friendly_name()),
+                )
+                .centered(),
+            );
         let top_info_inner = top_info.inner(layout[0]);
         let top_info_areas =
             Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).split(top_info_inner);
@@ -254,9 +266,15 @@ impl TuiApp for TargetQualityApp {
         let input_info = InputInfo::new(self.clip_info);
         let input_info = input_info.generate(false);
         frame.render_widget(input_info, top_info_areas[0]);
-        let encoder_info = EncoderInfo::new(self.encoder.clone(), None);
-        let encoder_info = encoder_info.generate(false);
-        frame.render_widget(encoder_info, top_info_areas[1]);
+        if let Some(encoder) = &self.encoder_summary {
+            let encoder_info = EncoderInfo::new(encoder.clone(), None);
+            frame.render_widget(encoder_info.generate(false), top_info_areas[1]);
+        } else {
+            frame.render_widget(
+                Paragraph::new("Mixed encoders: per-scene settings").centered(),
+                top_info_areas[1],
+            );
+        }
 
         let state = &self.cached_state;
         let (quantizers, scores) = state.quality_passes.iter().fold(
@@ -383,6 +401,8 @@ impl TargetQualityApp {
         probe_statistic: ProbeStatistic,
         metric: &QualityMetric,
     ) -> anyhow::Result<TargetQualityApp> {
+        let encoder_summary =
+            representative_encoder(scenes.iter().map(|scene| &scene.encoder), &encoder).cloned();
         let quality_passes: BTreeMap<u64, Vec<QualityPass>> = scenes
             .into_iter()
             .enumerate()
@@ -425,6 +445,7 @@ impl TargetQualityApp {
         };
         Ok(TargetQualityApp {
             encoder,
+            encoder_summary,
             clip_info,
             pass_started: std::time::Instant::now(),
             pass_completed: None,
@@ -465,6 +486,58 @@ pub struct QualityPass {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn c05_tq_header_uses_actual_uniform_or_mixed_scene_settings() {
+        use crate::apps::TuiApp;
+        use andean_condor::models::{
+            encoder::{Encoder, EncoderBase},
+            sequence::target_quality::types::{ProbeStatistic, QualityMetric},
+        };
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (clip, scenes) = crate::test_helpers::quality_scene_fixture();
+        let global = Encoder::default_from_base(&EncoderBase::AOM, false);
+        for variant in 0..4 {
+            let mut scenes = scenes.clone();
+            for scene in &mut scenes {
+                scene.encoder = Encoder::default_from_base(&EncoderBase::X264, false);
+            }
+            match variant {
+                1 => scenes[1].encoder = Encoder::default_from_base(&EncoderBase::X265, false),
+                2 => scenes[1].encoder.set_quantizer(17.0),
+                3 => scenes.clear(),
+                _ => {},
+            }
+            let app = TargetQualityApp::new(
+                clip,
+                scenes,
+                global.clone(),
+                ProbeStatistic::Mean,
+                &QualityMetric::default(),
+            )
+            .unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let buf = terminal.backend().buffer();
+            let header = (0..8)
+                .map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if variant == 3 {
+                assert!(header.contains("cpu-used"), "{header}");
+            } else {
+                assert!(!header.contains("cpu-used"), "{header}");
+                if variant == 0 {
+                    assert!(header.contains("x264"), "{header}");
+                    assert!(header.contains("--preset"), "{header}");
+                } else {
+                    assert!(header.contains("Mixed encoders"), "{header}");
+                    assert!(header.contains("per-scene settings"), "{header}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn q05_saved_tq_rejects_corrupt_claimed_passes() {
         use andean_condor::models::sequence::target_quality::types::{

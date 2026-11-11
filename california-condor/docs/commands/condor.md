@@ -7,6 +7,13 @@ $ condor -i "input.mp4" -o "output.mkv"
 $ condor --config-file ./config.json --skip-scd
 ```
 
+Global encoder flags (`--encoder`, `--params`, `--passes`, noise/filter options and
+`--disable-color-data`) change defaults for future scenes, not encoders already
+saved in the job. Bare resume keeps those overrides without an encoder-edit warning.
+Use `condor scenes all info encoder` to inspect them. To replace them explicitly,
+use `condor scenes all reset encoder`; this leaves chunks and saved results in
+place, so review stale work before reuse. See [encode](encode.md) for TUI labels.
+
 | Name                                                              | Flag                  | Type        | Default                |
 | ----------------------------------------------------------------- | --------------------- | ----------- | ---------------------- |
 | [Input](#input--i)                                                | `-i`, `--input`       | Path        |                        |

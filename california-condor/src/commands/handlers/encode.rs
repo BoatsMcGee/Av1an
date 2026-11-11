@@ -68,8 +68,26 @@ pub fn encode_handler(
 
     configuration.validate_encoder_settings()?;
     configuration.save(&config_path)?;
+    if encoder.is_some()
+        || passes.is_some()
+        || params.is_some()
+        || photon_noise.is_some()
+        || chroma_noise.is_some()
+        || ffmpeg_filter.is_some()
+    {
+        warn_existing_scene_encoders(&configuration);
+    }
 
     Ok((configuration, config_path))
+}
+
+/// Global edits are defaults for future scenes, never implicit scene resets.
+pub(super) fn warn_existing_scene_encoders(configuration: &Configuration) {
+    if !configuration.condor.scenes.is_empty() {
+        tracing::warn!(
+            "Global encoder defaults updated for future scenes. Existing scenes unchanged; to copy the global encoder into them explicitly, run `condor scenes all reset encoder`. Saved results/files are not cleaned or recomputed."
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -644,7 +662,30 @@ impl ConfigCommand for EncodeCrud {
 
 /// `condor encode info|set|reset`.
 pub fn config(config_path: Option<&Path>, action: &EncodeAction) -> Result<()> {
-    edit::<EncodeCrud>(config_path, action)
+    edit::<EncodeCrud>(config_path, action)?;
+    let encoder_edit = match action {
+        ConfigAction::Info { .. } => false,
+        ConfigAction::Set { setting } => !matches!(
+            setting,
+            EncodeSet::MaxTries { .. }
+                | EncodeSet::Workers { .. }
+                | EncodeSet::Input { .. }
+                | EncodeSet::ScenesDirectory { .. }
+        ),
+        ConfigAction::Reset { key } => !matches!(
+            key,
+            Some(
+                EncodeKey::MaxTries
+                    | EncodeKey::Workers
+                    | EncodeKey::Input
+                    | EncodeKey::ScenesDirectory
+            )
+        ),
+    };
+    if encoder_edit {
+        warn_existing_scene_encoders(&load_configuration(config_path)?.0);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

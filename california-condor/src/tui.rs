@@ -18,7 +18,10 @@ use andean_condor::{
             speed_scaler::SpeedScaler, target_quality::TargetQuality,
         },
     },
-    models::input::Input as InputModel,
+    models::{
+        encoder::Encoder, input::Input as InputModel, scene::Scene,
+        sequence::target_quality::TargetQualityConfig,
+    },
 };
 use anyhow::{Context, Result, bail};
 use thiserror::Error as ThisError;
@@ -377,6 +380,25 @@ pub fn run_benchmarker_tui(
     finish_stage("Benchmarker", executed, || tui_handle.join())
 }
 
+fn target_quality_app(
+    clip_info: ClipInfo,
+    mut scenes: Vec<Scene<CliSequenceData>>,
+    encoder: &Encoder,
+    config: &TargetQualityConfig,
+) -> Result<TargetQualityApp> {
+    // Display copies use execution's resolver; saved scenes keep their final settings.
+    for scene in &mut scenes {
+        scene.encoder = config.probe_encoder(&scene.encoder);
+    }
+    TargetQualityApp::new(
+        clip_info,
+        scenes,
+        config.probe_encoder(encoder),
+        config.probing.statistic,
+        &config.metric,
+    )
+}
+
 #[tracing::instrument(skip_all)]
 pub fn run_target_quality_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
@@ -428,30 +450,20 @@ pub fn run_target_quality_tui(
     }
 
     debug!("Running Target Quality");
-    let mut encoder = condor.encoder.clone();
-    if let Some(target_quality_encoder_options) = condor
-        .sequence_config
-        .target_quality
-        .as_ref()
-        .map(|tq| tq.probing.clone())
-        .and_then(|p| p.encoder_options)
-    {
-        encoder.parameters_mut().clear();
-        encoder.parameters_mut().extend(target_quality_encoder_options);
-    }
-    let initial_scenes = condor.scenes.clone();
     let target_quality_config = condor
         .sequence_config
         .target_quality
         .as_ref()
         .expect("target_quality is required");
-    let probe_statistic = target_quality_config.probing.statistic;
-    let metric = target_quality_config.metric.clone();
+    let mut tq_app = target_quality_app(
+        clip_info,
+        condor.scenes.clone(),
+        &condor.encoder,
+        target_quality_config,
+    )?;
     let ctrlc_cancelled = Arc::clone(&cancelled);
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
-        let mut tq_app =
-            TargetQualityApp::new(clip_info, initial_scenes, encoder, probe_statistic, &metric)?;
         tq_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
@@ -710,6 +722,81 @@ mod tests {
     use tracing_subscriber::{Layer, layer::SubscriberExt};
 
     use super::*;
+
+    #[test]
+    fn c05_stage_tq_summary_uses_resolved_scene_probe_encoders() {
+        use andean_condor::models::encoder::{
+            EncoderBase, EncoderPasses, cli_parameter::CLIParameter,
+        };
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (clip, mut scenes) = crate::test_helpers::quality_scene_fixture();
+        let global = Encoder::default_from_base(&EncoderBase::AOM, false);
+        let mut actual = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+        actual.set_ffmpeg_filter(Some("hflip".into()));
+        actual
+            .parameters_mut()
+            .insert("psy-rd".into(), CLIParameter::new_number("--", " ", 1.0));
+        for scene in &mut scenes {
+            scene.encoder = actual.clone();
+        }
+        scenes[1]
+            .encoder
+            .parameters_mut()
+            .insert("psy-rd".into(), CLIParameter::new_number("--", " ", 3.0));
+        let before = serde_json::to_value(&scenes).unwrap();
+        for replace in [false, true] {
+            let mut config = TargetQualityConfig::default();
+            if replace {
+                config.probing.encoder_options = Some(
+                    [
+                        ("preset".into(), CLIParameter::new_number("--", " ", 9.0)),
+                        ("psy-rd".into(), CLIParameter::new_number("--", " ", 2.0)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                );
+            }
+            let app = target_quality_app(clip, scenes.clone(), &global, &config).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let buf = terminal.backend().buffer();
+            let header = (0..8)
+                .map(|y| (0..160).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                header.contains("Scalable Video Technology for AV1"),
+                "{header}"
+            );
+            assert!(
+                !header.contains("Mixed encoders"),
+                "resolved settings are uniform: {header}"
+            );
+            assert!(!header.contains("cpu-used"), "{header}");
+            assert!(
+                !header.contains("psy-rd"),
+                "must strip psychovisual options: {header}"
+            );
+            assert!(
+                header.contains(if replace { "--preset 9" } else { "--preset 4" }),
+                "{header}"
+            );
+            assert_eq!(
+                header.contains("--crf"),
+                !replace,
+                "options replace rather than merge: {header}"
+            );
+            let expected = config.probe_encoder(&actual);
+            assert_eq!(expected.ffmpeg_filter(), None);
+            assert_eq!(expected.passes(), EncoderPasses::All(1));
+            assert_eq!(
+                serde_json::to_value(&scenes).unwrap(),
+                before,
+                "display must not mutate saved scenes"
+            );
+        }
+    }
 
     #[derive(Clone, Copy, Debug)]
     enum StageOutcome {

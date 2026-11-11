@@ -7,6 +7,21 @@ $ condor encode
 $ condor encode -i input.mp4 -e svt-av1 -w 4 --params "--preset 4" --photon-noise 800
 ```
 
+Encoder flags and `encode set`/`reset` edit the global default for future scenes.
+Existing scenes keep their saved encoders, including detection and zone overrides.
+To deliberately replace every saved scene's encoder with the current global default:
+
+```bash
+condor scenes all reset encoder
+```
+
+This does not delete chunks or clear saved results; review stale results/files before
+reusing them. It does not reapply zones. `condor scenes all info encoder` shows the
+actual saved encoders. The parallel and Target Quality TUI headers show the actual
+uniform settings, or **Mixed encoders: per-scene settings** when any settings differ
+(even within one codec). Target Quality shows resolved probe settings, not final
+encode settings; worker panels name their actual scene codecs.
+
 | Name                                                  | Flag              | Type        | Default                |
 | ----------------------------------------------------- | ----------------- | ----------- | ---------------------- |
 | [Input](#input--i)                                    | `-i`, `--input`   | Path        | Config input           |

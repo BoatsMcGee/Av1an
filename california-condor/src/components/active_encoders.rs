@@ -43,8 +43,11 @@ impl Widget for ActiveEncoders<'_> {
             let bordered_area = Block::bordered()
                 .border_type(ratatui::widgets::BorderType::Rounded)
                 .title(Line::from(format!(
-                    "Scene {} Pass {}/{}",
-                    scene_index, scene_encoder.current_pass, scene_encoder.total_passes
+                    "Scene {} Pass {}/{} · {}",
+                    scene_index,
+                    scene_encoder.current_pass,
+                    scene_encoder.total_passes,
+                    scene_encoder.scene.encoder.base().friendly_name()
                 )));
             let worker_area_inner = bordered_area.inner(*worker_area);
             bordered_area.render(*worker_area, buf);
@@ -55,8 +58,7 @@ impl Widget for ActiveEncoders<'_> {
             let active_worker_areas = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)])
                 .split(worker_area_inner);
 
-            // Top half: per-scene encoder parameters (only if different from
-            // parent)
+            // Same-codec panels show differences; cross-codec options stay complete.
             let encoder_info = EncoderInfo::new(
                 scene_encoder.scene.encoder.clone(),
                 Some(self.parent_encoder.clone()),

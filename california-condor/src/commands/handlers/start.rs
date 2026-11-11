@@ -17,7 +17,7 @@ use crate::{
             concatenate::{apply_discard, configure_concatenate},
             configure_root_input, configure_temp,
             detect_scenes::configure_scene_detector,
-            encode::{configure_encoder, configure_parallel_encoder},
+            encode::{configure_encoder, configure_parallel_encoder, warn_existing_scene_encoders},
             target_quality::configure_target_quality,
         },
     },
@@ -220,6 +220,16 @@ pub fn start_handler(
         debug!("Saving new Configuration to {}", config_path.display());
     }
     configuration.save(&config_path)?;
+    if encoder.is_some()
+        || passes.is_some()
+        || params.is_some()
+        || photon_noise.is_some()
+        || chroma_noise.is_some()
+        || ffmpeg_filter.is_some()
+        || append_color_data.is_some()
+    {
+        warn_existing_scene_encoders(&configuration);
+    }
 
     Ok((configuration, config_path))
 }

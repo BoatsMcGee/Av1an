@@ -175,6 +175,11 @@ pub const HELP_MAX_SCENE_SECONDS_SHORT: &str = short_help(HELP_MAX_SCENE_SECONDS
 pub const HELP_ENCODER: &str = r#"Video encoder to use.
 
 Defaults to **svt-av1**.
+
+Global encoder settings affect future scenes. Existing scenes keep their saved
+encoders; inspect them with `condor scenes all info encoder`. To copy the global
+default into them explicitly, use `condor scenes all reset encoder`. This does not
+clean files or recompute saved results.
 "#;
 pub const HELP_ENCODER_SHORT: &str = short_help(HELP_ENCODER);
 
@@ -211,6 +216,10 @@ pub const HELP_PARAMS: &str = concat!(
     r#"Parameters for the video encoder (*--encoder*).
 
 These parameters are passed directly to the encoder binary. These parameters will be merged with Condor's default set of encoder parameters.
+
+Global parameter edits leave existing scenes unchanged. To copy the current global
+encoder into them explicitly, use `condor scenes all reset encoder`; saved files
+and results are not cleaned or recomputed.
 
 Examples:"#,
     params_examples!("--params")

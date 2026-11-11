@@ -15,14 +15,16 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::Color,
     text::Line,
-    widgets::Block,
+    widgets::{Block, Paragraph},
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
     apps::{SharedProgress, TuiApp},
     components::{
-        active_encoders::ActiveEncoders, encoder_info::EncoderInfo, input_info::InputInfo,
+        active_encoders::ActiveEncoders,
+        encoder_info::{EncoderInfo, representative_encoder},
+        input_info::InputInfo,
         progress_bar::ProgressBar,
     },
     configuration::CliSequenceData,
@@ -253,10 +255,20 @@ impl TuiApp for ParallelEncoderApp {
         let total_frames_completed: u64 =
             self.cached_state.scenes.iter().map(|(_, (completed, _))| completed).sum();
         let total_frames = self.total_frames;
+        let actual_encoder = representative_encoder(
+            self.cached_state.scenes.values().map(|(_, scene)| &scene.encoder),
+            &self.encoder,
+        );
         let top_info = Block::bordered()
             .border_type(ratatui::widgets::BorderType::Rounded)
             .title(Line::from("Input").centered())
-            .title_bottom(Line::from(self.encoder.base().friendly_name()).centered());
+            .title_bottom(
+                Line::from(
+                    actual_encoder
+                        .map_or("Mixed encoders", |encoder| encoder.base().friendly_name()),
+                )
+                .centered(),
+            );
         let top_info_inner = top_info.inner(layout[0]);
         let top_info_areas =
             Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).split(top_info_inner);
@@ -264,9 +276,15 @@ impl TuiApp for ParallelEncoderApp {
         let input_info = InputInfo::new(self.clip_info);
         let input_info = input_info.generate(false);
         frame.render_widget(input_info, top_info_areas[0]);
-        let encoder_info = EncoderInfo::new(self.encoder.clone(), None);
-        let encoder_info = encoder_info.generate(false);
-        frame.render_widget(encoder_info, top_info_areas[1]);
+        if let Some(encoder) = actual_encoder {
+            let encoder_info = EncoderInfo::new(encoder.clone(), None);
+            frame.render_widget(encoder_info.generate(false), top_info_areas[1]);
+        } else {
+            frame.render_widget(
+                Paragraph::new("Mixed encoders: per-scene settings").centered(),
+                top_info_areas[1],
+            );
+        }
 
         let active_encoders = ActiveEncoders::new(
             main,
@@ -531,6 +549,64 @@ mod tests {
             .map(|y| (0..120).map(|x| buf[(x, y)].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn c05_parallel_header_uses_actual_uniform_or_mixed_scene_settings() {
+        let global = Encoder::default_from_base(&EncoderBase::AOM, false);
+        let uniform = ParallelEncoderApp::new(2, global.clone(), scenes(), clip_info());
+        let header = screen(&uniform).lines().take(8).collect::<Vec<_>>().join("\n");
+        assert!(
+            header.contains("Scalable Video Technology for AV1"),
+            "{header}"
+        );
+        assert!(
+            !header.contains("cpu-used"),
+            "global parameters leaked: {header}"
+        );
+        for difference in 0..5 {
+            let mut scenes = scenes();
+            let scene = &mut scenes.get_mut(&1).unwrap().1;
+            match difference {
+                0 => scene.encoder = Encoder::default_from_base(&EncoderBase::X264, false),
+                1 => scene.encoder.set_quantizer(17.0),
+                2 => scene.encoder.set_executable(Some("custom-svt".into())),
+                3 => scene.encoder.set_append_color_data(false),
+                _ => scene.encoder.set_ffmpeg_filter(Some("hflip".into())),
+            }
+            let app = ParallelEncoderApp::new(2, global.clone(), scenes, clip_info());
+            let header = screen(&app).lines().take(8).collect::<Vec<_>>().join("\n");
+            assert!(header.contains("Mixed encoders"), "{header}");
+            assert!(header.contains("per-scene settings"), "{header}");
+            assert!(!header.contains("cpu-used"), "{header}");
+        }
+        let empty = ParallelEncoderApp::new(2, global, BTreeMap::new(), clip_info());
+        assert!(
+            screen(&empty).contains("cpu-used"),
+            "empty scenes retain the fallback"
+        );
+    }
+
+    #[test]
+    fn c05_active_worker_panels_name_actual_codecs_and_keep_cross_codec_parameters() {
+        let mut scene_map = scenes();
+        for (index, base) in [(0, EncoderBase::X264), (1, EncoderBase::X265)] {
+            scene_map.get_mut(&index).unwrap().1.encoder = Encoder::default_from_base(&base, false);
+        }
+        let mut app = ParallelEncoderApp::new(
+            2,
+            Encoder::default_from_base(&EncoderBase::AOM, false),
+            scene_map,
+            clip_info(),
+        );
+        for index in [0, 1] {
+            ParallelEncoderApp::map_progress(progress(index, (1, 1), 10), &mut app.cached_state);
+        }
+        let body = screen(&app).lines().skip(8).collect::<Vec<_>>().join("\n");
+        for name in ["x264", "x265"] {
+            assert!(body.contains(name), "worker codec missing: {body}");
+        }
+        assert_eq!(body.matches("--preset").count(), 2, "{body}");
     }
 
     #[test]

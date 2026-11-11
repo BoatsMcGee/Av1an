@@ -124,6 +124,13 @@ Overlapping scenes are not repaired for you: the neighbouring scene keeps its ra
 
 ### Encoder and its settings
 
+Each saved scene owns its encoder. Later global encoder edits affect future
+detection/new scenes only; they do not overwrite scene or zone overrides.
+`info encoder` reports the actual saved encoder, not the current global default.
+Use `condor scenes all reset encoder` to copy that default into every saved scene
+deliberately. This preserves frame ranges, sub-scenes, history and files; it does
+not reapply zones or recompute stale results.
+
 `set encoder` switches the scene to another encoder, starting from that encoder's defaults, and applies any flags given on the same line after the switch:
 
 ```bash

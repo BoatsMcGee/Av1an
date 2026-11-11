@@ -487,7 +487,18 @@ impl ConfigCommand for InitCrud {
 
 /// `condor init info|set|reset`.
 pub fn config(config_path: Option<&Path>, action: &InitAction) -> Result<()> {
-    edit::<InitCrud>(config_path, action)
+    edit::<InitCrud>(config_path, action)?;
+    if matches!(
+        action,
+        ConfigAction::Set {
+            setting: InitSet::Encoder { .. }
+        } | ConfigAction::Reset {
+            key: Some(InitKey::Encoder)
+        }
+    ) {
+        super::encode::warn_existing_scene_encoders(&super::load_configuration(config_path)?.0);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
