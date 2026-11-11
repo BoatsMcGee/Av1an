@@ -1,6 +1,6 @@
 use std::sync::{self, Arc, atomic::AtomicBool};
 
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use thiserror::Error;
 use tracing::debug;
 
@@ -78,75 +78,101 @@ where
             return Ok(((), warnings));
         }
 
-        let scene_values = condor
-            .scenes
-            .iter()
-            .filter_map(|scene| scene.sequence_data.get_target_quality().ok())
-            .filter_map(|tq| tq.passes.last())
-            .map(|pass| (pass.quantizer, pass.bitrate))
-            .collect::<Vec<_>>();
-        let scene_quantizers = scene_values.iter().map(|(q, _b)| *q).collect::<Vec<_>>();
-        let scene_bitrates = scene_values.iter().map(|(_q, b)| *b).collect::<Vec<_>>();
+        let mut scene_values = Vec::new();
+        for (index, scene) in condor.scenes.iter().enumerate() {
+            let Some(quantizer) = scene.encoder.quantizer() else {
+                continue;
+            };
+            ensure!(
+                quantizer.is_finite(),
+                "scene {index}: selected quantizer must be finite"
+            );
+            let Ok(tq) = scene.sequence_data.get_target_quality() else {
+                continue;
+            };
+            // Resume histories may end at another q or contain an unmeasured attempt.
+            let Some(pass) = tq
+                .passes
+                .iter()
+                .rfind(|pass| pass.quantizer == quantizer && !pass.scores.is_empty())
+            else {
+                continue;
+            };
+            ensure!(
+                pass.bitrate.is_finite() && pass.bitrate >= 0.0,
+                "scene {index}: selected probe bitrate must be finite and nonnegative"
+            );
+            ensure!(
+                pass.scores.iter().all(|score| score.is_finite()),
+                "scene {index}: selected probe score must be finite"
+            );
+            scene_values.push((index, quantizer, pass.bitrate));
+        }
+        if scene_values.len() < 2 {
+            return Ok(((), warnings));
+        }
 
         let quantizer_average =
-            scene_quantizers.iter().sum::<f64>() / scene_quantizers.len() as f64;
+            scene_values.iter().map(|(_, q, _)| q).sum::<f64>() / scene_values.len() as f64;
+        ensure!(
+            quantizer_average.is_finite(),
+            "quantizer average must be finite"
+        );
         debug!("Average Quantizer: {}", quantizer_average);
 
-        let bitrate_average = scene_bitrates.iter().sum::<f64>() / scene_bitrates.len() as f64;
-        let bitrate_variance = scene_bitrates
+        let bitrate_average =
+            scene_values.iter().map(|(_, _, b)| b).sum::<f64>() / scene_values.len() as f64;
+        ensure!(
+            bitrate_average.is_finite(),
+            "bitrate average must be finite"
+        );
+        let bitrate_variance = scene_values
             .iter()
-            .map(|bitrate| (bitrate - bitrate_average).powi(2))
+            .map(|(_, _, bitrate)| (bitrate - bitrate_average).powi(2))
             .sum::<f64>()
-            / scene_bitrates.len() as f64;
+            / scene_values.len() as f64;
+        ensure!(
+            bitrate_variance.is_finite(),
+            "bitrate variance must be finite"
+        );
         let bitrate_standard_deviation = bitrate_variance.sqrt();
         let bitrate_sigma_threshold =
             (bitrate_sigma_threshold as f64).mul_add(bitrate_standard_deviation, bitrate_average);
+        ensure!(
+            bitrate_sigma_threshold.is_finite(),
+            "bitrate cutoff must be finite"
+        );
+        if bitrate_standard_deviation == 0.0 {
+            return Ok(((), warnings));
+        }
 
-        for (index, scene) in condor.scenes.iter_mut().enumerate() {
-            let Some(final_pass) = scene.sequence_data.get_target_quality()?.passes.last() else {
-                continue;
-            };
-            if final_pass.bitrate <= bitrate_sigma_threshold {
+        let candidate = quantizer_average.round();
+        let mut updates = Vec::new();
+        for (index, quantizer, bitrate) in scene_values {
+            if bitrate <= bitrate_sigma_threshold || quantizer == candidate {
                 continue;
             }
+            // Validate every prospective encoder before publishing any scene changes.
+            let mut encoder = condor.scenes[index].encoder.clone();
+            encoder.set_quantizer(candidate);
+            encoder.validate_settings().with_context(|| {
+                format!("scene {index}: optimized quantizer {candidate} is invalid")
+            })?;
+            updates.push((index, encoder, bitrate));
+        }
+        if updates.is_empty() {
+            return Ok(((), warnings));
+        }
 
+        for (index, encoder, bitrate) in updates {
             debug!(
                 "Optimized Scene {}: Bitrate: {}({}), Quantizer: {}",
                 index,
-                final_pass.bitrate,
-                (final_pass.bitrate - bitrate_average) / bitrate_standard_deviation,
-                quantizer_average.round(),
+                bitrate,
+                (bitrate - bitrate_average) / bitrate_standard_deviation,
+                candidate,
             );
-            scene.encoder.set_quantizer(quantizer_average.round());
-
-            // let data = scene
-            //     .sequence_data
-            //     .get_target_quality()?
-            //     .passes
-            //     .iter()
-            //     .map(|pass| {
-            //         (
-            //             pass.quantizer,
-            //             (pass.scores.iter().sum::<f64>() / pass.scores.len()
-            // as f64) / pass.bitrate,         )
-            //     })
-            //     .collect::<Vec<_>>();
-
-            // let fit = CurveFit::<ChebyshevBasis>::new_auto(&data,
-            // DegreeBound::Custom(2), &Aic)?;
-
-            // for critical_point in fit.critical_points()? {
-            //     if let CriticalPoint::Maxima(quantizer, _efficiency) =
-            // critical_point {         debug!(
-            //             "Optimized Scene {}: Bitrate: {}({}), Quantizer: {}",
-            //             index,
-            //             final_pass.bitrate,
-            //             (final_pass.bitrate - bitrate_average) /
-            // bitrate_standard_deviation,             quantizer
-            //         );
-            //         scene.encoder.set_quantizer(quantizer.round());
-            //     }
-            // }
+            condor.scenes[index].encoder = encoder;
         }
 
         condor.save()?;
@@ -163,4 +189,392 @@ pub enum BitrateOptimizerError {
     PreviousPassDataNotFound,
     #[error("Failed to measure quality")]
     QualityMeasurementFailed,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, io::Read, rc::Rc};
+
+    use serde::Serialize;
+    use serde_json::Value;
+
+    use super::*;
+    use crate::{
+        core::{input::Input, output::Output},
+        models::{
+            encoder::{Encoder, EncoderBase},
+            scene::{Scene, SubScene},
+            sequence::{
+                DefaultSequenceConfig,
+                target_quality::{TargetQualityData, types::QualityPass},
+            },
+        },
+    };
+
+    #[derive(Clone, Default, Serialize)]
+    struct Data(Option<TargetQualityData>);
+
+    impl SequenceDataHandler for Data {}
+
+    impl TargetQualityDataHandler for Data {
+        fn get_target_quality(&self) -> Result<&TargetQualityData> {
+            self.0.as_ref().ok_or_else(|| anyhow::anyhow!("no target-quality data"))
+        }
+
+        fn get_target_quality_mut(&mut self) -> Result<&mut TargetQualityData> {
+            self.0.as_mut().ok_or_else(|| anyhow::anyhow!("no target-quality data"))
+        }
+    }
+
+    type TestCondor = Condor<Data, DefaultSequenceConfig>;
+    type Snapshots = Rc<RefCell<Vec<Value>>>;
+
+    fn measured(quantizer: f64, bitrate: f64) -> QualityPass {
+        QualityPass {
+            quantizer,
+            bitrate,
+            scores: vec![80.0],
+            started_on: 123,
+            completed_on: 456,
+        }
+    }
+
+    fn scene(base: EncoderBase, quantizer: f64, passes: Vec<QualityPass>) -> Scene<Data> {
+        let mut encoder = Encoder::default_from_base(&base, false);
+        encoder.set_executable(Some("q10-must-not-run".into()));
+        encoder.set_quantizer(quantizer);
+        Scene {
+            start_frame: 0,
+            end_frame: 1,
+            sub_scenes: Some(vec![SubScene {
+                start_frame: 0,
+                end_frame: 1,
+            }]),
+            encoder,
+            sequence_data: Data(Some(TargetQualityData { passes })),
+        }
+    }
+
+    fn fixture(mut scenes: Vec<Scene<Data>>) -> (TestCondor, Snapshots) {
+        for (index, scene) in scenes.iter_mut().enumerate() {
+            // Unequal durations must not change the equal-scene weighting.
+            scene.start_frame = index * 100;
+            scene.end_frame = scene.start_frame + index + 1;
+        }
+        // A header-only Rust Y4M decoder satisfies Condor without opening native input.
+        let reader: Box<dyn Read> = Box::new(&b"YUV4MPEG2 W2 H2 F24:1 Ip A1:1 C420\n"[..]);
+        let decoder = av_decoders::Decoder::from_decoder_impl(av_decoders::DecoderImpl::Y4m(
+            av_decoders::Y4mDecoder::new(reader).expect("Y4M header"),
+        ))
+        .expect("Rust decoder");
+        let input = Input::Video {
+            path: "q10-unused.y4m".into(),
+            import_method: crate::models::input::ImportMethod::FFMS2 {
+                index: None,
+                cache_path: None,
+            },
+            filters: vec![],
+            source_details: *decoder.get_video_details(),
+            decoder,
+            clip_info: None,
+        };
+        let snapshots = Snapshots::default();
+        let saved = Rc::clone(&snapshots);
+        let mut config = DefaultSequenceConfig::default();
+        config.bitrate_optimizer.bitrate_sigma_threshold = Some(1);
+        let condor = Condor::new(
+            input,
+            Output {
+                path: "q10-unused.mkv".into(),
+                tags: Default::default(),
+                video_tags: Default::default(),
+            },
+            Encoder::default_from_base(&EncoderBase::AOM, false),
+            scenes,
+            Some(config),
+            Box::new(move |data| {
+                saved.borrow_mut().push(serde_json::to_value(data.scenes)?);
+                Ok(())
+            }),
+        );
+        (condor, snapshots)
+    }
+
+    fn run(condor: &mut TestCondor) -> Result<((), Vec<anyhow::Error>)> {
+        let (tx, _rx) = sync::mpsc::channel();
+        BitrateOptimizer::default().execute(condor, tx, Arc::new(AtomicBool::new(false)))
+    }
+
+    fn outliers() -> Vec<Scene<Data>> {
+        [(20.0, 100.0, 50.0, 5000.0), (30.0, 100.0, 5.0, 1.0), (10.0, 1000.0, 60.0, 5.0)]
+            .into_iter()
+            .map(|(q, bitrate, other_q, other_bitrate)| {
+                scene(
+                    EncoderBase::AOM,
+                    q,
+                    vec![measured(q, bitrate), measured(other_q, other_bitrate)],
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn q10_selected_nonlast_probes_drive_statistics_and_one_real_save() {
+        let (mut condor, saved) = fixture(outliers());
+        let mut expected = condor.scenes.clone();
+        expected[2].encoder.set_quantizer(20.0);
+        let expected = serde_json::to_value(expected).expect("expected scenes");
+        let (_, warnings) = run(&mut condor).expect("selected measurements");
+        assert!(warnings.is_empty());
+        run(&mut condor).expect("unchanged repeat does not save again");
+        assert_eq!(
+            serde_json::to_value(&condor.scenes).expect("scenes"),
+            expected
+        );
+        assert_eq!(&*saved.borrow(), &[expected]);
+    }
+
+    #[test]
+    fn q10_preserves_population_variance_equal_scene_weight_and_rounded_mean() {
+        let scenes = [(20.0, 100.0), (30.0, 200.0), (12.0, 300.0)]
+            .into_iter()
+            .map(|(q, b)| scene(EncoderBase::AOM, q, vec![measured(q, b)]))
+            .collect();
+        let (mut condor, saved) = fixture(scenes);
+        let mut expected = condor.scenes.clone();
+        // Population cutoff ~281.65 admits b300; sample cutoff 300 would not.
+        // Equal-scene mean q20.666 rounds to 21 despite unequal frame counts.
+        expected[2].encoder.set_quantizer(21.0);
+        let expected = serde_json::to_value(expected).expect("expected");
+        run(&mut condor).expect("existing statistical formula");
+        assert_eq!(
+            serde_json::to_value(&condor.scenes).expect("scenes"),
+            expected
+        );
+        assert_eq!(&*saved.borrow(), &[expected]);
+    }
+
+    #[test]
+    fn q10_exact_quarter_steps_use_latest_measured_match_and_keep_scene_identity() {
+        let mut scenes = outliers();
+        scenes.insert(0, scene(EncoderBase::AOM, 15.0, vec![measured(16.0, 1e9)]));
+        scenes.insert(2, scene(EncoderBase::AOM, 15.0, vec![]));
+        scenes[1] = scene(EncoderBase::SVTAV1, 20.25, vec![measured(20.25, 100.0)]);
+        let mut unmeasured = measured(10.25, f64::NAN);
+        unmeasured.scores.clear();
+        scenes[4] = scene(
+            EncoderBase::SVTAV1,
+            10.25,
+            vec![
+                measured(10.0, 1.0),
+                measured(10.25, 1.0),
+                measured(10.25, 1000.0),
+                measured(10.5, 1.0),
+                unmeasured,
+            ],
+        );
+        let (mut condor, saved) = fixture(scenes);
+        let mut expected = condor.scenes.clone();
+        // (20.25 + 30 + 10.25) / 3 rounds to 20, not a nearest-quarter fallback.
+        expected[4].encoder.set_quantizer(20.0);
+        let expected = serde_json::to_value(expected).expect("expected");
+        run(&mut condor).expect("mixed measured scenes");
+        assert_eq!(
+            serde_json::to_value(&condor.scenes).expect("scenes"),
+            expected
+        );
+        assert_eq!(&*saved.borrow(), &[expected]);
+    }
+
+    #[test]
+    fn q10_no_work_controls_leave_scenes_unchanged_without_saving() {
+        for control in [
+            "empty",
+            "no-q",
+            "missing-data",
+            "empty-history",
+            "unmatched",
+            "empty-scores",
+            "one-eligible",
+            "zero-variance",
+            "zero-bitrates",
+            "no-outlier",
+            "unchanged-q",
+            "disabled",
+        ] {
+            let mut scenes = outliers();
+            match control {
+                "empty" => scenes.clear(),
+                "no-q" => {
+                    for scene in &mut scenes {
+                        scene.encoder.parameters_mut().remove("cq-level");
+                    }
+                },
+                "missing-data" => {
+                    for scene in &mut scenes {
+                        scene.sequence_data.0 = None;
+                    }
+                },
+                "empty-history" => {
+                    for scene in &mut scenes {
+                        scene.sequence_data.get_target_quality_mut().expect("data").passes.clear();
+                    }
+                },
+                "unmatched" => {
+                    for scene in &mut scenes {
+                        scene.encoder.set_quantizer(15.0);
+                    }
+                },
+                "empty-scores" => {
+                    for scene in &mut scenes {
+                        scene.sequence_data.get_target_quality_mut().expect("data").passes[0]
+                            .scores
+                            .clear();
+                    }
+                },
+                "one-eligible" => {
+                    scenes[1].sequence_data.0 = None;
+                    scenes[2].encoder.set_quantizer(15.0);
+                },
+                "zero-variance" | "zero-bitrates" => {
+                    for scene in &mut scenes {
+                        scene.sequence_data.get_target_quality_mut().expect("data").passes[0]
+                            .bitrate = if control == "zero-bitrates" {
+                            0.0
+                        } else {
+                            100.0
+                        };
+                    }
+                },
+                "unchanged-q" => {
+                    scenes[2].encoder.set_quantizer(25.0);
+                    scenes[2].sequence_data.get_target_quality_mut().expect("data").passes[0]
+                        .quantizer = 25.0;
+                },
+                "disabled" => scenes[0].encoder.set_quantizer(f64::NAN),
+                "no-outlier" => {},
+                _ => unreachable!(),
+            }
+            let (mut condor, saved) = fixture(scenes);
+            if control == "disabled" {
+                condor.sequence_config.bitrate_optimizer.bitrate_sigma_threshold = None;
+            } else if control == "no-outlier" {
+                condor.sequence_config.bitrate_optimizer.bitrate_sigma_threshold = Some(3);
+            }
+            let before = serde_json::to_value(&condor.scenes).expect("snapshot");
+            run(&mut condor).unwrap_or_else(|error| panic!("{control}: {error:#}"));
+            assert_eq!(
+                serde_json::to_value(&condor.scenes).expect("unchanged"),
+                before,
+                "{control}"
+            );
+            assert!(saved.borrow().is_empty(), "{control}: no save for no work");
+        }
+    }
+
+    #[test]
+    fn q10_corrupt_selected_measurements_fail_before_mutation_or_save() {
+        for field in ["selected quantizer", "bitrate", "score"] {
+            for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+                if field != "bitrate" && invalid == -1.0 {
+                    continue;
+                }
+                let mut scenes = outliers();
+                // Put a valid outlier before corruption to catch partial publication.
+                scenes.swap(0, 2);
+                match field {
+                    "selected quantizer" => scenes[2].encoder.set_quantizer(invalid),
+                    "bitrate" => {
+                        scenes[2].sequence_data.get_target_quality_mut().expect("data").passes[0]
+                            .bitrate = invalid;
+                    },
+                    "score" => {
+                        scenes[2].sequence_data.get_target_quality_mut().expect("data").passes[0]
+                            .scores
+                            .push(invalid);
+                    },
+                    _ => unreachable!(),
+                }
+                if field != "selected quantizer" {
+                    // A valid older duplicate must not conceal corrupt newer measurements.
+                    let passes =
+                        &mut scenes[2].sequence_data.get_target_quality_mut().expect("data").passes;
+                    passes.insert(0, measured(20.0, 100.0));
+                }
+                let (mut condor, saved) = fixture(scenes);
+                let before = serde_json::to_value(&condor.scenes).expect("snapshot");
+                let error = run(&mut condor).expect_err("corrupt selected measurement");
+                let message = format!("{error:#}");
+                assert!(
+                    message.contains("scene 2") && message.contains(field),
+                    "{message}"
+                );
+                assert_eq!(
+                    serde_json::to_value(&condor.scenes).expect("unchanged"),
+                    before
+                );
+                assert!(saved.borrow().is_empty());
+                if field == "selected quantizer" {
+                    assert_eq!(
+                        condor.scenes[2].encoder.quantizer().expect("q").to_bits(),
+                        invalid.to_bits()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn q10_nonfinite_statistics_fail_without_mutation_or_save() {
+        for field in ["quantizer average", "bitrate average", "bitrate variance"] {
+            let mut scenes = outliers();
+            for scene in &mut scenes {
+                let pass =
+                    &mut scene.sequence_data.get_target_quality_mut().expect("data").passes[0];
+                match field {
+                    "quantizer average" => {
+                        scene.encoder.set_quantizer(f64::MAX);
+                        pass.quantizer = f64::MAX;
+                    },
+                    "bitrate average" => pass.bitrate = f64::MAX,
+                    "bitrate variance" => pass.bitrate *= 1e153,
+                    _ => unreachable!(),
+                }
+            }
+            let (mut condor, saved) = fixture(scenes);
+            let before = serde_json::to_value(&condor.scenes).expect("snapshot");
+            let error = run(&mut condor).expect_err("overflowing statistics");
+            assert!(error.to_string().contains(field), "{error:#}");
+            assert_eq!(
+                serde_json::to_value(&condor.scenes).expect("unchanged"),
+                before
+            );
+            assert!(saved.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn q10_invalid_cross_encoder_mean_rejects_all_staged_changes() {
+        let scenes = vec![
+            scene(EncoderBase::RAV1E, 200.0, vec![measured(200.0, 100.0)]),
+            scene(EncoderBase::RAV1E, 200.0, vec![measured(200.0, 100.0)]),
+            scene(EncoderBase::RAV1E, 200.0, vec![measured(200.0, 100.0)]),
+            scene(EncoderBase::RAV1E, 10.0, vec![measured(10.0, 1000.0)]),
+            scene(EncoderBase::AOM, 10.0, vec![measured(10.0, 1000.0)]),
+        ];
+        let (mut condor, saved) = fixture(scenes);
+        let before = serde_json::to_value(&condor.scenes).expect("snapshot");
+        // Mean q124 is valid for the first outlier (RAV1E), impossible for AOM.
+        let error = run(&mut condor).expect_err("no partial encoder updates");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("scene 4") && message.contains("cq-level"),
+            "{message}"
+        );
+        assert_eq!(
+            serde_json::to_value(&condor.scenes).expect("unchanged"),
+            before
+        );
+        assert!(saved.borrow().is_empty());
+    }
 }
