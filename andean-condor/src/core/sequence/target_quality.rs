@@ -576,10 +576,16 @@ impl TargetQuality {
         } else {
             (above, below)
         };
-        (
+        let bounds = (
             lower.map_or(quantizer_range.0 as f64, |(quantizer, _)| *quantizer),
             upper.map_or(quantizer_range.1 as f64, |(quantizer, _)| *quantizer),
-        )
+        );
+        if inverse_metric && bounds.0 > bounds.1 {
+            // Noisy inverse probes can cross; configured bounds keep prediction's clamp valid.
+            (quantizer_range.0 as f64, quantizer_range.1 as f64)
+        } else {
+            bounds
+        }
     }
 
     fn quality_completion(
@@ -1854,6 +1860,42 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn q03_noisy_inverse_bounds_predict_within_configured_range() {
+        use crate::models::sequence::target_quality::types::InterpolationMethod;
+
+        let histories = [
+            [(20.0, 0.5), (40.0, 1.6), (30.0, 1.02), (31.0, 0.98)],
+            [(31.0, 0.98), (30.0, 1.02), (40.0, 1.6), (20.0, 0.5)],
+            [(20.0, 0.5), (40.0, 1.6), (30.0, 1.0002), (30.25, 0.9998)],
+        ];
+        for history in histories {
+            let bounds = TargetQuality::quantizer_bounds((7, 51), 1.0, &history, true);
+            let predicted = TargetQuality::predict_quantizer(
+                bounds,
+                1.0,
+                (InterpolationMethod::Linear, InterpolationMethod::Linear),
+                &history,
+                0.25,
+            )
+            .expect("noisy inverse history must remain predictable");
+            assert_eq!(bounds, (7.0, 51.0));
+            assert!(
+                predicted.is_finite() && (7.0..=51.0).contains(&predicted),
+                "prediction {predicted} for {history:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn q03_noisy_higher_bounds_remain_unchanged() {
+        let history = [(20.0, 1.6), (40.0, 0.5), (31.0, 1.02), (30.0, 0.98)];
+        assert_eq!(
+            TargetQuality::quantizer_bounds((7, 51), 1.0, &history, false),
+            (31.0, 30.0)
+        );
     }
 
     #[test]
