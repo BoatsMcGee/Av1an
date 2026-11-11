@@ -520,7 +520,9 @@ mod tests {
                 .timeout(std::time::Duration::from_secs(20))
                 .assert();
             let output = assertion.get_output();
-            if !output.status.success() {
+            if !output.status.success()
+                || !String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed;")
+            {
                 failures.push(case);
                 eprintln!(
                     "C07 {case}: {} {}",
