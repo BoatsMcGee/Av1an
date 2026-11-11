@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     fmt::Display,
+    hash::{DefaultHasher, Hash, Hasher},
     io::{Cursor, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -1191,20 +1192,36 @@ impl Encoder {
             return Ok(None);
         }
         let photon_noise = photon_noise.expect("photon noise should exist");
-        let hash_name = photon_noise.hash_name();
+        let width = photon_noise.width.unwrap_or(width);
+        let height = photon_noise.height.unwrap_or(height);
+        let full_range = matches!(color_range, Some(ColorRange::Full));
+        // Normalize overrides so equivalent generation requests share a table.
+        let resolved = PhotonNoise {
+            width: Some(width),
+            height: Some(height),
+            ..photon_noise.clone()
+        };
+        let transfer_tag = match transfer_function {
+            TransferFunction::BT1886 => 0_u8,
+            TransferFunction::SMPTE2084 => 1_u8,
+        };
+        let mut hasher = DefaultHasher::new();
+        (resolved, transfer_tag, full_range).hash(&mut hasher);
+        // Keep unvalidated settings-only legacy files outside this namespace.
+        let hash_name = format!("photon-v2-{:x}", hasher.finish());
         let mut params = generate_photon_noise_params(
             0,
             u64::MAX,
             NoiseGenArgs {
                 iso_setting: photon_noise.iso,
-                width: photon_noise.width.unwrap_or(width),
-                height: photon_noise.height.unwrap_or(height),
+                width,
+                height,
                 transfer_function,
                 chroma_grain: photon_noise
                     .chroma_iso
                     .is_some_and(|c_iso| c_iso == photon_noise.iso),
                 random_seed: None,
-                full_range: matches!(color_range, Some(ColorRange::Full)),
+                full_range,
             },
         );
 
@@ -1216,12 +1233,12 @@ impl Encoder {
                 u64::MAX,
                 NoiseGenArgs {
                     iso_setting: chroma_iso,
-                    width: photon_noise.width.unwrap_or(width),
-                    height: photon_noise.height.unwrap_or(height),
+                    width,
+                    height,
                     transfer_function,
                     chroma_grain: true,
                     random_seed: None,
-                    full_range: matches!(color_range, Some(ColorRange::Full)),
+                    full_range,
                 },
             );
             params.scaling_points_cr = chroma_params.scaling_points_cr;
@@ -1697,6 +1714,9 @@ mod e03_tests;
 
 #[cfg(test)]
 mod e04_tests;
+
+#[cfg(test)]
+mod e25_tests;
 
 #[cfg(test)]
 #[cfg(unix)]
