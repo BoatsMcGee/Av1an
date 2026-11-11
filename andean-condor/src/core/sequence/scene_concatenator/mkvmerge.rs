@@ -1,6 +1,8 @@
 use super::*;
 
 impl SceneConcatenator {
+    /// Scratch writer: the caller must exclusively own `output`; this can overwrite it.
+    /// Use the final Sequence boundary for saved overwrite/source protection and publication.
     #[allow(clippy::too_many_arguments)]
     #[inline]
     pub fn mkvmerge(
@@ -26,6 +28,7 @@ impl SceneConcatenator {
     }
 
     /// Each intermediate group and final mux is a separate graceful admission.
+    /// Caller must exclusively own the scratch output (it may be truncated on error).
     #[inline]
     #[allow(clippy::too_many_arguments)]
     pub fn mkvmerge_cancel(

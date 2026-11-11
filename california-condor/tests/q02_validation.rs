@@ -632,6 +632,7 @@ mod tests {
                         cli.maximum_quantizer,
                         cli.target_profile.as_ref(),
                         cli.max_tries,
+                        cli.overwrite,
                     );
                     if let Err(error) = result {
                         failures.push(format!("{case}/{entry}: {error:#}"));

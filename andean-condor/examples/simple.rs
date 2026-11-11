@@ -84,6 +84,7 @@ fn main() -> Result<()> {
     // Output: output.mkv
     let output_model = OutputModel {
         path: PathBuf::from("output.mkv"),
+        overwrite: false,
         tags: HashMap::new(),
         video_tags: HashMap::new(),
     };

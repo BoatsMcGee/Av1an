@@ -156,6 +156,23 @@ impl ParallelEncoderConfigHandler for DefaultSequenceConfig {
 
 impl SceneConcatenatorConfigHandler for DefaultSequenceConfig {
     #[inline]
+    fn protected_sources(&self) -> Vec<std::path::PathBuf> {
+        [
+            self.scene_detector.input.as_ref(),
+            self.parallel_encoder.input.as_ref(),
+            self.noise_detector.as_ref().and_then(|config| config.input.as_ref()),
+            self.target_quality.as_ref().and_then(|config| config.input.as_ref()),
+            self.target_quality.as_ref().and_then(|config| config.metric_input.as_ref()),
+            self.quality_check.as_ref().and_then(|config| config.input.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(crate::models::input::Input::path)
+        .map(std::path::Path::to_path_buf)
+        .collect()
+    }
+
+    #[inline]
     fn scene_concatenator(&self) -> Result<&SceneConcatenatorConfig> {
         Ok(&self.scene_concatenator)
     }

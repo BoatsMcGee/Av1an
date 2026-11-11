@@ -53,6 +53,22 @@ fn stream_concurrently_default() -> bool {
 }
 
 impl Input {
+    /// The explicitly declared source path; inline code's hidden reads are not enumerable.
+    #[inline]
+    pub fn path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Video { path, .. } | Self::VapourSynth { path, .. } => Some(path),
+            Self::VapourSynthScript {
+                source: VapourSynthScriptSource::Path(path),
+                ..
+            } => Some(path),
+            Self::VapourSynthScript {
+                source: VapourSynthScriptSource::Text(_),
+                ..
+            } => None,
+        }
+    }
+
     /// This input's VapourSynth filters, or an empty slice for a native input.
     ///
     /// Native filters are a different type, so a native input reports none here

@@ -141,6 +141,7 @@ fn e15_offline_handlers_crud_preserve_and_validate_budget() {
             None,
             None,
             value,
+            false,
         )
     };
     assert_eq!(
@@ -277,7 +278,8 @@ fn e15_offline_handlers_crud_preserve_and_validate_budget() {
             true,
             None,
             None,
-            Some(0)
+            Some(0),
+            false,
         )
         .expect_err("init zero before backend IO")
         .to_string()

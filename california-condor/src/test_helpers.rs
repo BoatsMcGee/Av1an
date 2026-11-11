@@ -334,6 +334,7 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
             },
             output: Output {
                 path: output_abs,
+                overwrite: false,
                 tags: HashMap::new(),
                 video_tags: HashMap::new(),
             },
@@ -347,6 +348,7 @@ pub fn default_config(test_video: &TestVideo, output: &Path, temp: &Path) -> Con
             },
             scenes: vec![],
             sequence_config: CliSequenceConfig {
+                source_path: None,
                 scene_detector: SceneDetectorConfig {
                     method: SceneDetectionMethod::AVSceneChange {
                         minimum_length: test_video.fps().round() as usize,
@@ -738,6 +740,10 @@ pub fn check_input(input: Option<&Input>, expected_input: Option<&Input>, input_
 }
 
 pub fn check_output(output: &Output, expected_output: &Output) {
+    assert_eq!(
+        output.overwrite, expected_output.overwrite,
+        "saved overwrite consent"
+    );
     assert_eq!(
         output.path,
         expected_output.path,

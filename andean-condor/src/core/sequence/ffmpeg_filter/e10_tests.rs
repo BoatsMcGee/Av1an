@@ -470,6 +470,7 @@ fn native_failure(root: &Path, case: &str) {
             input,
             Output {
                 path: root.join("unused"),
+                overwrite: false,
                 tags: HashMap::new(),
                 video_tags: HashMap::new(),
             },

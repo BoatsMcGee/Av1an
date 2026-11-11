@@ -380,6 +380,7 @@ fn q09_actual_rate_child() {
             input,
             Output {
                 path: root.join("unused"),
+                overwrite: false,
                 tags: Default::default(),
                 video_tags: Default::default(),
             },
@@ -868,6 +869,7 @@ fn e15_public_child() {
         input,
         Output {
             path: root.join("unused"),
+            overwrite: false,
             tags: Default::default(),
             video_tags: Default::default(),
         },

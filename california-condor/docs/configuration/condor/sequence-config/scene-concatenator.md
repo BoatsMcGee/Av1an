@@ -8,6 +8,10 @@
 | `scenes_directory` | String (path) | Yes | `<temp>/scenes` | Directory of per-scene encodes |
 | `output` | String (path) or null | Yes | `null` | Override output path |
 
+`output` is the actual final destination when set; otherwise `condor.output.path`
+is used. Both use the saved `condor.output.overwrite` consent and source-alias
+protection described in [output safety](../output.md).
+
 Each `method` payload holds that muxer's settings: a `mkvmerge` or `ffmpeg` object with its track/chapter/metadata options, or the plain string `"ivf"` (video only).
 
 Example:

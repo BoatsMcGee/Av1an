@@ -60,7 +60,7 @@ which = "8.0.0"
 # they select a much larger prebuilt runtime at build time.
 [target.'cfg(windows)'.dependencies]
 ort = { version = "=2.0.0-rc.12", features = ["directml"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"

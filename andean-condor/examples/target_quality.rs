@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool, mpsc},
     thread,
 };
@@ -101,6 +101,7 @@ fn main() -> Result<()> {
     // Output: output.mkv
     let output_model = OutputModel {
         path: PathBuf::from("output.mkv"),
+        overwrite: false,
         tags: HashMap::new(),
         video_tags: HashMap::new(),
     };
@@ -450,6 +451,21 @@ impl ParallelEncoderConfigHandler for ExampleSequenceConfig {
 }
 
 impl SceneConcatenatorConfigHandler for ExampleSequenceConfig {
+    #[inline]
+    fn protected_sources(&self) -> Vec<PathBuf> {
+        [
+            self.scene_detector.input.as_ref(),
+            self.parallel_encoder.input.as_ref(),
+            self.target_quality.as_ref().and_then(|config| config.input.as_ref()),
+            self.target_quality.as_ref().and_then(|config| config.metric_input.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(andean_condor::models::input::Input::path)
+        .map(Path::to_path_buf)
+        .collect()
+    }
+
     #[inline]
     fn scene_concatenator(&self) -> Result<&SceneConcatenatorConfig> {
         Ok(&self.scene_concatenator)

@@ -477,6 +477,7 @@ fn e12_scene_child() {
             input,
             Output {
                 path: root.join("unused"),
+                overwrite: false,
                 tags: HashMap::new(),
                 video_tags: HashMap::new(),
             },
@@ -991,6 +992,7 @@ fn e12_scene_child() {
                 input,
                 Output {
                     path: root.join("unused"),
+                    overwrite: false,
                     tags: HashMap::new(),
                     video_tags: HashMap::new(),
                 },

@@ -1,6 +1,8 @@
 use super::*;
 
 impl SceneConcatenator {
+    /// Scratch writer: the caller must exclusively own `output`; this can overwrite it.
+    /// Use the final Sequence boundary for saved overwrite/source protection and publication.
     #[allow(clippy::too_many_arguments)]
     #[inline]
     pub fn ffmpeg(
@@ -28,6 +30,7 @@ impl SceneConcatenator {
     }
 
     /// Runs one admitted concat unit; force kills its owned tree even while silent.
+    /// Caller must exclusively own the scratch output (it may be truncated on error).
     #[inline]
     #[allow(clippy::too_many_arguments)]
     pub fn ffmpeg_cancel(

@@ -12,6 +12,14 @@ $ condor concatenate --method mkvmerge --discard audio,subtitle
 | --------------------------------- | ---------- | -------- | ---------- |
 | [Method](#method---method)        | `--method` | [`CONCAT`](../types/concatenation.md) | `mkvmerge` |
 | [Discard](#discard---discard)     | `--discard` | [String List](#discard---discard) | nothing |
+| Overwrite | `--overwrite` | Flag | Keep saved consent (new jobs: false) |
+
+Existing final outputs require explicit saved `output.overwrite` consent; no prompt
+is used. `condor concatenate --overwrite` saves consent, and omission retains it.
+Revoke it with `condor init set overwrite false` or `condor init reset overwrite`.
+Source aliases remain forbidden, including disabled extra/attachment inputs and
+encoded chunks. Output admission precedes probing and saving; a missing output
+parent fails without creating it. See [output safety](../configuration/condor/output.md).
 
 ## Method `--method`
 

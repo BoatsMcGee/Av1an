@@ -82,6 +82,11 @@ pub const HELP_OUTPUT: &str = r#"Path to the output video file.
 
 File extension must be supported by the specified Concatenation method (*--concat*).
 
+Existing outputs are refused unless saved `output.overwrite` consent is true.
+Use `--overwrite` on the root command, `init INPUT OUTPUT`, or `concatenate` to save
+consent. Revoke it with `init set overwrite false` or `init reset overwrite`.
+Declared source aliases are forbidden even with consent. No overwrite prompts are used.
+
 Examples:
 - `./output.mp4`
 - `/Videos/bird_folder/takeoff.mkv`

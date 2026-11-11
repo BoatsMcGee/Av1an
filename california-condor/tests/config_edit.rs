@@ -71,6 +71,198 @@ mod tests {
     }
 
     #[test]
+    fn c06_output_crud_rejects_alias_without_mutation() {
+        use california_condor::commands::{
+            config::ConfigCommand,
+            handlers::{
+                concatenate::{ConcatenateCrud, ConcatenateSet},
+                init::{InitCrud, InitSet},
+            },
+        };
+        for concat in [false, true] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let mut config = root_edit_fixture(temp.path());
+            let before = serde_json::to_value(&config).expect("snapshot");
+            let file = temp.path().join("condor.json");
+            config.save(&file).expect("save");
+            let disk = std::fs::read(&file).expect("disk snapshot");
+            let source = config.input.clone();
+            let result = if concat {
+                ConcatenateCrud::apply(
+                    &mut config,
+                    &ConcatenateSet::Output {
+                        path: source.clone(),
+                    },
+                )
+            } else {
+                InitCrud::apply(
+                    &mut config,
+                    &InitSet::Output {
+                        path: source.clone(),
+                    },
+                )
+            };
+            assert!(result.is_err(), "output CRUD must refuse source aliases");
+            assert_eq!(serde_json::to_value(config).expect("after"), before);
+            assert_eq!(std::fs::read(&file).expect("disk"), disk);
+            assert!(!temp.path().join("source-opened").exists());
+        }
+    }
+
+    #[test]
+    fn c06_declared_sources_and_offline_output_edits() {
+        use andean_condor::models::{
+            input::VapourSynthScriptSource,
+            sequence::{
+                noise_detector::NoiseDetectorConfig,
+                quality_check::QualityCheckConfig,
+                scene_concatenator::{ConcatMethod, FfmpegConfig, MkvmergeConfig},
+                target_quality::TargetQualityConfig,
+            },
+        };
+        use california_condor::commands::{
+            config::ConfigCommand,
+            handlers::init::{InitCrud, InitSet},
+        };
+        for slot in [
+            "root-video",
+            "root-vs",
+            "root-script",
+            "scd",
+            "parallel",
+            "noise",
+            "tq",
+            "metric",
+            "qc",
+            "ff-extra",
+            "ff-attachment",
+            "ff-extra-attachment",
+            "mkv-extra",
+            "mkv-attachment",
+            "mkv-extra-attachment",
+            "chunk",
+        ] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let mut config = root_edit_fixture(temp.path());
+            let protected = temp.path().join("protected");
+            std::fs::write(&protected, b"protected source").expect("source");
+            let input = Input::VapourSynthScript {
+                source: VapourSynthScriptSource::Path(protected.clone()),
+                variables: Default::default(),
+                index: 0,
+                filters: vec![],
+                stream_concurrently: false,
+            };
+            let seq = &mut config.condor.sequence_config;
+            match slot {
+                "root-video" => {
+                    config.condor.input = Input::Video {
+                        path: protected.clone(),
+                        import_method: andean_condor::models::input::ImportMethod::FFMS2 {
+                            index: None,
+                            cache_path: None,
+                        },
+                        filters: vec![],
+                    }
+                },
+                "root-vs" => {
+                    config.condor.input = Input::VapourSynth {
+                        path: protected.clone(),
+                        import_method:
+                            andean_condor::models::input::VapourSynthImportMethod::BestSource {
+                                index: None,
+                            },
+                        cache_path: None,
+                        filters: vec![],
+                    }
+                },
+                "root-script" => config.condor.input = input,
+                "scd" => seq.scene_detector.input = Some(input),
+                "parallel" => seq.parallel_encoder.input = Some(input),
+                "noise" => {
+                    seq.noise_detector = Some(NoiseDetectorConfig {
+                        input: Some(input),
+                        ..Default::default()
+                    });
+                },
+                "tq" => {
+                    seq.target_quality = Some(TargetQualityConfig {
+                        input: Some(input),
+                        ..Default::default()
+                    });
+                },
+                "metric" => {
+                    seq.target_quality = Some(TargetQualityConfig {
+                        metric_input: Some(input),
+                        ..Default::default()
+                    });
+                },
+                "qc" => {
+                    seq.quality_check = Some(QualityCheckConfig {
+                        input: Some(input),
+                        ..Default::default()
+                    });
+                },
+                "chunk" => {
+                    let chunk = seq.scene_concatenator.scenes_directory.join(format!(
+                        "{}.{}",
+                        andean_condor::core::sequence::parallel_encoder::ParallelEncoder::scene_id(
+                            0
+                        ),
+                        config.condor.scenes[0].encoder.output_extension()
+                    ));
+                    config.condor.output.path = chunk;
+                },
+                _ => {
+                    let extra = slot.ends_with("extra");
+                    let extra_attachment = slot.ends_with("extra-attachment");
+                    let tracks = serde_json::json!({"7":{"type":"attachment","path":protected,"copy":false}});
+                    let settings = if extra {
+                        serde_json::json!({"extra_inputs":[{"path":protected,"tracks":{}}]})
+                    } else if extra_attachment {
+                        serde_json::json!({"extra_inputs":[{"path":temp.path().join("other"),"tracks":tracks}]})
+                    } else {
+                        serde_json::json!({"tracks":tracks})
+                    };
+                    seq.scene_concatenator.method = if slot.starts_with("ff") {
+                        ConcatMethod::FFmpeg(
+                            serde_json::from_value::<FfmpegConfig>(settings).expect("FFmpeg model"),
+                        )
+                    } else {
+                        ConcatMethod::MKVMerge(
+                            serde_json::from_value::<MkvmergeConfig>(settings).expect("MKV model"),
+                        )
+                    };
+                },
+            }
+            if slot != "chunk" {
+                config.condor.output.path = protected.clone();
+            }
+            config.condor.output.overwrite = true;
+            let before = serde_json::to_value(&config).expect("before");
+            assert!(config.validate_output(false).is_err(), "declared {slot}");
+            assert_eq!(serde_json::to_value(&config).expect("after"), before);
+            assert_eq!(
+                std::fs::read(&protected).expect("source"),
+                b"protected source"
+            );
+            assert!(!temp.path().join("source-opened").exists());
+        }
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut config = root_edit_fixture(temp.path());
+        let missing = temp.path().join("not-created/out.mkv");
+        InitCrud::apply(
+            &mut config,
+            &InitSet::Output {
+                path: missing.clone(),
+            },
+        )
+        .expect("offline edit permits missing parent");
+        assert!(!missing.parent().expect("parent").exists());
+        assert!(!temp.path().join("source-opened").exists());
+    }
+
+    #[test]
     fn c03_empty_temp_edit_rebases_only_derived_directories() {
         use california_condor::commands::handlers::configure_temp;
         for kind in ["missing", "empty", "unset", "encoder-custom", "concat-custom", "both-custom"]

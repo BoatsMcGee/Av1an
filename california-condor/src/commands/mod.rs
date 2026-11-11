@@ -56,6 +56,9 @@ pub struct CondorCli {
     pub input: Option<PathBuf>,
     #[arg(long, short('o'), value_name = "Output", help = HELP_OUTPUT_SHORT, long_help = HELP_OUTPUT)]
     pub output: Option<PathBuf>,
+    /// Save explicit consent to replace a distinct final output; never prompts.
+    #[arg(long)]
+    pub overwrite: bool,
     #[arg(long, value_name = "Scene Detector Input", help = HELP_SCD_INPUT_SHORT, long_help = HELP_SCD_INPUT)]
     pub scd_input: Option<PathBuf>,
     #[arg(long, value_name = "Target Quality Input", help = HELP_TQ_INPUT_SHORT, long_help = HELP_TQ_INPUT)]
@@ -197,6 +200,9 @@ pub enum Commands {
         input: Option<PathBuf>,
         #[arg(value_name = "Output", help = HELP_OUTPUT_SHORT, long_help = HELP_OUTPUT)]
         output: Option<PathBuf>,
+        /// Save explicit consent to replace a distinct final output; never prompts.
+        #[arg(long)]
+        overwrite: bool,
         #[arg(long, value_name = "Decoder", help = HELP_DECODER_SHORT, long_help = HELP_DECODER)]
         decoder: Option<DecoderMethod>,
         #[arg(long, value_name = "VapourSynth Filters", help = HELP_FILTERS_SHORT, long_help = HELP_FILTERS)]
@@ -471,6 +477,9 @@ pub enum Commands {
     /// *condor concatenate info*, *set* and *reset*.
     #[command(args_conflicts_with_subcommands = true)]
     Concatenate {
+        /// Save explicit consent to replace a distinct final output; never prompts.
+        #[arg(long)]
+        overwrite: bool,
         #[command(subcommand)]
         edit: Option<handlers::concatenate::ConcatenateAction>,
         #[arg(long, value_name = "Concatenation Method", help = HELP_CONCAT_SHORT, long_help = HELP_CONCAT)]

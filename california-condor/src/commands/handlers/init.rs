@@ -54,14 +54,16 @@ pub fn init_handler(
     target_metric: Option<&QualityMetricBase>,
     target: Option<f64>,
     max_tries: Option<u32>,
+    overwrite: bool,
 ) -> Result<()> {
     anyhow::ensure!(
         max_tries != Some(0),
         "max_tries must be at least 1 total attempt"
     );
     let cwd = std::env::current_dir()?;
-    let input = path_abs::PathAbs::new(input_path)?.as_path().to_path_buf();
-    let output = path_abs::PathAbs::new(output_path)?.as_path().to_path_buf();
+    andean_condor::core::output::admit_output(output_path, &[input_path.into()], overwrite, false)?;
+    let input = cwd.join(input_path);
+    let output = cwd.join(output_path);
     let config_path = path_abs::PathAbs::new(
         config_path.map_or_else(|| cwd.join(DEFAULT_CONFIG_PATH), |p| p.to_path_buf()),
     )?
@@ -87,6 +89,7 @@ pub fn init_handler(
         Some(append_color_data),
     )?;
     let mut configuration = Configuration::new(&input, &output, temp_path, vs_args, decoder)?;
+    configuration.condor.output.overwrite = overwrite;
     configuration.condor.encoder = selected_encoder;
     // A video input never consumes script arguments; say so instead of
     // dropping them silently.
@@ -119,6 +122,7 @@ pub fn init_handler(
         None,
     )?;
     configure_concatenate(&mut configuration, concatenator)?;
+    configuration.validate_output(false)?;
     apply_discard(&mut configuration, discard.unwrap_or_default())?;
 
     configuration.validate_encoder_settings()?;
@@ -143,6 +147,8 @@ pub enum InitKey {
     Input,
     /// The file the pipeline writes.
     Output,
+    /// Saved consent to replace an existing distinct final output.
+    Overwrite,
     /// The encoder and its parameters.
     Encoder,
     /// How many encoder processes run at once.
@@ -158,6 +164,11 @@ pub enum InitKey {
 /// Settings `condor init set` can change.
 #[derive(Debug, Clone, Subcommand)]
 pub enum InitSet {
+    /// Save or revoke consent to replace a distinct final output (true/false).
+    Overwrite {
+        #[arg(action = clap::ArgAction::Set)]
+        value: bool,
+    },
     /// The input video or VapourSynth script.
     ///
     /// Builds the same input the *--decoder*, *--filters* and *--vs-args* flags
@@ -303,6 +314,7 @@ impl ConfigCommand for InitCrud {
             }),
             Some(InitKey::Input) => serde_json::to_value(&condor.input)?,
             Some(InitKey::Output) => serde_json::to_value(&condor.output)?,
+            Some(InitKey::Overwrite) => serde_json::to_value(condor.output.overwrite)?,
             Some(InitKey::Encoder) => serde_json::to_value(&condor.encoder)?,
             Some(InitKey::Workers) => {
                 serde_json::to_value(condor.sequence_config.parallel_encoder.workers)?
@@ -325,12 +337,19 @@ impl ConfigCommand for InitCrud {
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
         match set {
+            InitSet::Overwrite { value } => {
+                configuration.condor.output.overwrite = *value;
+                PropertyChange::new("overwrite", value)
+            },
             InitSet::Input { args } => {
                 Self::apply_input(configuration, args)?;
                 PropertyChange::new("input", &configuration.condor.input)
             },
             InitSet::Output { path } => {
-                configuration.condor.output.path = path.clone();
+                let mut candidate = configuration.clone();
+                candidate.condor.output.path = path.clone();
+                candidate.validate_output(false)?;
+                *configuration = candidate;
                 PropertyChange::new("output", &configuration.condor.output)
             },
             InitSet::Encoder {
@@ -432,6 +451,10 @@ impl ConfigCommand for InitCrud {
             return Err(InitConfigError::ResetNeedsProperty.into());
         };
         match key {
+            InitKey::Overwrite => {
+                configuration.condor.output.overwrite = false;
+                Ok(Some(PropertyChange::new("overwrite", false)?))
+            },
             // The input and output paths are what `init` exists to capture;
             // there is no default worth writing over them.
             InitKey::Input => Err(InitConfigError::NoDefault("input").into()),
@@ -575,6 +598,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
 
@@ -680,6 +704,7 @@ mod tests {
             Some(&QualityMetricBase::SSIMULACRA2),
             Some(75.0),
             None,
+            false,
         )
         .expect("init_handler should succeed");
 
@@ -723,6 +748,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
 
@@ -800,6 +826,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert_matches!(result, Err(_), "init_handler should fail");
         assert!(!config_path.exists(), "config file does not exist");

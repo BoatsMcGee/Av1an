@@ -78,6 +78,10 @@ impl crate::models::sequence::target_quality::TargetQualityConfigHandler for Con
     }
 }
 impl crate::models::sequence::scene_concatenator::SceneConcatenatorConfigHandler for Config {
+    fn protected_sources(&self) -> Vec<std::path::PathBuf> {
+        crate::models::sequence::scene_concatenator::SceneConcatenatorConfigHandler::protected_sources(&self.inner)
+    }
+
     fn scene_concatenator(
         &self,
     ) -> anyhow::Result<&crate::models::sequence::scene_concatenator::SceneConcatenatorConfig> {
@@ -313,6 +317,7 @@ fn e14_r1_child() {
         input,
         Output {
             path: root.join("unused"),
+            overwrite: false,
             tags: Default::default(),
             video_tags: Default::default(),
         },

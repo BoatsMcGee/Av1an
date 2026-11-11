@@ -1114,6 +1114,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = encode_handler(
@@ -1238,6 +1239,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = encode_handler(
@@ -1307,6 +1309,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
 

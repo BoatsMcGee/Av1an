@@ -2908,6 +2908,7 @@ mod tests {
             input,
             Output {
                 path: temp.path().join("final.mkv"),
+                overwrite: false,
                 tags: Default::default(),
                 video_tags: Default::default(),
             },
@@ -3464,6 +3465,7 @@ mod tests {
                 input,
                 Output {
                     path: temp.path().join("final.mkv"),
+                    overwrite: false,
                     tags: Default::default(),
                     video_tags: Default::default(),
                 },
@@ -4476,6 +4478,7 @@ mod tests {
                     input,
                     Output {
                         path: temp.path().join("final.mkv"),
+                        overwrite: false,
                         tags: Default::default(),
                         video_tags: Default::default(),
                     },
@@ -4608,6 +4611,7 @@ mod tests {
                     input,
                     Output {
                         path: temp.path().join("final.mkv"),
+                        overwrite: false,
                         tags: Default::default(),
                         video_tags: Default::default(),
                     },

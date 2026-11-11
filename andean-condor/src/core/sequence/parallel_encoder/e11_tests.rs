@@ -369,6 +369,7 @@ fn persist_success_after_worker_failure(root: &Path, input: Input, fail_save: bo
         input,
         Output {
             path: root.join("unused"),
+            overwrite: false,
             tags: HashMap::new(),
             video_tags: HashMap::new(),
         },

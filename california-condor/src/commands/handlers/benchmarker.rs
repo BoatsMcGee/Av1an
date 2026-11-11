@@ -193,6 +193,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = benchmarker_handler(Some(&config_path), None, None, None)
@@ -254,6 +255,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = benchmarker_handler(

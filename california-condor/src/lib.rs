@@ -73,6 +73,9 @@ fn run() -> anyhow::Result<()> {
     let mut cli = CondorCli::from_arg_matches(&matches).map_err(|err| err.exit())?;
     cli.normalize_zone_flags();
     cli.reject_indexed_add(&mut cmd);
+    if cli.overwrite && cli.command.is_some() {
+        cmd.error(clap::error::ErrorKind::ArgumentConflict, "root --overwrite is only for a root run; use init INPUT OUTPUT --overwrite or concatenate --overwrite on those routes").exit();
+    }
     commands::set_verbose(cli.verbose);
 
     if cli.version {
@@ -99,6 +102,7 @@ fn run() -> anyhow::Result<()> {
     match cli.command {
         Some(Commands::Init {
             edit,
+            overwrite,
             input,
             output,
             decoder,
@@ -138,6 +142,7 @@ fn run() -> anyhow::Result<()> {
                 target_metric.as_ref(),
                 target,
                 max_tries,
+                overwrite,
             )?;
         },
         Some(Commands::DetectScenes {
@@ -350,6 +355,7 @@ fn run() -> anyhow::Result<()> {
         },
         Some(Commands::Concatenate {
             edit,
+            overwrite,
             method,
             discard,
         }) => {
@@ -361,6 +367,7 @@ fn run() -> anyhow::Result<()> {
                 temp.as_deref(),
                 method.as_ref(),
                 discard.as_deref(),
+                overwrite,
             )?;
 
             run_concatenator(&configuration, &save_file)?;
@@ -427,6 +434,7 @@ fn run() -> anyhow::Result<()> {
                 cli.maximum_quantizer,
                 cli.target_profile.as_ref(),
                 cli.max_tries,
+                cli.overwrite,
             )?;
 
             if let Some(zones) = &cli.zones {

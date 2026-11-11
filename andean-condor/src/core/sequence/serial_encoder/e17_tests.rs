@@ -246,6 +246,7 @@ fn e17_public_child() {
         input(&root, native),
         Output {
             path: root.join("unused"),
+            overwrite: false,
             tags: HashMap::new(),
             video_tags: HashMap::new(),
         },

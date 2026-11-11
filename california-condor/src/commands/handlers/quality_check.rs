@@ -390,6 +390,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) =
@@ -476,6 +477,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = quality_check_handler(

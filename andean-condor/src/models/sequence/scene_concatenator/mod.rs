@@ -29,6 +29,9 @@ where
 {
     fn scene_concatenator(&self) -> Result<&SceneConcatenatorConfig>;
     fn scene_concatenator_mut(&mut self) -> Result<&mut SceneConcatenatorConfig>;
+    /// Enumerate every declared stage source, including disabled overrides.
+    /// Custom configs must include their own inputs; root/mux/chunks are added by the caller.
+    fn protected_sources(&self) -> Vec<PathBuf>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -54,6 +57,41 @@ impl Default for SceneConcatenatorConfig {
 }
 
 impl SceneConcatenatorConfig {
+    /// Declared extra inputs and explicit attachments, even when copying is disabled.
+    #[inline]
+    pub fn mux_sources(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        match &self.method {
+            ConcatMethod::FFmpeg(config) => {
+                for tracks in config
+                    .tracks
+                    .iter()
+                    .chain(config.extra_inputs.iter().filter_map(|input| input.tracks.as_ref()))
+                {
+                    paths.extend(tracks.values().filter_map(|track| {
+                        track.attachment().and_then(|track| track.path.clone())
+                    }));
+                }
+                paths.extend(config.extra_inputs.iter().map(|input| input.path.clone()));
+            },
+            ConcatMethod::MKVMerge(config) => {
+                for tracks in config
+                    .tracks
+                    .iter()
+                    .chain(config.extra_inputs.iter().filter_map(|input| input.tracks.as_ref()))
+                {
+                    paths.extend(tracks.values().filter_map(|track| match track {
+                        MkvmergeTrack::Attachment(track) => track.path.clone(),
+                        _ => None,
+                    }));
+                }
+                paths.extend(config.extra_inputs.iter().map(|input| input.path.clone()));
+            },
+            ConcatMethod::Ivf => (),
+        }
+        paths
+    }
+
     #[inline]
     pub fn new(scenes_directory: &Path) -> Self {
         Self {

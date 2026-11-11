@@ -176,6 +176,7 @@ fn e13_public_stream_child() {
             input,
             Output {
                 path: root.join("unused"),
+                overwrite: false,
                 tags: Default::default(),
                 video_tags: Default::default(),
             },

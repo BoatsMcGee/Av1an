@@ -179,6 +179,7 @@ fn q05_qc_execute_corrupt_last_scene_does_not_attach_save_or_complete() {
                 input,
                 Output {
                     path: output.path().to_owned(),
+                    overwrite: false,
                     tags: Default::default(),
                     video_tags: Default::default(),
                 },
@@ -293,6 +294,7 @@ fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
                     input,
                     Output {
                         path: output.path().to_owned(),
+                        overwrite: false,
                         tags: Default::default(),
                         video_tags: Default::default(),
                     },

@@ -82,6 +82,22 @@ pub struct Configuration {
 }
 
 impl Configuration {
+    /// Admit the effective final destination; offline edits check aliases without existence policy.
+    #[inline]
+    pub fn validate_output(&self, execution: bool) -> Result<()> {
+        let mut sources = andean_condor::core::sequence::scene_concatenator::SceneConcatenator::protected_sources(&self.condor.input, &self.condor.sequence_config, &self.condor.scenes)?;
+        sources.push(self.input.clone());
+        let concat = &self.condor.sequence_config.scene_concatenator;
+        let output = &self.condor.output;
+        andean_condor::core::output::admit_output(&output.path, &sources, true, false)?;
+        andean_condor::core::output::admit_output(
+            concat.output.as_deref().unwrap_or(&output.path),
+            &sources,
+            !execution || output.overwrite,
+            execution,
+        )
+    }
+
     #[inline]
     pub fn new(
         input: &Path,
@@ -114,6 +130,7 @@ impl Configuration {
                 input: input_data,
                 output: OutputModel {
                     path: output.to_path_buf(),
+                    overwrite: false,
                     tags: HashMap::new(),
                     video_tags: HashMap::new(),
                 },
@@ -140,6 +157,7 @@ impl Configuration {
                     quality_check: None,
                     bitrate_optimizer: BitrateOptimizerConfig::default(),
                     speed_scaler: SpeedScalerConfig::default(),
+                    source_path: None,
                 },
             },
             input: input.to_path_buf(),
@@ -252,12 +270,14 @@ impl Configuration {
         )?;
         let output = Output::new(&self.condor.output)?;
 
+        let mut sequence_config = self.condor.sequence_config.clone();
+        sequence_config.source_path = Some(self.input.clone());
         let condor = Condor {
             input,
             output,
             encoder: self.condor.encoder.clone(),
             scenes: self.condor.scenes.clone(),
-            sequence_config: self.condor.sequence_config.clone(),
+            sequence_config,
             save_callback,
         };
 
@@ -381,6 +401,10 @@ where
     pub quality_check: Option<QualityCheckConfig>,
     pub bitrate_optimizer: BitrateOptimizerConfig,
     pub speed_scaler: SpeedScalerConfig,
+    /// CLI root-path identity retained for final rechecks of inline script jobs.
+    /// Runtime-only: Configuration.input remains the saved authority.
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
 }
 
 impl Default for CliSequenceConfig {
@@ -398,6 +422,7 @@ impl Default for CliSequenceConfig {
             quality_check: None,
             bitrate_optimizer: BitrateOptimizerConfig::default(),
             speed_scaler: SpeedScalerConfig::default(),
+            source_path: None,
         }
     }
 }
@@ -485,6 +510,23 @@ impl ParallelEncoderConfigHandler for CliSequenceConfig {
 }
 
 impl SceneConcatenatorConfigHandler for CliSequenceConfig {
+    fn protected_sources(&self) -> Vec<PathBuf> {
+        [
+            self.scene_detector.input.as_ref(),
+            self.parallel_encoder.input.as_ref(),
+            self.noise_detector.as_ref().and_then(|config| config.input.as_ref()),
+            self.target_quality.as_ref().and_then(|config| config.input.as_ref()),
+            self.target_quality.as_ref().and_then(|config| config.metric_input.as_ref()),
+            self.quality_check.as_ref().and_then(|config| config.input.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(InputModel::path)
+        .map(Path::to_path_buf)
+        .chain(self.source_path.iter().cloned())
+        .collect()
+    }
+
     fn scene_concatenator(&self) -> Result<&SceneConcatenatorConfig> {
         Ok(&self.scene_concatenator)
     }

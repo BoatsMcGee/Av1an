@@ -58,6 +58,7 @@ pub fn start_handler(
     maximum_quantizer: Option<u8>,
     target_profile: Option<&QualityProfile>,
     max_tries: Option<u32>,
+    overwrite: bool,
 ) -> Result<(Configuration, PathBuf)> {
     anyhow::ensure!(
         max_tries != Some(0),
@@ -112,8 +113,15 @@ pub fn start_handler(
             let input_path = input_path.ok_or_else(path_err)?;
             let output_path = output_path.ok_or_else(path_err)?;
             debug!("Creating new configuration");
-            let input = path_abs::PathAbs::new(input_path)?.as_path().to_path_buf();
-            let output = path_abs::PathAbs::new(output_path)?.as_path().to_path_buf();
+            let sources = [Some(input_path), scd_input_path, tq_input_path]
+                .into_iter()
+                .flatten()
+                .map(Path::to_path_buf)
+                .collect::<Vec<_>>();
+            andean_condor::core::output::admit_output(output_path, &sources, overwrite, true)?;
+            let cwd = std::env::current_dir()?;
+            let input = cwd.join(input_path);
+            let output = cwd.join(output_path);
             debug!("TEMP: {temp:?}", temp = temp_path);
             let mut selected_encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
             configure_encoder(
@@ -146,8 +154,11 @@ pub fn start_handler(
     )?;
     configure_temp(&mut configuration, temp_path)?;
     if let Some(output) = output_path {
-        let output = path_abs::PathAbs::new(output)?.as_path().to_path_buf();
+        let output = std::env::current_dir()?.join(output);
         configuration.condor.output.path = output;
+    }
+    if overwrite {
+        configuration.condor.output.overwrite = true;
     }
 
     if config_already_existed {
@@ -172,6 +183,25 @@ pub fn start_handler(
         max_tries,
     )?;
     configuration.validate_encoder_settings()?;
+    configure_concatenate(&mut configuration, concatenator)?;
+    configuration.validate_output(true)?;
+    let additional_sources = [input_path, scd_input_path, tq_input_path]
+        .into_iter()
+        .flatten()
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>();
+    andean_condor::core::output::admit_output(
+        configuration
+            .condor
+            .sequence_config
+            .scene_concatenator
+            .output
+            .as_deref()
+            .unwrap_or(&configuration.condor.output.path),
+        &additional_sources,
+        configuration.condor.output.overwrite,
+        true,
+    )?;
     configure_scene_detector(
         &mut configuration,
         scd_input_path,
@@ -213,7 +243,7 @@ pub fn start_handler(
     )?;
     // configure_optimize_bitrate_handler(&mut configuration, sigma_threshold)?;
     // configure_scale_speed(&mut configuration, quantizers, speeds)?;
-    configure_concatenate(&mut configuration, concatenator)?;
+    configuration.validate_output(true)?;
     apply_discard(&mut configuration, discard.unwrap_or_default())?;
 
     if !config_already_existed {
@@ -335,6 +365,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("start_handler should succeed");
 
@@ -542,6 +573,7 @@ mod tests {
             Some(35),
             Some(&QualityProfile::Slow),
             None,
+            false,
         )
         .expect("start_handler should succeed");
 
@@ -749,6 +781,7 @@ mod tests {
             Some(35),
             Some(&QualityProfile::Slow),
             None,
+            false,
         )
         .expect("start_handler should succeed");
 
@@ -912,6 +945,7 @@ mod tests {
             Some(25),
             Some(&QualityProfile::Standard),
             None,
+            false,
         )
         .expect("start_handler should succeed");
 
@@ -1028,6 +1062,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("start_handler should succeed");
 
@@ -1082,6 +1117,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         );
         assert_matches!(result, Err(_), "start_handler should fail");
         assert!(!config_path.exists(), "config file does not exist");

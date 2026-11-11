@@ -286,6 +286,7 @@ mod tests {
             input,
             Output {
                 path: "q10-unused.mkv".into(),
+                overwrite: false,
                 tags: Default::default(),
                 video_tags: Default::default(),
             },

@@ -30,11 +30,16 @@ pub fn concatenate_handler(
     temp_path: Option<&Path>,
     method: Option<&ConcatenationMethod>,
     discard: Option<&[DiscardCategory]>,
+    overwrite: bool,
 ) -> Result<(Configuration, PathBuf)> {
     let (mut configuration, config_path) = load_configuration(config_path)?;
 
     configure_temp(&mut configuration, temp_path)?;
     configure_concatenate(&mut configuration, method)?;
+    if overwrite {
+        configuration.condor.output.overwrite = true;
+    }
+    configuration.validate_output(true)?;
     apply_discard(&mut configuration, discard.unwrap_or_default())?;
 
     configuration.save(&config_path)?;
@@ -364,8 +369,10 @@ impl ConfigCommand for ConcatenateCrud {
                 )
             },
             ConcatenateSet::Output { path: output } => {
-                configuration.condor.sequence_config.scene_concatenator.output =
-                    Some(output.clone());
+                let mut candidate = configuration.clone();
+                candidate.condor.sequence_config.scene_concatenator.output = Some(output.clone());
+                candidate.validate_output(false)?;
+                *configuration = candidate;
                 PropertyChange::new(
                     "output",
                     &configuration.condor.sequence_config.scene_concatenator.output,
@@ -386,8 +393,9 @@ impl ConfigCommand for ConcatenateCrud {
         configuration: &mut Configuration,
         key: Option<&Self::Key>,
     ) -> Result<Option<PropertyChange>> {
+        let mut candidate = configuration.clone();
         let defaults = SceneConcatenatorConfig::default();
-        let concat = &mut configuration.condor.sequence_config.scene_concatenator;
+        let concat = &mut candidate.condor.sequence_config.scene_concatenator;
         let (property, value) = match key {
             // `scenes_directory` is derived from --temp, so resetting the whole
             // section restores the method and output but keeps it in place.
@@ -412,6 +420,8 @@ impl ConfigCommand for ConcatenateCrud {
                 )
             },
         };
+        candidate.validate_output(false)?;
+        *configuration = candidate;
         Ok(Some(PropertyChange {
             property: property.to_owned(),
             value,
@@ -477,6 +487,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = concatenate_handler(
@@ -485,6 +496,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("concatenate_handler should succeed");
 
@@ -544,6 +556,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("init_handler should succeed");
         let (config, found_config_path) = concatenate_handler(
@@ -552,6 +565,7 @@ mod tests {
             Some(&temp.path().join(hash_path(&input_abs))),
             Some(&ConcatenationMethod::FFmpeg),
             None,
+            false,
         )
         .expect("concatanate_handler should succeed");
 

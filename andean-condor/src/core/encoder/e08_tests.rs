@@ -371,6 +371,7 @@ fn serial_case(root: &Path, case: &str, mut encoder: Encoder) {
         input,
         Output {
             path: root.join("unused"),
+            overwrite: false,
             tags: HashMap::new(),
             video_tags: HashMap::new(),
         },

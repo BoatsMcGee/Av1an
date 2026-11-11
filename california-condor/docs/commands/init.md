@@ -63,6 +63,11 @@ edits retain it. No old cache file is deleted.
 
 Path to the output video file. Extension must be supported by `--concat`.
 
+An existing output is refused by default, without a prompt. `--overwrite` explicitly
+saves `output.overwrite: true`; source aliases are still forbidden. Omitting the flag
+on later root or concatenate runs retains saved consent. Use `condor init set overwrite
+false` or `condor init reset overwrite` to revoke it. See [output safety](../configuration/condor/output.md).
+
 ### Examples
 
 - `> condor init input.mp4 ./output.mkv`

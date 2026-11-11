@@ -34,6 +34,182 @@ mod tests {
     use super::*;
 
     #[test]
+    fn c06_init_and_new_start_reject_alias_before_source_evaluation_or_save() {
+        for (init, overwrite) in [(true, false), (true, true), (false, false), (false, true)] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let source = temp.path().join("source.vpy");
+            let marker = serde_json::to_string(&temp.path().join("opened")).expect("path literal");
+            let bytes = format!(
+                "from pathlib import Path\nPath({marker}).write_text('opened')\nraise RuntimeError('SOURCE WAS OPENED')\n"
+            );
+            std::fs::write(&source, &bytes).expect("script");
+            let mut args = if init {
+                vec!["init", "source.vpy", "./source.vpy"]
+            } else {
+                vec!["--input", "source.vpy", "--output", "./source.vpy"]
+            };
+            if overwrite {
+                args.push("--overwrite");
+            }
+            let output = condor_cmd(&temp).env("PATH", "").args(args).output().expect("CLI");
+            assert!(!output.status.success());
+            assert!(
+                !temp.path().join("opened").exists(),
+                "output rejection must precede script evaluation: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!temp.path().join("condor.json").exists());
+            assert_eq!(std::fs::read(source).expect("source"), bytes.as_bytes());
+        }
+    }
+
+    #[test]
+    fn c06_init_refuses_existing_distinct_output_without_consent() {
+        let temp = tempfile::tempdir().expect("fixture");
+        std::fs::write(temp.path().join("source.vpy"), "import vapoursynth as vs\nvs.core.std.BlankClip(width=32,height=16,length=2,format=vs.YUV420P8).set_output()\n").expect("script");
+        std::fs::write(temp.path().join("out.mkv"), b"old final sentinel").expect("output");
+        condor_cmd(&temp)
+            .env("PATH", "")
+            .args(["init", "source.vpy", "out.mkv"])
+            .assert()
+            .failure();
+        assert!(!temp.path().join("condor.json").exists());
+        assert_eq!(
+            std::fs::read(temp.path().join("out.mkv")).expect("output"),
+            b"old final sentinel"
+        );
+    }
+
+    #[test]
+    fn c06_existing_start_admits_output_before_native_work_and_save() {
+        use andean_condor::models::input::VapourSynthScriptSource;
+        for case in ["root", "distinct", "new-scd", "new-tq", "missing-parent"] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let source = temp.path().join("source.vpy");
+            let marker = serde_json::to_string(&temp.path().join("opened")).expect("marker");
+            std::fs::write(&source,format!("from pathlib import Path\nPath({marker}).write_text('opened')\nraise RuntimeError('SOURCE WAS OPENED')\n")).expect("script");
+            let video = TestVideo {
+                path: source.clone(),
+                width: 32,
+                height: 16,
+                frames: 2,
+                fps_rational: (24, 1),
+                format: FFPixelFormat::YUV420P,
+                scenes: vec![],
+            };
+            let output = match case {
+                "root" => source.clone(),
+                "missing-parent" => temp.path().join("absent/out.mkv"),
+                _ => temp.path().join("out.mkv"),
+            };
+            if case == "distinct" {
+                std::fs::write(&output, b"old final").expect("old");
+            }
+            let mut config = default_config(&video, &output, &temp.path().join("work"));
+            config.condor.input = Input::VapourSynthScript {
+                source: VapourSynthScriptSource::Path(source.clone()),
+                variables: Default::default(),
+                index: 0,
+                filters: vec![],
+                stream_concurrently: false,
+            };
+            config.input = temp.path().join("duplicated-but-not-actual.vpy");
+            let file = temp.path().join("condor.json");
+            config.save(&file).expect("save fixture");
+            let before = std::fs::read(&file).expect("snapshot");
+            let mut cmd = condor_cmd(&temp);
+            cmd.env("PATH", "");
+            if case == "new-scd" {
+                cmd.args(["--scd-input", path_str(&output)]);
+            }
+            if case == "new-tq" {
+                cmd.args(["--tq-input", path_str(&output)]);
+            }
+            let result = cmd.output().expect("CLI");
+            assert!(!result.status.success(), "{case}");
+            let message = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                message.contains("Output") || message.contains("output"),
+                "{case}: {message}"
+            );
+            assert!(!temp.path().join("opened").exists(), "{case}: {message}");
+            assert_eq!(std::fs::read(file).expect("saved bytes"), before);
+            assert!(!temp.path().join("absent").exists());
+            if case == "distinct" {
+                assert_eq!(std::fs::read(output).expect("old"), b"old final");
+            }
+        }
+    }
+
+    #[test]
+    fn c06_overwrite_routes_and_saved_revocation() {
+        let temp = tempfile::tempdir().expect("fixture");
+        std::fs::write(temp.path().join("source.vpy"),"import vapoursynth as vs\nvs.core.std.BlankClip(width=32,height=16,length=2,format=vs.YUV420P8).set_output()\n").expect("script");
+        std::fs::write(temp.path().join("out.mkv"), b"old final").expect("old");
+        condor_cmd(&temp)
+            .env("PATH", "")
+            .args(["init", "source.vpy", "out.mkv", "--overwrite"])
+            .assert()
+            .success();
+        let file = temp.path().join("condor.json");
+        assert!(load(&file).condor.output.overwrite);
+        condor_cmd(&temp)
+            .env("PATH", "")
+            .env("CONDOR_TEST_MODE", "1")
+            .args(["--concat", "ivf"])
+            .assert()
+            .failure();
+        assert!(
+            load(&file).condor.output.overwrite,
+            "omission retains saved consent even when native validation later fails"
+        );
+        for args in [vec!["init", "set", "overwrite", "false"], vec!["init", "reset", "overwrite"]]
+        {
+            condor_cmd(&temp)
+                .env("PATH", "")
+                .args(["init", "set", "overwrite", "true"])
+                .assert()
+                .success();
+            condor_cmd(&temp).env("PATH", "").args(args).assert().success();
+            assert!(!load(&file).condor.output.overwrite);
+        }
+        let before = std::fs::read(&file).expect("before refusal");
+        condor_cmd(&temp).env("PATH", "").assert().failure();
+        assert_eq!(std::fs::read(&file).expect("unchanged"), before);
+        condor_cmd(&temp)
+            .env("PATH", "")
+            .env("CONDOR_TEST_MODE", "1")
+            .args(["--overwrite", "--concat", "ivf"])
+            .assert()
+            .failure();
+        assert!(
+            load(&file).condor.output.overwrite,
+            "root flag saves consent"
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("out.mkv")).expect("old"),
+            b"old final"
+        );
+        let mut legacy = serde_json::to_value(load(&file)).expect("JSON");
+        legacy["condor"]["output"].as_object_mut().expect("output").remove("overwrite");
+        let restored: california_condor::configuration::Configuration =
+            serde_json::from_value(legacy).expect("legacy loads");
+        assert!(!restored.condor.output.overwrite);
+        let schema = schemars::schema_for!(california_condor::configuration::Configuration);
+        let schema = serde_json::to_value(schema).expect("schema JSON");
+        assert_eq!(
+            schema["$defs"]["Output"]["properties"]["overwrite"]["default"],
+            false
+        );
+        assert_eq!(
+            schema["$defs"]["Output"]["properties"]["overwrite"]["type"],
+            "boolean"
+        );
+        condor_cmd(&temp).args(["scenes", "--overwrite"]).assert().failure();
+        condor_cmd(&temp).args(["--overwrite", "scenes"]).assert().failure();
+    }
+
+    #[test]
     fn c03_combined_root_input_and_temp_edit_matches_cli_and_keeps_custom_paths() {
         use andean_condor::models::input::VapourSynthScriptSource;
         use california_condor::commands::handlers::start::start_handler;
@@ -108,6 +284,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
             )
             .expect("empty combined direct handler");
             assert_eq!(direct.input, replacement);
@@ -283,6 +460,7 @@ mod tests {
             cli.maximum_quantizer,
             cli.target_profile.as_ref(),
             cli.max_tries,
+            cli.overwrite,
         )
         .expect_err("source guard precedes unrelated encoder validation");
         let message = format!("{error:#}");

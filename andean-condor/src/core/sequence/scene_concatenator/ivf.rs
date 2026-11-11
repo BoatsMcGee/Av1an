@@ -1,6 +1,8 @@
 use super::*;
 
 impl SceneConcatenator {
+    /// Scratch writer: the caller must exclusively own `output`; this can overwrite it.
+    /// Use the final Sequence boundary for saved overwrite/source protection and publication.
     #[inline]
     pub fn ivf(
         output: &Path,
@@ -16,6 +18,7 @@ impl SceneConcatenator {
         )
     }
 
+    /// Caller must exclusively own the scratch output (it may be truncated on error).
     #[inline]
     pub fn ivf_cancel(
         output: &Path,

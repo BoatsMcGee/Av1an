@@ -230,6 +230,7 @@ fn e25_parallel_initializer_writes_distinct_tables_reuses_and_preserves_legacy()
         input(1920, 1080, 1, 1),
         Output {
             path: temp.path().join("unused.ivf"),
+            overwrite: false,
             tags: HashMap::new(),
             video_tags: HashMap::new(),
         },
