@@ -11,6 +11,12 @@
 
 CLI mapping: `scale-noise --threshold <float> --minimum-scaler <float> --maximum-scaler <float> --scale-chroma`.
 
+All three numeric fields must be finite and non-negative, with `minimum_scaler <= maximum_scaler`; calibration values have no arbitrary upper cap. A newly enabled section defaults to `0` for all three and `false` for `scale_chroma`.
+
+When the maximum recorded noise across all scenes is at or below `threshold`, scaling does nothing: ISO, chroma and scaling metadata are preserved without saving. Missing measurements remain missing. With a greater maximum, scenes below the threshold are skipped; equality receives `minimum_scaler`, and the maximum receives `maximum_scaler`, interpolating linearly between them. ISO is rounded as an integer. Explicit zero factors are valid.
+
+`scale_chroma` affects only an existing chroma ISO; `null` stays `null`. Only Photon Noise on AOM, rav1e and SVT-AV1 is scaled; SVT-AV1 with native `film-grain` is excluded, as are already-scaled scenes. Recorded noise must be finite and non-negative even on excluded scenes. Invalid data, non-finite calculations or a rounded ISO outside `u32` return an error before scene changes or a save. Lower the factors if the resulting ISO is too large. See [Scale Noise](../../../commands/scale-noise.md) for safe saved-setting repairs.
+
 Example:
 
 ```json

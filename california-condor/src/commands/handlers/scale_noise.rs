@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::models::sequence::noise_scaler::NoiseScalerConfig;
+pub use andean_condor::models::sequence::noise_scaler::NoiseScalerConfigError as ScaleNoiseConfigError;
 use anyhow::Result;
 use clap::Subcommand;
 use serde_json::Value;
-use thiserror::Error;
 use tracing::warn;
 
 use crate::{
@@ -44,25 +44,22 @@ pub fn configure_noise_scaler(
     maximum_scaler: Option<f64>,
     scale_chroma: bool,
 ) -> Result<()> {
-    // Ensure noise_scaler config exists
-    if configuration.condor.sequence_config.noise_scaler.is_none() {
-        configuration.condor.sequence_config.noise_scaler = Some(NoiseScalerConfig::default());
+    let mut candidate =
+        configuration.condor.sequence_config.noise_scaler.clone().unwrap_or_default();
+    if let Some(t) = threshold {
+        candidate.threshold = t;
     }
-
-    if let Some(scaler_config) = &mut configuration.condor.sequence_config.noise_scaler {
-        if let Some(t) = threshold {
-            scaler_config.threshold = t;
-        }
-        if let Some(min) = minimum_scaler {
-            scaler_config.minimum_scaler = min;
-        }
-        if let Some(max) = maximum_scaler {
-            scaler_config.maximum_scaler = max;
-        }
-        if scale_chroma {
-            scaler_config.scale_chroma = true;
-        }
+    if let Some(min) = minimum_scaler {
+        candidate.minimum_scaler = min;
     }
+    if let Some(max) = maximum_scaler {
+        candidate.maximum_scaler = max;
+    }
+    if scale_chroma {
+        candidate.scale_chroma = true;
+    }
+    candidate.validate()?;
+    configuration.condor.sequence_config.noise_scaler = Some(candidate);
 
     Ok(())
 }
@@ -111,49 +108,8 @@ pub enum ScaleNoiseSet {
 /// The action triple attached to `condor scale-noise`.
 pub type ScaleNoiseAction = ConfigAction<ScaleNoiseKey, ScaleNoiseSet>;
 
-/// Everything that can make a Noise Scaler setting unusable.
-#[derive(Debug, Error)]
-pub enum ScaleNoiseConfigError {
-    #[error("threshold must be a finite, non-negative noise level")]
-    InvalidThreshold,
-    #[error("minimum scaler must be a finite, non-negative factor")]
-    InvalidMinimumScaler,
-    #[error("maximum scaler must be a finite, non-negative factor")]
-    InvalidMaximumScaler,
-    #[error("minimum scaler must not exceed maximum scaler")]
-    ScalerRangeInverted,
-}
-
 /// The `condor scale-noise` configuration section.
 pub struct ScaleNoiseCrud;
-
-impl ScaleNoiseCrud {
-    /// The section, materialized so a `set` always has somewhere to write.
-    fn section_mut(configuration: &mut Configuration) -> &mut NoiseScalerConfig {
-        configuration
-            .condor
-            .sequence_config
-            .noise_scaler
-            .get_or_insert_with(NoiseScalerConfig::default)
-    }
-
-    /// Rejects scaler bounds the Noise Scaler could not honour.
-    fn validate(scaler: &NoiseScalerConfig) -> Result<(), ScaleNoiseConfigError> {
-        if !scaler.threshold.is_finite() || scaler.threshold < 0.0 {
-            return Err(ScaleNoiseConfigError::InvalidThreshold);
-        }
-        if !scaler.minimum_scaler.is_finite() || scaler.minimum_scaler < 0.0 {
-            return Err(ScaleNoiseConfigError::InvalidMinimumScaler);
-        }
-        if !scaler.maximum_scaler.is_finite() || scaler.maximum_scaler < 0.0 {
-            return Err(ScaleNoiseConfigError::InvalidMaximumScaler);
-        }
-        if scaler.minimum_scaler > scaler.maximum_scaler {
-            return Err(ScaleNoiseConfigError::ScalerRangeInverted);
-        }
-        Ok(())
-    }
-}
 
 impl ConfigCommand for ScaleNoiseCrud {
     type Key = ScaleNoiseKey;
@@ -181,26 +137,29 @@ impl ConfigCommand for ScaleNoiseCrud {
     }
 
     fn apply(configuration: &mut Configuration, set: &Self::Set) -> Result<PropertyChange> {
+        let mut scaler =
+            configuration.condor.sequence_config.noise_scaler.clone().unwrap_or_default();
         let (property, value) = match set {
             ScaleNoiseSet::Threshold { value } => {
-                Self::section_mut(configuration).threshold = *value;
+                scaler.threshold = *value;
                 ("threshold", serde_json::to_value(value)?)
             },
             ScaleNoiseSet::MinimumScaler { value } => {
-                Self::section_mut(configuration).minimum_scaler = *value;
+                scaler.minimum_scaler = *value;
                 ("minimum-scaler", serde_json::to_value(value)?)
             },
             ScaleNoiseSet::MaximumScaler { value } => {
-                Self::section_mut(configuration).maximum_scaler = *value;
+                scaler.maximum_scaler = *value;
                 ("maximum-scaler", serde_json::to_value(value)?)
             },
             ScaleNoiseSet::ScaleChroma { value } => {
                 let enabled = value.unwrap_or(Toggle::On).enabled();
-                Self::section_mut(configuration).scale_chroma = enabled;
+                scaler.scale_chroma = enabled;
                 ("scale-chroma", serde_json::to_value(enabled)?)
             },
         };
-        Self::validate(Self::section_mut(configuration))?;
+        scaler.validate()?;
+        configuration.condor.sequence_config.noise_scaler = Some(scaler);
         Ok(PropertyChange {
             property: property.to_owned(),
             value,
@@ -228,8 +187,9 @@ impl ConfigCommand for ScaleNoiseCrud {
             .condor
             .sequence_config
             .noise_scaler
-            .as_mut()
+            .as_ref()
             .expect("noise scaler was just checked to exist");
+        let mut scaler = scaler.clone();
         let defaults = NoiseScalerConfig::default();
         let (property, value) = match key {
             None => unreachable!("handled above"),
@@ -256,6 +216,8 @@ impl ConfigCommand for ScaleNoiseCrud {
                 ("scale-chroma", serde_json::to_value(scaler.scale_chroma)?)
             },
         };
+        scaler.validate()?;
+        configuration.condor.sequence_config.noise_scaler = Some(scaler);
         Ok(Some(PropertyChange {
             property: property.to_owned(),
             value,

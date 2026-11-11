@@ -22,6 +22,234 @@ mod tests {
 
     use super::*;
 
+    fn q12_fixture(temp: &std::path::Path) -> california_condor::configuration::Configuration {
+        let video = TestVideo {
+            path: temp.join("must-not-open.mkv"),
+            width: 2,
+            height: 2,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: andean_condor::ffmpeg::FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        let mut configuration =
+            default_config(&video, &temp.join("out.mkv"), &temp.join("scratch"));
+        configuration.condor.encoder.set_executable(Some(temp.join("must-not-run")));
+        configuration.condor.scenes = video.mock_scenes(&configuration.condor.encoder);
+        configuration.condor.sequence_config.noise_scaler = Some(NoiseScalerConfig {
+            threshold: 0.2,
+            minimum_scaler: 0.5,
+            maximum_scaler: 1.5,
+            scale_chroma: true,
+        });
+        configuration
+    }
+
+    #[test]
+    fn q12_flags_and_crud_errors_preserve_memory_and_saved_bytes_offline() {
+        use california_condor::commands::{
+            config::ConfigCommand,
+            handlers::scale_noise::{
+                ScaleNoiseCrud, ScaleNoiseKey, ScaleNoiseSet, configure_noise_scaler,
+                scale_noise_handler,
+            },
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        let mut failures = vec![];
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1] {
+            for field in 0..3 {
+                let mut config = q12_fixture(temp.path());
+                config.save(&path).expect("save");
+                let before = serde_json::to_vec(&config).expect("snapshot");
+                let bytes = std::fs::read(&path).expect("bytes");
+                let args = match field {
+                    0 => (Some(bad), None, None),
+                    1 => (None, Some(bad), None),
+                    _ => (None, None, Some(bad)),
+                };
+                let result = configure_noise_scaler(&mut config, args.0, args.1, args.2, false);
+                if result.is_ok() || serde_json::to_vec(&config).expect("config") != before {
+                    failures.push(format!("flags field {field} bad={bad}: {result:?}"));
+                }
+                config = q12_fixture(temp.path());
+                let before = serde_json::to_vec(&config).expect("CRUD snapshot");
+                let set = match field {
+                    0 => ScaleNoiseSet::Threshold { value: bad },
+                    1 => ScaleNoiseSet::MinimumScaler { value: bad },
+                    _ => ScaleNoiseSet::MaximumScaler { value: bad },
+                };
+                let result = ScaleNoiseCrud::apply(&mut config, &set);
+                if result.is_ok() || serde_json::to_vec(&config).expect("config") != before {
+                    failures.push(format!("CRUD field {field} bad={bad}: {result:?}"));
+                }
+                if scale_noise_handler(Some(&path), args.0, args.1, args.2, false).is_ok()
+                    || std::fs::read(&path).expect("bytes") != bytes
+                {
+                    failures.push(format!(
+                        "saved flags field {field} bad={bad} accepted/changed bytes"
+                    ));
+                }
+            }
+        }
+        let mut config = q12_fixture(temp.path());
+        let before = serde_json::to_vec(&config).expect("snapshot");
+        let result = ScaleNoiseCrud::restore(&mut config, Some(&ScaleNoiseKey::MaximumScaler));
+        if result.is_ok() || serde_json::to_vec(&config).expect("config") != before {
+            failures.push(format!("reset max below min accepted/mutated: {result:?}"));
+        }
+        config.condor.sequence_config.noise_scaler = None;
+        let before = serde_json::to_vec(&config).expect("snapshot");
+        let result = configure_noise_scaler(&mut config, Some(f64::NAN), None, None, false);
+        if result.is_ok() || serde_json::to_vec(&config).expect("config") != before {
+            failures.push("invalid flags materialized disabled section".into());
+        }
+        assert!(!temp.path().join("scratch").exists());
+        assert!(
+            failures.is_empty(),
+            "invalid config accepted or mutated: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn q12_actual_cli_invalid_flags_set_reset_preserve_file_bytes_offline() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        let config = q12_fixture(temp.path());
+        let mut failures = vec![];
+        for args in [
+            vec!["scale-noise", "--threshold", "NaN"],
+            vec!["scale-noise", "--minimum-scaler", "inf"],
+            vec!["scale-noise", "--maximum-scaler=-1"],
+            vec!["scale-noise", "--minimum-scaler", "2"],
+            vec!["scale-noise", "set", "threshold", "NaN"],
+            vec!["scale-noise", "set", "maximum-scaler", "inf"],
+            vec!["scale-noise", "set", "minimum-scaler", "2"],
+            vec!["scale-noise", "reset", "maximum-scaler"],
+        ] {
+            config.save(&path).expect("save");
+            let bytes = std::fs::read(&path).expect("bytes");
+            let output =
+                condor_cmd(&temp).env("PATH", temp.path()).args(&args).output().expect("CLI");
+            let unchanged = std::fs::read(&path).expect("bytes") == bytes;
+            eprintln!(
+                "Q12 CLI {args:?}: status={} unchanged={unchanged} stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if output.status.success() || !unchanged {
+                failures.push(format!(
+                    "{args:?}: status={}, unchanged={unchanged}",
+                    output.status
+                ));
+            }
+        }
+        assert!(!temp.path().join("scratch").exists());
+        assert!(
+            failures.is_empty(),
+            "CLI accepted invalid edit or changed bytes: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn q12_candidate_repair_defaults_and_crud_off_are_offline() {
+        use california_condor::commands::{
+            config::ConfigCommand,
+            handlers::scale_noise::{
+                ScaleNoiseCrud, ScaleNoiseKey, ScaleNoiseSet, configure_noise_scaler,
+                scale_noise_handler,
+            },
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        let mut config = q12_fixture(temp.path());
+        config
+            .condor
+            .sequence_config
+            .noise_scaler
+            .as_mut()
+            .expect("scaler")
+            .minimum_scaler = 2.0;
+        config.save(&path).expect("bad finite bounds");
+        let (mut repaired, _) =
+            scale_noise_handler(Some(&path), Some(0.2), Some(0.5), Some(1.5), false)
+                .expect("complete flags repair");
+        assert!(
+            repaired
+                .condor
+                .sequence_config
+                .noise_scaler
+                .as_ref()
+                .expect("scaler")
+                .scale_chroma,
+            "false flag retains true"
+        );
+        ScaleNoiseCrud::apply(
+            &mut repaired,
+            &ScaleNoiseSet::ScaleChroma {
+                value: Some(california_condor::commands::config::Toggle::Off),
+            },
+        )
+        .expect("CRUD off");
+        assert!(
+            !repaired
+                .condor
+                .sequence_config
+                .noise_scaler
+                .as_ref()
+                .expect("scaler")
+                .scale_chroma
+        );
+        config.save(&path).expect("bad bounds again");
+        condor_cmd(&temp)
+            .env("PATH", temp.path())
+            .args(["scale-noise", "set", "maximum-scaler", "3"])
+            .assert()
+            .success();
+        assert_eq!(
+            load(&path).condor.sequence_config.noise_scaler.expect("scaler").maximum_scaler,
+            3.0
+        );
+        config.save(&path).expect("bad bounds again");
+        condor_cmd(&temp)
+            .env("PATH", temp.path())
+            .args(["scale-noise", "reset", "minimum-scaler"])
+            .assert()
+            .success();
+        assert_eq!(
+            load(&path).condor.sequence_config.noise_scaler.expect("scaler").minimum_scaler,
+            0.0
+        );
+        config.save(&path).expect("bad bounds again");
+        condor_cmd(&temp)
+            .env("PATH", temp.path())
+            .args(["scale-noise", "reset"])
+            .assert()
+            .success();
+        assert!(load(&path).condor.sequence_config.noise_scaler.is_none());
+        config.condor.sequence_config.noise_scaler.as_mut().expect("scaler").threshold = f64::NAN;
+        configure_noise_scaler(&mut config, Some(0.2), Some(0.5), Some(1.5), false)
+            .expect("repair before validation");
+        ScaleNoiseCrud::restore(&mut config, None).expect("whole reset");
+        assert!(config.condor.sequence_config.noise_scaler.is_none());
+        ScaleNoiseCrud::restore(&mut config, Some(&ScaleNoiseKey::Threshold))
+            .expect("disabled reset");
+        assert!(config.condor.sequence_config.noise_scaler.is_none());
+        configure_noise_scaler(&mut config, None, None, None, false).expect("defaults unchanged");
+        let defaults = config.condor.sequence_config.noise_scaler.expect("defaults");
+        assert_eq!(
+            (
+                defaults.threshold,
+                defaults.minimum_scaler,
+                defaults.maximum_scaler,
+                defaults.scale_chroma
+            ),
+            (0.0, 0.0, 0.0, false)
+        );
+        assert!(!temp.path().join("scratch").exists());
+        assert!(!temp.path().join("must-not-open.mkv").exists());
+    }
+
     #[serial]
     #[test]
     fn default_and_no_noise_detector_data() {

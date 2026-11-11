@@ -2,6 +2,10 @@
 
 Scale Photon Noise ISO per scene based on Noise Detector results. Scenes must have Photon Noise (`--photon-noise`/`--chroma-noise`) configured. Scenes below the threshold are not scaled. See [guide](../guide.md) and [Photon Noise](../types/photon-noise.md).
 
+Threshold and scaler bounds must be finite and non-negative, with minimum ≤ maximum. There is no fixed upper calibration limit. If the maximum recorded noise (across all scenes) is at or below the threshold, ISO, chroma and scaling records are left untouched and the scaling stage does not save. The command still saves its configuration edits before running that stage. Missing measurements are not treated as zero.
+
+Otherwise, the factor is `minimum + (noise - threshold) / (maximum_noise - threshold) * (maximum - minimum)`. A scene exactly at the threshold receives the minimum factor. ISO is rounded to the nearest integer; an explicit zero factor can produce ISO zero. Invalid recorded noise, non-finite calculations or an ISO that cannot round into `u32` produce a scene-specific error before any scene updates are published or saved. Reduce the calibration factors if the resulting ISO is too large.
+
 ```bash
 $ condor scale-noise --threshold 0.002
 $ condor scale-noise --threshold 0.002 --minimum-scaler 0.5 --maximum-scaler 2.0 --scale-chroma
@@ -32,7 +36,7 @@ Maximum scale factor for Photon Noise ISO scaling.
 
 ## Scale Chroma `--scale-chroma`
 
-Scale Chroma ISO.
+Scale existing Chroma ISO too. Without this flag, chroma is unchanged; an absent chroma ISO stays absent. The flag only enables scaling; use `set scale-chroma off` to disable it.
 
 ## Edit saved settings
 
@@ -42,6 +46,8 @@ Scale Chroma ISO.
 - `set minimum-scaler FACTOR` / `set maximum-scaler FACTOR` — bounds for the ISO scale factor; rejected when the minimum exceeds the maximum.
 - `set scale-chroma [on|off]` — scale the chroma ISO too; the value may be omitted, which means `on`.
 - `info [threshold|minimum-scaler|maximum-scaler|scale-chroma]` prints JSON; `reset KEY` resets one of them, and `reset` with no key drops the whole optional section back to `null`.
+
+Flags, `set` and single-key `reset` validate the complete resulting section before changing it. Invalid edits leave memory and saved file bytes unchanged. A replacement can repair invalid saved bounds; resetting the whole section can always disable scaling. A newly enabled section retains the defaults: threshold/minimum/maximum `0`, chroma scaling `false`.
 
 ```bash
 $ condor scale-noise set threshold 0.002
