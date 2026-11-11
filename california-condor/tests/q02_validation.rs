@@ -62,16 +62,19 @@ mod tests {
         configuration
     }
 
+    fn blank_input() -> InputModel {
+        InputModel::VapourSynthScript {
+        source: VapourSynthScriptSource::Text("from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=32,height=32,length=2,format=YUV420P8).set_output()\n".into()),
+        variables: Default::default(), index: 0, filters: vec![], stream_concurrently: false,
+        }
+    }
+
     fn runtime(
         configuration: &Configuration,
         saved: Arc<AtomicUsize>,
     ) -> Condor<CliSequenceData, CliSequenceConfig> {
-        let seed = InputModel::VapourSynthScript {
-        source: VapourSynthScriptSource::Text("from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=32,height=32,length=2,format=YUV420P8).set_output()\n".into()),
-        variables: Default::default(), index: 0, filters: vec![], stream_concurrently: false,
-    };
         Condor::new(
-            Input::from_data(&seed).expect("blank input"),
+            Input::from_data(&blank_input()).expect("blank input"),
             Output::new(&configuration.condor.output).expect("output"),
             configuration.condor.encoder.clone(),
             configuration.condor.scenes.clone(),
@@ -526,5 +529,292 @@ mod tests {
             assert!(!configuration.temp.exists());
             assert!(!temp.path().join("forbidden.ffindex").exists());
         }
+    }
+
+    #[test]
+    fn q02_root_and_start_apply_repairs_before_final_validation() {
+        use andean_condor::models::{
+            encoder::cli_parameter::CLIParameter, sequence::target_quality::types::ProbeStrategy,
+        };
+        use california_condor::commands::{CondorCli, handlers::start::start_handler};
+        use clap::Parser;
+
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        let mut failures = vec![];
+        for (case, flags) in [
+            (
+                "range",
+                vec!["--minimum-quantizer", "10", "--maximum-quantizer", "30"],
+            ),
+            (
+                "encoder",
+                vec![
+                    "--encoder",
+                    "svt-av1",
+                    "--minimum-quantizer",
+                    "20",
+                    "--maximum-quantizer",
+                    "50",
+                ],
+            ),
+            ("options", vec!["--tq-params", "--preset 6 --rc 0"]),
+            ("profile", vec!["--target-profile", "standard"]),
+        ] {
+            let mut configuration = fixture(temp.path());
+            // Start reads SCD metadata even without SCD flags. A generated clip
+            // satisfies that existing requirement without opening/indexing the source.
+            configuration.condor.sequence_config.scene_detector.input = Some(blank_input());
+            let quality = configuration.condor.sequence_config.target_quality.as_mut().expect("TQ");
+            match case {
+                "range" => quality.quantizer_range = (40, 20),
+                "encoder" => {
+                    quality.quantizer_range = (50, 140);
+                    configuration.condor.encoder =
+                        Encoder::default_from_base(&EncoderBase::RAV1E, false);
+                    for scene in &mut configuration.condor.scenes {
+                        scene.encoder = configuration.condor.encoder.clone();
+                    }
+                },
+                "options" => {
+                    quality.probing.encoder_options =
+                        Some(CLIParameter::new_numbers("--", " ", &[("rc", 1.0)]));
+                },
+                _ => quality.probing.strategy = ProbeStrategy::Skip { skip: 0 },
+            }
+            let before = serde_json::to_vec(&configuration).expect("hand-edited JSON");
+            for entry in ["root CLI", "start handler"] {
+                std::fs::write(&path, &before).expect("fixture");
+                if entry == "root CLI" {
+                    let output = common::condor_cmd(&temp).args(&flags).output().expect("root CLI");
+                    // The start handler must save the repaired candidate before the runner
+                    // reaches the missing-input sentinel; no native encode is needed.
+                    assert!(!output.status.success());
+                    let message = String::from_utf8_lossy(&output.stderr);
+                    if !message.contains("must-not-open.mkv") {
+                        failures.push(format!("{case}/{entry}: {message}"));
+                    }
+                } else {
+                    let cli = CondorCli::try_parse_from(
+                        std::iter::once("condor").chain(flags.iter().copied()),
+                    )
+                    .expect("root flags");
+                    let result = start_handler(
+                        Some(&path),
+                        cli.temp.as_deref(),
+                        cli.input.as_deref(),
+                        cli.scd_input.as_deref(),
+                        cli.tq_input.as_deref(),
+                        cli.output.as_deref(),
+                        cli.decoder.as_ref(),
+                        cli.scd_decoder.as_ref(),
+                        cli.tq_decoder.as_ref(),
+                        cli.filters.as_deref(),
+                        cli.scd_filters.as_deref(),
+                        cli.tq_filters.as_deref(),
+                        cli.vs_args.as_deref(),
+                        cli.scd_vs_args.as_deref(),
+                        cli.tq_vs_args.as_deref(),
+                        cli.concat.as_ref(),
+                        cli.discard.as_deref(),
+                        cli.workers,
+                        cli.encoder.as_ref(),
+                        cli.passes,
+                        cli.params.as_deref(),
+                        cli.tq_params.as_deref(),
+                        cli.photon_noise,
+                        cli.chroma_noise,
+                        cli.ffmpeg_filter.as_deref(),
+                        None,
+                        cli.target_metric.as_ref(),
+                        cli.target,
+                        cli.minimum_quantizer,
+                        cli.maximum_quantizer,
+                        cli.target_profile.as_ref(),
+                        cli.max_tries,
+                    );
+                    if let Err(error) = result {
+                        failures.push(format!("{case}/{entry}: {error:#}"));
+                    }
+                }
+                let repaired = Configuration::load(&path).expect("load").expect("exists");
+                let quality = repaired.condor.sequence_config.target_quality.as_ref().expect("TQ");
+                let expected_range = match case {
+                    "range" => (10, 30),
+                    "encoder" => (20, 50),
+                    _ => (0, 51),
+                };
+                if quality.quantizer_range != expected_range
+                    || quality.validate(&repaired.condor.encoder).is_err()
+                {
+                    failures.push(format!(
+                        "{case}/{entry}: stale candidate saved: {quality:?}"
+                    ));
+                }
+                if case == "encoder" && repaired.condor.encoder.base() != EncoderBase::SVTAV1 {
+                    failures.push(format!("{case}/{entry}: actual encoder switch not saved"));
+                }
+                if case == "options" && quality.validate(&repaired.condor.encoder).is_ok() {
+                    assert_eq!(quality.probing.encoder_options.as_ref().expect("explicit probe options")["preset"].to_string_value(), "6");
+                }
+                if case == "profile" && quality.validate(&repaired.condor.encoder).is_ok() {
+                    assert_eq!(
+                        quality
+                            .probing
+                            .strategy
+                            .frame_indices(0, 100)
+                            .expect("repaired Q01 selection"),
+                        (38..63).collect::<Vec<_>>()
+                    );
+                }
+                assert_eq!(
+                    serde_json::to_value(&repaired.condor.scenes).expect("scenes"),
+                    serde_json::to_value(&configuration.condor.scenes).expect("original scenes")
+                );
+                assert!(!configuration.temp.exists());
+                assert!(!temp.path().join("forbidden.ffindex").exists());
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn q02_root_still_rejects_invalid_final_candidates_and_early_encoder_controls() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut configuration = fixture(temp.path());
+        configuration.condor.sequence_config.scene_detector.input = Some(blank_input());
+        let path = temp.path().join("condor.json");
+        configuration.save(&path).expect("valid save");
+        let before = std::fs::read(&path).expect("snapshot");
+        for (flags, expected) in [
+            (
+                vec!["--minimum-quantizer", "40", "--maximum-quantizer", "20"],
+                "quantizer",
+            ),
+            (vec!["--tq-params", "--rc 1 --keyint 24"], "rc"),
+            (vec!["--target", "NaN"], "finite"),
+            (vec!["--params", "--preset 99"], "preset"),
+            (vec!["--max-tries", "0"], "max-tries"),
+        ] {
+            let output = common::condor_cmd(&temp).args(flags).output().expect("root CLI");
+            assert!(!output.status.success());
+            let message = String::from_utf8_lossy(&output.stderr);
+            assert!(message.contains(expected), "{message}");
+            assert_eq!(std::fs::read(&path).expect("unchanged bytes"), before);
+            assert!(!configuration.temp.exists());
+            assert!(!temp.path().join("forbidden.ffindex").exists());
+        }
+    }
+
+    #[test]
+    fn q02_empty_scene_public_validation_rejects_global_config_before_detection() {
+        use andean_condor::{
+            core::{AndeanCondor, DefaultAndeanCondor},
+            models::sequence::{
+                DefaultSequenceConfig, DefaultSequenceData, target_quality::types::ProbeStrategy,
+            },
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut failures = vec![];
+        for invalid in [
+            "range", "target", "probes", "strategy", "endpoint", "options", "valid", "disabled",
+        ] {
+            let mut configuration = fixture(temp.path());
+            configuration.condor.scenes.clear();
+            configuration.condor.sequence_config.parallel_encoder.validate_frame_count = false;
+            let quality = configuration.condor.sequence_config.target_quality.as_mut().expect("TQ");
+            let expected = match invalid {
+                "range" => {
+                    quality.quantizer_range = (40, 20);
+                    "quantizer"
+                },
+                "target" => {
+                    quality.metric.target_range_mut().0 = f64::NAN;
+                    "finite"
+                },
+                "probes" => {
+                    quality.maximum_probes = 0;
+                    "probes"
+                },
+                "strategy" => {
+                    quality.probing.strategy = ProbeStrategy::Skip { skip: 0 };
+                    "skip"
+                },
+                "endpoint" => {
+                    quality.quantizer_range = (71, 71);
+                    "quantizer"
+                },
+                "valid" => "",
+                "disabled" => {
+                    configuration.condor.sequence_config.target_quality = None;
+                    ""
+                },
+                _ => {
+                    quality.probing.encoder_options = Some(
+                        andean_condor::models::encoder::cli_parameter::CLIParameter::new_numbers(
+                            "--",
+                            " ",
+                            &[("rc", 1.0)],
+                        ),
+                    );
+                    "rc"
+                },
+            };
+            for entry in ["pure admission", "sequence validate", "Condor validate"] {
+                let saved = Arc::new(AtomicUsize::new(0));
+                let mut condor = runtime(&configuration, Arc::clone(&saved));
+                let result = match entry {
+                    "pure admission" => TargetQuality::validate_config(&condor),
+                    "sequence validate" => {
+                        TargetQuality::new(None, None).validate(&mut condor).map(|_| ())
+                    },
+                    _ => {
+                        // The pipeline checks executable existence before its sequences;
+                        // the current test binary satisfies that without any native probe.
+                        condor
+                            .encoder
+                            .set_executable(Some(std::env::current_exe().expect("test binary")));
+                        let config = DefaultSequenceConfig {
+                            target_quality: condor.sequence_config.target_quality,
+                            parallel_encoder: condor.sequence_config.parallel_encoder,
+                            ..Default::default()
+                        };
+                        let condor: Condor<DefaultSequenceData, DefaultSequenceConfig> =
+                            Condor::new(
+                                condor.input,
+                                condor.output,
+                                condor.encoder,
+                                vec![],
+                                Some(config),
+                                Box::new(|_| panic!("validation must not persist")),
+                            );
+                        let mut pipeline = DefaultAndeanCondor {
+                            condor,
+                            sequences: vec![Box::new(TargetQuality::new(None, None))],
+                        };
+                        let result = pipeline.validate().map(|_| ());
+                        assert!(pipeline.condor.scenes.is_empty(), "no scene detection");
+                        result
+                    },
+                };
+                match result {
+                    Ok(()) if expected.is_empty() => (),
+                    Ok(()) => failures.push(format!(
+                        "{invalid}/{entry}: accepted invalid global TQ before detection"
+                    )),
+                    Err(error) if expected.is_empty() => failures.push(format!(
+                        "{invalid}/{entry}: rejected valid no-work config: {error:#}"
+                    )),
+                    Err(error) if !format!("{error:#}").contains(expected) => {
+                        failures.push(format!("{invalid}/{entry}: {error:#}"));
+                    },
+                    Err(_) => (),
+                }
+                assert_eq!(saved.load(Ordering::Relaxed), 0);
+                assert!(!configuration.temp.exists());
+                assert!(!temp.path().join("forbidden.ffindex").exists());
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

@@ -571,9 +571,6 @@ impl TargetQuality {
         DataHandler: SequenceDataHandler,
         ConfigHandler: SequenceConfigHandler + TargetQualityConfigHandler,
     {
-        if condor.scenes.is_empty() {
-            return Ok(());
-        }
         if let Some(config) = condor.sequence_config.target_quality()? {
             config.validate(&condor.encoder)?;
             for (index, scene) in condor.scenes.iter().enumerate() {

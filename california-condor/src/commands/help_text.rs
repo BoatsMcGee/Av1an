@@ -468,19 +468,23 @@ Defaults to **ssimulacra2**.
 "#;
 pub const HELP_TARGET_METRIC_SHORT: &str = short_help(HELP_TARGET_METRIC);
 
-pub const HELP_TARGET: &str = r#"The quality metric score that Target Quality will aim for.
+pub const HELP_TARGET: &str = r#"The finite quality metric score that Target Quality will aim for.
 "#;
 pub const HELP_TARGET_SHORT: &str = short_help(HELP_TARGET);
 
-pub const HELP_MINIMUM_QUANTIZER: &str = r#"The lowest quantizer for Target Quality to try when searching for the optimal quantizer.
+pub const HELP_MINIMUM_QUANTIZER: &str = r#"The lowest Target Quality quantizer; minimum <= maximum (equal bounds allowed).
 
 Default depends on the specified encoder (*--encoder*).
+Both bounds must pass known encoder settings checks. Native bit-depth/version
+and FFmpeg codec limits still apply; pure checks do not establish native support.
 "#;
 pub const HELP_MINIMUM_QUANTIZER_SHORT: &str = short_help(HELP_MINIMUM_QUANTIZER);
 
-pub const HELP_MAXIMUM_QUANTIZER: &str = r#"The highest quantizer for Target Quality to try when searching for the optimal quantizer.
+pub const HELP_MAXIMUM_QUANTIZER: &str = r#"The highest Target Quality quantizer; maximum >= minimum (equal bounds allowed).
 
 Default depends on the specified encoder (*--encoder*).
+Both bounds must pass known encoder settings checks. Native bit-depth/version
+and FFmpeg codec limits still apply; pure checks do not establish native support.
 "#;
 pub const HELP_MAXIMUM_QUANTIZER_SHORT: &str = short_help(HELP_MAXIMUM_QUANTIZER);
 

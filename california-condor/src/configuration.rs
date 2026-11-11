@@ -181,7 +181,6 @@ impl Configuration {
 
     /// Checks global and per-scene encoders before CLI edits are saved or workers start.
     pub(crate) fn validate_encoder_settings(&self) -> Result<()> {
-        self.validate_target_quality()?;
         self.condor.sequence_config.parallel_encoder.validate()?;
         self.condor.encoder.validate_settings()?;
         for scene in &self.condor.scenes {
