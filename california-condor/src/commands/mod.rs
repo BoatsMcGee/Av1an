@@ -3193,7 +3193,10 @@ mod tests {
     mod discard {
         use std::str::FromStr;
 
+        use clap::{CommandFactory, FromArgMatches};
+
         use super::*;
+        use crate::commands::help_text::process_command_tree;
 
         #[test]
         fn parses_every_category() {
@@ -3235,36 +3238,46 @@ mod tests {
             }
         }
 
-        /// The top-level flag applies to any command, so it is accepted before
-        /// the subcommand as well as after it.
+        /// Root discard options belong to a full run, not a selected subcommand.
         #[test]
-        fn the_top_level_flag_is_accepted() {
-            let result =
-                CondorCli::try_parse_from(["condor", "--discard", "audio", "detect-scenes"]);
-            assert_matches!(
-                result,
-                Ok(CondorCli {
-                    discard: Some(_),
-                    ..
-                }),
-                "\"condor --discard audio detect-scenes\" parses"
-            );
+        fn c09_root_discard_before_subcommand_is_rejected() {
+            let mut cmd = process_command_tree(CondorCli::command());
+            let matches = cmd
+                .try_get_matches_from_mut(["condor", "--discard", "audio", "detect-scenes"])
+                .expect("known root options parse before admission");
+            let error = CondorCli::admit_root_arguments(&matches, &mut cmd)
+                .expect_err("root discard cannot be combined with detect-scenes");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            assert!(error.to_string().contains("--discard"), "{error}");
         }
 
-        /// The subcommand's own `--discard` is parsed independently of the
-        /// top-level one, which belongs to the full run.
+        /// Local discard is valid, but cannot make misplaced root discard valid.
         #[test]
-        fn the_subcommand_flag_is_parsed_separately() {
-            let cli = CondorCli::try_parse_from([
-                "condor",
-                "--discard",
-                "audio",
-                "concatenate",
-                "--discard",
-                "subtitle",
-            ])
-            .expect("\"condor --discard audio concatenate --discard subtitle\" parses");
-            assert_eq!(cli.discard, Some(vec![DiscardCategory::Audio]));
+        fn c09_root_discard_conflicts_even_with_valid_local_discard() {
+            let mut cmd = process_command_tree(CondorCli::command());
+            let matches = cmd
+                .try_get_matches_from_mut([
+                    "condor",
+                    "--discard",
+                    "audio",
+                    "concatenate",
+                    "--discard",
+                    "subtitle",
+                ])
+                .expect("known root and local options parse before admission");
+            let error = CondorCli::admit_root_arguments(&matches, &mut cmd)
+                .expect_err("local discard does not excuse misplaced root discard");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            assert!(error.to_string().contains("--discard"), "{error}");
+
+            let mut cmd = process_command_tree(CondorCli::command());
+            let matches = cmd
+                .try_get_matches_from_mut(["condor", "concatenate", "--discard", "subtitle"])
+                .expect("command-local discard parses");
+            CondorCli::admit_root_arguments(&matches, &mut cmd)
+                .expect("command-local discard is admitted");
+            let cli = CondorCli::from_arg_matches(&matches).expect("admitted CLI");
+            assert_eq!(cli.discard, None);
             let Commands::Concatenate {
                 discard: Some(categories),
                 ..
