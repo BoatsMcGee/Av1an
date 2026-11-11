@@ -221,8 +221,8 @@ where
                     .prefix(".av1an-serial-")
                     .tempdir_in(&self.scenes_directory)
                     .context("Creating private serial scene directory")?;
-                // A missing basename inside our exclusive directory lets native
-                // codecs create output without an overwrite flag or caller files.
+                // Only this exclusive attempt directory grants FFmpeg scratch
+                // overwrite, never the separately protected published scene path.
                 let candidate = tempfile::TempPath::try_from_path(
                     attempt.path().join(format!("{scene_id}.{extension}")),
                 )?;
@@ -248,7 +248,7 @@ where
                     thread::Builder::new().name("serial-encoder".into()).spawn(move || {
                         #[cfg(all(test, target_os = "linux"))]
                         e17_tests::worker("encoder");
-                        scene_encoder.encode_with_stream_cancel(
+                        scene_encoder.encode_owned_with_stream_cancel(
                             frames_rx,
                             &private_output,
                             scene_progress_tx,

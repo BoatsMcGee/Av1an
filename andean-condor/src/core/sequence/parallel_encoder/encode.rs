@@ -125,7 +125,8 @@ pub(super) fn consume_frames(
             super::e11_tests::fault("worker", task.original_index)?;
             let result = task
                 .encoder
-                .encode_with_stream_cancel(frames, temp, tx, clip_info, cancellation)
+                // encode_attempts retains the exclusive TempDir through this call.
+                .encode_owned_with_stream_cancel(frames, temp, tx, clip_info, cancellation)
                 .or_else(|error| {
                     if error.is::<crate::utils::cancellation::Cancelled>() {
                         Err(error)

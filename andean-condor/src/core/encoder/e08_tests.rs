@@ -9,6 +9,10 @@ fn bytes(value: &StringOrBytes) -> &[u8] {
 }
 
 fn diagnostics(result: &EncoderResult, dropped_after_first: bool) {
+    assert!(
+        !result.parameters.iter().any(|parameter| parameter == "-y"),
+        "non-FFmpeg argv unchanged"
+    );
     let mut stdout = b"POC: 0\r\n".to_vec();
     if dropped_after_first {
         stdout.extend_from_slice(b"POC: 1\r\n");
@@ -56,6 +60,19 @@ fn e26_vvenc_bounded_public_input_and_stream_progress() {
     bounded_runtime(&["vvenc-input", "vvenc-stream"]);
 }
 
+#[test]
+fn e29_bounded_owned_ffmpeg_and_public_controls() {
+    bounded_runtime(&[
+        "e29-parallel-stale",
+        "e29-parallel-decoded-stale",
+        "e29-serial-stale",
+        "e29-parallel-raw-y",
+        "e29-parallel-raw-n",
+        "e29-parallel-raw-yn",
+        "e29-public",
+    ]);
+}
+
 fn bounded_runtime(cases: &[&str]) {
     let temp = tempfile::tempdir().expect("fixture");
     let root = temp.path();
@@ -78,6 +95,9 @@ fn bounded_runtime(cases: &[&str]) {
             .status()
             .expect("bounded child");
         let log = fs::read_to_string(log_path).expect("child log");
+        if case.starts_with("e29-") {
+            eprintln!("{case}: {status}\n{log}");
+        }
         if case == "watchdog" {
             assert_eq!(
                 status.code(),
@@ -116,6 +136,10 @@ fn e08_runtime_child() {
     };
     let root = PathBuf::from(root);
     let case = std::env::var("E08_CASE").expect("case");
+    if case.starts_with("e29-") {
+        e29_case(&root, &case);
+        return;
+    }
     if case.starts_with("vvenc-") {
         vvenc_case(&root, &case);
         return;
@@ -250,6 +274,318 @@ fn e08_runtime_child() {
     if let Some(observer) = observer {
         observer.join().expect("observer joined");
     }
+}
+
+// Removing owned-only overwrite must break native stale encodes; extending
+// it to public APIs must break the nonowned sentinel controls below.
+fn e29_case(root: &Path, case: &str) {
+    use crate::{
+        core::{
+            Condor,
+            output::Output,
+            sequence::{
+                Sequence,
+                parallel_encoder::{ParallelEncoder, ParallelEncoderOptions, Task},
+                serial_encoder::SerialEncoder,
+            },
+        },
+        models::{
+            input::{ImportMethod, Input as InputModel, VapourSynthScriptSource},
+            scene::Scene,
+            sequence::{DefaultSequenceConfig, DefaultSequenceData},
+        },
+        utils::cancellation::Cancellation,
+    };
+    use std::{collections::VecDeque, os::unix::fs::PermissionsExt};
+
+    let job = root.join(case);
+    fs::create_dir_all(&job).expect("isolated case");
+    let root = job.as_path();
+    let native = case != "e29-parallel-decoded-stale";
+    let source = root.join(if native { "input.y4m" } else { "input.vpy" });
+    let source_bytes = if native {
+        let mut data = b"YUV4MPEG2 W64 H64 F24:1 Ip A1:1 C420jpeg\n".to_vec();
+        for _ in 0..2 {
+            data.extend_from_slice(b"FRAME\n");
+            data.extend(vec![48; 64 * 64 * 3 / 2]);
+        }
+        data
+    } else {
+        b"from vapoursynth import core,YUV420P8\ncore.std.BlankClip(width=64,height=64,length=2,format=YUV420P8).set_output()\n".to_vec()
+    };
+    fs::write(&source, &source_bytes).expect("source");
+    let mut input = if native {
+        Input::from_video(&InputModel::Video {
+            path: source.clone(),
+            import_method: ImportMethod::FFMS2 {
+                index: None,
+                cache_path: Some(root.join("input.ffindex")),
+            },
+            filters: vec![],
+        })
+    } else {
+        Input::from_data(&InputModel::VapourSynthScript {
+            source: VapourSynthScriptSource::Path(source.clone()),
+            variables: HashMap::new(),
+            index: 0,
+            filters: vec![],
+            stream_concurrently: false,
+        })
+    }
+    .expect("real input");
+    let mut encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, true);
+    encoder.set_append_color_data(false);
+    encoder.parameters_mut().extend(CLIParameter::new_strings(
+        "-",
+        " ",
+        &[("c:v", "ffv1"), ("f", "matroska"), ("v", "error")],
+    ));
+    let rejects_n = case.ends_with("raw-n") || case.ends_with("raw-yn");
+    if case.contains("raw-") {
+        for flag in case.rsplit('-').next().expect("raw options").chars() {
+            encoder
+                .parameters_mut()
+                .insert(flag.to_string(), CLIParameter::new_bool("-", true));
+        }
+    }
+    let wrapper = root.join("ffmpeg-wrapper");
+    fs::write(&wrapper, format!(
+        "#!/bin/sh\nset -eu\nfor out do :; done\nprintf '%s\\n' \"$@\" > '{}/argv-'$$\n{}exec '{}' \"$@\"\n",
+        root.display(),
+        if case.ends_with("stale") { "test -f \"$out\" || printf stale-owned-attempt > \"$out\"\n" } else { "" },
+        which::which("ffmpeg").expect("ffmpeg").display(),
+    )).expect("native wrapper");
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("wrapper executable");
+    encoder.set_executable(Some(wrapper));
+    let old_final = root.join("user-final.mkv");
+    fs::write(&old_final, b"existing user final").expect("old final");
+    let info = input.clip_info().expect("clip info");
+    if case == "e29-public" {
+        // A matching prefix, owned statistics, or a missing basename is not
+        // output ownership. Exercise both public input/stream and pass APIs.
+        let caller = root.join(".av1an-attempt-caller");
+        fs::create_dir_all(&caller).expect("nonowned prefix");
+        for manual in [false, true] {
+            for decoded in [false, true] {
+                for isolated in [false, true] {
+                    let total = 1;
+                    let output = caller.join(format!("{manual}-{decoded}-{isolated}.mkv"));
+                    fs::write(&output, b"caller sentinel").expect("sentinel");
+                    let stats = if isolated {
+                        PassStatistics::new(&output)
+                    } else {
+                        PassStatistics::external(&output.with_extension("stats"))
+                    }
+                    .expect("statistics do not grant output ownership");
+                    for parameters in [
+                        encoder.parameters_with_output((total, total), &output, &info),
+                        encoder.parameters_with_stats((total, total), &output, &info, stats.base()),
+                        encoder.parameters_with_output(
+                            (total, total),
+                            &caller.join("missing.mkv"),
+                            &info,
+                        ),
+                    ] {
+                        assert!(!parameters.expect("public argv").iter().any(|p| p == "-y"));
+                    }
+                    let (tx, rx) = mpsc::channel();
+                    drop(rx);
+                    let result = if decoded {
+                        if manual {
+                            encoder.encode_pass_with_input(
+                                &mut input,
+                                &output,
+                                0,
+                                2,
+                                (total, total),
+                                tx,
+                                Some(&stats),
+                            )
+                        } else {
+                            encoder.encode_with_input(&mut input, &output, 0, 2, tx)
+                        }
+                    } else {
+                        let (frames, rx) = crossbeam_channel::unbounded();
+                        frames.send(Cursor::new(source_bytes.clone())).expect("Y4M stdin");
+                        drop(frames);
+                        if manual {
+                            encoder.encode_pass_with_stream(
+                                (total, total),
+                                rx,
+                                &output,
+                                tx,
+                                &info,
+                                Some(&stats),
+                            )
+                        } else {
+                            encoder.encode_with_stream(rx, &output, tx, &info)
+                        }
+                    };
+                    // Some native FFmpeg builds return zero on overwrite refusal.
+                    // Raw APIs preserve native status, not final-writer guarantees.
+                    let diagnostic = match result {
+                        Ok(result) => result,
+                        Err(error) => error.downcast::<EncoderResult>().expect("native refusal"),
+                    };
+                    assert!(!diagnostic.parameters.iter().any(|p| p == "-y"));
+                    let stderr = String::from_utf8_lossy(bytes(&diagnostic.stderr));
+                    assert!(
+                        stderr.contains("already exists")
+                            && (stderr.contains("Exiting") || stderr.contains("Not overwriting")),
+                        "{diagnostic:?}"
+                    );
+                    assert_eq!(fs::read(&output).expect("preserved"), b"caller sentinel");
+                    eprintln!(
+                        "public manual={manual} decoded={decoded} isolated_stats={isolated}: native status={} no generated -y; sentinel preserved",
+                        diagnostic.status
+                    );
+                }
+            }
+        }
+        // Explicit raw -y retains its existing low-level native meaning; it is
+        // not C06 final-output consent and is not inserted into saved defaults.
+        encoder.parameters_mut().insert("y".into(), CLIParameter::new_bool("-", true));
+        let raw_output = caller.join("explicit-y.mkv");
+        fs::write(&raw_output, b"explicit caller overwrite").expect("raw sentinel");
+        let (tx, _rx) = mpsc::channel();
+        let result = encoder
+            .encode_with_input(&mut input, &raw_output, 0, 2, tx)
+            .expect("explicit raw -y");
+        assert_eq!(result.parameters.iter().filter(|p| *p == "-y").count(), 1);
+        e29_decoded_frames(&raw_output);
+    } else {
+        let scenes = root.join("scenes");
+        fs::create_dir_all(&scenes).expect("scenes");
+        if case.starts_with("e29-serial-") {
+            let scene = Scene {
+                start_frame: 0,
+                end_frame: 2,
+                sub_scenes: None,
+                encoder: encoder.clone(),
+                sequence_data: DefaultSequenceData::default(),
+            };
+            let mut condor = Condor::<DefaultSequenceData, DefaultSequenceConfig>::new(
+                input,
+                Output {
+                    path: old_final.clone(),
+                    overwrite: false,
+                    tags: HashMap::new(),
+                    video_tags: HashMap::new(),
+                },
+                encoder,
+                vec![scene],
+                None,
+                Box::new(|_| Ok(())),
+            );
+            let (tx, _rx) = mpsc::channel();
+            let result = SerialEncoder::new(&scenes).execute_cancel(
+                &mut condor,
+                tx,
+                Cancellation::default(),
+            );
+            eprintln!("serial result={result:?}");
+            result.expect("owned serial FFmpeg output");
+            e29_decoded_frames(&scenes.join("00000.mkv"));
+        } else {
+            let tasks = (0..2)
+                .map(|index| Task {
+                    original_index: index,
+                    index,
+                    frame_indices: vec![0, 1],
+                    sub_scenes: None,
+                    encoder: encoder.clone(),
+                    output: scenes.join(format!("{index}.mkv")),
+                })
+                .collect::<VecDeque<_>>();
+            let (tx, _rx) = mpsc::channel();
+            let result = ParallelEncoder::encode_tasks_with_options(
+                &mut input,
+                2,
+                tasks,
+                tx,
+                Cancellation::default(),
+                ParallelEncoderOptions {
+                    max_tries: 1,
+                    validate_frame_count: true,
+                },
+            );
+            eprintln!("parallel result={result:?}");
+            if rejects_n {
+                let error = result.expect_err("owned -n conflict must fail before native launch");
+                assert!(
+                    format!("{error:#}")
+                        .contains("-n conflicts with owned FFmpeg attempt overwrite"),
+                    "{error:#}"
+                );
+            } else {
+                let results = result.expect("owned parallel FFmpeg output");
+                for (index, result) in results.into_iter().enumerate() {
+                    let result = result.expect("published scene").result;
+                    assert!(result.status.success());
+                    assert_eq!(result.parameters.iter().filter(|p| *p == "-y").count(), 1);
+                    e29_decoded_frames(&scenes.join(format!("{index}.mkv")));
+                }
+            }
+        }
+        let mut paths = std::collections::BTreeMap::new();
+        for entry in fs::read_dir(root).expect("native records") {
+            let path = entry.expect("entry").path();
+            if path.file_name().expect("name").to_string_lossy().starts_with("argv-") {
+                let args = fs::read_to_string(path).expect("argv");
+                eprintln!("native argv:\n{args}");
+                let args = args.lines().collect::<Vec<_>>();
+                assert_eq!(args.iter().filter(|p| **p == "-y").count(), 1);
+                let output = *args.last().expect("output");
+                assert_ne!(Path::new(output), source);
+                assert_ne!(Path::new(output), old_final);
+                assert!(
+                    !Path::new(output).exists(),
+                    "joined private output cleaned after publication"
+                );
+                *paths.entry(output.to_owned()).or_insert(0) += 1;
+            }
+        }
+        assert_eq!(
+            paths.len(),
+            if rejects_n {
+                0
+            } else if case.starts_with("e29-serial-") {
+                1
+            } else {
+                2
+            }
+        );
+        assert!(paths.values().all(|count| *count == 1));
+        assert!(fs::read_dir(&scenes).expect("cleanup").all(|entry| {
+            !entry.expect("entry").file_name().to_string_lossy().starts_with(".av1an-")
+        }));
+    }
+    assert_eq!(
+        fs::read(&old_final).expect("old final preserved"),
+        b"existing user final"
+    );
+    assert_eq!(fs::read(&source).expect("source preserved"), source_bytes);
+}
+
+fn e29_decoded_frames(output: &Path) {
+    let probe = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_frames",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(output)
+        .output()
+        .expect("real output decode");
+    assert!(probe.status.success(), "{probe:?}");
+    assert_eq!(String::from_utf8(probe.stdout).expect("count").trim(), "2");
+    eprintln!("decoded {}: 2 frames", output.display());
 }
 
 fn vvenc_case(root: &Path, case: &str) {

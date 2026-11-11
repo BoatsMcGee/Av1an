@@ -637,6 +637,8 @@ impl Encoder {
 
     /// Automatic multi-pass attempts own isolated statistics. `Specific` reuses
     /// caller-owned output-derived files; use a shared context for isolated manual passes.
+    /// Raw output paths do not grant overwrite consent. Explicit native options
+    /// retain their meaning; use the final-output sequence for protected publication.
     /// Stops after the first failed pass, once its workers have joined.
     /// A nonzero exit without worker errors returns an `EncoderResult` error.
     #[inline]
@@ -915,6 +917,8 @@ impl Encoder {
 
     #[inline]
     /// Runs all requested passes with one isolated, owned statistics context.
+    /// Statistics ownership does not grant output overwrite consent. Explicit raw
+    /// options retain native behavior, not the final-output sequence's guarantees.
     /// `Specific` is caller-managed: it reuses output-derived statistics without cleanup.
     /// For isolated manual attempts, call `encode_pass_with_stream` with a shared context.
     /// Stops after the first failed pass, once its workers have joined.
@@ -948,6 +952,47 @@ impl Encoder {
         clip_info: &ClipInfo,
         cancellation: &Cancellation,
     ) -> Result<EncoderResult> {
+        self.encode_with_stream_impl(
+            frames_rx,
+            output,
+            progress_tx,
+            clip_info,
+            cancellation,
+            false,
+        )
+    }
+
+    /// Only for paths created inside the caller's exclusive attempt TempDir,
+    /// retained through all workers/validation. Never pass a caller/final path.
+    /// Ownership is supplied by the parallel/serial owner, not inferred from paths
+    /// or statistics. This is unrelated to final-output overwrite consent.
+    pub(crate) fn encode_owned_with_stream_cancel(
+        &self,
+        frames_rx: crossbeam_channel::Receiver<Cursor<Vec<u8>>>,
+        output: &Path,
+        progress_tx: mpsc::Sender<EncodeProgress>,
+        clip_info: &ClipInfo,
+        cancellation: &Cancellation,
+    ) -> Result<EncoderResult> {
+        self.encode_with_stream_impl(
+            frames_rx,
+            output,
+            progress_tx,
+            clip_info,
+            cancellation,
+            true,
+        )
+    }
+
+    fn encode_with_stream_impl(
+        &self,
+        frames_rx: crossbeam_channel::Receiver<Cursor<Vec<u8>>>,
+        output: &Path,
+        progress_tx: mpsc::Sender<EncodeProgress>,
+        clip_info: &ClipInfo,
+        cancellation: &Cancellation,
+        owned_output: bool,
+    ) -> Result<EncoderResult> {
         self.validate()?;
         cancellation.check_admission()?;
         let cancellation = &cancellation.active();
@@ -959,7 +1004,7 @@ impl Encoder {
                     frame: 0,
                     usage: EncodeResourceUsage::default(),
                 });
-                Ok(self.encode_pass_with_stream_cancel(
+                Ok(self.encode_pass_with_stream_impl(
                     (1, 1),
                     frames_rx,
                     output,
@@ -967,6 +1012,7 @@ impl Encoder {
                     clip_info,
                     None,
                     cancellation,
+                    owned_output,
                 )?)
             },
             EncoderPasses::Specific(current, total) => {
@@ -975,7 +1021,7 @@ impl Encoder {
                     frame: 0,
                     usage: EncodeResourceUsage::default(),
                 });
-                Ok(self.encode_pass_with_stream_cancel(
+                Ok(self.encode_pass_with_stream_impl(
                     (current, total),
                     frames_rx,
                     output,
@@ -983,6 +1029,7 @@ impl Encoder {
                     clip_info,
                     None,
                     cancellation,
+                    owned_output,
                 )?)
             },
             EncoderPasses::All(total) => {
@@ -1003,7 +1050,7 @@ impl Encoder {
                             frame: 0,
                             usage: EncodeResourceUsage::default(),
                         });
-                        self.encode_pass_with_stream_cancel(
+                        self.encode_pass_with_stream_impl(
                             (pass, total),
                             frames_rx,
                             output,
@@ -1011,6 +1058,7 @@ impl Encoder {
                             clip_info,
                             Some(&stats),
                             cancellation,
+                            owned_output,
                         )
                     },
                 )
@@ -1063,6 +1111,30 @@ impl Encoder {
         stats: Option<&PassStatistics>,
         cancellation: &Cancellation,
     ) -> Result<EncoderResult> {
+        self.encode_pass_with_stream_impl(
+            pass,
+            frames_rx,
+            output,
+            progress_tx,
+            clip_info,
+            stats,
+            cancellation,
+            false,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments, clippy::unnecessary_debug_formatting)]
+    fn encode_pass_with_stream_impl(
+        &self,
+        pass: (u8, u8),
+        frames_rx: crossbeam_channel::Receiver<Cursor<Vec<u8>>>,
+        output: &Path,
+        progress_tx: mpsc::Sender<EncodeProgress>,
+        clip_info: &ClipInfo,
+        stats: Option<&PassStatistics>,
+        cancellation: &Cancellation,
+        owned_output: bool,
+    ) -> Result<EncoderResult> {
         self.validate_settings()?;
         self.validate_pass_settings(pass)?;
         let executable = self.resolve_executable()?;
@@ -1072,7 +1144,21 @@ impl Encoder {
             || absolute_file_path(output).map(|p| p.with_extension("")),
             |s| Ok(s.base().to_path_buf()),
         )?;
-        let parameters = self.parameters_with_stats(pass, output, clip_info, &stats_base)?;
+        let mut parameters = self.parameters_with_stats(pass, output, clip_info, &stats_base)?;
+        if owned_output && matches!(self, Encoder::FFmpeg { .. }) {
+            let emits = |flag| {
+                self.parameters()
+                    .iter()
+                    .any(|(key, value)| value.to_string_pair(key).0.as_deref() == Some(flag))
+            };
+            anyhow::ensure!(
+                !emits("-n"),
+                "-n conflicts with owned FFmpeg attempt overwrite"
+            );
+            if !emits("-y") {
+                parameters.insert(0, "-y".to_owned());
+            }
+        }
         // TODO:
         // - Report mapped errors
         // - Report CPU, memory, disk usage - Done-ish
