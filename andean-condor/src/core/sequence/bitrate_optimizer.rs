@@ -149,7 +149,7 @@ where
         let candidate = quantizer_average.round();
         let mut updates = Vec::new();
         for (index, quantizer, bitrate) in scene_values {
-            if bitrate <= bitrate_sigma_threshold || quantizer == candidate {
+            if bitrate <= bitrate_sigma_threshold || quantizer >= candidate {
                 continue;
             }
             // Validate every prospective encoder before publishing any scene changes.
@@ -316,6 +316,87 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn q16_high_quantizer_outlier_is_unchanged_without_save() {
+        let scenes = [(20.0, 100.0), (25.0, 100.0), (30.0, 100.0), (45.0, 1000.0)]
+            .into_iter()
+            .map(|(q, b)| scene(EncoderBase::AOM, q, vec![measured(q, b)]))
+            .collect();
+        let (mut condor, saved) = fixture(scenes);
+        let before = serde_json::to_value(&condor.scenes).expect("snapshot");
+        // Mean q30 must not lower the over-budget scene's selected q45.
+        let (_, warnings) = run(&mut condor).expect("high-q outlier");
+        let quantizers: Vec<_> =
+            condor.scenes.iter().map(|scene| scene.encoder.quantizer()).collect();
+        eprintln!(
+            "Q16 high-q outlier: q={quantizers:?}, saves={}",
+            saved.borrow().len()
+        );
+        assert!(warnings.is_empty());
+        assert_eq!(
+            serde_json::to_value(&condor.scenes).expect("unchanged"),
+            before
+        );
+        assert!(saved.borrow().is_empty());
+    }
+
+    #[test]
+    fn q16_equal_or_quarter_step_above_mean_is_unchanged_without_save() {
+        for selected in [30.0, 30.25] {
+            let scenes = [(20.0, 100.0), (30.0, 100.0), (40.0, 100.0), (selected, 1000.0)]
+                .into_iter()
+                .map(|(q, b)| scene(EncoderBase::SVTAV1, q, vec![measured(q, b)]))
+                .collect();
+            let (mut condor, saved) = fixture(scenes);
+            let before = serde_json::to_value(&condor.scenes).expect("snapshot");
+            // Both means round to q30; an accepted quarter step must not round down.
+            let (_, warnings) = run(&mut condor).expect("equal or quarter-step outlier");
+            eprintln!(
+                "Q16 selected q{selected}: q={:?}, saves={}",
+                condor.scenes[3].encoder.quantizer(),
+                saved.borrow().len()
+            );
+            assert!(warnings.is_empty());
+            assert_eq!(
+                serde_json::to_value(&condor.scenes).expect("unchanged"),
+                before
+            );
+            assert!(saved.borrow().is_empty());
+        }
+    }
+
+    #[test]
+    fn q16_mixed_outliers_only_raise_lower_quantizer_and_save_once_preserving_histories() {
+        let scenes = [(20.0, 100.0), (30.0, 100.0), (40.0, 100.0), (45.0, 1000.0), (5.0, 1000.0)]
+            .into_iter()
+            .map(|(q, b)| {
+                scene(
+                    EncoderBase::AOM,
+                    q,
+                    vec![measured(q, b), measured(1.0, 1.0)],
+                )
+            })
+            .collect();
+        let (mut condor, saved) = fixture(scenes);
+        let mut expected = condor.scenes.clone();
+        // Mean q28 raises only q5, not q45; every probe and other setting stays intact.
+        expected[4].encoder.set_quantizer(28.0);
+        let expected = serde_json::to_value(expected).expect("expected scenes");
+        let (_, warnings) = run(&mut condor).expect("mixed outliers");
+        let quantizers: Vec<_> =
+            condor.scenes.iter().map(|scene| scene.encoder.quantizer()).collect();
+        eprintln!(
+            "Q16 mixed outliers: q={quantizers:?}, saves={}",
+            saved.borrow().len()
+        );
+        assert!(warnings.is_empty());
+        assert_eq!(
+            serde_json::to_value(&condor.scenes).expect("scenes and histories"),
+            expected
+        );
+        assert_eq!(&*saved.borrow(), &[expected]);
     }
 
     #[test]

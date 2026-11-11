@@ -1,6 +1,6 @@
 # Optimize Bitrate
 
-Optimize bitrate for scenes that exceed normal bitrate after Target Quality. Scenes with bitrate above the normal threshold are optimized by clamping the quantizer to the average quantizer value. See [guide](../guide.md).
+Optimize bitrate for scenes that exceed normal bitrate after Target Quality. Scenes above the bitrate threshold have their quantizer raised to the rounded mean of eligible scenes only when that mean is higher than their selected value. The mean may be unmeasured, so this does not guarantee a bitrate reduction or meeting a bitrate budget. See [guide](../guide.md).
 
 ```bash
 $ condor optimize-bitrate
