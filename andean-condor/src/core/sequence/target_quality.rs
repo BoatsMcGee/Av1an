@@ -307,6 +307,14 @@ where
 
             if tasks.is_empty() {
                 // Empty early ordinals can precede resumable scenes with longer prefixes.
+                if !condor.scenes.iter().any(|scene| {
+                    scene.sequence_data.get_target_quality().is_ok_and(|data| {
+                        data.passes.len() >= usize::from(pass)
+                            && data.passes.len() < usize::from(config.maximum_probes)
+                    })
+                }) {
+                    break;
+                }
                 pass += 1;
                 continue;
             }
@@ -3469,6 +3477,111 @@ mod tests {
                     _ => None,
                 })
                 .collect()
+        }
+
+        #[test]
+        fn q13_h1_maximum_budget_no_work_is_bounded() {
+            use std::{
+                process::{Command, Stdio},
+                time::{Duration, Instant},
+            };
+            if let Ok(case) = std::env::var("Q13_H1_CASE") {
+                let (temp, mut condor, saved) = q13_fixture(&[1], 1);
+                let config = condor.sequence_config.target_quality.as_mut().expect("TQ");
+                config.maximum_probes = 255;
+                match case.as_str() {
+                    "early-hit" => *config.metric.target_range_mut() = (10.0, 10.0),
+                    "budget-255" => {
+                        // Synthetic valid records: this case needs no 255 native encodes.
+                        let passes = &mut condor.scenes[0].sequence_data.target_quality.passes;
+                        passes.resize(255, passes[0].clone());
+                    },
+                    _ => panic!("unknown H1 case: {case}"),
+                }
+                let mut unavailable = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+                unavailable.set_executable(Some(temp.path().join("unavailable-custom-svt")));
+                condor.scenes[0].encoder = unavailable;
+                let before =
+                    serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
+                        .expect("prefix bytes");
+                let directory = temp.path().join("Target Quality");
+                let sentinel = directory.join("1/00000.ivf");
+                std::fs::write(&sentinel, b"completed probe scratch").expect("sentinel");
+                eprintln!(
+                    "Q13 H1 {case}: entering actual execute, saved count={}, max255",
+                    condor.scenes[0].sequence_data.target_quality.passes.len()
+                );
+                for (configured_q, expected_saves) in [(26.0, 0), (20.0, 1), (26.0, 1)] {
+                    condor.scenes[0].encoder.set_quantizer(configured_q);
+                    let (tx, rx) = sync::mpsc::channel();
+                    let (_, warnings) = TargetQuality::default()
+                        .execute_cancel(&mut condor, tx, Default::default())
+                        .expect("bounded no-work owning execute");
+                    assert!(warnings.is_empty(), "{warnings:?}");
+                    assert!(rx.try_iter().next().is_none(), "no skipped-round progress");
+                    assert_eq!(condor.scenes[0].encoder.quantizer(), Some(26.0));
+                    assert_eq!(saved.borrow().len(), expected_saves);
+                    assert_eq!(
+                        serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
+                            .expect("unchanged history"),
+                        before
+                    );
+                    assert_eq!(
+                        std::fs::read(&sentinel).expect("no excluded cleanup"),
+                        b"completed probe scratch"
+                    );
+                    assert_eq!(
+                        std::fs::read_dir(&directory).expect("scratch").count(),
+                        2,
+                        "no new ordinal directories"
+                    );
+                }
+                assert_eq!(saved.borrow()[0][0].encoder.quantizer(), Some(26.0));
+                assert_eq!(
+                    serde_json::to_vec(&saved.borrow()[0][0].sequence_data.target_quality.passes)
+                        .expect("saved history"),
+                    before
+                );
+                eprintln!(
+                    "Q13 H1 {case}: all three actual executions returned; identical history/scratch, no capability/native work/progress, only one changed-q restoration save"
+                );
+                return;
+            }
+
+            let mut failures = Vec::new();
+            for case in ["early-hit", "budget-255"] {
+                // Parent owns all child temporary files even if the watchdog must kill it.
+                let temp = tempfile::tempdir().expect("watchdog root");
+                let mut child = Command::new(std::env::current_exe().expect("test binary"))
+                    .args(["--exact", "core::sequence::target_quality::tests::q07::q13_h1_maximum_budget_no_work_is_bounded", "--nocapture"])
+                    .env("Q13_H1_CASE", case)
+                    .env("TMPDIR", temp.path())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .expect("bounded owning-execute child");
+                let start = Instant::now();
+                let mut timed_out = false;
+                while child.try_wait().expect("child status").is_none() {
+                    if start.elapsed() > Duration::from_secs(10) {
+                        timed_out = true;
+                        child.kill().expect("kill stuck no-work child");
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                let output = child.wait_with_output().expect("reap child and collect evidence");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!(
+                    "Q13 H1 {case}: watchdog timeout={timed_out}, status={}\n{stdout}\n{stderr}",
+                    output.status
+                );
+                if timed_out || !output.status.success() || !stdout.contains("1 passed; 0 failed") {
+                    failures.push(format!("{case}: timeout={timed_out}, {}", output.status));
+                }
+            }
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
         }
 
         #[test]
