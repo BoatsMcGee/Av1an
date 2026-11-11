@@ -161,7 +161,7 @@ pub struct StrategyArgs {
     /// Subset length in frames; used by *subset*.
     #[arg(long, value_name = "Frames")]
     pub length_frames: Option<u32>,
-    /// Subset length as a percentage; used by *subset*.
+    /// Subset length as a finite percentage (0 < percent <= 100), at least one frame.
     #[arg(long, value_name = "Percent")]
     pub length_percent: Option<f64>,
 }
@@ -237,7 +237,7 @@ pub enum ProbeError {
     SubsetStrategyTakesNoSkip,
     #[error("--length-frames must be positive")]
     SubsetLengthNotPositive,
-    #[error("--length-percent must be within 0..=100")]
+    #[error("--length-percent must be finite and within 0 < percent <= 100")]
     SubsetLengthPercentOutOfRange,
     #[error("provide either --length-frames or --length-percent, not both")]
     SubsetLengthAmbiguous,
@@ -279,7 +279,7 @@ impl StrategyArgs {
             },
             ProbeStrategyKind::Skip => {
                 let skip = self.skip.ok_or(ProbeError::SkipStrategyNeedsFrames)?;
-                if skip == 0 {
+                if (ProbeStrategy::Skip { skip }).validate().is_err() {
                     return Err(ProbeError::SkipStrategyNotPositive);
                 }
                 if takes_flags {
@@ -292,22 +292,12 @@ impl StrategyArgs {
                     return Err(ProbeError::SubsetStrategyTakesNoSkip);
                 }
                 let length = match (self.length_frames, self.length_percent) {
-                    (Some(frames), None) => {
-                        if frames == 0 {
-                            return Err(ProbeError::SubsetLengthNotPositive);
-                        }
-                        SubsetProbeLength::Frames(frames)
-                    },
-                    (None, Some(percent)) => {
-                        if !percent.is_finite() || !(0.0..=100.0).contains(&percent) {
-                            return Err(ProbeError::SubsetLengthPercentOutOfRange);
-                        }
-                        SubsetProbeLength::Percentage(percent)
-                    },
+                    (Some(frames), None) => SubsetProbeLength::Frames(frames),
+                    (None, Some(percent)) => SubsetProbeLength::Percentage(percent),
                     (None, None) => SubsetProbeLength::default(),
                     (Some(_), Some(_)) => return Err(ProbeError::SubsetLengthAmbiguous),
                 };
-                Ok(ProbeStrategy::Subset {
+                let strategy = ProbeStrategy::Subset {
                     position: self.position.map_or(SubsetProbePosition::Middle, |position| {
                         match position {
                             SubsetPosition::Start => SubsetProbePosition::Start,
@@ -316,7 +306,12 @@ impl StrategyArgs {
                         }
                     }),
                     length,
-                })
+                };
+                strategy.validate().map_err(|_| match length {
+                    SubsetProbeLength::Frames(_) => ProbeError::SubsetLengthNotPositive,
+                    SubsetProbeLength::Percentage(_) => ProbeError::SubsetLengthPercentOutOfRange,
+                })?;
+                Ok(strategy)
             },
         }
     }

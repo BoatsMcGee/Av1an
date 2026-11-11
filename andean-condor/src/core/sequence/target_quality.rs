@@ -88,6 +88,11 @@ where
     ) -> Result<((), Vec<anyhow::Error>)> {
         let warnings = vec![];
 
+        if let Some(config) = condor.sequence_config.target_quality()? {
+            for scene in &condor.scenes {
+                config.probing.strategy.validate_range(scene.start_frame, scene.end_frame)?;
+            }
+        }
         // Ensure all the scene encoders are validated
         for scene in &condor.scenes {
             scene.encoder.validate()?;
@@ -115,6 +120,12 @@ where
             warnings.push(anyhow::Error::new(TargetQualityError::ScenesEmpty));
             return Ok(((), warnings));
         }
+        let Some(config) = config else {
+            return Ok(((), warnings));
+        };
+        for scene in &condor.scenes {
+            config.probing.strategy.validate_range(scene.start_frame, scene.end_frame)?;
+        }
         let input = if let Some(input) = self.input.as_mut() {
             input
         } else if let Some(input_model) = &parallel_encoder_config.input {
@@ -124,9 +135,7 @@ where
         };
         let metric_input = if let Some(input) = self.metric_input.as_mut() {
             Some(input)
-        } else if let Some(config) = config
-            && let Some(metric_input) = &config.metric_input
-        {
+        } else if let Some(metric_input) = &config.metric_input {
             Some(&mut Input::from_data(metric_input)?)
         } else {
             None
@@ -201,6 +210,11 @@ where
             return Ok(((), warnings));
         }
         let config = config.clone().expect("TargetQualityConfig is Some");
+        let scene_frame_indices = condor
+            .scenes
+            .iter()
+            .map(|scene| config.probing.strategy.frame_indices(scene.start_frame, scene.end_frame))
+            .collect::<Result<Vec<_>>>()?;
         let input = if let Some(input) = self.input.as_mut() {
             input
         } else if let Some(input_model) = &config.input {
@@ -234,10 +248,10 @@ where
             let tasks = condor
                 .scenes
                 .iter_mut()
+                .zip(&scene_frame_indices)
                 .enumerate()
-                .map(|(index, scene)| {
-                    let frame_indices =
-                        config.probing.strategy.frame_indices(scene.start_frame, scene.end_frame);
+                .map(|(index, (scene, frame_indices))| {
+                    let frame_indices = frame_indices.clone();
                     let mut encoder = scene.encoder.clone();
                     if let Some(parameters) = config.probing.encoder_options.as_ref() {
                         encoder.parameters_mut().clear();

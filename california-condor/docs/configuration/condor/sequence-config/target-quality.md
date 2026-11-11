@@ -23,8 +23,13 @@
 `probing.strategy` variants:
 
 - `"Whole"` — all frames
-- `{ "Skip": { "skip": <u32> } }` — every Nth frame
+- `{ "Skip": { "skip": <u32> } }` — every Nth frame, starting with the scene's first frame; N must be positive
 - `{ "Subset": { "position": "Start"|"Middle"|"End", "length": { "Percentage": <f64> } | { "Frames": <u32> } } }`
+
+`Percentage` is finite and positive, at most 100: `25.0` means 25%, not `0.25`.
+The rounded count is clamped to at least one frame and at most the scene length.
+`Frames` must be positive and is also clamped to the scene length. Empty or reversed
+scene ranges are errors, not empty measurements.
 
 `probing.statistic` variants: `"Mean"`, `"Median"`, `"Harmonic"`, `{ "Percentile": <f64> }`, `{ "StandardDeviationDistance": { "sigma": <f64> } }`, `"Mode"`, `"Minimum"`, `"Maximum"`, `"RootMeanSquare"`.
 
@@ -51,7 +56,7 @@ Example:
     "metric_input": null,
     "probing": {
         "encoder_options": null,
-        "strategy": { "Subset": { "position": "Middle", "length": { "Percentage": 0.25 } } },
+        "strategy": { "Subset": { "position": "Middle", "length": { "Percentage": 25.0 } } },
         "statistic": "RootMeanSquare"
     }
 }

@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
+use anyhow::{Result, ensure};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
@@ -228,39 +229,69 @@ pub enum ProbeStrategy {
 }
 
 impl ProbeStrategy {
+    /// Reject zero frame/skip counts and non-finite percentages outside `0 < p <= 100`.
     #[inline]
-    pub fn frame_indices(&self, start: usize, end: usize) -> Vec<usize> {
+    pub fn validate(&self) -> Result<()> {
         match self {
+            Self::Skip { skip } => ensure!(*skip > 0, "probe skip must be positive, got {skip}"),
+            Self::Subset {
+                length: SubsetProbeLength::Frames(frames),
+                ..
+            } => {
+                ensure!(*frames > 0, "probe frames must be positive, got {frames}");
+            },
+            Self::Subset {
+                length: SubsetProbeLength::Percentage(percent),
+                ..
+            } => {
+                ensure!(
+                    percent.is_finite() && *percent > 0.0 && *percent <= 100.0,
+                    "probe percent must be finite and within 0 < percent <= 100, got {percent}"
+                );
+            },
+            Self::Whole => (),
+        }
+        Ok(())
+    }
+
+    /// Validate selection without allocating indices; ranges are nonempty and half-open.
+    #[inline]
+    pub fn validate_range(&self, start: usize, end: usize) -> Result<()> {
+        self.validate()?;
+        ensure!(
+            start < end,
+            "invalid probe frame range {start}..{end}: start must be less than end"
+        );
+        Ok(())
+    }
+
+    /// Select source indices in `[start, end)`, or reject an invalid strategy/range.
+    /// Percentages use units of 0..100, rounded and clamped to at least one frame.
+    #[inline]
+    pub fn frame_indices(&self, start: usize, end: usize) -> Result<Vec<usize>> {
+        self.validate_range(start, end)?;
+        Ok(match self {
             ProbeStrategy::Whole => (start..end).collect::<Vec<_>>(),
-            ProbeStrategy::Skip { skip } => (start..end)
-                .filter(|index| {
-                    (index - start) == 0 || (index - start).is_multiple_of(*skip as usize)
-                })
-                .collect::<Vec<_>>(),
+            ProbeStrategy::Skip { skip } => (start..end).step_by(*skip as usize).collect(),
             ProbeStrategy::Subset { position, length } => {
                 let max_length = end - start;
                 let length = match length {
                     SubsetProbeLength::Percentage(percentage) => {
-                        (percentage * max_length as f64).round() as usize
+                        ((percentage / 100.0 * max_length as f64).round() as usize)
+                            .clamp(1, max_length)
                     },
                     SubsetProbeLength::Frames(frames) => (*frames as usize).min(max_length),
                 };
-                match position {
-                    SubsetProbePosition::Start => {
-                        (start..(start + length).min(end)).collect::<Vec<_>>()
-                    },
-                    SubsetProbePosition::Middle => {
-                        let middle = start + (max_length / 2);
-                        let middle_start = (middle - (length / 2)).max(start);
-                        let middle_end = (middle + (length as f64 / 2.0).ceil() as usize).min(end);
-                        (middle_start..middle_end).collect::<Vec<_>>()
-                    },
-                    SubsetProbePosition::End => {
-                        ((end - length).max(start)..end).collect::<Vec<_>>()
-                    },
-                }
+                let offset = match position {
+                    SubsetProbePosition::Start => 0,
+                    SubsetProbePosition::Middle => (max_length - length).div_ceil(2),
+                    SubsetProbePosition::End => max_length - length,
+                };
+                // INVARIANT: offset + length <= max_length, including near usize::MAX.
+                let subset_start = start.saturating_add(offset);
+                (subset_start..subset_start.saturating_add(length).min(end)).collect()
             },
-        }
+        })
     }
 }
 
@@ -274,7 +305,9 @@ pub enum SubsetProbePosition {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub enum SubsetProbeLength {
+    /// Finite percentage in `0 < p <= 100`; round to a count with a minimum of one.
     Percentage(f64),
+    /// Positive frame count, clamped to the nonempty scene length.
     Frames(u32),
 }
 
@@ -394,7 +427,107 @@ impl Default for QualityPass {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProbeStatistic, QualityMetric};
+    use super::{
+        ProbeStatistic, ProbeStrategy, QualityMetric, SubsetProbeLength, SubsetProbePosition,
+    };
+
+    #[test]
+    fn q01_percentage_selects_scene_fraction() {
+        let strategy = ProbeStrategy::Subset {
+            position: SubsetProbePosition::Start,
+            length: SubsetProbeLength::Percentage(25.0),
+        };
+        assert_eq!(
+            strategy.frame_indices(0, 100).expect("selection"),
+            (0..25).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn q01_small_numeric_and_boundary_matrix() {
+        use SubsetProbeLength::{Frames, Percentage};
+        use SubsetProbePosition::{End, Middle, Start};
+        for (position, length, start, end, expected) in [
+            (End, Percentage(25.0), 0, 100, (75..100).collect::<Vec<_>>()),
+            (Middle, Percentage(25.0), 100, 200, (138..163).collect()),
+            (Start, Percentage(100.0), 7, 12, vec![7, 8, 9, 10, 11]),
+            (Middle, Percentage(100.0), 7, 12, vec![7, 8, 9, 10, 11]),
+            (End, Percentage(100.0), 7, 12, vec![7, 8, 9, 10, 11]),
+            (Start, Percentage(f64::MIN_POSITIVE), 7, 12, vec![7]),
+            (Middle, Percentage(f64::MIN_POSITIVE), 7, 12, vec![9]),
+            (End, Percentage(f64::MIN_POSITIVE), 7, 12, vec![11]),
+            (Middle, Percentage(25.0), 9, 10, vec![9]),
+            (Middle, Percentage(25.0), 7, 13, vec![9, 10]),
+            (Middle, Percentage(f64::from_bits(1)), 7, 12, vec![9]),
+            (Start, Frames(100), 7, 12, vec![7, 8, 9, 10, 11]),
+            (Middle, Frames(100), 7, 12, vec![7, 8, 9, 10, 11]),
+            (End, Frames(100), 7, 12, vec![7, 8, 9, 10, 11]),
+            (
+                Middle,
+                Frames(1),
+                usize::MAX - 100,
+                usize::MAX,
+                vec![usize::MAX - 50],
+            ),
+            (Middle, Frames(1), 0, usize::MAX, vec![usize::MAX / 2]),
+            (End, Frames(1), 0, usize::MAX, vec![usize::MAX - 1]),
+        ] {
+            let strategy = ProbeStrategy::Subset { position, length };
+            assert_eq!(
+                strategy.frame_indices(start, end).expect("selection"),
+                expected,
+                "{strategy:?}/{start}..{end}"
+            );
+        }
+        assert_eq!(
+            ProbeStrategy::Skip { skip: 3 }.frame_indices(7, 15).expect("skip"),
+            vec![7, 10, 13]
+        );
+        assert_eq!(
+            ProbeStrategy::Skip { skip: 20 }.frame_indices(7, 15).expect("skip"),
+            vec![7]
+        );
+        assert_eq!(
+            ProbeStrategy::Whole.frame_indices(7, 10).expect("whole"),
+            vec![7, 8, 9]
+        );
+    }
+
+    #[test]
+    fn q01_checked_selection_rejects_invalid_values_and_ranges() {
+        for strategy in [
+            ProbeStrategy::Skip { skip: 0 },
+            ProbeStrategy::Subset {
+                position: SubsetProbePosition::Middle,
+                length: SubsetProbeLength::Frames(0),
+            },
+        ]
+        .into_iter()
+        .chain(
+            [0.0, -0.0, -1.0, 101.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY].map(|percent| {
+                ProbeStrategy::Subset {
+                    position: SubsetProbePosition::Middle,
+                    length: SubsetProbeLength::Percentage(percent),
+                }
+            }),
+        ) {
+            assert!(strategy.validate().is_err(), "{strategy:?}");
+            assert!(strategy.frame_indices(7, 12).is_err(), "{strategy:?}");
+        }
+        for strategy in [
+            ProbeStrategy::Whole,
+            ProbeStrategy::Skip { skip: 2 },
+            ProbeStrategy::Subset {
+                position: SubsetProbePosition::Middle,
+                length: SubsetProbeLength::Frames(1),
+            },
+        ] {
+            for (start, end) in [(0, 0), (10, 10), (10, 7), (usize::MAX, usize::MAX - 1)] {
+                let error = strategy.frame_indices(start, end).expect_err("invalid range");
+                assert!(error.to_string().contains(&format!("{start}..{end}")));
+            }
+        }
+    }
 
     #[test]
     fn m27_metric_reduction_keeps_prefix_order_and_independent_statistics() {

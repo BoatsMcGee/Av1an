@@ -127,6 +127,11 @@ where
     ) -> Result<((), Vec<anyhow::Error>)> {
         let mut warnings = vec![];
 
+        if let Some(config) = condor.sequence_config.quality_check()? {
+            for scene in &condor.scenes {
+                config.strategy.validate_range(scene.start_frame, scene.end_frame)?;
+            }
+        }
         if condor.scenes.is_empty() {
             warnings.push(anyhow::Error::new(QualityCheckError::ScenesEmpty));
         }
@@ -152,14 +157,21 @@ where
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
     ) -> Result<((), Vec<anyhow::Error>)> {
-        let warnings = vec![];
+        let mut warnings = vec![];
 
-        let config = condor.sequence_config.quality_check()?;
+        let Some(config) = condor.sequence_config.quality_check()? else {
+            return Ok(((), warnings));
+        };
+        if condor.scenes.is_empty() {
+            warnings.push(anyhow::Error::new(QualityCheckError::ScenesEmpty));
+            return Ok(((), warnings));
+        }
+        for scene in &condor.scenes {
+            config.strategy.validate_range(scene.start_frame, scene.end_frame)?;
+        }
         let input = if let Some(input) = self.input.as_mut() {
             input
-        } else if let Some(config) = config
-            && let Some(input_model) = &config.input
-        {
+        } else if let Some(input_model) = &config.input {
             &mut Input::from_data(input_model)?
         } else {
             &mut condor.input
@@ -190,6 +202,7 @@ where
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        crate::utils::cancellation::Cancellation::from(Arc::clone(&cancelled)).check()?;
         let mut warnings = vec![];
 
         let Some(config) = condor.sequence_config.quality_check()? else {
@@ -200,13 +213,34 @@ where
             warnings.push(anyhow::Error::new(QualityCheckError::ScenesEmpty));
             return Ok(((), warnings));
         }
+        for scene in &condor.scenes {
+            config.strategy.validate_range(scene.start_frame, scene.end_frame)?;
+        }
         if !condor.output.path.exists() {
             warnings.push(anyhow::Error::new(QualityCheckError::OutputMissing {
                 path: condor.output.path.clone(),
             }));
             return Ok(((), warnings));
         }
-
+        let scene_frame_indices = condor
+            .scenes
+            .iter()
+            .enumerate()
+            .map(|(index, scene)| {
+                Ok((
+                    index,
+                    config.strategy.frame_indices(scene.start_frame, scene.end_frame)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|(index, indices)| {
+                !condor.scenes[*index]
+                    .sequence_data
+                    .get_quality_check()
+                    .is_ok_and(|data| data.quality.scores.len() == indices.len())
+            })
+            .collect::<Vec<_>>();
         let input = if let Some(input) = self.input.as_mut() {
             input
         } else if let Some(input_model) = &config.input {
@@ -214,24 +248,6 @@ where
         } else {
             &mut condor.input
         };
-
-        let scene_frame_indices = condor
-            .scenes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, scene)| {
-                let indices = config.strategy.frame_indices(scene.start_frame, scene.end_frame);
-                let complete = scene
-                    .sequence_data
-                    .get_quality_check()
-                    .is_ok_and(|data| data.quality.scores.len() == indices.len());
-                if complete {
-                    None
-                } else {
-                    Some((index, indices))
-                }
-            })
-            .collect::<Vec<_>>();
 
         if scene_frame_indices.is_empty() {
             progress_tx.send(SequenceStatus::Whole(Status::Completed {
