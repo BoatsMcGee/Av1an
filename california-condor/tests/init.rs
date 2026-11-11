@@ -34,6 +34,196 @@ mod tests {
     use super::*;
 
     #[test]
+    fn c03_combined_root_input_and_temp_edit_matches_cli_and_keeps_custom_paths() {
+        use andean_condor::models::input::VapourSynthScriptSource;
+        use california_condor::commands::handlers::start::start_handler;
+        for custom in [false, true] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+            for name in ["a.vpy", "b.vpy"] {
+                std::fs::write(base.join(name), "from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=32,height=16,length=12,format=YUV420P8,fpsnum=24,fpsden=1).set_output()\n").expect("finite script");
+            }
+            let source = base.join("a.vpy");
+            let replacement = base.join("b.vpy");
+            let video = TestVideo {
+                path: source.clone(),
+                width: 32,
+                height: 16,
+                frames: 12,
+                fps_rational: (24, 1),
+                format: FFPixelFormat::YUV420P,
+                scenes: vec![(0, 12)],
+            };
+            let mut configuration = default_config(
+                &video,
+                &base.join("out.mkv"),
+                &base.join(hash_path(&source)),
+            );
+            configuration.condor.input = Input::VapourSynthScript {
+                source: VapourSynthScriptSource::Path(source),
+                variables: Default::default(),
+                index: 0,
+                filters: vec![],
+                stream_concurrently: false,
+            };
+            if custom {
+                configuration.condor.sequence_config.parallel_encoder.scenes_directory =
+                    base.join("custom-encoder");
+                configuration.condor.sequence_config.scene_concatenator.scenes_directory =
+                    Default::default();
+            }
+            let file = base.join("condor.json");
+            configuration.save(&file).expect("save empty job");
+            let selected = base.join("selected");
+            let (direct, _) = start_handler(
+                Some(&file),
+                Some(&selected),
+                Some(&replacement),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("empty combined direct handler");
+            assert_eq!(direct.input, replacement);
+            assert_eq!(direct.temp, selected);
+            assert_eq!(
+                direct.condor.sequence_config.parallel_encoder.scenes_directory,
+                if custom {
+                    base.join("custom-encoder")
+                } else {
+                    selected.join("scenes")
+                }
+            );
+            assert_eq!(
+                direct.condor.sequence_config.scene_concatenator.scenes_directory,
+                selected.join("scenes")
+            );
+            assert!(
+                !selected.exists(),
+                "a handler edit is not artifact migration"
+            );
+            configuration.save(&file).expect("restore original empty job");
+            let output = condor_cmd(&temp)
+                .env("PATH", "")
+                .env("CONDOR_TEST_MODE", "1")
+                .args(["--input", path_str(&replacement), "--temp", "selected"])
+                .output()
+                .expect("root CLI");
+            let message = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !message.contains("unexpected argument") && !message.contains("cannot change"),
+                "{message}"
+            );
+            let cli = load(&file);
+            assert_eq!(cli.input, replacement);
+            assert_eq!(cli.temp, selected);
+            assert_eq!(
+                cli.condor.sequence_config.parallel_encoder.scenes_directory,
+                direct.condor.sequence_config.parallel_encoder.scenes_directory
+            );
+            assert_eq!(
+                cli.condor.sequence_config.scene_concatenator.scenes_directory,
+                selected.join("scenes")
+            );
+            if custom {
+                assert!(
+                    message.contains(path_str(&base.join("custom-encoder")))
+                        && message.contains("--temp does not move those files"),
+                    "{message}"
+                );
+            }
+            assert!(!configuration.temp.exists());
+            assert!(
+                !base.join(hash_path(&replacement)).exists(),
+                "C02's intermediate auto root is not created"
+            );
+        }
+    }
+
+    #[test]
+    fn c03_new_init_and_empty_detection_use_selected_work_roots() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+        let source = base.join("blank.vpy");
+        std::fs::write(&source, "from vapoursynth import core, YUV420P8\ncore.std.BlankClip(width=32,height=16,length=12,format=YUV420P8,fpsnum=24,fpsden=1).set_output()\n").expect("finite script");
+        condor_cmd(&temp)
+            .env("PATH", "")
+            .args(["init", "blank.vpy", "out.mkv", "--temp", "initial"])
+            .assert()
+            .success();
+        let file = base.join("condor.json");
+        let initial = load(&file);
+        assert_eq!(initial.temp, base.join("initial"));
+        assert_eq!(
+            initial.condor.sequence_config.parallel_encoder.scenes_directory,
+            base.join("initial/scenes")
+        );
+        assert_eq!(
+            initial.condor.sequence_config.scene_concatenator.scenes_directory,
+            base.join("initial/scenes")
+        );
+        assert!(!base.join("initial").exists());
+        condor_cmd(&temp)
+            .env("PATH", "")
+            .env("CONDOR_TEST_MODE", "1")
+            .args(["detect-scenes", "--method", "none", "--temp", "detected"])
+            .assert()
+            .success();
+        let after = load(&file);
+        assert!(
+            !after.condor.scenes.is_empty(),
+            "real detection saved scenes"
+        );
+        assert_eq!(after.temp, base.join("detected"));
+        assert_eq!(
+            after.condor.sequence_config.parallel_encoder.scenes_directory,
+            base.join("detected/scenes")
+        );
+        assert_eq!(
+            after.condor.sequence_config.scene_concatenator.scenes_directory,
+            base.join("detected/scenes")
+        );
+        assert!(
+            !base.join("initial").exists(),
+            "nothing moved or written to the old root"
+        );
+        let before = std::fs::read(&file).expect("detected job bytes");
+        condor_cmd(&temp)
+            .env("PATH", "")
+            .args(["encode", "--temp", "refused"])
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read(file).expect("unchanged detected job"), before);
+        assert!(!base.join("refused").exists());
+    }
+
+    #[test]
     fn c02_start_handler_rejects_new_root_before_other_edits_and_save() {
         use california_condor::commands::{CondorCli, handlers::start::start_handler};
         use clap::Parser;

@@ -93,6 +93,10 @@ pub const HELP_TEMP: &str = r#"Path to the temporary directory to use.
 
 If not specified, the temporary directory is created in the current working directory with a hash of the input file name as the directory name.
 
+For an empty saved job, changing --temp updates unset or derived TEMP/scenes encoding and concatenation directories, including the parent of Target Quality probes. Saved scenes or nonempty known work directories prevent a change: start a new job with a new --config-file instead. An equivalent path (including a symlink alias) is accepted without changing saved paths or results.
+
+Custom scenes directories stay in place with a warning; use `condor encode set scenes-directory PATH` and `condor concatenate set scenes-directory PATH` to change them. --temp never moves existing files and refuses to adopt a nonempty new default scenes directory.
+
 Examples:
 - `./temp`
 - `/mnt/working_bird_folder`

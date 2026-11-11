@@ -30,6 +30,161 @@ mod tests {
     const HEIGHT: usize = 540;
 
     #[test]
+    fn c03_real_native_encode_publishes_new_root_chunk_and_owning_progress() {
+        use andean_condor::{
+            core::sequence::{
+                Sequence, SequenceCompletion, SequenceStatus, Status,
+                parallel_encoder::ParallelEncoder, target_quality::TargetQuality,
+            },
+            models::{
+                input::ImportMethod,
+                sequence::target_quality::{TargetQualityConfig, types::ProbeStrategy},
+            },
+        };
+        use california_condor::commands::handlers::encode::encode_handler;
+        use std::sync::{Arc, atomic::AtomicBool};
+
+        let temp = tempfile::tempdir().expect("fixture");
+        let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+        let source = base.join("finite.y4m");
+        let generated = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=32x16:r=24",
+                "-frames:v",
+                "4",
+                "-pix_fmt",
+                "yuv420p",
+                "-f",
+                "yuv4mpegpipe",
+            ])
+            .arg(&source)
+            .output()
+            .expect("FFmpeg fixture generator is required");
+        assert!(
+            generated.status.success(),
+            "{}",
+            String::from_utf8_lossy(&generated.stderr)
+        );
+        let video = TestVideo {
+            path: source.clone(),
+            width: 32,
+            height: 16,
+            frames: 4,
+            fps_rational: (24, 1),
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 4)],
+        };
+        let old = base.join("old");
+        std::fs::create_dir_all(&old).expect("old root");
+        std::fs::write(old.join("sentinel"), b"not moved").expect("old root sentinel");
+        let mut configuration = default_config(&video, &base.join("out.mkv"), &old);
+        configuration.condor.input = Input::Video {
+            path: source,
+            import_method: ImportMethod::FFMS2 {
+                index: None,
+                cache_path: Some(base.join("source.ffindex")),
+            },
+            filters: vec![],
+        };
+        configuration.condor.encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, true);
+        configuration.condor.encoder.set_append_color_data(false);
+        configuration
+            .condor
+            .encoder
+            .parameters_mut()
+            .insert("c:v".into(), CLIParameter::new_string("-", " ", "ffv1"));
+        configuration.condor.sequence_config.parallel_encoder.workers = Some(1);
+        configuration.condor.sequence_config.parallel_encoder.max_tries = 1;
+        let file = base.join("condor.json");
+        configuration.save(&file).expect("save empty job");
+        let selected = base.join("new");
+        let (mut configuration, _) = encode_handler(
+            Some(&file),
+            Some(&selected),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("edit empty job before adding scenes");
+        assert_eq!(
+            configuration.condor.sequence_config.parallel_encoder.scenes_directory,
+            selected.join("scenes")
+        );
+        assert_eq!(
+            configuration.condor.sequence_config.scene_concatenator.scenes_directory,
+            selected.join("scenes")
+        );
+        assert!(!selected.exists());
+        configuration.condor.scenes = video.mock_scenes(&configuration.condor.encoder);
+        configuration.save(&file).expect("add one real scene");
+        let template = configuration.clone();
+        let saved_file = file.clone();
+        let mut condor = configuration
+            .instantiate_condor(Box::new(move |model| {
+                let mut saved = template.clone();
+                saved.condor = model;
+                saved.save(&saved_file)?;
+                Ok(())
+            }))
+            .expect("real native FFMS2 input");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut sequence = ParallelEncoder::default();
+        sequence.validate(&mut condor).expect("real FFmpeg + frame-count prerequisites");
+        sequence
+            .initialize(&mut condor, tx.clone())
+            .expect("owning work directory initialization");
+        sequence
+            .execute(&mut condor, tx, Arc::new(AtomicBool::new(false)))
+            .expect("finite real FFmpeg encode and decoder-backed validation");
+        let chunk = selected.join("scenes/00000.mkv");
+        let bytes = std::fs::metadata(&chunk).expect("new-root published chunk").len();
+        assert!(bytes > 0);
+        let saved = load(&file);
+        let data = &saved.condor.scenes[0].sequence_data.parallel_encoder;
+        assert_eq!(data.bytes, Some(bytes));
+        assert!(data.started_on.is_some() && data.completed_on.is_some());
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(events.iter().any(|event| matches!(event, SequenceStatus::Whole(Status::Processing { id, completion: SequenceCompletion::Frames { completed: 4, total: 4 } }) if id == "Parallel Encoder")), "owning sequence reports all four usable frames: {events:?}");
+        assert!(events.iter().any(|event| matches!(event, SequenceStatus::Subprocess { child: Status::Completed { id }, .. } if id == "0")), "published scene completion: {events:?}");
+        assert_eq!(
+            std::fs::read(old.join("sentinel")).expect("old sentinel"),
+            b"not moved"
+        );
+        assert!(!old.join("scenes").exists());
+        assert_eq!(
+            std::fs::read_dir(selected.join("scenes")).expect("owned artifacts").count(),
+            1
+        );
+
+        // Probe-parent proof uses the actual TQ initializer, without running a quality probe.
+        condor.encoder = Encoder::default_from_base(&EncoderBase::X264, false);
+        condor.scenes[0].encoder = condor.encoder.clone();
+        let mut target = TargetQualityConfig::default();
+        target.probing.strategy = ProbeStrategy::Whole;
+        condor.sequence_config.target_quality = Some(target);
+        let (tx, _rx) = std::sync::mpsc::channel();
+        TargetQuality::default()
+            .initialize(&mut condor, tx)
+            .expect("actual probe directory model");
+        assert!(selected.join("scenes/Target Quality").is_dir());
+        assert!(!old.join("scenes").exists());
+    }
+
+    #[test]
     fn c02_populated_stage_overrides_do_not_replace_or_guard_the_root() {
         use andean_condor::models::input::ImportMethod;
         use california_condor::commands::handlers::encode::encode_handler;

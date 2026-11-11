@@ -71,6 +71,456 @@ mod tests {
     }
 
     #[test]
+    fn c03_empty_temp_edit_rebases_only_derived_directories() {
+        use california_condor::commands::handlers::configure_temp;
+        for kind in ["missing", "empty", "unset", "encoder-custom", "concat-custom", "both-custom"]
+        {
+            let temp = tempfile::tempdir().expect("fixture");
+            let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+            let mut configuration = root_edit_fixture(&base);
+            configuration.condor.scenes.clear();
+            configuration.temp = base.join("old");
+            let old_scenes = base.join("old/scenes");
+            let custom_encoder = base.join("custom-encoder");
+            let custom_concat = base.join("custom-concat");
+            let sequence = &mut configuration.condor.sequence_config;
+            sequence.parallel_encoder.scenes_directory = match kind {
+                "unset" => Default::default(),
+                "encoder-custom" | "both-custom" => custom_encoder.clone(),
+                _ => old_scenes.clone(),
+            };
+            sequence.scene_concatenator.scenes_directory = match kind {
+                "unset" | "encoder-custom" => Default::default(),
+                "concat-custom" | "both-custom" => custom_concat.clone(),
+                _ => old_scenes.clone(),
+            };
+            if kind == "empty" {
+                std::fs::create_dir_all(&old_scenes).expect("empty old directory");
+            }
+            let selected = base.join("new");
+            // Unadopted default work belongs to somebody else, not to either custom directory.
+            if kind == "both-custom" {
+                std::fs::create_dir_all(selected.join("scenes")).expect("foreign work");
+                std::fs::write(selected.join("scenes/foreign"), b"unowned").expect("sentinel");
+            }
+            let file = base.join("condor.json");
+            configuration.save(&file).expect("save");
+            let bytes = std::fs::read(&file).expect("snapshot");
+            let mut expected = configuration.clone();
+            expected.temp = selected.clone();
+            expected.condor.sequence_config.parallel_encoder.scenes_directory =
+                if matches!(kind, "encoder-custom" | "both-custom") {
+                    custom_encoder
+                } else {
+                    selected.join("scenes")
+                };
+            expected.condor.sequence_config.scene_concatenator.scenes_directory =
+                if matches!(kind, "concat-custom" | "both-custom") {
+                    custom_concat
+                } else {
+                    selected.join("scenes")
+                };
+            configure_temp(&mut configuration, Some(&base.join("absent/../new")))
+                .expect("empty offline temp edit");
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("actual"),
+                serde_json::to_value(expected).expect("expected"),
+                "{kind}"
+            );
+            assert_eq!(std::fs::read(&file).expect("no implicit save"), bytes);
+            assert!(!base.join("source-opened").exists());
+            if kind == "empty" {
+                assert!(
+                    old_scenes.is_dir(),
+                    "do not remove even an empty old directory"
+                );
+            }
+            if kind == "both-custom" {
+                assert_eq!(
+                    std::fs::read(selected.join("scenes/foreign")).expect("foreign"),
+                    b"unowned"
+                );
+            } else {
+                assert!(
+                    !selected.exists(),
+                    "pure config edits do not create directories"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn c03_populated_and_foreign_temp_edits_are_atomic() {
+        use california_condor::commands::handlers::configure_temp;
+        for kind in ["saved-scenes", "encoder-orphan", "concat-orphan", "foreign-destination"] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+            let mut configuration = root_edit_fixture(&base);
+            let old = configuration.temp.clone();
+            let selected = base.join("new-work");
+            if kind != "saved-scenes" {
+                configuration.condor.scenes.clear();
+            }
+            let chunk = match kind {
+                "encoder-orphan" => Some(old.join("scenes/orphan")),
+                "concat-orphan" => {
+                    configuration.condor.sequence_config.scene_concatenator.scenes_directory =
+                        base.join("concat");
+                    Some(base.join("concat/orphan"))
+                },
+                "foreign-destination" => Some(selected.join("scenes/foreign")),
+                _ => None,
+            };
+            if let Some(chunk) = &chunk {
+                std::fs::create_dir_all(chunk.parent().expect("parent")).expect("work");
+                std::fs::write(chunk, b"keep chunk").expect("chunk");
+            }
+            let file = base.join("condor.json");
+            configuration.save(&file).expect("save");
+            let bytes = std::fs::read(&file).expect("bytes");
+            let before = serde_json::to_value(&configuration).expect("snapshot");
+            let error = configure_temp(&mut configuration, Some(&selected))
+                .expect_err("must refuse relocation/adoption");
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(path_str(&old))
+                    && message.contains(path_str(&selected))
+                    && message.contains("--config-file"),
+                "{kind}: {message}"
+            );
+            assert_eq!(serde_json::to_value(&configuration).expect("after"), before);
+            assert_eq!(std::fs::read(file).expect("bytes"), bytes);
+            if let Some(chunk) = chunk {
+                assert_eq!(std::fs::read(chunk).expect("retained chunk"), b"keep chunk");
+            }
+            assert!(!base.join("source-opened").exists());
+        }
+    }
+
+    #[test]
+    fn c03_cli_temp_refusal_matrix_precedes_save_and_native_work() {
+        for kind in ["saved-scenes", "encoder-orphan", "concat-orphan", "foreign-destination"] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+            let mut configuration = root_edit_fixture(&base);
+            // Even the broken baseline cannot reach an actual benchmark or codec.
+            std::fs::write(base.join("a.vpy"), format!("from pathlib import Path\nPath({}).write_text('opened')\nraise RuntimeError('C03 source must not open')\n", serde_json::to_string(&base.join("source-opened")).expect("literal"))).expect("guard script");
+            if kind != "saved-scenes" {
+                configuration.condor.scenes.clear();
+            }
+            let selected = base.join("new-work");
+            let chunk = match kind {
+                "encoder-orphan" => Some(configuration.temp.join("scenes/orphan")),
+                "concat-orphan" => {
+                    configuration.condor.sequence_config.scene_concatenator.scenes_directory =
+                        base.join("concat");
+                    Some(base.join("concat/orphan"))
+                },
+                "foreign-destination" => Some(selected.join("scenes/foreign")),
+                _ => None,
+            };
+            if let Some(chunk) = &chunk {
+                std::fs::create_dir_all(chunk.parent().expect("parent")).expect("work");
+                std::fs::write(chunk, b"CLI sentinel chunk").expect("chunk");
+            }
+            for name in ["a.ffindex", "b.ffindex"] {
+                std::fs::write(base.join(name), b"index sentinel").expect("index");
+            }
+            let file = base.join("condor.json");
+            configuration.save(&file).expect("save");
+            let bytes = std::fs::read(&file).expect("bytes");
+            let mut failures = vec![];
+            for command in [
+                "",
+                "encode",
+                "detect-scenes",
+                "target-quality",
+                "concatenate",
+                "quality-check",
+                "benchmark",
+            ] {
+                let mut cli = condor_cmd(&temp);
+                cli.env("PATH", "").arg("--config-file").arg(&file).arg("--temp").arg(&selected);
+                if !command.is_empty() {
+                    cli.arg(command);
+                }
+                let output = cli.output().expect("CLI");
+                let message = String::from_utf8_lossy(&output.stderr);
+                if output.status.success()
+                    || !message.contains(path_str(&configuration.temp))
+                    || !message.contains(path_str(&selected))
+                    || !message.contains("--config-file")
+                    || message.contains("unexpected argument")
+                {
+                    failures.push(format!(
+                        "{kind}/{command}: missing temp policy refusal: {message}"
+                    ));
+                }
+                if std::fs::read(&file).expect("after") != bytes {
+                    failures.push(format!("{kind}/{command}: saved config changed"));
+                }
+                std::fs::write(&file, &bytes).expect("restore baseline fixture");
+            }
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+            assert!(!base.join("source-opened").exists());
+            if let Some(chunk) = chunk {
+                assert_eq!(std::fs::read(chunk).expect("chunk"), b"CLI sentinel chunk");
+            }
+            for name in ["a.ffindex", "b.ffindex"] {
+                assert_eq!(
+                    std::fs::read(base.join(name)).expect("index"),
+                    b"index sentinel"
+                );
+            }
+            if kind != "foreign-destination" {
+                assert!(!selected.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn c03_equivalent_temp_roots_and_none_preserve_populated_jobs() {
+        use california_condor::commands::handlers::configure_temp;
+        let temp = tempfile::tempdir().expect("fixture");
+        let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+        let mut configuration = root_edit_fixture(&base);
+        configuration.temp = base.join("./old");
+        configuration.condor.sequence_config.parallel_encoder.scenes_directory =
+            base.join("old/scenes");
+        configuration.condor.sequence_config.scene_concatenator.scenes_directory =
+            base.join("custom-concat");
+        std::fs::create_dir_all(base.join("old/scenes")).expect("old work");
+        std::fs::create_dir_all(base.join("sub")).expect("relative parent");
+        std::fs::write(base.join("old/scenes/0.ivf"), b"populated alias chunk").expect("chunk");
+        let file = base.join("condor.json");
+        configuration.save(&file).expect("save");
+        let expected = serde_json::to_value(&configuration).expect("snapshot");
+        let bytes = std::fs::read(&file).expect("bytes");
+        let mut aliases = vec!["old", "./old", "sub/../old"];
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join("old"), base.join("alias")).expect("alias");
+            aliases.push("alias");
+            std::fs::create_dir_all(base.join("old/child")).expect("alias child");
+            std::os::unix::fs::symlink(base.join("old/child"), base.join("alias-child"))
+                .expect("child alias");
+            aliases.push("alias-child/..");
+        }
+        configure_temp(&mut configuration, None).expect("no explicit edit");
+        assert_eq!(
+            serde_json::to_value(&configuration).expect("None"),
+            expected
+        );
+        for alias in aliases {
+            std::fs::write(&file, &bytes).expect("restore bytes after the preceding CLI save");
+            configure_temp(&mut configuration, Some(&base.join(alias))).expect("direct alias");
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("direct"),
+                expected
+            );
+            assert_eq!(std::fs::read(&file).expect("no direct save"), bytes);
+            let output = condor_cmd(&temp)
+                .env("PATH", "")
+                .args(["encode", "--temp", alias])
+                .output()
+                .expect("CLI");
+            let message = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !message.contains("cannot change temp") && !message.contains("unexpected argument"),
+                "{message}"
+            );
+            assert_eq!(serde_json::to_value(load(&file)).expect("CLI"), expected);
+        }
+        assert_eq!(
+            std::fs::read(base.join("old/scenes/0.ivf")).expect("chunk"),
+            b"populated alias chunk"
+        );
+        configuration.temp = base.join("missing");
+        let before = serde_json::to_value(&configuration).expect("offline snapshot");
+        configure_temp(&mut configuration, Some(&base.join("absent/../missing")))
+            .expect("missing lexical equivalent");
+        assert_eq!(
+            serde_json::to_value(&configuration).expect("offline"),
+            before
+        );
+    }
+
+    #[test]
+    fn c03_filesystem_errors_do_not_publish_temp_or_directory_changes() {
+        use california_condor::commands::handlers::configure_temp;
+        for kind in ["old-not-directory", "destination-not-directory"] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+            let mut configuration = root_edit_fixture(&base);
+            configuration.condor.scenes.clear();
+            let selected = base.join("new");
+            let bad = if kind == "old-not-directory" {
+                configuration.condor.sequence_config.parallel_encoder.scenes_directory =
+                    base.join(kind);
+                base.join(kind)
+            } else {
+                std::fs::create_dir_all(&selected).expect("new root");
+                selected.join("scenes")
+            };
+            std::fs::write(&bad, b"not a directory").expect("sentinel");
+            let file = base.join("condor.json");
+            configuration.save(&file).expect("save");
+            let bytes = std::fs::read(&file).expect("bytes");
+            let before = serde_json::to_value(&configuration).expect("snapshot");
+            let error =
+                configure_temp(&mut configuration, Some(&selected)).expect_err("not a directory");
+            assert!(format!("{error:#}").contains(path_str(&bad)), "{error:#}");
+            assert_eq!(serde_json::to_value(&configuration).expect("after"), before);
+            assert_eq!(std::fs::read(file).expect("bytes"), bytes);
+            assert_eq!(std::fs::read(bad).expect("sentinel"), b"not a directory");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c03_normalization_and_read_errors_are_contextual_and_atomic() {
+        use california_condor::commands::handlers::configure_temp;
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("fixture");
+        let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+        std::os::unix::fs::symlink("loop", base.join("loop")).expect("symlink loop");
+        let protected = base.join("protected");
+        std::fs::create_dir_all(protected.join("child")).expect("directory");
+        for kind in ["loop", "old-read", "destination-read", "normalize"] {
+            let mut configuration = root_edit_fixture(&base);
+            configuration.condor.scenes.clear();
+            let selected = match kind {
+                "loop" => base.join("loop"),
+                "normalize" => protected.join("child"),
+                "destination-read" => {
+                    std::fs::create_dir_all(base.join("destination")).expect("destination");
+                    std::os::unix::fs::symlink(&protected, base.join("destination/scenes"))
+                        .expect("scenes alias");
+                    base.join("destination")
+                },
+                _ => base.join("new"),
+            };
+            if kind == "old-read" {
+                configuration.condor.sequence_config.parallel_encoder.scenes_directory =
+                    protected.clone();
+            }
+            let file = base.join("condor.json");
+            configuration.save(&file).expect("save");
+            let bytes = std::fs::read(&file).expect("bytes");
+            let before = serde_json::to_value(&configuration).expect("before");
+            if kind != "loop" {
+                std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o000))
+                    .expect("deny access");
+            }
+            let result = configure_temp(&mut configuration, Some(&selected));
+            std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o700))
+                .expect("restore before assertions and cleanup");
+            let error = result.expect_err("filesystem errors cannot masquerade as missing/empty");
+            let message = format!("{error:#}");
+            let context = match kind {
+                "loop" => "normalizing temp directory",
+                "normalize" => "normalizing temp directory",
+                _ => "inspecting work directory",
+            };
+            assert!(message.contains(context), "{kind}: {message}");
+            assert_eq!(serde_json::to_value(&configuration).expect("after"), before);
+            assert_eq!(std::fs::read(&file).expect("bytes"), bytes);
+        }
+        // None is an unconditional no-op, even when the saved root cannot be normalized.
+        let mut configuration = root_edit_fixture(&base);
+        configuration.temp = base.join("loop");
+        let before = serde_json::to_value(&configuration).expect("before");
+        configure_temp(&mut configuration, None).expect("no requested edit");
+        assert_eq!(serde_json::to_value(configuration).expect("after"), before);
+    }
+
+    #[test]
+    fn c03_empty_cli_handlers_save_paths_and_warn_for_preserved_custom_directories() {
+        use california_condor::commands::handlers::benchmarker::benchmarker_handler;
+        for kind in ["derived", "encoder-custom", "concat-custom", "both-custom"] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let base = std::fs::canonicalize(temp.path()).expect("canonical fixture");
+            let mut configuration = root_edit_fixture(&base);
+            configuration.condor.scenes.clear();
+            // These handlers save before the later execution prerequisite fails.
+            std::fs::write(
+                base.join("a.vpy"),
+                "raise RuntimeError('C03 execution prerequisite')\n",
+            )
+            .expect("unavailable execution source");
+            let sequence = &mut configuration.condor.sequence_config;
+            sequence.quality_check = Some(Default::default());
+            if matches!(kind, "encoder-custom" | "both-custom") {
+                sequence.parallel_encoder.scenes_directory = base.join("custom-encoder");
+            }
+            if matches!(kind, "concat-custom" | "both-custom") {
+                sequence.scene_concatenator.scenes_directory = base.join("custom-concat");
+            } else if kind == "encoder-custom" {
+                sequence.scene_concatenator.scenes_directory = Default::default();
+            }
+            let selected = base.join("new");
+            let mut expected = configuration.clone();
+            expected.temp = selected.clone();
+            if !matches!(kind, "encoder-custom" | "both-custom") {
+                expected.condor.sequence_config.parallel_encoder.scenes_directory =
+                    selected.join("scenes");
+            }
+            if !matches!(kind, "concat-custom" | "both-custom") {
+                expected.condor.sequence_config.scene_concatenator.scenes_directory =
+                    selected.join("scenes");
+            }
+            let file = base.join("condor.json");
+            for command in ["encode", "target-quality", "concatenate", "quality-check"] {
+                configuration.save(&file).expect("restore empty job");
+                let output = condor_cmd(&temp)
+                    .env("PATH", "")
+                    .args([command, "--temp", "new"])
+                    .output()
+                    .expect("CLI");
+                let message = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    !output.status.success() && message.contains("C03 execution prerequisite"),
+                    "{command}: {message}"
+                );
+                assert_eq!(
+                    serde_json::to_value(load(&file)).expect("saved"),
+                    serde_json::to_value(&expected).expect("expected"),
+                    "{kind}/{command}"
+                );
+                for (custom, directory, editor) in [
+                    (
+                        matches!(kind, "encoder-custom" | "both-custom"),
+                        base.join("custom-encoder"),
+                        "encode",
+                    ),
+                    (
+                        matches!(kind, "concat-custom" | "both-custom"),
+                        base.join("custom-concat"),
+                        "concatenate",
+                    ),
+                ] {
+                    if custom {
+                        assert!(
+                            message.contains(path_str(&directory))
+                                && message.contains("--temp does not move those files")
+                                && message.contains(&format!("{editor} set scenes-directory")),
+                            "{message}"
+                        );
+                    }
+                }
+            }
+            configuration.save(&file).expect("restore empty job");
+            let (after, _) = benchmarker_handler(Some(&file), Some(&selected), None, None)
+                .expect("handler only; never execute a benchmark");
+            assert_eq!(
+                serde_json::to_value(after).expect("benchmark handler"),
+                serde_json::to_value(expected).expect("expected")
+            );
+            assert!(!selected.exists());
+        }
+    }
+
+    #[test]
     fn c02_populated_root_direct_edits_refuse_before_mutation() {
         use andean_condor::models::input::ImportMethod;
         use california_condor::commands::{

@@ -118,6 +118,27 @@ decoder-kind change clears its cache selection; same-kind edits retain it.
 Stage-specific inputs (including `encode` and quality-reference inputs) remain
 separate, editable overrides and are not rewritten by a root edit. See [Init](init.md#input).
 
+### Changing the temporary directory
+
+On run commands, `--temp PATH` changes an empty job's temp root and its derived
+encoding/concatenation directories (unset or the old `TEMP/scenes`). Target Quality
+probes follow the encoding scenes directory. No files are moved, copied or deleted;
+editing paths alone need not create directories.
+
+Saved scenes, including detection-only results, or a nonempty known encoding or
+concatenation directory prevent a root change before it is saved. Start a new job
+with a new `--config-file` instead. A nonempty new default `PATH/scenes` is also
+refused when it would be adopted, so foreign chunks cannot silently become job work.
+An equivalent temp path, including a symlink alias, keeps the saved paths and results
+and is accepted even for a populated job. Omitting `--temp` changes nothing.
+
+Explicit custom scenes directories are preserved with a warning naming each path:
+`--temp` does not move those files. This includes older configurations whose scenes
+directories no longer match their saved temp root; their origin cannot be inferred.
+To change these paths intentionally, use `condor encode set scenes-directory PATH`
+and `condor concatenate set scenes-directory PATH`. These settings do not migrate
+content either.
+
 ## Examples
 
 ```bash

@@ -85,11 +85,79 @@ pub fn load_configuration(config_path: Option<&Path>) -> Result<(Configuration, 
     Ok((configuration, config_path))
 }
 
+/// Changes an empty job's temp root without moving files or opening its source.
+/// Equivalent roots are no-ops; populated jobs and foreign destinations refuse atomically.
 pub fn configure_temp(configuration: &mut Configuration, temp_path: Option<&Path>) -> Result<()> {
-    if let Some(temp_path) = temp_path {
-        configuration.temp = path_abs::PathAbs::new(temp_path)?.as_path().to_path_buf();
+    let Some(temp_path) = temp_path else {
+        return Ok(());
+    };
+    let temp = path_abs::PathAbs::new(temp_path)
+        .with_context(|| format!("normalizing temp directory `{}`", temp_path.display()))?
+        .as_path()
+        .to_path_buf();
+    if normalized_path(&configuration.temp, "temp directory")?
+        == normalized_path(temp_path, "temp directory")?
+    {
+        // Keep the saved representation, custom paths and history even for populated aliases.
+        return Ok(());
     }
 
+    let refusal = || {
+        format!(
+            "cannot change temp directory from `{}` to `{}`: saved scenes or nonempty work directory; start a new job with a new --config-file; --temp does not move files",
+            configuration.temp.display(),
+            temp.display()
+        )
+    };
+    ensure!(configuration.condor.scenes.is_empty(), "{}", refusal());
+    let sequence = &configuration.condor.sequence_config;
+    let mut directories = [
+        sequence.parallel_encoder.scenes_directory.clone(),
+        sequence.scene_concatenator.scenes_directory.clone(),
+    ];
+    for directory in &directories {
+        ensure!(
+            !work_directory_populated(directory)?,
+            "{} (`{}`)",
+            refusal(),
+            directory.display()
+        );
+    }
+    let old_scenes = normalized_path(&configuration.temp.join("scenes"), "work directory")?;
+    let new_scenes = temp.join("scenes");
+    let mut rebased = [false; 2];
+    for (index, directory) in directories.iter_mut().enumerate() {
+        if directory.as_os_str().is_empty()
+            || normalized_path(directory, "work directory")? == old_scenes
+        {
+            *directory = new_scenes.clone();
+            rebased[index] = true;
+        }
+    }
+    if rebased.contains(&true) {
+        ensure!(
+            !work_directory_populated(&new_scenes)?,
+            "{} (destination `{}` already contains work)",
+            refusal(),
+            new_scenes.display()
+        );
+    }
+    for ((directory, rebased), command) in
+        directories.iter().zip(rebased).zip(["encode", "concatenate"])
+    {
+        if !rebased {
+            warn!(
+                "Preserving custom {command} scenes directory `{}`; --temp does not move those files; use `condor {command} set scenes-directory PATH` to change it",
+                directory.display()
+            );
+        }
+    }
+    // All filesystem checks precede publication; Target Quality derives probes from the encoder root.
+    let [encoder, concat] = directories;
+    let sequence = &mut configuration.condor.sequence_config;
+    sequence.parallel_encoder.scenes_directory = encoder;
+    sequence.scene_concatenator.scenes_directory = concat;
+    configuration.temp = temp;
     Ok(())
 }
 
@@ -103,13 +171,15 @@ fn root_source_path<'a>(input: &'a InputModel, fallback: &'a Path) -> &'a Path {
     }
 }
 
-fn normalized_source_path(path: &Path) -> Result<PathBuf> {
+fn normalized_path(path: &Path, what: &str) -> Result<PathBuf> {
     match std::fs::canonicalize(path) {
         Ok(path) => Ok(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => path_abs::PathAbs::new(path)
             .map(|path| path.as_path().to_path_buf())
-            .with_context(|| format!("normalizing offline input `{}`", path.display())),
-        Err(error) => Err(error).with_context(|| format!("normalizing input `{}`", path.display())),
+            .with_context(|| format!("normalizing offline {what} `{}`", path.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("normalizing {what} `{}`", path.display()))
+        },
     }
 }
 
@@ -146,8 +216,8 @@ pub(crate) fn configure_root_input(
         .as_deref()
         .map(|path| -> Result<_> {
             Ok((
-                normalized_source_path(old_path)?,
-                normalized_source_path(path)?,
+                normalized_path(old_path, "input")?,
+                normalized_path(path, "input")?,
                 path_abs::PathAbs::new(path)
                     .with_context(|| format!("normalizing input path `{}`", path.display()))?
                     .as_path()
