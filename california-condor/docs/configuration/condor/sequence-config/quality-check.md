@@ -14,7 +14,7 @@ Example:
 ```json
 {
     "metric": { "SSIMULACRA2": { "target_range": [74.0, 76.0], "resolution": null, "threads": null } },
-    "strategy": { "Subset": { "position": "Middle", "length": { "Percentage": 0.25 } } },
+    "strategy": { "Subset": { "position": "Middle", "length": { "Percentage": 25.0 } } },
     "statistic": "RootMeanSquare",
     "input": null
 }
