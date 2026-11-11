@@ -141,6 +141,16 @@ pub fn start_handler(
         }
     };
 
+    if let (Some(_), Some(output)) = (
+        output_path,
+        configuration.condor.sequence_config.scene_concatenator.output.as_ref(),
+    ) {
+        bail!(
+            "--output (-o) is shadowed by the saved concatenation output {}; run `condor concatenate reset output` before choosing a root output, or `condor concatenate set output PATH` to change the override",
+            output.display()
+        );
+    }
+
     // Root admission precedes --temp/output edits, native work and all saves.
     configure_root_input(
         &mut configuration,
@@ -195,9 +205,7 @@ pub fn start_handler(
             .condor
             .sequence_config
             .scene_concatenator
-            .output
-            .as_deref()
-            .unwrap_or(&configuration.condor.output.path),
+            .effective_output(&configuration.condor.output.path),
         &additional_sources,
         configuration.condor.output.overwrite,
         true,

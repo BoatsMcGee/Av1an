@@ -178,7 +178,7 @@ where
             }
         };
         let config = condor.sequence_config.scene_concatenator()?;
-        let destination = config.output.as_deref().unwrap_or(&condor.output.path);
+        let destination = config.effective_output(&condor.output.path);
         let destination = std::env::current_dir()?.join(destination);
         // Native muxers can require a nonexistent path. A private owned sibling
         // directory reserves its namespace without an unlink/recreate race or prompt.
@@ -247,12 +247,11 @@ where
 
         cancelled.publish(|| {
             Self::admit_final(condor)?;
-            let staged_path = tempfile::TempPath::try_from_path(staged_path)?;
-            if condor.output.overwrite {
-                staged_path.persist(&destination)?;
-            } else {
-                staged_path.persist_noclobber(&destination)?;
-            }
+            crate::core::output::persist_output(
+                tempfile::TempPath::try_from_path(staged_path)?,
+                &destination,
+                condor.output.overwrite,
+            )?;
             progress_tx.send(SequenceStatus::Whole(Status::Completed {
                 id: DETAILS.name.to_owned(),
             }))?;
@@ -300,7 +299,7 @@ impl SceneConcatenator {
         )?;
         let config = condor.sequence_config.scene_concatenator()?;
         crate::core::output::admit_output(
-            config.output.as_deref().unwrap_or(&condor.output.path),
+            config.effective_output(&condor.output.path),
             &sources,
             condor.output.overwrite,
             true,

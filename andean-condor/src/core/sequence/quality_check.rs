@@ -22,6 +22,7 @@ use crate::{
             quality_check::{
                 QualityCheckConfig, QualityCheckConfigHandler, QualityCheckDataHandler,
             },
+            scene_concatenator::SceneConcatenatorConfigHandler,
             target_quality::types::{
                 MeasurementError, QualityMetric, QualityPass, validate_scores,
             },
@@ -49,6 +50,8 @@ pub static DETAILS: SequenceDetails = SequenceDetails {
     version: "0.0.1",
 };
 
+/// Compare the reference against the effective final mux destination.
+/// Sequence configs provide both QualityCheckConfigHandler and SceneConcatenatorConfigHandler.
 pub struct QualityCheck {
     pub input: Option<Input>,
 }
@@ -115,7 +118,8 @@ pub(super) fn finish_temporal_compare<T>(
 impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for QualityCheck
 where
     DataHandler: SequenceDataHandler + QualityCheckDataHandler,
-    ConfigHandler: SequenceConfigHandler + QualityCheckConfigHandler,
+    ConfigHandler:
+        SequenceConfigHandler + QualityCheckConfigHandler + SceneConcatenatorConfigHandler,
 {
     #[inline]
     fn details(&self) -> SequenceDetails {
@@ -137,9 +141,13 @@ where
         if condor.scenes.is_empty() {
             warnings.push(anyhow::Error::new(QualityCheckError::ScenesEmpty));
         }
-        if !condor.output.path.exists() {
+        let output_path = condor
+            .sequence_config
+            .scene_concatenator()?
+            .effective_output(&condor.output.path);
+        if !output_path.exists() {
             warnings.push(anyhow::Error::new(QualityCheckError::OutputMissing {
-                path: condor.output.path.clone(),
+                path: output_path.to_path_buf(),
             }));
         }
         // Quality Check compares the reference input against the encoded
@@ -218,9 +226,14 @@ where
         for scene in &condor.scenes {
             config.strategy.validate_range(scene.start_frame, scene.end_frame)?;
         }
-        if !condor.output.path.exists() {
+        let output_path = condor
+            .sequence_config
+            .scene_concatenator()?
+            .effective_output(&condor.output.path)
+            .to_path_buf();
+        if !output_path.exists() {
             warnings.push(anyhow::Error::new(QualityCheckError::OutputMissing {
-                path: condor.output.path.clone(),
+                path: output_path,
             }));
             return Ok(((), warnings));
         }
@@ -271,7 +284,7 @@ where
         let measurements = if matches!(config.metric, QualityMetric::VMAF { .. }) {
             Self::measure_vmaf(
                 input,
-                &condor.output.path,
+                &output_path,
                 config,
                 &scene_frame_indices,
                 &progress_tx,
@@ -279,7 +292,7 @@ where
             )?
         } else if let Some(scores) = Self::measure_native(
             input,
-            &condor.output.path,
+            &output_path,
             config,
             &scene_frame_indices,
             &progress_tx,
@@ -289,7 +302,7 @@ where
         } else {
             Self::measure(
                 input,
-                &condor.output.path,
+                &output_path,
                 config,
                 &scene_frame_indices,
                 &progress_tx,

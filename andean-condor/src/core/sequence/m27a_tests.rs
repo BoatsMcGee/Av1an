@@ -32,6 +32,232 @@ fn metric(disabled: Option<bool>) -> QualityMetric {
     }
 }
 
+fn c06_qc_output_case(test: &str, root_kind: &str) {
+    native_children(test, &[("m27a-f-qc", ""), ("m27a-v-qc", "")], || {
+        use crate::{
+            core::{Condor, input::Input, output::Output, sequence::Sequence},
+            models::{
+                input::{ImportMethod, Input as InputModel},
+                scene::Scene,
+                sequence::{
+                    DefaultSequenceConfig, DefaultSequenceData, quality_check::QualityCheckConfig,
+                    target_quality::types::QualityPass,
+                },
+            },
+        };
+        let source = y4m_fixture(&[32, 48, 64, 80]);
+        let output = y4m_fixture(&[40, 56, 72, 88]);
+        let root = y4m_fixture(&[1, 2, 3, 4]);
+        let source_bytes = std::fs::read(source.path()).unwrap();
+        match root_kind {
+            "missing" => std::fs::remove_file(root.path()).unwrap(),
+            "invalid" => std::fs::write(root.path(), b"not a video").unwrap(),
+            "missing-override" => std::fs::remove_file(output.path()).unwrap(),
+            "invalid-override" => {
+                std::fs::write(output.path(), b"invalid effective output").unwrap();
+            },
+            _ => (),
+        }
+        let output_bytes = std::fs::read(output.path()).ok();
+        let root_bytes = std::fs::read(root.path()).ok();
+        let input = Input::from_video(&InputModel::Video {
+            path: source.path().into(),
+            import_method: ImportMethod::FFMS2 {
+                index: None,
+                cache_path: None,
+            },
+            filters: vec![],
+        })
+        .unwrap();
+        let mut scenes = (0..2)
+            .map(|index| Scene {
+                start_frame: index * 2,
+                end_frame: index * 2 + 2,
+                sub_scenes: None,
+                encoder: Default::default(),
+                sequence_data: DefaultSequenceData::default(),
+            })
+            .collect::<Vec<_>>();
+        scenes[0].sequence_data.quality_check.quality = QualityPass {
+            scores: vec![17.0, 18.0],
+            started_on: 100,
+            completed_on: 200,
+            ..Default::default()
+        };
+        let history = serde_json::to_vec(&scenes[0]).unwrap();
+        let before = serde_json::to_vec(&scenes).unwrap();
+        let saved = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = std::rc::Rc::clone(&saved);
+        let mut config = DefaultSequenceConfig {
+            quality_check: Some(QualityCheckConfig {
+                metric: metric(None),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        if root_kind != "fallback" {
+            config.scene_concatenator.output = Some(output.path().into());
+        }
+        let root_path = if root_kind == "fallback" {
+            output.path()
+        } else {
+            root.path()
+        };
+        let mut job = Condor::new(
+            input,
+            Output {
+                path: root_path.into(),
+                overwrite: false,
+                tags: Default::default(),
+                video_tags: Default::default(),
+            },
+            Default::default(),
+            scenes,
+            Some(config),
+            Box::new(move |data| {
+                recorded.borrow_mut().push(data);
+                Ok(())
+            }),
+        );
+        let mut qc = QualityCheck::default();
+        let (_, warnings) = qc.validate(&mut job).unwrap();
+        let (tx, rx) = mpsc::channel();
+        clear();
+        let result = qc.execute(&mut job, tx, Arc::new(AtomicBool::new(false)));
+        if root_kind == "missing-override" {
+            for warning in warnings
+                .iter()
+                .chain(result.as_ref().expect("missing effective output is a warning").1.iter())
+            {
+                assert!(
+                    matches!(warning.downcast_ref::<super::quality_check::QualityCheckError>(),Some(super::quality_check::QualityCheckError::OutputMissing{path}) if path==output.path()),
+                    "effective output warning: {warning:#}"
+                );
+            }
+            assert_eq!(warnings.len(), 1);
+            assert_eq!(result.unwrap().1.len(), 1);
+            assert_eq!(serde_json::to_vec(&job.scenes).unwrap(), before);
+            assert!(
+                saved.borrow().is_empty() && calls().is_empty() && rx.try_iter().next().is_none()
+            );
+        } else if root_kind == "invalid-override" {
+            assert!(warnings.is_empty());
+            let error =
+                result.expect_err("invalid effective output must not fall back to the valid root");
+            assert!(
+                error.is::<av_decoders::DecoderError>(),
+                "native decoder cause: {error:#}"
+            );
+            assert!(
+                format!("{error:#}").contains(output.path().to_str().unwrap()),
+                "effective path error context: {error:#}"
+            );
+            assert_eq!(serde_json::to_vec(&job.scenes).unwrap(), before);
+            assert!(
+                saved.borrow().is_empty() && calls().is_empty() && rx.try_iter().next().is_none()
+            );
+        } else {
+            let (_, execution_warnings) = result.unwrap_or_else(|error| {
+                panic!("QC must measure the effective output, root={root_kind}: {error:#}")
+            });
+            assert!(
+                warnings.is_empty() && execution_warnings.is_empty(),
+                "root={root_kind}, warnings={warnings:?}, execute={execution_warnings:?}"
+            );
+            // The ABI fixture marks raw Y for vship, limited-range RGB8 for fmetrics.
+            // Neutral Y 64/72/80/88 becomes RGB8 56/65/75/84 (255/219 scaling).
+            let expected = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+                [251.0, 253837.0]
+            } else {
+                [280.0, 283144.0]
+            };
+            assert_eq!(
+                job.scenes[1].sequence_data.quality_check.quality.scores, expected,
+                "actual decoded override samples, not the distinct root"
+            );
+            assert_eq!(saved.borrow().len(), 1);
+            assert_eq!(
+                saved.borrow()[0].scenes[1].sequence_data.quality_check.quality.scores,
+                expected
+            );
+            assert_eq!(saved.borrow()[0].output.path, root_path);
+            assert_eq!(
+                saved.borrow()[0].sequence_config.scene_concatenator.output,
+                job.sequence_config.scene_concatenator.output
+            );
+            let prefix = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+                "f"
+            } else {
+                "v"
+            };
+            assert_eq!(
+                calls(),
+                format!("{prefix}c+\n{prefix}p\n{prefix}p\n{prefix}c-\n")
+            );
+        }
+        assert_eq!(
+            serde_json::to_vec(&job.scenes[0]).unwrap(),
+            history,
+            "retained valid scene history"
+        );
+        assert_eq!(
+            std::fs::read(source.path()).unwrap(),
+            source_bytes,
+            "reference bytes unchanged"
+        );
+        assert_eq!(std::fs::read(output.path()).ok(), output_bytes);
+        assert_eq!(std::fs::read(root.path()).ok(), root_bytes);
+    });
+}
+
+#[test]
+fn c06_qc_override_scores_distinct_native_output() {
+    c06_qc_output_case(
+        "core::sequence::m27a_tests::c06_qc_override_scores_distinct_native_output",
+        "distinct",
+    );
+}
+
+#[test]
+fn c06_qc_override_ignores_missing_root() {
+    c06_qc_output_case(
+        "core::sequence::m27a_tests::c06_qc_override_ignores_missing_root",
+        "missing",
+    );
+}
+
+#[test]
+fn c06_qc_override_ignores_invalid_root() {
+    c06_qc_output_case(
+        "core::sequence::m27a_tests::c06_qc_override_ignores_invalid_root",
+        "invalid",
+    );
+}
+
+#[test]
+fn c06_qc_missing_effective_output_warns_without_scoring_root() {
+    c06_qc_output_case(
+        "core::sequence::m27a_tests::c06_qc_missing_effective_output_warns_without_scoring_root",
+        "missing-override",
+    );
+}
+
+#[test]
+fn c06_qc_without_override_scores_fallback() {
+    c06_qc_output_case(
+        "core::sequence::m27a_tests::c06_qc_without_override_scores_fallback",
+        "fallback",
+    );
+}
+
+#[test]
+fn c06_qc_invalid_effective_output_reports_actual_error_without_save() {
+    c06_qc_output_case(
+        "core::sequence::m27a_tests::c06_qc_invalid_effective_output_reports_actual_error_without_save",
+        "invalid-override",
+    );
+}
+
 fn decoder(samples: &[u8]) -> av_decoders::Decoder {
     let clips = samples.iter().map(|sample| format!("c.std.BlankClip(width=32,height=32,length=1,format=vs.YUV420P8,color=[{sample},128,128])")).collect::<Vec<_>>().join(",");
     av_decoders::Decoder::from_script(&format!("import vapoursynth as vs\nc=vs.core\nc.std.Splice([{clips}]).std.SetFrameProps(_Matrix=1,_Transfer=13,_Primaries=1,_Range=1).set_output()"), Default::default()).unwrap()

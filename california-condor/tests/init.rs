@@ -33,6 +33,204 @@ mod tests {
 
     use super::*;
 
+    fn c06_shadowed_output_case(direct: bool) {
+        use andean_condor::models::input::VapourSynthScriptSource;
+        use california_condor::commands::{CondorCli, handlers::start::start_handler};
+        use clap::Parser;
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("source.vpy");
+        let marker = serde_json::to_string(&temp.path().join("opened")).expect("marker");
+        std::fs::write(&source,format!("from pathlib import Path\nPath({marker}).write_text('opened')\nraise RuntimeError('SOURCE WAS OPENED')\n")).expect("script");
+        let source_bytes = std::fs::read(&source).expect("source snapshot");
+        let video = TestVideo {
+            path: source.clone(),
+            width: 32,
+            height: 32,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![],
+        };
+        let mut config = default_config(
+            &video,
+            &temp.path().join("fallback.mkv"),
+            &temp.path().join("work"),
+        );
+        config.condor.input = Input::VapourSynthScript {
+            source: VapourSynthScriptSource::Path(source.clone()),
+            variables: Default::default(),
+            index: 0,
+            filters: vec![],
+            stream_concurrently: false,
+        };
+        let actual = temp.path().join("actual.mkv");
+        config.condor.sequence_config.scene_concatenator.output = Some(actual.clone());
+        let file = temp.path().join("condor.json");
+        config.save(&file).expect("save fixture");
+        let before = std::fs::read(&file).expect("snapshot");
+        let cli = CondorCli::try_parse_from(["condor", "-o", "new-root.mkv", "--overwrite"])
+            .expect("root flags");
+        let message = if direct {
+            let error = start_handler(
+                Some(&file),
+                cli.temp.as_deref(),
+                cli.input.as_deref(),
+                cli.scd_input.as_deref(),
+                cli.tq_input.as_deref(),
+                cli.output.as_deref(),
+                cli.decoder.as_ref(),
+                cli.scd_decoder.as_ref(),
+                cli.tq_decoder.as_ref(),
+                cli.filters.as_deref(),
+                cli.scd_filters.as_deref(),
+                cli.tq_filters.as_deref(),
+                cli.vs_args.as_deref(),
+                cli.scd_vs_args.as_deref(),
+                cli.tq_vs_args.as_deref(),
+                cli.concat.as_ref(),
+                cli.discard.as_deref(),
+                cli.workers,
+                cli.encoder.as_ref(),
+                cli.passes,
+                cli.params.as_deref(),
+                cli.tq_params.as_deref(),
+                cli.photon_noise,
+                cli.chroma_noise,
+                cli.ffmpeg_filter.as_deref(),
+                None,
+                cli.target_metric.as_ref(),
+                cli.target,
+                cli.minimum_quantizer,
+                cli.maximum_quantizer,
+                cli.target_profile.as_ref(),
+                cli.max_tries,
+                cli.overwrite,
+            )
+            .expect_err("shadowed explicit output");
+            format!("{error:#}")
+        } else {
+            let result = condor_cmd(&temp)
+                .env("PATH", "")
+                .args(["-o", "new-root.mkv", "--overwrite"])
+                .output()
+                .expect("CLI");
+            assert!(!result.status.success());
+            String::from_utf8_lossy(&result.stderr).into_owned()
+        };
+        assert!(
+            message.contains("--output")
+                && message.contains("concatenate reset output")
+                && message.contains(path_str(&actual)),
+            "actionable conflict: {message}"
+        );
+        assert!(
+            !temp.path().join("opened").exists(),
+            "no native work: {message}"
+        );
+        assert_eq!(
+            std::fs::read(source).expect("unchanged source"),
+            source_bytes
+        );
+        assert_eq!(std::fs::read(file).expect("saved bytes"), before);
+        assert!(!temp.path().join("new-root.mkv").exists());
+        assert_eq!(
+            config.condor.sequence_config.scene_concatenator.output,
+            Some(actual)
+        );
+    }
+
+    #[test]
+    fn c06_shadowed_output_direct_start_rejects_before_native_and_save() {
+        c06_shadowed_output_case(true);
+    }
+
+    #[test]
+    fn c06_shadowed_output_cli_start_rejects_before_native_and_save() {
+        c06_shadowed_output_case(false);
+    }
+
+    #[test]
+    fn c06_landing_reports_actual_override_after_owning_root_execution() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("source.mkv");
+        let encoded = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=32x32:rate=24",
+                "-frames:v",
+                "2",
+                "-c:v",
+                "ffv1",
+            ])
+            .arg(&source)
+            .output()
+            .expect("required FFmpeg CLI");
+        assert!(
+            encoded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&encoded.stderr)
+        );
+        let video = TestVideo {
+            path: source.clone(),
+            width: 32,
+            height: 32,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        let fallback = temp.path().join("fallback-must-not-be-written.mkv");
+        let actual = temp.path().join("actual.mkv");
+        let mut config = default_config(&video, &fallback, &temp.path().join("work"));
+        config.condor.input = Input::Video {
+            path: source,
+            import_method: ImportMethod::FFMS2 {
+                index: None,
+                cache_path: None,
+            },
+            filters: vec![],
+        };
+        config.condor.encoder = Encoder::default_from_base(&EncoderBase::AOM, false);
+        config
+            .condor
+            .encoder
+            .parameters_mut()
+            .insert("cpu-used".into(), CLIParameter::new_number("--", "=", 8.0));
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        config.condor.sequence_config.parallel_encoder.workers = Some(1);
+        config.condor.sequence_config.parallel_encoder.max_tries = 1;
+        config.condor.sequence_config.scene_concatenator.method =
+            ConcatMethod::FFmpeg(Default::default());
+        config.condor.sequence_config.scene_concatenator.output = Some(actual.clone());
+        let file = temp.path().join("condor.json");
+        config.save(&file).expect("save tiny native job");
+        let result = condor_cmd(&temp)
+            .env("CONDOR_TEST_MODE", "1")
+            .args(["--skip-scd"])
+            .output()
+            .expect("root pipeline");
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert!(result.status.success(), "{message}");
+        assert!(
+            actual.is_file() && !fallback.exists(),
+            "actual final override"
+        );
+        assert!(
+            message.contains(&format!("Condor has landed. Output: {}", actual.display())),
+            "actual landing consumer: {message}"
+        );
+        let saved = load(&file);
+        assert_eq!(saved.condor.output.path, fallback);
+        assert_eq!(
+            saved.condor.sequence_config.scene_concatenator.output,
+            Some(actual)
+        );
+    }
+
     #[test]
     fn c06_init_and_new_start_reject_alias_before_source_evaluation_or_save() {
         for (init, overwrite) in [(true, false), (true, true), (false, false), (false, true)] {

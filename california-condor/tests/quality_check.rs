@@ -28,6 +28,120 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn c06_qc_cli_plugin_scores_override_with_missing_root_like_fallback() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("source.mkv");
+        let actual = temp.path().join("actual.mkv");
+        for (path, distorted) in [(&source, false), (&actual, true)] {
+            let mut command = std::process::Command::new("ffmpeg");
+            command.args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=64x64:rate=24",
+                "-frames:v",
+                "2",
+            ]);
+            if distorted {
+                command.args(["-vf", "noise=alls=2:allf=u"]);
+            }
+            let output =
+                command.args(["-c:v", "ffv1"]).arg(path).output().expect("required FFmpeg CLI");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let source_bytes = std::fs::read(&source).expect("source snapshot");
+        let output_bytes = std::fs::read(&actual).expect("output snapshot");
+        let video = TestVideo {
+            path: source.clone(),
+            width: 64,
+            height: 64,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        let file = temp.path().join("condor.json");
+        let mut baseline = None;
+        for overridden in [false, true] {
+            let root = if overridden {
+                temp.path().join("missing-root.mkv")
+            } else {
+                actual.clone()
+            };
+            let mut config = default_config(&video, &root, &temp.path().join("work"));
+            config.condor.input = Input::Video {
+                path: source.clone(),
+                import_method: andean_condor::models::input::ImportMethod::FFMS2 {
+                    index: None,
+                    cache_path: None,
+                },
+                filters: vec![],
+            };
+            config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+            config.condor.sequence_config.quality_check = Some(QualityCheckConfig {
+                metric: MetricModel::XPSNR {
+                    target_range: (44.0, 46.0),
+                    resolution: None,
+                },
+                strategy: ProbeStrategy::Whole,
+                ..Default::default()
+            });
+            config.condor.sequence_config.scene_concatenator.output =
+                overridden.then(|| actual.clone());
+            config.save(&file).expect("save measured job");
+            let output = condor_cmd(&temp)
+                .env("CONDOR_TEST_MODE", "1")
+                .args(["quality-check"])
+                .output()
+                .expect("owning CLI QC");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let saved = load(&file);
+            let mut scores =
+                saved.condor.scenes[0].sequence_data.quality_check.quality.scores.clone();
+            assert_eq!(
+                scores.len(),
+                2,
+                "actual plugin scored both frames, overridden={overridden}"
+            );
+            assert!(scores.iter().all(|score| score.is_finite() && *score > 0.0));
+            // Plugin callbacks can arrive out of frame order; C06 checks the file's
+            // score values/count, not the separately deferred ordering contract.
+            scores.sort_by(f64::total_cmp);
+            if let Some(baseline) = &baseline {
+                assert_eq!(
+                    &scores, baseline,
+                    "same distorted clip must be measured through either destination route"
+                );
+            } else {
+                baseline = Some(scores);
+            }
+            assert_eq!(saved.condor.output.path, root);
+            assert_eq!(
+                saved.condor.sequence_config.scene_concatenator.output,
+                config.condor.sequence_config.scene_concatenator.output
+            );
+            assert_eq!(
+                std::fs::read(&source).expect("reference preserved"),
+                source_bytes
+            );
+            assert_eq!(
+                std::fs::read(&actual).expect("output preserved"),
+                output_bytes
+            );
+        }
+    }
+
     /// Downscaling the clip to 540p cuts the encode and metric cost roughly
     /// fourfold, and nothing here depends on the source resolution.
     const WIDTH: usize = 960;

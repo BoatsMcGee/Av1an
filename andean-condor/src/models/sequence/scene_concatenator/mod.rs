@@ -57,6 +57,12 @@ impl Default for SceneConcatenatorConfig {
 }
 
 impl SceneConcatenatorConfig {
+    /// The final mux/measurement destination; the root output remains the saved fallback.
+    #[inline]
+    pub fn effective_output<'a>(&'a self, fallback: &'a Path) -> &'a Path {
+        self.output.as_deref().unwrap_or(fallback)
+    }
+
     /// Declared extra inputs and explicit attachments, even when copying is disabled.
     #[inline]
     pub fn mux_sources(&self) -> Vec<PathBuf> {

@@ -126,6 +126,20 @@ fn metadata_if_present(path: &Path) -> std::io::Result<Option<fs::Metadata>> {
     }
 }
 
+/// Persist an exclusively owned, successfully muxed scratch file after final admission.
+/// The owning Sequence holds Cancellation::publish; false consent must still reject a late file.
+pub(crate) fn persist_output(
+    staged: tempfile::TempPath,
+    destination: &Path,
+    overwrite: bool,
+) -> Result<(), tempfile::PathPersistError> {
+    if overwrite {
+        staged.persist(destination)
+    } else {
+        staged.persist_noclobber(destination)
+    }
+}
+
 // Resolve each existing component before interpreting `..`: lexical cleanup first
 // would mistake `symlink/../file` for a different destination. Only NotFound is absence.
 fn resolve_path(path: &Path) -> Result<PathBuf> {
@@ -202,6 +216,34 @@ pub enum OutputError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c06_persist_rejects_destination_created_after_admission_without_consent() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().expect("fixture");
+        let destination = dir.path().join("final.mkv");
+        admit_output(&destination, &[], false, true)
+            .expect("earlier admission of absent destination");
+        let mut staged = tempfile::NamedTempFile::new_in(dir.path()).expect("owned staged output");
+        staged.write_all(b"successful mux bytes").expect("staged mux");
+        fs::write(&destination, b"late destination owner")
+            .expect("destination created after admission");
+        let error = persist_output(staged.into_temp_path(), &destination, false).expect_err(
+            "atomic primitive must refuse a late destination without a second admission check",
+        );
+        assert_eq!(error.error.kind(), ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read(&destination).expect("late destination"),
+            b"late destination owner"
+        );
+        persist_output(error.path, &destination, true)
+            .expect("explicit consent control replaces the distinct file");
+        assert_eq!(
+            fs::read(&destination).expect("published"),
+            b"successful mux bytes"
+        );
+        assert_eq!(fs::read_dir(dir.path()).expect("owned cleanup").count(), 1);
+    }
 
     #[test]
     fn c06_identity_and_existing_output_policy() {

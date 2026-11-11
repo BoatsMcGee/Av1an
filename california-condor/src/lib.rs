@@ -573,7 +573,11 @@ pub fn run_condor(configuration: &Configuration, save_file: &Path, skip_scd: boo
 
     info!(
         "Condor has landed. Output: {}",
-        condor.output.path.display()
+        condor
+            .sequence_config
+            .scene_concatenator
+            .effective_output(&condor.output.path)
+            .display()
     );
     info!("Have a nice day!");
 

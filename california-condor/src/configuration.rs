@@ -91,7 +91,7 @@ impl Configuration {
         let output = &self.condor.output;
         andean_condor::core::output::admit_output(&output.path, &sources, true, false)?;
         andean_condor::core::output::admit_output(
-            concat.output.as_deref().unwrap_or(&output.path),
+            concat.effective_output(&output.path),
             &sources,
             !execution || output.overwrite,
             execution,
