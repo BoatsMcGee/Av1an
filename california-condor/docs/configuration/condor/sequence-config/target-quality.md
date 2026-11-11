@@ -37,6 +37,19 @@ shape. Every recorded TQ pass must match the current selected-frame count and ha
 finite scores and a defined statistic; a mismatch or corrupt pass is an error
 before prediction or reuse. Settings changes do not automatically migrate history.
 
+For a requested pass, every candidate scene must have a valid record before that
+pass can be reused unchanged, without reading retained probe outputs. Otherwise,
+all candidate outputs and the concatenated pass output are discarded and the whole
+pass is encoded with current quantizers. Cleanup errors stop work before encoding
+or saving; directories at output paths are errors, and output symlinks are removed
+without following their targets. Unrelated neighboring files are not deleted.
+Only a fully validated replacement batch replaces partial current-pass records
+and their dependent suffix; earlier verified records remain unchanged. A missing
+earlier pass is an error, not an inferred measurement. Cancellation accepts no
+incomplete pass. No-new-probe resumes also save a restored measured final quantizer
+when it differs from the scene's configured value, without an extra save on repeat.
+This does not verify source/settings provenance or migrate older records.
+
 - `VMAF`: `{ "target_range": [94.0, 96.0], "resolution": [w, h] or null, "scaler": <string>, "threads": <usize>, "model": <path> or null, "features": ["default"|"weighted"|"neg"|"motionless"|"uhd"] }`
 - `SSIMULACRA2`: `{ "target_range": [74.0, 76.0], "resolution": [w, h] or null, "threads": <u8> or null }` (default)
 - `BUTTERAUGLI`: `{ "target_range": [0.8, 1.2], "resolution": [w, h] or null, "threads": <u8> or null, "intensity_multiplier": <f64> or null, "norm": <u8> or null }`

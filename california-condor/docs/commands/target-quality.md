@@ -90,6 +90,19 @@ This fallback does not mean the target was achieved; Target Quality never select
 an unmeasured next prediction. Scenes without accepted measurements keep their
 configured quantizer. Later bitrate optimization may change the selected quantizer.
 
+On resume, a probe pass is reusable only when every candidate scene has a validated
+record for that pass. Complete records are kept unchanged; retained probe files
+are not required. An incomplete pass is replayed in full with the current probe
+quantizers after its declared stale outputs are discarded. Existing files alone
+are not measurements. A cleanup failure stops the pass before encoding or saving;
+cancelled or invalid measurements are not attached to scene history.
+
+If recorded measurements end the search without new probes, a changed final scene
+quantizer is still restored and saved once. Repeating that run without changes
+does not save again. History must still match the selected-frame count and contain
+finite scores with a defined statistic; changed settings do not migrate records
+or establish their provenance. See [Editing saved settings](config-editing.md).
+
 ### Examples
 
 - `> condor target-quality --metric ssimulacra2 --target 85`

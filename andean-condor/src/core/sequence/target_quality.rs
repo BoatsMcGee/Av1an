@@ -3,7 +3,6 @@ use std::{
     path::{Path, PathBuf},
     sync::{self, Arc, atomic::AtomicBool},
     thread,
-    time::SystemTime,
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -234,13 +233,17 @@ where
 
         // A resumed/exhausted search may schedule no tasks, but its final q must
         // still come from recorded measurements. Empty histories leave scenes untouched.
+        let mut restored_quantizers = false;
         for scene in &mut condor.scenes {
             let Ok(data) = scene.sequence_data.get_target_quality() else {
                 continue;
             };
             let history = Self::quantizer_score_history(&config, &data.passes)?;
-            if let Some(q) = Self::measured_quantizer(&config.metric, &history) {
+            if let Some(q) = Self::measured_quantizer(&config.metric, &history)
+                && scene.encoder.quantizer() != Some(q)
+            {
                 scene.encoder.set_quantizer(q);
+                restored_quantizers = true;
             }
         }
 
@@ -430,6 +433,10 @@ where
             );
             let (completed_tasks, pass_warnings) = probed?;
             relayed?;
+            if completed_tasks.is_empty() {
+                warnings.extend(pass_warnings);
+                break;
+            }
 
             let mut staged = condor.scenes.clone();
             let mut completions = Vec::with_capacity(completed_tasks.len());
@@ -481,11 +488,20 @@ where
             let mut data = condor_data.clone();
             data.scenes = condor.scenes.clone();
             (condor.save_callback)(data).expect("failed to save data");
+            restored_quantizers = false;
 
             cancelled.check_forced()?;
             if cancelled.is_cancelled() {
                 break;
             }
+        }
+
+        cancelled.check_forced()?;
+        if restored_quantizers && !cancelled.is_cancelled() {
+            let mut data = condor_data;
+            data.scenes = condor.scenes.clone();
+            (condor.save_callback)(data)
+                .context("Saving restored measured Target Quality quantizers")?;
         }
 
         Ok(((), warnings))
@@ -996,6 +1012,10 @@ impl TargetQuality {
     }
 
     /// Explicit per-scene policy; whole-zone batches still make one attempt.
+    /// Complete validated pass records return unchanged without native work.
+    /// Incomplete passes require all earlier records and outputs directly under
+    /// `<target_quality_directory>/<pass>`; stale outputs must unlink successfully
+    /// before the whole batch is encoded and admitted. No per-file reuse occurs.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     #[inline]
     pub fn probe_pass_with_options(
@@ -1019,8 +1039,18 @@ impl TargetQuality {
         if cancellation.is_cancelled() {
             return Ok((Vec::new(), Vec::new()));
         }
+        ensure!(pass > 0, "Target Quality pass must be at least 1");
+        if tasks.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
         for task in tasks {
-            task.encoder.validate()?;
+            config.validate(&task.encoder)?;
+            task.encoder.validate_settings()?;
+            ensure!(
+                !task.frame_indices.is_empty(),
+                "Target Quality scene {} has no selected frames",
+                task.original_index
+            );
             Self::validate_history(
                 config,
                 task.original_index,
@@ -1028,43 +1058,111 @@ impl TargetQuality {
                 &task.passes,
             )?;
         }
-        super::parallel_encoder::artifact::preflight(options.validate_frame_count)?;
-        let warnings: Vec<anyhow::Error> = vec![];
         let temporal = metrics::scene_temporal(&config.metric);
         let scenes: Vec<_> = tasks.iter().map(|task| task.frame_indices.as_slice()).collect();
-        if temporal && metrics::probe::validate_scene_selection(&scenes)? == 0 {
-            return Ok((Vec::new(), warnings));
+        if temporal {
+            metrics::probe::validate_scene_selection(&scenes)?;
         }
+        // Records, not scratch artifacts or native availability, establish reuse.
+        if Self::pass_is_complete(tasks, pass) {
+            return Ok((tasks.to_vec(), Vec::new()));
+        }
+        let previous_passes = usize::from(pass - 1);
+        for task in tasks {
+            ensure!(
+                task.passes.len() >= previous_passes,
+                "Target Quality scene {} pass {pass} is missing an earlier recorded pass",
+                task.original_index
+            );
+            task.encoder.validate()?;
+        }
+        // Preserve early prerequisite diagnostics, but only for passes that
+        // actually need work. These lookups launch no encoder or metric.
+        super::parallel_encoder::artifact::preflight(options.validate_frame_count)?;
+        let warnings: Vec<anyhow::Error> = vec![];
         let pass_directory = target_quality_directory.join(pass.to_string());
         let output = concat_method.with_extension(&target_quality_directory.join(pass.to_string()));
-        let framerate = input.clip_info()?.frame_rate;
-        // Seconds per frame, for a probe encoded by an earlier run.
-        let fps = *framerate.numer() as f64 / *framerate.denom() as f64;
-
-        // An aborted pass leaves scene files encoded at an unsaved quantizer,
-        // which a resume would skip while re-encoding the rest, so the pass
-        // would be scored as a mixture. Discard an incomplete pass.
-        let pass_is_complete = Self::pass_is_complete(tasks, pass);
-        if !pass_is_complete && pass_directory.exists() {
-            for entry in std::fs::read_dir(&pass_directory)? {
-                let path = entry?.path();
-                if path.is_file() {
-                    debug!("Discarding orphaned probe output {}", path.display());
-                    let _ = std::fs::remove_file(&path);
+        // SECURITY: Only declared outputs in this pass belong to the replay. Do
+        // not scan neighbors, recurse into directories, or follow a pass-dir link.
+        match pass_directory.symlink_metadata() {
+            Ok(metadata) => ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "Target Quality pass {pass} scratch directory is not a directory: {}",
+                pass_directory.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Inspecting Target Quality pass {pass} scratch {}",
+                        pass_directory.display()
+                    )
+                });
+            },
+        }
+        for task in tasks {
+            ensure!(
+                task.output.parent() == Some(pass_directory.as_path()),
+                "Target Quality scene {} output is outside pass {pass} scratch: {}",
+                task.original_index,
+                task.output.display()
+            );
+        }
+        for source in std::iter::once(&*input).chain(metric_input.as_deref()) {
+            let path = match source {
+                Input::Video { path, .. } | Input::VapourSynth { path, .. } => Some(path),
+                Input::VapourSynthScript {
+                    source: crate::models::input::VapourSynthScriptSource::Path(path),
+                    ..
+                } => Some(path),
+                Input::VapourSynthScript { .. } => None,
+            };
+            if let Some(source) = path {
+                let source = source.canonicalize().with_context(|| {
+                    format!(
+                        "Resolving Target Quality input before pass {pass} cleanup: {}",
+                        source.display()
+                    )
+                })?;
+                for candidate in
+                    tasks.iter().map(|task| &task.output).chain(std::iter::once(&output))
+                {
+                    // Unlinking an output symlink is safe; only a regular entry
+                    // could remove the input itself through an aliased parent.
+                    if candidate.symlink_metadata().is_ok_and(|metadata| metadata.is_file()) {
+                        ensure!(
+                            candidate.canonicalize().with_context(|| format!(
+                                "Resolving stale output {}",
+                                candidate.display()
+                            ))? != source,
+                            "Target Quality pass {pass} output overlaps input {}; refusing stale cleanup",
+                            candidate.display()
+                        );
+                    }
                 }
             }
         }
-
-        let already_completed_tasks =
-            tasks.iter().filter(|task| task.output.exists()).collect::<Vec<_>>();
-        let frames_already_completed = already_completed_tasks
-            .iter()
-            .fold(0, |acc, task| acc + task.frame_indices.len());
+        // An incomplete pass describes no single measurement. Remove every
+        // candidate output before any native work, even if some have records.
+        for path in tasks.iter().map(|task| &task.output).chain(std::iter::once(&output)) {
+            match std::fs::remove_file(path) {
+                Ok(()) => debug!("Discarding orphaned probe output {}", path.display()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "Discarding stale Target Quality pass {pass} output {}",
+                            path.display()
+                        )
+                    });
+                },
+            }
+        }
+        let framerate = input.clip_info()?.frame_rate;
         let total_frames = tasks.iter().fold(0, |acc, task| acc + task.frame_indices.len());
 
         let encode_tasks = tasks
             .iter()
-            .filter(|task| !task.output.exists())
             .enumerate()
             .map(|(index, task)| ParallelEncoderTask {
                 original_index: task.original_index,
@@ -1094,7 +1192,7 @@ impl TargetQuality {
                             progress_tx_clone.send(SequenceStatus::Whole(Status::Processing {
                                 id: "Encode".to_owned(),
                                 completion: SequenceCompletion::Frames {
-                                    completed: frames_already_completed as u64 + completed,
+                                    completed,
                                     total: total_frames as u64,
                                 },
                             }))?;
@@ -1292,7 +1390,6 @@ impl TargetQuality {
         // final completion and drops its sender instead; holding it
         // across the `join` below would leave the relay thread waiting
         // forever.
-        let started = SystemTime::now();
         // A metric scored natively above reuses those scores; otherwise the
         // plugin branches below run. For the vship metrics the plugin
         // branch is reached only when libvship was unavailable or
@@ -1531,15 +1628,11 @@ impl TargetQuality {
         else {
             return Ok((Vec::new(), warnings));
         };
-        let ended = SystemTime::now();
 
         drop(progress_tx);
 
-        // `results` covers only the tasks encoded this run and is indexed by
-        // that subset, so its positions name no scene. `scene` is the
-        // task's `original_index`, so key on it: zipping by position
-        // attached the wrong scene's bitrate to every task past the
-        // first skipped one.
+        // Zone and per-scene results both identify the original scene, not
+        // its position in this candidate batch.
         let results = results
             .into_iter()
             .flatten()
@@ -1550,39 +1643,41 @@ impl TargetQuality {
         let tasks = tasks
             .iter()
             .zip(grouped)
-            .map(|(task, scores)| {
+            .map(|(task, scores)| -> Result<Task> {
                 let mut completed_task = task.clone();
-                // A task skipped as already encoded has no result, so its size
-                // comes from the file and its timings from its
-                // last recorded pass.
-                let bitrate = results.get(&task.original_index).map_or_else(
-                    || {
-                        let bytes = task.output.metadata().map_or(0, |meta| meta.len());
-                        (bytes * 8) as f64 / (task.frame_indices.len() as f64 * fps)
-                    },
-                    |result| result.bitrate,
-                );
+                let result = results.get(&task.original_index).with_context(|| {
+                    format!(
+                        "Target Quality scene {} pass {pass} has no completed encode",
+                        task.original_index
+                    )
+                })?;
+                // Keep the verified prefix; replace any partially recorded
+                // current pass and its dependent suffix only after full admission.
+                completed_task.passes.truncate(previous_passes);
                 completed_task.passes.push(QualityPass {
                     quantizer: task.encoder.quantizer().expect("quantizer exists"),
                     scores,
-                    bitrate,
-                    started_on: task.passes.last().map_or_else(
-                        || {
-                            started
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .expect("Time is valid")
-                                .as_millis()
-                        },
-                        |previous| previous.started_on,
-                    ),
-                    completed_on: ended
+                    bitrate: result.bitrate,
+                    started_on: result
+                        .started
                         .duration_since(std::time::UNIX_EPOCH)
-                        .expect("Time is valid")
+                        .context("Probe encode start precedes UNIX epoch")?
+                        .as_millis(),
+                    completed_on: result
+                        .ended
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .context("Probe encode completion precedes UNIX epoch")?
                         .as_millis(),
                 });
-                completed_task
+                Self::validate_history(
+                    config,
+                    task.original_index,
+                    task.frame_indices.len(),
+                    &completed_task.passes,
+                )?;
+                Ok(completed_task)
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
 
         Ok((tasks, warnings))
     }
@@ -1977,15 +2072,9 @@ mod tests {
         },
     };
 
-    use crate::{
-        core::{
-            encoder::{EncoderResult, StringOrBytes},
-            sequence::parallel_encoder::ParallelEncoderResult,
-        },
-        models::{
-            encoder::{Encoder, EncoderBase, photon_noise::PhotonNoise},
-            sequence::target_quality::types::QualityMetric,
-        },
+    use crate::models::{
+        encoder::{Encoder, EncoderBase, photon_noise::PhotonNoise},
+        sequence::target_quality::types::QualityMetric,
     };
 
     #[test]
@@ -2847,23 +2936,6 @@ mod tests {
         }
     }
 
-    fn result_for(scene: usize) -> Option<ParallelEncoderResult> {
-        Some(ParallelEncoderResult {
-            scene,
-            started: std::time::UNIX_EPOCH,
-            ended: std::time::UNIX_EPOCH,
-            bytes: 1000 * (scene as u64 + 1),
-            bitrate: 100.0 * (scene as f64 + 1.0),
-            result: EncoderResult {
-                encoder: EncoderBase::X264,
-                parameters: Vec::new(),
-                status: Default::default(),
-                stdout: StringOrBytes::from(Vec::new()),
-                stderr: StringOrBytes::from(Vec::new()),
-            },
-        })
-    }
-
     fn ssimulacra2() -> QualityMetric {
         QualityMetric::SSIMULACRA2 {
             target_range: (74.0, 76.0),
@@ -2873,48 +2945,692 @@ mod tests {
         }
     }
 
-    /// A cancelled pass reports no completed tasks.
-    ///
-    /// Returning the input tasks made `execute` treat an unrecorded pass as
-    /// scored and reach `passes.last()`, empty on the first pass, so it
-    /// panicked.
-    #[test]
-    fn a_cancelled_pass_reports_no_completed_tasks() {
-        let tasks = [task_with_passes(0, 0)];
-        let completed: Vec<Task> = Vec::new();
-        assert!(completed.is_empty());
-        assert!(tasks[0].passes.is_empty());
-    }
+    mod q07 {
+        use super::super::*;
+        use crate::{
+            core::{Condor, output::Output, sequence::Sequence},
+            models::{
+                scene::Scene,
+                sequence::{
+                    DefaultSequenceConfig, DefaultSequenceData,
+                    parallel_encoder::ParallelEncoderConfig,
+                },
+            },
+            utils::cancellation::{Cancellation, Cancelled},
+        };
 
-    /// Results must be attributed to the scene they were produced for.
-    ///
-    /// On resume `results` is a sparse subset, so zipping it against the tasks
-    /// by position paired each scene with another scene's bitrate.
-    #[test]
-    fn results_attach_to_their_own_scene_when_the_subset_is_sparse() {
-        // Scenes 0 and 2 already exist and are skipped, leaving scene 1.
-        let tasks = [task_with_passes(0, 1), task_with_passes(1, 1), task_with_passes(2, 1)];
-        let results = vec![result_for(1)];
+        // Real FFmpeg/FFMS2/libvmaf, shared with the Q04 acceptance fixture.
+        fn fixture() -> (
+            tempfile::TempDir,
+            Input,
+            Encoder,
+            TargetQualityConfig,
+            PathBuf,
+        ) {
+            let temp = tempfile::tempdir().expect("fixture");
+            let source = temp.path().join("source.mkv");
+            let generated = std::process::Command::new("ffmpeg")
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=128x128:rate=24",
+                    "-frames:v",
+                    "4",
+                    "-c:v",
+                    "ffv1",
+                ])
+                .arg(&source)
+                .output()
+                .expect("existing FFmpeg");
+            assert!(generated.status.success(), "{generated:?}");
+            let input = Input::from_video(&InputModel::Video {
+                path: source,
+                import_method: ImportMethod::FFMS2 {
+                    index: None,
+                    cache_path: None,
+                },
+                filters: vec![],
+            })
+            .expect("FFMS2");
+            let mut encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, false);
+            encoder.parameters_mut().extend(CLIParameter::new_strings(
+                "-",
+                " ",
+                &[("c:v", "libx264"), ("preset", "ultrafast")],
+            ));
+            encoder.set_quantizer(26.0);
+            let config = TargetQualityConfig {
+                quantizer_range: (26, 34),
+                maximum_probes: 2,
+                metric: QualityMetric::VMAF {
+                    target_range: (0.0, 0.0),
+                    resolution: None,
+                    scaler: "bicubic".into(),
+                    threads: 0,
+                    model: None,
+                    features: vec![],
+                },
+                ..Default::default()
+            };
+            let directory = temp.path().join("Target Quality");
+            for pass in 1..=2 {
+                std::fs::create_dir_all(
+                    directory.join(pass.to_string()).join("Scene Concatenator"),
+                )
+                .expect("scratch");
+            }
+            (temp, input, encoder, config, directory)
+        }
 
-        let indexed = results
-            .into_iter()
-            .flatten()
-            .map(|result| (result.scene, result))
-            .collect::<std::collections::HashMap<_, _>>();
+        fn tasks(encoder: &Encoder, directory: &Path, pass: u8) -> Vec<Task> {
+            [vec![0, 1], vec![2, 3]]
+                .into_iter()
+                .enumerate()
+                .map(|(index, frame_indices)| Task {
+                    original_index: index,
+                    frame_indices,
+                    encoder: encoder.clone(),
+                    output: directory.join(pass.to_string()).join(format!("{index:05}.mkv")),
+                    passes: vec![],
+                })
+                .collect()
+        }
 
-        for task in &tasks {
-            match indexed.get(&task.original_index) {
-                Some(result) => assert_eq!(
-                    result.bitrate,
-                    100.0 * (task.original_index as f64 + 1.0),
-                    "scene {} must read its own result",
-                    task.original_index
-                ),
-                None => assert!(
-                    !task.output.exists(),
-                    "scene {} skipped without an output to reuse",
-                    task.original_index
-                ),
+        fn probe(
+            pass: u8,
+            directory: &Path,
+            config: &TargetQualityConfig,
+            input: &mut Input,
+            tasks: &[Task],
+        ) -> Result<Vec<Task>> {
+            let (tx, _rx) = sync::mpsc::channel();
+            let (completed, warnings) = TargetQuality::probe_pass_with_options(
+                pass,
+                directory,
+                config,
+                input,
+                None,
+                1,
+                &ConcatMethod::FFmpeg(Default::default()),
+                tasks,
+                tx,
+                &Default::default(),
+                Default::default(),
+            )?;
+            assert!(warnings.is_empty(), "{warnings:?}");
+            Ok(completed)
+        }
+
+        #[cfg(unix)]
+        fn executable(path: &Path, source: &str) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(path, source).expect("script");
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                .expect("executable");
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn q07_cleanup_failure_aborts_before_encoder_with_path_context() {
+            let (temp, mut input, mut encoder, config, directory) = fixture();
+            let script = temp.path().join("encoder");
+            executable(
+                &script,
+                "#!/bin/sh\nprintf spawned > \"$0.calls\"\nexit 1\n",
+            );
+            encoder.set_executable(Some(script.clone()));
+            let tasks = tasks(&encoder, &directory, 1);
+            std::fs::create_dir_all(&tasks[0].output).expect("directory collision");
+            let sentinel = tasks[0].output.join("caller-data");
+            std::fs::write(&sentinel, b"preserve").expect("sentinel");
+            let error =
+                probe(1, &directory, &config, &mut input, &tasks).expect_err("cleanup must fail");
+            eprintln!("Q07 cleanup owning-path error: {error:#}");
+            assert!(
+                format!("{error:#}").contains(&tasks[0].output.display().to_string()),
+                "{error:#}"
+            );
+            assert!(
+                !script.with_extension("calls").exists(),
+                "cleanup must precede any encoder spawn"
+            );
+            assert_eq!(
+                std::fs::read(sentinel).expect("preserved directory"),
+                b"preserve"
+            );
+            let mut escaped = tasks.clone();
+            escaped[1].output = temp.path().join("source.mkv");
+            assert!(probe(1, &directory, &config, &mut input, &escaped).is_err());
+            assert!(
+                escaped[1].output.exists(),
+                "never delete outside the owned pass"
+            );
+            let detached = temp.path().join("caller-directory");
+            std::fs::rename(directory.join("1"), &detached).expect("move scratch");
+            std::os::unix::fs::symlink(&detached, directory.join("1")).expect("pass-dir link");
+            assert!(probe(1, &directory, &config, &mut input, &tasks).is_err());
+            assert_eq!(
+                std::fs::read(detached.join("00000.mkv/caller-data"))
+                    .expect("linked directory preserved"),
+                b"preserve"
+            );
+            assert!(!script.with_extension("calls").exists());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn q07_cleanup_never_deletes_an_input_even_inside_pass_scratch() {
+            let (temp, mut input, mut encoder, config, directory) = fixture();
+            let script = temp.path().join("encoder");
+            executable(
+                &script,
+                "#!/bin/sh\nprintf spawned > \"$0.calls\"\nexit 1\n",
+            );
+            encoder.set_executable(Some(script.clone()));
+            let tasks = tasks(&encoder, &directory, 1);
+            std::fs::copy(temp.path().join("source.mkv"), &tasks[0].output)
+                .expect("source inside scratch");
+            if let Input::Video { path, .. } = &mut input {
+                *path = directory.join("1/../1/00000.mkv");
+            }
+            let before = std::fs::read(&tasks[0].output).expect("source bytes");
+            assert!(probe(1, &directory, &config, &mut input, &tasks).is_err());
+            assert_eq!(
+                std::fs::read(&tasks[0].output).expect("source must be preserved"),
+                before
+            );
+            assert!(!script.with_extension("calls").exists());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn q07_complete_pass_returns_unchanged_without_scratch_input_or_encoder() {
+            let (temp, mut input, mut encoder, config, directory) = fixture();
+            let script = temp.path().join("encoder");
+            executable(
+                &script,
+                "#!/bin/sh\nprintf spawned > \"$0.calls\"\nexit 1\n",
+            );
+            encoder.set_executable(Some(script.clone()));
+            let mut tasks = tasks(&encoder, &directory, 1);
+            for task in &mut tasks {
+                task.passes.push(QualityPass {
+                    quantizer: 26.0,
+                    scores: vec![75.0, 76.0],
+                    bitrate: 100.0,
+                    started_on: 12,
+                    completed_on: 34,
+                });
+            }
+            std::fs::remove_file(temp.path().join("source.mkv")).expect("no retained source");
+            for available in [true, false] {
+                if !available {
+                    std::fs::remove_file(&script).expect("unavailable encoder");
+                }
+                let before = format!("{tasks:?}");
+                let completed = probe(1, &directory, &config, &mut input, &tasks)
+                    .expect("complete validated history is sufficient");
+                assert_eq!(format!("{completed:?}"), before);
+                assert!(!script.with_extension("calls").exists());
+                eprintln!(
+                    "Q07 complete reuse: records unchanged, missing outputs/source, encoder available={available}, no spawn"
+                );
+            }
+            let mut invalid = tasks.clone();
+            invalid[1].passes[0].scores.pop();
+            assert!(
+                probe(1, &directory, &config, &mut input, &invalid)
+                    .expect_err("strict history")
+                    .is::<MeasurementError>()
+            );
+            let mut invalid_config = config.clone();
+            *invalid_config.metric.target_range_mut() = (f64::NAN, 75.0);
+            assert!(probe(1, &directory, &invalid_config, &mut input, &tasks).is_err());
+            let mut temporal = config.clone();
+            temporal.metric = QualityMetric::CVVDP {
+                target_range: (0.0, 1.0),
+                resolution: None,
+                display_model: None,
+                resize_to_display: None,
+                disable_temporal: None,
+                gpu_id: None,
+            };
+            let mut invalid_selection = tasks.clone();
+            invalid_selection[0].frame_indices.reverse();
+            let error = probe(1, &directory, &temporal, &mut input, &invalid_selection)
+                .expect_err("pure temporal selection validation still precedes reuse");
+            assert!(
+                format!("{error:#}").contains("strictly increasing"),
+                "{error:#}"
+            );
+            assert!(probe(0, &directory, &config, &mut input, &tasks).is_err());
+            assert!(
+                probe(1, &directory, &config, &mut input, &[])
+                    .expect("empty no-work")
+                    .is_empty()
+            );
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn q07_incomplete_pass_reencodes_current_quantizers_and_replaces_partial_records() {
+            let (temp, mut input, encoder, config, directory) = fixture();
+            let mut tasks = probe(
+                1,
+                &directory,
+                &config,
+                &mut input,
+                &tasks(&encoder, &directory, 1),
+            )
+            .expect("verified prefix");
+            let previous = tasks
+                .iter()
+                .map(|task| serde_json::to_value(&task.passes).expect("history"))
+                .collect::<Vec<_>>();
+            for task in &mut tasks {
+                task.output = directory.join("2").join(format!("{:05}.mkv", task.original_index));
+                task.encoder.set_quantizer(28.0);
+            }
+            let partial = probe(2, &directory, &config, &mut input, &tasks[..1])
+                .expect("one scene has a current record");
+            tasks[0].passes = partial[0].passes.clone();
+            std::fs::write(&tasks[0].output, b"stale q28 marker").expect("abandoned output");
+            let outside = temp.path().join("caller-directory");
+            std::fs::create_dir_all(&outside).expect("outside directory");
+            std::fs::write(outside.join("caller-data"), b"outside sentinel").expect("outside");
+            std::os::unix::fs::symlink(&outside, &tasks[1].output).expect("stale output symlink");
+            let unrelated = directory.join("2/unrelated.txt");
+            std::fs::write(&unrelated, b"not a declared output").expect("caller neighbor");
+            for (task, q) in tasks.iter_mut().zip([30.0, 34.0]) {
+                task.encoder.set_quantizer(q);
+            }
+            let completed =
+                probe(2, &directory, &config, &mut input, &tasks).expect("whole pass replay");
+            eprintln!(
+                "Q07 mixed replay: {:?}",
+                completed
+                    .iter()
+                    .map(|task| (
+                        task.original_index,
+                        task.passes.iter().map(|pass| pass.quantizer).collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            for (index, task) in completed.iter().enumerate() {
+                assert_eq!(
+                    task.passes.len(),
+                    2,
+                    "replace current record rather than appending a duplicate"
+                );
+                assert_eq!(
+                    serde_json::to_value(&task.passes[..1]).expect("prefix"),
+                    previous[index]
+                );
+                assert_eq!(task.passes[1].quantizer, [30.0, 34.0][index]);
+                assert_eq!(task.passes[1].scores.len(), 2);
+                assert!(task.passes[1].scores.iter().all(|score| score.is_finite()));
+                assert!(
+                    !task
+                        .output
+                        .symlink_metadata()
+                        .expect("fresh artifact")
+                        .file_type()
+                        .is_symlink()
+                );
+                assert_ne!(
+                    std::fs::read(&task.output).expect("fresh output"),
+                    b"stale q28 marker"
+                );
+            }
+            assert_eq!(
+                std::fs::read(outside.join("caller-data"))
+                    .expect("symlink directory target preserved"),
+                b"outside sentinel"
+            );
+            assert_eq!(
+                std::fs::read(unrelated).expect("caller data preserved"),
+                b"not a declared output"
+            );
+            tasks[1].passes.clear();
+            let before = std::fs::read(&tasks[0].output).expect("output");
+            assert!(
+                probe(2, &directory, &config, &mut input, &tasks).is_err(),
+                "missing earlier prefix must not be invented"
+            );
+            assert_eq!(
+                std::fs::read(&tasks[0].output).expect("not deleted"),
+                before
+            );
+        }
+
+        #[test]
+        fn q07_execute_no_new_work_saves_only_changed_measured_restoration() {
+            for target_hit in [true, false] {
+                let (temp, mut input, encoder, mut config, directory) = fixture();
+                let measured = probe(
+                    1,
+                    &directory,
+                    &config,
+                    &mut input,
+                    &tasks(&encoder, &directory, 1)[..1],
+                )
+                .expect("real measured history");
+                let history = measured[0].passes.clone();
+                config.quantizer_range = (26, 26);
+                if target_hit {
+                    *config.metric.target_range_mut() = (0.0, 100.0);
+                }
+                let score = config
+                    .metric
+                    .calculate_score(config.probing.statistic, &history[0].scores)
+                    .expect("real measured score");
+                assert_eq!(config.metric.score_within_target(score), target_hit);
+                let mut scene_encoder = encoder.clone();
+                scene_encoder.set_quantizer(20.0);
+                let mut data = DefaultSequenceData::default();
+                data.get_target_quality_mut().expect("TQ").passes = history.clone();
+                let scenes = vec![Scene {
+                    start_frame: 0,
+                    end_frame: 2,
+                    sub_scenes: None,
+                    encoder: scene_encoder,
+                    sequence_data: data,
+                }];
+                let snapshots = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                let saved = std::rc::Rc::clone(&snapshots);
+                let mut condor = Condor::new(
+                    input,
+                    Output {
+                        path: temp.path().join("final.mkv"),
+                        tags: Default::default(),
+                        video_tags: Default::default(),
+                    },
+                    encoder,
+                    scenes,
+                    Some(DefaultSequenceConfig {
+                        target_quality: Some(config),
+                        parallel_encoder: ParallelEncoderConfig::new(temp.path()),
+                        ..Default::default()
+                    }),
+                    Box::new(move |data| {
+                        saved.borrow_mut().push(data.scenes);
+                        Ok(())
+                    }),
+                );
+                for _ in 0..2 {
+                    let (tx, _rx) = sync::mpsc::channel();
+                    TargetQuality::default()
+                        .execute_cancel(&mut condor, tx, Default::default())
+                        .expect("no new work");
+                    assert_eq!(condor.scenes[0].encoder.quantizer(), Some(26.0));
+                    assert_eq!(
+                        snapshots.borrow().len(),
+                        1,
+                        "actual callback once, no gratuitous repeated save"
+                    );
+                    let saved = snapshots.borrow();
+                    assert_eq!(saved[0][0].encoder.quantizer(), Some(26.0));
+                    assert_eq!(
+                        serde_json::to_value(
+                            &saved[0][0].sequence_data.get_target_quality().expect("TQ").passes
+                        )
+                        .expect("history"),
+                        serde_json::to_value(&history).expect("history")
+                    );
+                }
+                for forced in [false, true] {
+                    let cancelled = Cancellation::default();
+                    cancelled.request().expect("graceful");
+                    if forced {
+                        cancelled.request().expect("force");
+                    }
+                    let (tx, _rx) = sync::mpsc::channel();
+                    let error = TargetQuality::default()
+                        .execute_cancel(&mut condor, tx, cancelled)
+                        .expect_err("cancel precedence");
+                    assert_eq!(
+                        error.downcast_ref::<Cancelled>(),
+                        Some(if forced {
+                            &Cancelled::Forced
+                        } else {
+                            &Cancelled::Graceful
+                        })
+                    );
+                }
+                condor.scenes[0].encoder.set_quantizer(20.0);
+                condor.sequence_config.target_quality = None;
+                let (tx, _rx) = sync::mpsc::channel();
+                TargetQuality::default()
+                    .execute_cancel(&mut condor, tx, Default::default())
+                    .expect("disabled");
+                assert_eq!(condor.scenes[0].encoder.quantizer(), Some(20.0));
+                condor.scenes.clear();
+                let (tx, _rx) = sync::mpsc::channel();
+                TargetQuality::default()
+                    .execute_cancel(&mut condor, tx, Default::default())
+                    .expect("empty");
+                assert_eq!(snapshots.borrow().len(), 1);
+                eprintln!(
+                    "Q07 no-work target_hit={target_hit}: measured q26 restored from configured q20, exactly one actual save across repeated execution; disabled/empty/cancel controls unchanged"
+                );
+            }
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn q07_cancelled_or_callback_failed_execute_keeps_history_then_replays_current_q() {
+            use std::time::{Duration, Instant};
+            for mode in [
+                "graceful",
+                "forced",
+                "closed-progress",
+                "native-graceful",
+                "native-forced",
+                "native-callback-fault",
+                "cleanup-failure",
+            ] {
+                let (temp, mut input, encoder, mut config, directory) = fixture();
+                let measured = probe(
+                    1,
+                    &directory,
+                    &config,
+                    &mut input,
+                    &tasks(&encoder, &directory, 1),
+                )
+                .expect("verified prefix");
+                config.quantizer_range = (30, 30);
+                let script = temp.path().join("encoder");
+                let ffmpeg = which::which("ffmpeg").expect("existing FFmpeg");
+                // Finite rendezvous at actual encoder admission, not buffered UI timing.
+                executable(
+                    &script,
+                    &format!(
+                        "#!/bin/sh\nset -eu\nprintf started > \"$0.started\"\nn=0\nwhile [ \"$n\" -lt 500 ]; do\n n=$((n+1))\n if [ -f \"$0.release\" ]; then exec '{}' \"$@\"; fi\n sleep 0.01\ndone\nexit 1\n",
+                        ffmpeg.display()
+                    ),
+                );
+                let scenes = measured
+                    .iter()
+                    .map(|task| {
+                        let mut data = DefaultSequenceData::default();
+                        data.get_target_quality_mut().expect("TQ").passes = task.passes.clone();
+                        let mut encoder = encoder.clone();
+                        if !mode.starts_with("native-") {
+                            encoder.set_executable(Some(script.clone()));
+                        }
+                        Scene {
+                            start_frame: task.frame_indices[0],
+                            end_frame: task.frame_indices[1] + 1,
+                            sub_scenes: None,
+                            encoder,
+                            sequence_data: data,
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let before = serde_json::to_value(&scenes).expect("before");
+                let snapshots = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+                let saved = std::rc::Rc::clone(&snapshots);
+                let mut condor = Condor::new(
+                    input,
+                    Output {
+                        path: temp.path().join("final.mkv"),
+                        tags: Default::default(),
+                        video_tags: Default::default(),
+                    },
+                    encoder,
+                    scenes,
+                    Some(DefaultSequenceConfig {
+                        target_quality: Some(config),
+                        parallel_encoder: ParallelEncoderConfig::new(temp.path()),
+                        ..Default::default()
+                    }),
+                    Box::new(move |data| {
+                        saved.borrow_mut().push(data.scenes);
+                        Ok(())
+                    }),
+                );
+                condor.sequence_config.scene_concatenator.method =
+                    ConcatMethod::FFmpeg(Default::default());
+                let mut sequence = TargetQuality::default();
+                if mode.starts_with("native-") {
+                    // Pause frame 1 in the real native VMAF reference decoder.
+                    // Frame 0 supplies metadata and one actual VMAF submission.
+                    let callback = format!(
+                        "import vapoursynth as vs\nimport pathlib, time\np = pathlib.Path({path:?})\nc = vs.core\nclip = c.std.BlankClip(width=128, height=128, length=4, format=vs.YUV420P8, fpsnum=24)\ndef frame(n, f):\n if n == 1:\n  p.with_suffix('.started').write_text('native')\n  deadline = time.monotonic() + 10\n  while not p.with_suffix('.release').exists():\n   if time.monotonic() > deadline: raise RuntimeError('Q07 native rendezvous timed out')\n   time.sleep(0.01)\n  if {fault}: raise RuntimeError('Q07 reference callback fault')\n return f\nclip.std.ModifyFrame(clip, frame).std.SetFrameProps(_Matrix=1, _Transfer=1, _Primaries=1, _Range=1).set_output()\n",
+                        path = script.display().to_string(),
+                        fault = if mode == "native-callback-fault" {
+                            "True"
+                        } else {
+                            "False"
+                        }
+                    );
+                    sequence.metric_input = Some(
+                        Input::from_data(&InputModel::VapourSynthScript {
+                            source: crate::models::input::VapourSynthScriptSource::Text(callback),
+                            variables: Default::default(),
+                            index: 0,
+                            filters: vec![],
+                            stream_concurrently: false,
+                        })
+                        .expect("real lazy native reference input"),
+                    );
+                }
+                let cancellation = Cancellation::default();
+                let signal = cancellation.clone();
+                let barrier = script.clone();
+                let (tx, rx) = sync::mpsc::channel();
+                let (result, events) = if mode == "cleanup-failure" {
+                    let collision = directory.join("2/00000.mkv");
+                    std::fs::create_dir_all(&collision).expect("stale directory");
+                    std::fs::write(collision.join("sentinel"), b"preserve").expect("sentinel");
+                    let result = sequence.execute_cancel(&mut condor, tx, cancellation);
+                    assert!(
+                        !script.with_extension("started").exists(),
+                        "no native work before cleanup succeeds"
+                    );
+                    assert_eq!(
+                        std::fs::read(collision.join("sentinel")).expect("preserved"),
+                        b"preserve"
+                    );
+                    std::fs::remove_file(collision.join("sentinel")).expect("fixture cleanup");
+                    std::fs::remove_dir(collision).expect("fixture cleanup");
+                    (result, rx.try_iter().collect::<Vec<_>>())
+                } else {
+                    let controller = thread::spawn(move || {
+                        let start = Instant::now();
+                        while !barrier.with_extension("started").exists() {
+                            assert!(
+                                start.elapsed() < Duration::from_secs(10),
+                                "encoder never admitted"
+                            );
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        if mode == "closed-progress" {
+                            drop(rx);
+                        } else {
+                            if mode != "native-callback-fault" {
+                                signal.request().expect("graceful");
+                            }
+                            if mode.ends_with("forced") {
+                                signal.request().expect("forced");
+                            }
+                            // Keep UI alive through every production relay join.
+                            std::fs::write(barrier.with_extension("release"), b"go")
+                                .expect("release");
+                            return rx.into_iter().collect::<Vec<_>>();
+                        }
+                        std::fs::write(barrier.with_extension("release"), b"go").expect("release");
+                        vec![]
+                    });
+                    let result = sequence.execute_cancel(&mut condor, tx, cancellation);
+                    (result, controller.join().expect("controller"))
+                };
+                if mode.ends_with("graceful") {
+                    result.expect("graceful incomplete pass");
+                } else {
+                    let error = result.expect_err("force/callback error");
+                    if mode.ends_with("forced") {
+                        assert_eq!(error.downcast_ref::<Cancelled>(), Some(&Cancelled::Forced));
+                    }
+                    if mode == "native-callback-fault" {
+                        assert!(
+                            format!("{error:#}").contains("Q07 reference callback fault"),
+                            "{error:#}"
+                        );
+                    }
+                    if mode == "cleanup-failure" {
+                        assert!(format!("{error:#}").contains("00000.mkv"), "{error:#}");
+                    }
+                }
+                assert_eq!(
+                    serde_json::to_value(&condor.scenes).expect("after"),
+                    before,
+                    "no accepted current record"
+                );
+                assert!(snapshots.borrow().is_empty(), "no empty-pass save");
+                assert!(!events.iter().any(|event| matches!(
+                    event,
+                    SequenceStatus::Subprocess {
+                        child: Status::Processing {
+                            completion: SequenceCompletion::SceneQuality { .. },
+                            ..
+                        },
+                        ..
+                    }
+                )));
+                if mode.starts_with("native-") {
+                    assert!(events.iter().any(|event| matches!(event, SequenceStatus::Subprocess { child: Status::Processing { id, completion: SequenceCompletion::Frames { completed: 1, .. } }, .. } if id == "Compare")), "actual native submission preceded cancellation/fault: {events:?}");
+                    assert!(!events.iter().any(|event| matches!(event, SequenceStatus::Subprocess { child: Status::Completed { id }, .. } if id == "Compare")));
+                }
+                for scene in &mut condor.scenes {
+                    scene.encoder.set_executable(None);
+                }
+                condor.sequence_config.target_quality.as_mut().expect("TQ").quantizer_range =
+                    (34, 34);
+                let (tx, _rx) = sync::mpsc::channel();
+                TargetQuality::default()
+                    .execute_cancel(&mut condor, tx, Default::default())
+                    .expect("resume complete pass");
+                assert_eq!(snapshots.borrow().len(), 1);
+                for (index, scene) in condor.scenes.iter().enumerate() {
+                    let passes = &scene.sequence_data.get_target_quality().expect("TQ").passes;
+                    assert_eq!(passes.len(), 2);
+                    assert_eq!(
+                        serde_json::to_value(&passes[..1]).expect("prefix"),
+                        serde_json::to_value(&measured[index].passes).expect("prefix")
+                    );
+                    assert_eq!(
+                        passes[1].quantizer, 34.0,
+                        "resume uses current quantizer, not abandoned q30"
+                    );
+                    assert_eq!(passes[1].scores.len(), 2);
+                }
+                eprintln!(
+                    "Q07 {mode}: interrupted owning execute kept both verified prefixes and made zero saves; resumed both at current q34 with one actual save"
+                );
             }
         }
     }
