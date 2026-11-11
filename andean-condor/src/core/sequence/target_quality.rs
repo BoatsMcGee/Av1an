@@ -188,6 +188,42 @@ where
         progress_tx: sync::mpsc::Sender<SequenceStatus>,
         cancelled: crate::utils::cancellation::Cancellation,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        self.execute_with_probe(
+            condor,
+            &progress_tx,
+            &cancelled,
+            Self::probe_pass_with_options,
+        )
+    }
+}
+
+impl TargetQuality {
+    fn execute_with_probe<DataHandler, ConfigHandler>(
+        &mut self,
+        condor: &mut Condor<DataHandler, ConfigHandler>,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+        cancelled: &crate::utils::cancellation::Cancellation,
+        mut probe: impl FnMut(
+            u8,
+            &Path,
+            &TargetQualityConfig,
+            &mut Input,
+            Option<&mut Input>,
+            u8,
+            &ConcatMethod,
+            &[Task],
+            sync::mpsc::Sender<SequenceStatus>,
+            &crate::utils::cancellation::Cancellation,
+            super::parallel_encoder::ParallelEncoderOptions,
+        ) -> Result<(Vec<Task>, Vec<anyhow::Error>)>,
+    ) -> Result<((), Vec<anyhow::Error>)>
+    where
+        DataHandler: SequenceDataHandler + TargetQualityDataHandler,
+        ConfigHandler: SequenceConfigHandler
+            + ParallelEncoderConfigHandler
+            + SceneConcatenatorConfigHandler
+            + TargetQualityConfigHandler,
+    {
         cancelled.check()?;
         let mut warnings = vec![];
         let parallel_encoder_config = condor.sequence_config.parallel_encoder()?;
@@ -229,7 +265,8 @@ where
             &mut condor.input
         };
 
-        let mut pass = 1;
+        // The post-pass ordinal must represent 256 even though public passes stop at 255.
+        let mut ordinal = 1_u16;
 
         // A resumed/exhausted search may schedule no tasks, but its final q must
         // still come from recorded measurements. Empty histories leave scenes untouched.
@@ -248,9 +285,10 @@ where
         }
 
         loop {
-            if pass > config.maximum_probes {
+            if ordinal > u16::from(config.maximum_probes) {
                 break;
             }
+            let pass = u8::try_from(ordinal).expect("ordinal is within the configured u8 budget");
 
             let pass_directory = target_quality_directory.join(pass.to_string());
             let tasks = condor
@@ -283,7 +321,7 @@ where
                         &config,
                         &encoder,
                         &quantizer_score_history,
-                        &cancelled,
+                        cancelled,
                     )?
                     else {
                         return Ok(None);
@@ -315,7 +353,7 @@ where
                 }) {
                     break;
                 }
-                pass += 1;
+                ordinal += 1;
                 continue;
             }
 
@@ -408,7 +446,7 @@ where
                 Ok(())
             });
 
-            let probed = Self::probe_pass_with_options(
+            let probed = probe(
                 pass,
                 target_quality_directory,
                 &config,
@@ -418,7 +456,7 @@ where
                 &scene_concatenator_config.method,
                 tasks.as_slice(),
                 pass_progress_tx,
-                &cancelled,
+                cancelled,
                 super::parallel_encoder::ParallelEncoderOptions {
                     max_tries: parallel_encoder_config.max_tries,
                     validate_frame_count: parallel_encoder_config.validate_frame_count,
@@ -481,7 +519,7 @@ where
                 break;
             }
 
-            pass += 1;
+            ordinal += 1;
             let mut data = condor_data.clone();
             data.scenes = condor.scenes.clone();
             (condor.save_callback)(data).expect("failed to save data");
@@ -3477,6 +3515,298 @@ mod tests {
                     _ => None,
                 })
                 .collect()
+        }
+
+        #[test]
+        fn q14_maximum_probe_execution_is_bounded() {
+            if let Ok(case) = std::env::var("Q14_CASE") {
+                let (maximum, expected, expected_calls) = match case.as_str() {
+                    "max-1" => (1, 1, 1),
+                    "max-2" => (2, 2, 2),
+                    "max-255" => (255, 255, 255),
+                    "early-hit" => (255, 1, 1),
+                    "failure" | "cancel" => (255, 1, 2),
+                    "forced" => (255, 2, 2),
+                    _ => panic!("unknown Q14 case: {case}"),
+                };
+                let (temp, mut condor, saved) = q13_fixture(&[0], 1);
+                let config = condor.sequence_config.target_quality.as_mut().expect("TQ");
+                config.maximum_probes = maximum;
+                // Synthetic model-only FFmpeg grid, not a native codec range claim.
+                config.quantizer_range = (0, u32::MAX);
+                *config.metric.target_range_mut() = (1.0, 1.0);
+                let (tx, rx) = sync::mpsc::channel();
+                let mut ordinals = Vec::new();
+                let result = TargetQuality::default().execute_with_probe(
+                    &mut condor,
+                    &tx,
+                    &Default::default(),
+                    |pass, _, _, _, _, _, _, tasks, progress, cancellation, _| {
+                        ordinals.push(pass);
+                        assert_ne!(pass, 0, "never call a wrapped pass");
+                        assert_eq!(tasks.len(), 1);
+                        assert_eq!(tasks[0].passes.len(), usize::from(pass - 1));
+                        eprintln!(
+                            "Q14 {case}: callback={pass}, prefix={}, saves={}",
+                            tasks[0].passes.len(),
+                            saved.borrow().len()
+                        );
+                        if pass == 2 && case == "failure" {
+                            bail!("Q14 injected probe failure");
+                        }
+                        if pass == 2 && case == "cancel" {
+                            cancellation.request()?;
+                            return Ok((Vec::new(), Vec::new()));
+                        }
+                        let mut completed = tasks.to_vec();
+                        let task = &mut completed[0];
+                        let quantizer = task.encoder.quantizer().expect("scheduled q");
+                        assert!(!task.passes.iter().any(|p| p.quantizer == quantizer));
+                        task.passes.push(QualityPass {
+                            quantizer,
+                            scores: vec![
+                                if case == "early-hit" {
+                                    1.0
+                                } else if pass == 1 {
+                                    0.0
+                                } else {
+                                    -f64::from(pass)
+                                };
+                                task.frame_indices.len()
+                            ],
+                            bitrate: 100.0 + f64::from(pass),
+                            started_on: u128::from(pass) * 2,
+                            completed_on: u128::from(pass) * 2 + 1,
+                        });
+                        for id in ["Encode", "Compare"] {
+                            progress.send(SequenceStatus::Whole(Status::Completed {
+                                id: id.to_owned(),
+                            }))?;
+                        }
+                        if pass == 2 && case == "forced" {
+                            cancellation.request()?;
+                            cancellation.request()?;
+                        }
+                        // Dropping the real sender allows the owning progress relay to join.
+                        Ok((completed, Vec::new()))
+                    },
+                );
+                match case.as_str() {
+                    "failure" => assert!(
+                        result.expect_err("probe failure").to_string().contains("Q14 injected")
+                    ),
+                    "forced" => assert_eq!(
+                        result
+                            .expect_err("force after accepted record")
+                            .downcast_ref::<Cancelled>(),
+                        Some(&Cancelled::Forced)
+                    ),
+                    _ => assert!(result.expect("bounded owning execute").1.is_empty()),
+                }
+                assert_eq!(ordinals, (1..=expected_calls).collect::<Vec<u8>>());
+                let passes = &condor.scenes[0].sequence_data.target_quality.passes;
+                eprintln!(
+                    "Q14 {case}: returned callbacks={}, history={}, saves={}",
+                    ordinals.len(),
+                    passes.len(),
+                    saved.borrow().len()
+                );
+                assert_eq!(passes.len(), usize::from(expected));
+                assert_eq!(saved.borrow().len(), usize::from(expected));
+                for (ordinal, snapshot) in (1..=expected).zip(saved.borrow().iter()) {
+                    assert_eq!(
+                        snapshot[0].sequence_data.target_quality.passes.len(),
+                        usize::from(ordinal)
+                    );
+                }
+                assert_eq!(
+                    serde_json::to_vec(saved.borrow().last().expect("last save")).expect("saved"),
+                    serde_json::to_vec(&condor.scenes).expect("attached")
+                );
+                let final_q = condor.scenes[0].encoder.quantizer().expect("measured final q");
+                assert_eq!(
+                    final_q, passes[0].quantizer,
+                    "initial score is closest to target"
+                );
+                assert!(passes.iter().any(|p| p.quantizer == final_q));
+                let (rounds, quality) = q14_progress(rx.try_iter().collect(), maximum);
+                assert_eq!(rounds, ordinals);
+                assert_eq!(quality, (1..=expected).collect::<Vec<u8>>());
+                assert!(!temp.path().join("Target Quality/0").exists());
+                assert!(!temp.path().join("Target Quality/256").exists());
+                return;
+            }
+            for case in ["max-1", "max-2", "max-255", "early-hit", "failure", "cancel", "forced"] {
+                q14_watchdog(case, "q14_maximum_probe_execution_is_bounded");
+            }
+        }
+
+        // Removing the normal wrapper's probe call or the last save must fail this test.
+        #[test]
+        fn q14_public_execute_saves_255th_native_record() {
+            if std::env::var("Q14_CASE").as_deref() != Ok("native-255") {
+                q14_watchdog("native-255", "q14_public_execute_saves_255th_native_record");
+                return;
+            }
+            let (temp, mut condor, saved) = q13_fixture(&[0], 1);
+            condor.sequence_config.target_quality.as_mut().expect("TQ").maximum_probes = 255;
+            // Only the prefix is synthetic. The wrapper must encode/score the one new record.
+            condor.scenes[0].sequence_data.target_quality.passes = vec![
+                QualityPass {
+                    quantizer: 30.0,
+                    scores: vec![10.0; 2],
+                    bitrate: 100.0,
+                    started_on: 12,
+                    completed_on: 34,
+                };
+                254
+            ];
+            condor.scenes[0].encoder.set_quantizer(30.0);
+            let before = serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
+                .expect("synthetic prefix bytes");
+            // Retain the existing concat-directory fixture workaround; do not fix it here.
+            std::fs::create_dir_all(temp.path().join("Target Quality/255/Scene Concatenator"))
+                .expect("last-pass concat scratch");
+            let (tx, rx) = sync::mpsc::channel();
+            eprintln!(
+                "Q14 native-255: entering public Sequence::execute with 254 synthetic records"
+            );
+            let (_, warnings) = TargetQuality::default()
+                .execute(&mut condor, tx, Arc::new(AtomicBool::new(false)))
+                .expect("one real final pass through normal wrapper");
+            assert!(warnings.is_empty(), "{warnings:?}");
+            let passes = &condor.scenes[0].sequence_data.target_quality.passes;
+            eprintln!(
+                "Q14 native-255: returned history={}, saves={}",
+                passes.len(),
+                saved.borrow().len()
+            );
+            assert_eq!(passes.len(), 255);
+            assert_eq!(serde_json::to_vec(&passes[..254]).expect("prefix"), before);
+            let last = &passes[254];
+            assert_eq!(last.quantizer, 32.0);
+            assert_eq!(last.scores.len(), 2);
+            assert!(last.scores.iter().all(|s| s.is_finite() && *s > 0.0));
+            assert!(last.started_on > 34 && last.completed_on >= last.started_on);
+            let bytes = std::fs::metadata(temp.path().join("Target Quality/255/00000.mkv"))
+                .expect("one native encoded output")
+                .len();
+            let expected_bitrate = bytes as f64 * 96.0;
+            assert!((last.bitrate - expected_bitrate).abs() < 1e-8);
+            assert_eq!(
+                saved.borrow().len(),
+                1,
+                "save actual 255th record before returning"
+            );
+            assert_eq!(
+                serde_json::to_vec(&saved.borrow()[0]).expect("last save"),
+                serde_json::to_vec(&condor.scenes).expect("attached last record")
+            );
+            let final_q = condor.scenes[0].encoder.quantizer().expect("measured q");
+            assert!(passes.iter().any(|p| p.quantizer == final_q));
+            let (rounds, quality) = q14_progress(rx.into_iter().collect(), 255);
+            assert_eq!(rounds, [255]);
+            assert_eq!(quality, [255]);
+            assert!(!temp.path().join("Target Quality/0").exists());
+            assert!(!temp.path().join("Target Quality/256").exists());
+            eprintln!(
+                "Q14 native-255: prefix byte-identical; one real q32 record retained/saved; progress255 only; final measured q={final_q}"
+            );
+        }
+
+        fn q14_progress(events: Vec<SequenceStatus>, maximum: u8) -> (Vec<u8>, Vec<u8>) {
+            let mut rounds = Vec::new();
+            let mut quality = Vec::new();
+            for event in events {
+                match event {
+                    SequenceStatus::Whole(Status::Processing {
+                        completion: SequenceCompletion::Passes { completed, total },
+                        ..
+                    }) => {
+                        assert!(total > 0 && total <= maximum);
+                        assert_eq!(
+                            completed,
+                            total - 1,
+                            "zero completed is valid only before pass1"
+                        );
+                        rounds.push(total);
+                    },
+                    SequenceStatus::Subprocess {
+                        parent:
+                            Status::Processing {
+                                completion: SequenceCompletion::Passes { completed, total },
+                                ..
+                            },
+                        child,
+                    } => {
+                        assert!(completed > 0 && completed <= maximum);
+                        assert_eq!(total, maximum);
+                        if matches!(
+                            child,
+                            Status::Processing {
+                                completion: SequenceCompletion::SceneQuality { .. },
+                                ..
+                            }
+                        ) {
+                            quality.push(completed);
+                        }
+                    },
+                    other => panic!("unexpected owning progress: {other:?}"),
+                }
+            }
+            (rounds, quality)
+        }
+
+        fn q14_watchdog(case: &str, test: &str) {
+            use std::{
+                process::{Command, Stdio},
+                time::{Duration, Instant},
+            };
+            // File-backed output cannot fill a pipe and masquerade as an overflow spin.
+            // The parent owns child scratch, including cleanup after a killed child.
+            let temp = tempfile::tempdir().expect("Q14 watchdog root");
+            let stdout_path = temp.path().join("stdout.log");
+            let stderr_path = temp.path().join("stderr.log");
+            let mut child = Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "--exact",
+                    &format!("core::sequence::target_quality::tests::q07::{test}"),
+                    "--nocapture",
+                ])
+                .env("Q14_CASE", case)
+                .env("TMPDIR", temp.path())
+                .stdout(Stdio::from(
+                    std::fs::File::create(&stdout_path).expect("child stdout"),
+                ))
+                .stderr(Stdio::from(
+                    std::fs::File::create(&stderr_path).expect("child stderr"),
+                ))
+                .spawn()
+                .expect("bounded Q14 child");
+            let start = Instant::now();
+            let mut timed_out = false;
+            while child.try_wait().expect("child status").is_none() {
+                if start.elapsed() > Duration::from_secs(60) {
+                    timed_out = true;
+                    child.kill().expect("kill stuck Q14 child");
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            let status = child.wait().expect("reap Q14 child");
+            let stdout = std::fs::read_to_string(stdout_path).expect("child stdout log");
+            let stderr = std::fs::read_to_string(stderr_path).expect("child stderr log");
+            eprintln!(
+                "Q14 {case}: watchdog timeout={timed_out}, status={status}\n{stdout}\n{stderr}"
+            );
+            assert!(
+                !timed_out && status.success(),
+                "Q14 {case}: timeout={timed_out}, {status}"
+            );
+            assert!(
+                stdout.contains("1 passed; 0 failed"),
+                "child must execute its oracle"
+            );
         }
 
         #[test]
