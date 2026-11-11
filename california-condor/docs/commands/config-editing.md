@@ -103,8 +103,17 @@ $ condor target-quality set statistic standard-deviation-distance 1.5
 Each `set input` property builds its input from the same flags as the owning
 command's run flags — `--path`, `--decoder`, `--filters`, `--vs-args` and
 `--stream-concurrently [on|off]` — and refuses an edit that sets none of them.
-When a supplied path does not exist yet on disk, the edit succeeds with a
-`WARN` noting that the file will be needed when the step runs.
+When a supplied path does not exist yet on disk, an otherwise valid edit succeeds
+with a `WARN` noting that the file will be needed when the step runs.
+
+The root `init set input --path` is stricter: a different normalized source path
+requires no saved scenes and empty known encoding/concatenation work directories.
+Otherwise use a new `--config-file`; no chunks are silently deleted. Equivalent
+paths keep work and caches. An empty-job replacement is offline and atomically
+updates root metadata, resets root cache/index choices, and rebases derived scenes
+directories. Auto-hashed temp names change under the same parent; custom temp roots
+stay. Stage-specific inputs (including `encode` and quality-reference inputs) remain
+separate, editable overrides and are not rewritten by a root edit. See [Init](init.md#input).
 
 ## Examples
 

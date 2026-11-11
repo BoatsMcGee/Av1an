@@ -34,6 +34,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn c02_start_handler_rejects_new_root_before_other_edits_and_save() {
+        use california_condor::commands::{CondorCli, handlers::start::start_handler};
+        use clap::Parser;
+        let temp = tempfile::tempdir().expect("fixture");
+        let video = get_test_video();
+        let mut configuration = default_config(
+            &video,
+            &temp.path().join("out.mkv"),
+            &temp.path().join("work"),
+        );
+        configuration.condor.scenes = video.mock_scenes(&configuration.condor.encoder);
+        let file = temp.path().join("condor.json");
+        configuration.save(&file).expect("save");
+        let before = std::fs::read(&file).expect("before");
+        let cli = CondorCli::try_parse_from([
+            "condor",
+            "--input",
+            "different.mkv",
+            "--temp",
+            "new-work",
+            "--output",
+            "new.mkv",
+            "--params",
+            "--preset 99",
+        ])
+        .expect("root flags");
+        let error = start_handler(
+            Some(&file),
+            cli.temp.as_deref(),
+            cli.input.as_deref(),
+            cli.scd_input.as_deref(),
+            cli.tq_input.as_deref(),
+            cli.output.as_deref(),
+            cli.decoder.as_ref(),
+            cli.scd_decoder.as_ref(),
+            cli.tq_decoder.as_ref(),
+            cli.filters.as_deref(),
+            cli.scd_filters.as_deref(),
+            cli.tq_filters.as_deref(),
+            cli.vs_args.as_deref(),
+            cli.scd_vs_args.as_deref(),
+            cli.tq_vs_args.as_deref(),
+            cli.concat.as_ref(),
+            cli.discard.as_deref(),
+            cli.workers,
+            cli.encoder.as_ref(),
+            cli.passes,
+            cli.params.as_deref(),
+            cli.tq_params.as_deref(),
+            cli.photon_noise,
+            cli.chroma_noise,
+            cli.ffmpeg_filter.as_deref(),
+            None,
+            cli.target_metric.as_ref(),
+            cli.target,
+            cli.minimum_quantizer,
+            cli.maximum_quantizer,
+            cli.target_profile.as_ref(),
+            cli.max_tries,
+        )
+        .expect_err("source guard precedes unrelated encoder validation");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("different.mkv") && message.contains("--config-file"),
+            "{message}"
+        );
+        assert_eq!(std::fs::read(file).expect("after"), before);
+        assert!(!configuration.temp.exists());
+    }
+
+    #[test]
     fn default() {
         if !ffmpeg_is_available() {
             return;

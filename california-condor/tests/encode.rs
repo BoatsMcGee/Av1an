@@ -29,6 +29,83 @@ mod tests {
     const WIDTH: usize = 960;
     const HEIGHT: usize = 540;
 
+    #[test]
+    fn c02_populated_stage_overrides_do_not_replace_or_guard_the_root() {
+        use andean_condor::models::input::ImportMethod;
+        use california_condor::commands::handlers::encode::encode_handler;
+        let temp = tempfile::tempdir().expect("fixture");
+        let video = get_test_video();
+        let mut configuration = default_config(
+            &video,
+            &temp.path().join("out.mkv"),
+            &temp.path().join("work"),
+        );
+        configuration.condor.scenes = video.mock_scenes(&configuration.condor.encoder);
+        let root = serde_json::to_value(&configuration.condor.input).expect("root");
+        let scenes = serde_json::to_value(&configuration.condor.scenes).expect("scenes");
+        let file = temp.path().join("condor.json");
+        configuration.save(&file).expect("save");
+        let replacement = temp.path().join("stage-only.mkv");
+        let (after, _) = encode_handler(
+            Some(&file),
+            None,
+            Some(&replacement),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("encode --input admission");
+        assert_eq!(
+            serde_json::to_value(&after.condor.input).expect("after"),
+            root
+        );
+        assert!(
+            matches!(&after.condor.sequence_config.parallel_encoder.input, Some(Input::VapourSynth { path, .. }) if path == &replacement)
+        );
+        for command in ["encode", "target-quality", "detect-scenes", "quality-check"] {
+            let property = if command == "target-quality" {
+                "metric-input"
+            } else {
+                "input"
+            };
+            condor_cmd(&temp)
+                .env("PATH", "")
+                .args([
+                    command,
+                    "set",
+                    property,
+                    "--path",
+                    path_str(&replacement),
+                    "--decoder",
+                    "ffms2",
+                ])
+                .assert()
+                .success();
+            let after = load(&file);
+            assert_eq!(
+                serde_json::to_value(&after.condor.input).expect("root"),
+                root
+            );
+            assert_eq!(
+                serde_json::to_value(&after.condor.scenes).expect("scenes"),
+                scenes
+            );
+            assert_eq!(after.input, configuration.input);
+        }
+        assert!(
+            matches!(load(&file).condor.sequence_config.parallel_encoder.input, Some(Input::Video { import_method: ImportMethod::FFMS2 { .. }, path, .. }) if path == replacement)
+        );
+        assert!(!configuration.temp.exists());
+    }
+
     #[serial]
     #[test]
     fn default_and_no_scenes() {

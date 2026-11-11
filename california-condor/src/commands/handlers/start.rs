@@ -1,23 +1,21 @@
 use std::path::{Path, PathBuf};
 
 use andean_condor::{
-    models::{
-        encoder::{Encoder, EncoderBase},
-        input::Input as InputModel,
-    },
+    models::encoder::{Encoder, EncoderBase},
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 use anyhow::{Result, bail};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, trace};
 
 use crate::{
     DEFAULT_CONFIG_PATH,
     commands::{
         ConcatenationMethod, CondorCliError, DecoderMethod, DiscardCategory, EncoderMethod,
         QualityMetric, QualityProfile,
+        config::InputOverride,
         handlers::{
             concatenate::{apply_discard, configure_concatenate},
-            configure_input, configure_temp,
+            configure_root_input, configure_temp,
             detect_scenes::configure_scene_detector,
             encode::{configure_encoder, configure_parallel_encoder},
             target_quality::configure_target_quality,
@@ -135,32 +133,23 @@ pub fn start_handler(
         }
     };
 
+    // Root admission precedes --temp/output edits, native work and all saves.
+    configure_root_input(
+        &mut configuration,
+        &InputOverride {
+            path: input_path.map(Path::to_path_buf),
+            decoder: decoder.cloned(),
+            filters: filters.map(<[_]>::to_vec),
+            vs_args: vs_args.map(<[_]>::to_vec),
+            stream_concurrently: None,
+        },
+    )?;
     configure_temp(&mut configuration, temp_path)?;
     if let Some(output) = output_path {
         let output = path_abs::PathAbs::new(output)?.as_path().to_path_buf();
         configuration.condor.output.path = output;
     }
 
-    let existing_input = configuration.condor.input.clone();
-    configuration.condor.input = configure_input(
-        &configuration,
-        &existing_input,
-        input_path,
-        decoder,
-        vs_args,
-        None,
-        None,
-    )?;
-    if let Some(filters) = filters {
-        let unsupported = InputModel::unsupported_filters(filters);
-        configuration.condor.input.set_filters(filters.to_vec())?;
-        for filter in unsupported {
-            warn!(
-                "{filter} needs VapourSynth and was dropped: a native FFMS2 input can only \
-                 convert bit depth, chroma and resolution"
-            );
-        }
-    }
     if config_already_existed {
         configure_encoder(
             &mut configuration.condor.encoder,
@@ -836,6 +825,7 @@ mod tests {
         let mut expected_config = expected_config;
         let mut custom_variables = HashMap::new();
         custom_variables.insert("key".to_owned(), "value".to_owned());
+        expected_config.input = script_input_abs.clone();
         expected_config.condor.input = Input::VapourSynthScript {
             source: VapourSynthScriptSource::Path(script_input_abs),
             variables: custom_variables,
@@ -926,9 +916,9 @@ mod tests {
         assert_eq!(config.temp, temp_abs, "temp path is {}", temp_abs.display());
         assert_eq!(
             config.input,
-            input_abs,
+            expected_config.input,
             "input path is {}",
-            input_abs.display()
+            expected_config.input.display()
         );
         assert_eq!(
             config.condor.output.path,

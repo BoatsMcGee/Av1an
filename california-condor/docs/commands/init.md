@@ -8,7 +8,7 @@ $ condor init input.mp4 output.mkv --encoder svt-av1 --target-metric ssimulacra2
 $ condor init set output final.mkv
 ```
 
-Creating a configuration needs `INPUT` and `OUTPUT`; the `info`, `set` and `reset` subcommands edit an existing one instead. The input and output of a running pipeline are changed here — no other command owns them.
+Creating a configuration needs `INPUT` and `OUTPUT`; the `info`, `set` and `reset` subcommands edit an existing one instead. Root input and output settings belong here; step-specific inputs are separate overrides.
 
 | Name                                                        | Flag              | Type      | Default                |
 | ----------------------------------------------------------- | ----------------- | --------- | ---------------------- |
@@ -31,6 +31,23 @@ Creating a configuration needs `INPUT` and `OUTPUT`; the `info`, `set` and `rese
 ## Input
 
 Path to the input file to encode. Can be a video or VapourSynth script (`.py` or `.vpy`).
+
+Once a job has saved scenes or files in its encoding/concatenation work directories,
+its source path cannot change, including through root `--input`. Use a new
+`--config-file`, for example `condor --config-file other.json init other.mp4 other.mkv`.
+Equivalent relative, absolute and symlink paths keep existing work; this checks path
+identity, not changes to the contents of a file at the same path.
+
+For an empty job, `condor init set input --path other.mp4` works offline. It updates
+both root input fields, clears root decoder cache/index selections, and rebases
+encoding/concatenation directories to `TEMP/scenes`. An automatically named temp
+directory gets the new source's path hash under the same parent; a custom temp root
+stays. Existing files are never deleted. Applicable filters and other settings stay.
+
+`encode --input`, `encode set input`, detection inputs and quality-reference inputs
+are stage overrides, not root replacements; they remain editable on populated jobs.
+Root edits do not rewrite those overrides. Changing filters/decoder/script variables
+at the same path is still allowed and does not validate saved results' provenance.
 
 ### Examples
 

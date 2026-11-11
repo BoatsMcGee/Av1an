@@ -17,6 +17,595 @@ mod tests {
 
     use super::*;
 
+    fn root_edit_fixture(
+        directory: &std::path::Path,
+    ) -> california_condor::configuration::Configuration {
+        use andean_condor::models::input::VapourSynthScriptSource;
+        let source = directory.join("a.vpy");
+        for (name, color) in [("a.vpy", 16), ("b.vpy", 235)] {
+            let marker = serde_json::to_string(&directory.join("source-opened"))
+                .expect("Python path literal");
+            std::fs::write(directory.join(name), format!("from pathlib import Path\nPath({marker}).write_text('opened')\nimport vapoursynth as vs\nvs.core.std.BlankClip(width=32,height=16,length=12,format=vs.YUV420P8,color=[{color},128,128]).set_output()\n")).expect("equal-length script sources");
+        }
+        let video = TestVideo {
+            path: source.clone(),
+            width: 32,
+            height: 16,
+            frames: 12,
+            fps_rational: (24, 1),
+            format: andean_condor::ffmpeg::FFPixelFormat::YUV420P,
+            scenes: vec![(0, 12)],
+        };
+        let mut configuration = default_config(
+            &video,
+            &directory.join("out.mkv"),
+            &directory.join(california_condor::utils::hash_path::hash_path(&source)),
+        );
+        configuration.condor.input = Input::VapourSynthScript {
+            source: VapourSynthScriptSource::Path(source),
+            variables: [("keep".into(), "yes".into())].into(),
+            index: 0,
+            filters: vec![],
+            stream_concurrently: false,
+        };
+        configuration.condor.scenes = video.mock_scenes(&configuration.condor.encoder);
+        let data = &mut configuration.condor.scenes[0].sequence_data;
+        data.parallel_encoder.started_on = Some(10);
+        data.parallel_encoder.completed_on = Some(20);
+        data.parallel_encoder.bytes = Some(1234);
+        data.quality_check.quality.scores = vec![91.5, 92.5];
+        data.target_quality.passes.push(data.quality_check.quality.clone());
+        configuration
+    }
+
+    fn root_edit_args(
+        path: std::path::PathBuf,
+    ) -> california_condor::commands::config::InputOverride {
+        california_condor::commands::config::InputOverride {
+            path: Some(path),
+            decoder: None,
+            filters: None,
+            vs_args: None,
+            stream_concurrently: None,
+        }
+    }
+
+    #[test]
+    fn c02_populated_root_direct_edits_refuse_before_mutation() {
+        use andean_condor::models::input::ImportMethod;
+        use california_condor::commands::{
+            config::ConfigCommand,
+            handlers::init::{InitCrud, InitSet},
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut configuration = root_edit_fixture(temp.path());
+        configuration.input = temp.path().join("a.mkv");
+        configuration.condor.input = Input::Video {
+            path: configuration.input.clone(),
+            import_method: ImportMethod::FFMS2 {
+                index: Some(1),
+                cache_path: Some(temp.path().join("a.ffindex")),
+            },
+            filters: vec![],
+        };
+        let file = temp.path().join("condor.json");
+        configuration.save(&file).expect("save");
+        let before = std::fs::read(&file).expect("snapshot");
+        let memory = serde_json::to_value(&configuration).expect("snapshot");
+        let chunk = configuration.temp.join("scenes/0.ivf");
+        std::fs::create_dir_all(chunk.parent().expect("parent")).expect("workdir");
+        std::fs::write(&chunk, b"old chunk").expect("chunk");
+        let old_cache = temp.path().join("a.ffindex");
+        let new_index = temp.path().join("b.ffindex");
+        std::fs::write(&old_cache, b"old cache").expect("cache");
+        std::fs::write(&new_index, b"new sentinel").expect("index");
+        let replacement = temp.path().join("b.mkv");
+        let error = InitCrud::apply(
+            &mut configuration,
+            &InitSet::Input {
+                args: root_edit_args(replacement),
+            },
+        )
+        .expect_err("populated root must refuse");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("a.mkv") && message.contains("b.mkv") && message.contains("--config"),
+            "{message}"
+        );
+        assert_eq!(serde_json::to_value(&configuration).expect("after"), memory);
+        assert_eq!(std::fs::read(&file).expect("bytes"), before);
+        assert_eq!(std::fs::read(chunk).expect("chunk"), b"old chunk");
+        assert_eq!(std::fs::read(old_cache).expect("cache"), b"old cache");
+        assert_eq!(std::fs::read(new_index).expect("index"), b"new sentinel");
+        assert!(!temp.path().join("source-opened").exists());
+    }
+
+    #[test]
+    fn c02_populated_root_cli_refuses_before_save_or_native_work() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let configuration = root_edit_fixture(temp.path());
+        let file = temp.path().join("condor.json");
+        configuration.save(&file).expect("save");
+        let before = std::fs::read(&file).expect("snapshot");
+        let replacement = temp.path().join("b.vpy");
+        let chunk = configuration.temp.join("scenes/0.ivf");
+        std::fs::create_dir_all(chunk.parent().expect("parent")).expect("workdir");
+        std::fs::write(&chunk, b"CLI chunk").expect("chunk");
+        let mut failures = vec![];
+        for args in [
+            vec!["init", "set", "input", "--path", path_str(&replacement)],
+            vec![
+                "--input",
+                path_str(&replacement),
+                "--temp",
+                "forbidden-work",
+                "--output",
+                "forbidden.mkv",
+                "--discard",
+                "audio",
+            ],
+        ] {
+            let output = condor_cmd(&temp).env("PATH", "").args(args).output().expect("CLI");
+            let message = String::from_utf8_lossy(&output.stderr);
+            if output.status.success()
+                || !message.contains("a.vpy")
+                || !message.contains("b.vpy")
+                || !message.contains("--config")
+            {
+                failures.push(format!("missing source refusal: {message}"));
+            }
+            if std::fs::read(&file).expect("unchanged bytes") != before {
+                failures.push("config bytes changed".into());
+            }
+            std::fs::write(&file, &before).expect("restore fixture");
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert!(!temp.path().join("forbidden-work").exists());
+        assert!(!temp.path().join("source-opened").exists());
+        assert_eq!(std::fs::read(chunk).expect("chunk"), b"CLI chunk");
+    }
+
+    #[test]
+    fn c02_equivalent_paths_and_stale_duplicate_keep_work_and_cache() {
+        use andean_condor::models::input::ImportMethod;
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut configuration = root_edit_fixture(temp.path());
+        let source = temp.path().join("a.vpy");
+        // A real source path is authoritative even when the duplicated metadata is stale.
+        configuration.input = temp.path().join("stale.vpy");
+        configuration.condor.input = Input::Video {
+            path: source.clone(),
+            import_method: ImportMethod::FFMS2 {
+                index: Some(2),
+                cache_path: Some(temp.path().join("keep.ffindex")),
+            },
+            filters: vec![],
+        };
+        let file = temp.path().join("condor.json");
+        let chunk = configuration.temp.join("scenes/0.ivf");
+        std::fs::create_dir_all(chunk.parent().expect("parent")).expect("workdir");
+        std::fs::write(&chunk, b"keep chunk").expect("chunk");
+        configuration.save(&file).expect("save");
+        let mut paths = vec!["a.vpy", "./a.vpy", "sub/../a.vpy"];
+        std::fs::create_dir_all(temp.path().join("sub")).expect("subdir");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&source, temp.path().join("alias.vpy")).expect("symlink");
+            paths.push("alias.vpy");
+        }
+        for path in paths {
+            condor_cmd(&temp)
+                .env("PATH", "")
+                .args(["init", "set", "input", "--path", path])
+                .assert()
+                .success();
+            let after = load(&file);
+            assert_eq!(after.input, source);
+            assert_eq!(
+                serde_json::to_value(&after.condor).expect("after"),
+                serde_json::to_value(&configuration.condor).expect("before")
+            );
+            assert_eq!(after.temp, configuration.temp);
+            assert_eq!(std::fs::read(&chunk).expect("chunk"), b"keep chunk");
+        }
+    }
+
+    #[test]
+    fn c02_empty_offline_replacement_resets_root_cache_and_rebases_only_derived_dirs() {
+        use andean_condor::models::input::{
+            Ffms2Filter, ImportMethod, VapourSynthImportMethod, VapourSynthScriptSource,
+        };
+        use california_condor::commands::{
+            config::ConfigCommand,
+            handlers::init::{InitCrud, InitSet},
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("old.mkv");
+        let replacement = temp.path().join("offline.mkv");
+        std::fs::write(temp.path().join("old.ffindex"), b"unowned cache").expect("cache");
+        let empty_work = temp.path().join("empty-work");
+        std::fs::create_dir_all(&empty_work).expect("empty directory");
+        for custom in [false, true] {
+            for kind in ["native", "vs", "lsmash", "bestsource", "dg", "script"] {
+                let mut configuration = root_edit_fixture(temp.path());
+                configuration.condor.scenes.clear();
+                configuration.input = source.clone();
+                configuration.temp = temp.path().join(if custom {
+                    "custom".into()
+                } else {
+                    california_condor::utils::hash_path::hash_path(&source)
+                });
+                configuration.condor.input = match kind {
+                    "native" => Input::Video {
+                        path: source.clone(),
+                        import_method: ImportMethod::FFMS2 {
+                            index: Some(3),
+                            cache_path: Some(temp.path().join("old.ffindex")),
+                        },
+                        filters: vec![Ffms2Filter::OutputFormat {
+                            bit_depth: Some(10),
+                            chroma: None,
+                            width: None,
+                            height: None,
+                        }],
+                    },
+                    "vs" | "lsmash" | "bestsource" | "dg" => Input::VapourSynth {
+                        path: source.clone(),
+                        import_method: match kind {
+                            "lsmash" => VapourSynthImportMethod::LSMASHWorks { index: Some(3) },
+                            "bestsource" => VapourSynthImportMethod::BestSource { index: Some(3) },
+                            "dg" => VapourSynthImportMethod::DGDecNV {
+                                dgindexnv_executable: Some(temp.path().join("custom-dgindexnv")),
+                            },
+                            _ => VapourSynthImportMethod::FFMS2 { index: Some(3) },
+                        },
+                        cache_path: Some(temp.path().join("old.cache")),
+                        filters: vec![],
+                    },
+                    _ => Input::VapourSynthScript {
+                        source: VapourSynthScriptSource::Path(source.with_extension("vpy")),
+                        variables: [("keep".into(), "yes".into())].into(),
+                        index: 3,
+                        filters: vec![],
+                        stream_concurrently: false,
+                    },
+                };
+                if kind == "script" {
+                    configuration.input = source.with_extension("vpy");
+                    configuration.temp = temp.path().join(if custom {
+                        "custom".into()
+                    } else {
+                        california_condor::utils::hash_path::hash_path(&configuration.input)
+                    });
+                }
+                let sequence = &mut configuration.condor.sequence_config;
+                sequence.parallel_encoder.workers = Some(5);
+                sequence.parallel_encoder.max_tries = 7;
+                sequence.parallel_encoder.scenes_directory = if kind == "native" {
+                    empty_work.clone()
+                } else {
+                    Default::default()
+                };
+                sequence.scene_concatenator.scenes_directory = Default::default();
+                sequence.scene_concatenator.method =
+                    andean_condor::models::sequence::scene_concatenator::ConcatMethod::Ivf;
+                sequence.scene_concatenator.output = Some(temp.path().join("separate.ivf"));
+                let stage = Input::Video {
+                    path: temp.path().join("stage.mkv"),
+                    import_method: ImportMethod::FFMS2 {
+                        index: Some(1),
+                        cache_path: Some(temp.path().join("stage.ffindex")),
+                    },
+                    filters: vec![],
+                };
+                sequence.parallel_encoder.input = Some(stage.clone());
+                sequence.target_quality = Some(
+                    andean_condor::models::sequence::target_quality::TargetQualityConfig {
+                        metric_input: Some(stage),
+                        ..Default::default()
+                    },
+                );
+                let new_source = if kind == "script" {
+                    replacement.with_extension("vpy")
+                } else {
+                    replacement.clone()
+                };
+                let original = configuration.clone();
+                let file = temp.path().join("condor.json");
+                configuration.save(&file).expect("save");
+                InitCrud::apply(
+                    &mut configuration,
+                    &InitSet::Input {
+                        args: root_edit_args(new_source.clone()),
+                    },
+                )
+                .expect("offline direct edit");
+                condor_cmd(&temp)
+                    .env("PATH", "")
+                    .args(["init", "set", "input", "--path", path_str(&new_source)])
+                    .assert()
+                    .success();
+                let after = load(&file);
+                assert_eq!(
+                    serde_json::to_value(&after).expect("CLI"),
+                    serde_json::to_value(&configuration).expect("direct")
+                );
+                assert_eq!(after.input, new_source);
+                let expected_temp = if custom {
+                    original.temp.clone()
+                } else {
+                    temp.path().join(california_condor::utils::hash_path::hash_path(&new_source))
+                };
+                assert_eq!(after.temp, expected_temp);
+                let mut expected = original;
+                expected.input = new_source.clone();
+                expected.temp = expected_temp.clone();
+                expected.condor.sequence_config.parallel_encoder.scenes_directory =
+                    expected_temp.join("scenes");
+                expected.condor.sequence_config.scene_concatenator.scenes_directory =
+                    expected_temp.join("scenes");
+                match &mut expected.condor.input {
+                    Input::Video {
+                        path,
+                        import_method: ImportMethod::FFMS2 { index, cache_path },
+                        ..
+                    } => {
+                        *path = new_source;
+                        *index = None;
+                        *cache_path = None;
+                    },
+                    Input::VapourSynth {
+                        path,
+                        import_method,
+                        cache_path,
+                        ..
+                    } => {
+                        *path = new_source;
+                        match import_method {
+                            VapourSynthImportMethod::FFMS2 { index }
+                            | VapourSynthImportMethod::LSMASHWorks { index }
+                            | VapourSynthImportMethod::BestSource { index } => *index = None,
+                            VapourSynthImportMethod::DGDecNV { .. } => {},
+                        }
+                        *cache_path = None;
+                    },
+                    Input::VapourSynthScript { source, index, .. } => {
+                        *source = VapourSynthScriptSource::Path(new_source);
+                        *index = 0;
+                    },
+                }
+                assert_eq!(
+                    serde_json::to_value(&after).expect("after"),
+                    serde_json::to_value(&expected).expect("expected")
+                );
+                assert!(
+                    !after.temp.exists(),
+                    "pure edit must not create work directories"
+                );
+                assert!(!temp.path().join("source-opened").exists());
+                assert!(empty_work.is_dir());
+                assert_eq!(
+                    std::fs::read(temp.path().join("old.ffindex")).expect("cache retained"),
+                    b"unowned cache"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn c02_orphan_workdirs_and_errors_refuse_without_unlinking() {
+        let temp = tempfile::tempdir().expect("fixture");
+        for which in ["parallel", "concat", "not-directory"] {
+            let mut configuration = root_edit_fixture(temp.path());
+            configuration.condor.scenes.clear();
+            let work = temp.path().join(which);
+            if which == "not-directory" {
+                std::fs::write(&work, b"not a directory").expect("file");
+            } else {
+                std::fs::create_dir_all(&work).expect("workdir");
+                std::fs::write(work.join("orphan"), b"keep orphan").expect("orphan");
+            }
+            configuration.condor.sequence_config.parallel_encoder.scenes_directory =
+                if which == "concat" {
+                    Default::default()
+                } else {
+                    work.clone()
+                };
+            configuration.condor.sequence_config.scene_concatenator.scenes_directory =
+                if which == "concat" {
+                    work.clone()
+                } else {
+                    Default::default()
+                };
+            let file = temp.path().join("condor.json");
+            configuration.save(&file).expect("save");
+            let before = std::fs::read(&file).expect("before");
+            for args in [
+                vec!["init", "set", "input", "--path", "b.vpy"],
+                vec!["--input", "b.vpy", "--temp", "new-work"],
+            ] {
+                let output = condor_cmd(&temp).env("PATH", "").args(args).output().expect("CLI");
+                assert!(!output.status.success(), "{which} must refuse");
+                let message = String::from_utf8_lossy(&output.stderr);
+                assert!(message.contains(which), "context missing: {message}");
+                assert_eq!(std::fs::read(&file).expect("after"), before);
+            }
+            assert!(work.exists());
+            if which != "not-directory" {
+                assert_eq!(
+                    std::fs::read(work.join("orphan")).expect("orphan"),
+                    b"keep orphan"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn c02_invalid_root_candidate_is_atomic_and_offline_equivalents_keep_inline_text() {
+        use andean_condor::models::input::VapourSynthScriptSource;
+        use california_condor::commands::{
+            DecoderMethod,
+            config::{ConfigCommand, Toggle},
+            handlers::init::{InitCrud, InitSet},
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut configuration = root_edit_fixture(temp.path());
+        configuration.condor.scenes.clear();
+        let file = temp.path().join("condor.json");
+        configuration.save(&file).expect("save");
+        let before = serde_json::to_value(&configuration).expect("before");
+        let bytes = std::fs::read(&file).expect("before");
+        let mut args = root_edit_args(temp.path().join("offline.mkv"));
+        args.decoder = Some(DecoderMethod::FFMS2);
+        args.filters = Some(vec![
+            andean_condor::vapoursynth::vapoursynth_filters::VapourSynthFilter::Resize {
+                scaler: None,
+                width: None,
+                height: None,
+                format: Some(andean_condor::ffmpeg::FFPixelFormat::NV12),
+            },
+        ]);
+        args.stream_concurrently = Some(Toggle::On);
+        InitCrud::apply(&mut configuration, &InitSet::Input { args })
+            .expect_err("invalid native format");
+        assert_eq!(serde_json::to_value(&configuration).expect("after"), before);
+        assert_eq!(std::fs::read(&file).expect("after"), bytes);
+        condor_cmd(&temp)
+            .env("PATH", "")
+            .args([
+                "init",
+                "set",
+                "input",
+                "--path",
+                "offline.mkv",
+                "--decoder",
+                "ffms2",
+                "--filters",
+                "resize:format=nv12;",
+                "--stream-concurrently",
+                "on",
+            ])
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read(&file).expect("CLI after"), bytes);
+        assert!(!temp.path().join("source-opened").exists());
+        configuration.input = temp.path().join("missing.vpy");
+        if let Input::VapourSynthScript { source, .. } = &mut configuration.condor.input {
+            *source = VapourSynthScriptSource::Text("inline source must survive".into());
+        }
+        configuration.condor.scenes = root_edit_fixture(temp.path()).condor.scenes;
+        let before = serde_json::to_value(&configuration).expect("before");
+        InitCrud::apply(
+            &mut configuration,
+            &InitSet::Input {
+                args: root_edit_args(temp.path().join("absent/../missing.vpy")),
+            },
+        )
+        .expect("offline lexical equivalent");
+        assert_eq!(serde_json::to_value(&configuration).expect("after"), before);
+        let mut args = root_edit_args(configuration.input.clone());
+        args.vs_args = Some(vec!["keep=updated".into()]);
+        args.stream_concurrently = Some(Toggle::On);
+        InitCrud::apply(&mut configuration, &InitSet::Input { args })
+            .expect("inline settings edit");
+        assert!(
+            matches!(&configuration.condor.input, Input::VapourSynthScript { source: VapourSynthScriptSource::Text(text), variables, stream_concurrently: true, .. } if text == "inline source must survive" && variables["keep"] == "updated")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c02_normalization_errors_are_not_treated_as_missing_offline_paths() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("fixture");
+        let configuration = root_edit_fixture(temp.path());
+        let file = temp.path().join("condor.json");
+        configuration.save(&file).expect("save");
+        let before = std::fs::read(&file).expect("before");
+        std::os::unix::fs::symlink("loop.vpy", temp.path().join("loop.vpy")).expect("symlink loop");
+        let output = condor_cmd(&temp)
+            .env("PATH", "")
+            .args(["init", "set", "input", "--path", "loop.vpy"])
+            .output()
+            .expect("CLI");
+        assert!(!output.status.success());
+        let message = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            message.contains("normaliz") && message.contains("loop.vpy"),
+            "{message}"
+        );
+        assert_eq!(std::fs::read(&file).expect("after"), before);
+        assert!(!temp.path().join("source-opened").exists());
+        let protected = temp.path().join("protected");
+        std::fs::create_dir_all(&protected).expect("directory");
+        std::fs::write(protected.join("source.vpy"), b"must not open").expect("source");
+        for work_directory in [false, true] {
+            let mut candidate = configuration.clone();
+            candidate.condor.scenes.clear();
+            if work_directory {
+                candidate.condor.sequence_config.parallel_encoder.scenes_directory =
+                    protected.clone();
+            }
+            candidate.save(&file).expect("save");
+            let before = std::fs::read(&file).expect("before");
+            std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o000))
+                .expect("deny access");
+            let replacement = if work_directory {
+                "b.vpy"
+            } else {
+                "protected/source.vpy"
+            };
+            let output = condor_cmd(&temp)
+                .env("PATH", "")
+                .args(["init", "set", "input", "--path", replacement])
+                .output();
+            std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o700))
+                .expect("restore access before assertions/cleanup");
+            let output = output.expect("CLI");
+            let message = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !output.status.success()
+                    && message.contains("protected")
+                    && message.contains("Permission denied"),
+                "{message}"
+            );
+            assert_eq!(std::fs::read(&file).expect("after"), before);
+        }
+    }
+
+    #[test]
+    fn c02_empty_script_to_video_does_not_reuse_script_output_index() {
+        use andean_condor::models::input::ImportMethod;
+        use california_condor::commands::{
+            DecoderMethod,
+            config::ConfigCommand,
+            handlers::init::{InitCrud, InitSet},
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut configuration = root_edit_fixture(temp.path());
+        configuration.condor.scenes.clear();
+        if let Input::VapourSynthScript { index, .. } = &mut configuration.condor.input {
+            *index = 7;
+        }
+        let mut args = root_edit_args(temp.path().join("offline.mkv"));
+        args.decoder = Some(DecoderMethod::FFMS2);
+        InitCrud::apply(&mut configuration, &InitSet::Input { args })
+            .expect("empty cross-kind edit");
+        assert!(
+            matches!(
+                configuration.condor.input,
+                Input::Video {
+                    import_method: ImportMethod::FFMS2 {
+                        index: None,
+                        cache_path: None
+                    },
+                    ..
+                }
+            ),
+            "new source must not inherit output 7 or default script output 0 as a video track index"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn e06_cli_path_name_edits_are_offline_and_not_reported_as_missing_paths() {

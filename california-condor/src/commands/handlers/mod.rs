@@ -6,7 +6,7 @@ use andean_condor::{
     },
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use tracing::{debug, error, warn};
 
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
         config::{InputOverride, Toggle},
     },
     configuration::{ConfigError, Configuration},
+    utils::hash_path::hash_path,
 };
 
 pub mod benchmarker;
@@ -89,6 +90,206 @@ pub fn configure_temp(configuration: &mut Configuration, temp_path: Option<&Path
         configuration.temp = path_abs::PathAbs::new(temp_path)?.as_path().to_path_buf();
     }
 
+    Ok(())
+}
+
+fn root_source_path<'a>(input: &'a InputModel, fallback: &'a Path) -> &'a Path {
+    match input {
+        InputModel::Video { path, .. } | InputModel::VapourSynth { path, .. } => path,
+        InputModel::VapourSynthScript { source, .. } => match source {
+            VapourSynthScriptSource::Path(path) => path,
+            VapourSynthScriptSource::Text(_) => fallback,
+        },
+    }
+}
+
+fn normalized_source_path(path: &Path) -> Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => path_abs::PathAbs::new(path)
+            .map(|path| path.as_path().to_path_buf())
+            .with_context(|| format!("normalizing offline input `{}`", path.display())),
+        Err(error) => Err(error).with_context(|| format!("normalizing input `{}`", path.display())),
+    }
+}
+
+fn work_directory_populated(path: &Path) -> Result<bool> {
+    // An unset directory is not the process's current working directory.
+    if path.as_os_str().is_empty() {
+        return Ok(false);
+    }
+    let mut entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting work directory `{}`", path.display()));
+        },
+    };
+    entries
+        .next()
+        .transpose()
+        .map(|entry| entry.is_some())
+        .with_context(|| format!("reading work directory `{}`", path.display()))
+}
+
+/// Atomically edits the job's root source without opening it or deleting work.
+/// A different normalized path requires no scenes and empty known work directories;
+/// stage overrides deliberately use the unrestricted `configure_input` builder instead.
+pub(crate) fn configure_root_input(
+    configuration: &mut Configuration,
+    args: &InputOverride,
+) -> Result<()> {
+    let old_path = root_source_path(&configuration.condor.input, &configuration.input);
+    let replacement = args
+        .path
+        .as_deref()
+        .map(|path| -> Result<_> {
+            Ok((
+                normalized_source_path(old_path)?,
+                normalized_source_path(path)?,
+            ))
+        })
+        .transpose()?;
+    let changed = replacement.as_ref().is_some_and(|(old, new)| old != new);
+    if changed {
+        let sequence = &configuration.condor.sequence_config;
+        let refusal = || {
+            format!(
+                "cannot change job input from `{}` to `{}`: saved scenes or nonempty work directory; use a new --config-file for a different source",
+                old_path.display(),
+                args.path.as_ref().expect("explicit replacement").display()
+            )
+        };
+        ensure!(configuration.condor.scenes.is_empty(), "{}", refusal());
+        for directory in [
+            &sequence.parallel_encoder.scenes_directory,
+            &sequence.scene_concatenator.scenes_directory,
+        ] {
+            ensure!(
+                !work_directory_populated(directory)?,
+                "{} (`{}`)",
+                refusal(),
+                directory.display()
+            );
+        }
+    }
+
+    let existing = &configuration.condor.input;
+    // Path-only equivalent edits must not rebuild inline scripts or lose decoder caches.
+    let mut input = if !changed && args.decoder.is_none() && args.vs_args.is_none() {
+        existing.clone()
+    } else if !changed
+        && matches!(
+            existing,
+            InputModel::VapourSynthScript {
+                source: VapourSynthScriptSource::Text(_),
+                ..
+            }
+        )
+    {
+        let mut input = existing.clone();
+        if let InputModel::VapourSynthScript { variables, .. } = &mut input
+            && let Some(args) = &args.vs_args
+        {
+            *variables = args
+                .iter()
+                .map(|arg| {
+                    let (key, value) = arg.split_once('=').unwrap_or((arg, ""));
+                    (key.to_owned(), value.to_owned())
+                })
+                .collect();
+        }
+        input
+    } else {
+        configure_input(
+            configuration,
+            existing,
+            replacement.as_ref().filter(|_| changed).map(|(_, new)| new.as_path()),
+            args.decoder.as_ref(),
+            args.vs_args.as_deref(),
+            None,
+            None,
+        )?
+    };
+    if let (
+        InputModel::VapourSynth {
+            import_method: old_method,
+            cache_path: old_cache,
+            ..
+        },
+        InputModel::VapourSynth {
+            import_method,
+            cache_path,
+            ..
+        },
+    ) = (existing, &mut input)
+    {
+        *cache_path = old_cache.clone();
+        if let (
+            VapourSynthImportMethod::DGDecNV {
+                dgindexnv_executable: old,
+            },
+            VapourSynthImportMethod::DGDecNV {
+                dgindexnv_executable,
+            },
+        ) = (old_method, import_method)
+        {
+            *dgindexnv_executable = old.clone();
+        }
+    }
+    if changed {
+        // Reset the resulting kind: script output 0 is not a video track selection.
+        match &mut input {
+            InputModel::Video {
+                import_method: ImportMethod::FFMS2 { index, cache_path },
+                ..
+            } => {
+                *index = None;
+                *cache_path = None;
+            },
+            InputModel::VapourSynth {
+                import_method,
+                cache_path,
+                ..
+            } => {
+                *cache_path = None;
+                match import_method {
+                    VapourSynthImportMethod::LSMASHWorks { index }
+                    | VapourSynthImportMethod::FFMS2 { index }
+                    | VapourSynthImportMethod::BestSource { index } => *index = None,
+                    VapourSynthImportMethod::DGDecNV { .. } => {},
+                }
+            },
+            InputModel::VapourSynthScript { index, .. } => *index = 0,
+        }
+    }
+    if let Some(filters) = args.filters.as_deref() {
+        apply_input_filters(&mut input, filters)?;
+    }
+    apply_stream_concurrently(&mut input, args.stream_concurrently);
+    if let Some(path) = args.path.as_deref() {
+        warn_missing_path("input path", path);
+    }
+    let mut temp = configuration.temp.clone();
+    if let Some((old, new)) = replacement.as_ref().filter(|_| changed)
+        && temp.file_name() == Some(std::ffi::OsStr::new(&hash_path(old)))
+    {
+        temp.set_file_name(hash_path(new));
+    }
+
+    // Publish only after all fallible model/filter conversions have succeeded.
+    if args.path.is_some() {
+        configuration.input = root_source_path(&input, &configuration.input).to_path_buf();
+    }
+    configuration.condor.input = input;
+    if changed {
+        configuration.temp = temp;
+        configuration.condor.sequence_config.parallel_encoder.scenes_directory =
+            configuration.temp.join("scenes");
+        configuration.condor.sequence_config.scene_concatenator.scenes_directory =
+            configuration.temp.join("scenes");
+    }
     Ok(())
 }
 

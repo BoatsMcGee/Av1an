@@ -23,13 +23,13 @@ use crate::{
         QualityMetric as QualityMetricBase,
         config::{ConfigAction, ConfigCommand, InputOverride, PropertyChange},
         handlers::{
-            apply_input_filters, apply_stream_concurrently,
+            apply_input_filters,
             concatenate::{apply_discard, configure_concatenate},
             config::{edit, ensure_override_requested},
-            configure_input, configure_temp,
+            configure_root_input, configure_temp,
             encode::{configure_encoder, configure_parallel_encoder},
             target_quality::{TargetQualityCrud, configure_target_quality},
-            warn_missing_executable, warn_missing_path, warn_unused_vs_args,
+            warn_missing_executable, warn_unused_vs_args,
         },
     },
     configuration::Configuration,
@@ -278,28 +278,7 @@ impl InitCrud {
     /// Applies one `set input` override to the root input.
     fn apply_input(configuration: &mut Configuration, args: &InputOverride) -> Result<()> {
         ensure_override_requested(args)?;
-        if let Some(path) = args.path.as_deref() {
-            warn_missing_path("input path", path);
-        }
-        let existing = configuration.condor.input.clone();
-        let mut input = configure_input(
-            configuration,
-            &existing,
-            args.path.as_deref(),
-            args.decoder.as_ref(),
-            args.vs_args.as_deref(),
-            None,
-            None,
-        )?;
-        if let Some(filters) = args.filters.as_deref() {
-            apply_input_filters(&mut input, filters)?;
-        }
-        apply_stream_concurrently(&mut input, args.stream_concurrently);
-        configuration.condor.input = input;
-        if let Some(path) = args.path.as_deref() {
-            configuration.input = path.to_path_buf();
-        }
-        Ok(())
+        configure_root_input(configuration, args)
     }
 }
 
