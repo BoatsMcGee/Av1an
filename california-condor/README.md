@@ -103,10 +103,20 @@ execution, save callbacks and worker joins. A busy-job error names the selected
 configuration and its lock; retry after the other process exits. Help, version,
 and the unavailable `clean` command do not acquire a job lock.
 
+Existing-job read/edit/run routes reject a missing configuration before creating
+directories, sidecars or logs. Only init-create (not `init info/set/reset`) and the
+root pipeline route prepare missing config parents. Those creation routes may leave
+parents and a sidecar even when later validation rejects the new job; no rollback
+or automatic lock-file cleanup is performed. Bare `scenes` and `info` on existing
+jobs need write/create access to the sidecar, even though they only read JSON, and
+return busy while another process owns the job.
+
 The stable sidecar uses the full filename: `job.json.lock` and `job.other.lock`
 are independent. The empty sidecar intentionally remains after exit or a crash;
 its existence does **not** mean busy. **Do not delete it to clear a lock**: the OS
 releases ownership when the process closes/exits, including a forced termination.
+Forced termination can leave native encoder/FFmpeg descendants writing work files;
+lock release does not prove that those processes have stopped.
 Separate configurations can run concurrently, but still need distinct work and
 output paths. Symlink aliases (including existing symlink parents for new files)
 resolve to one configuration target. Separately named hardlinks are not unified;
@@ -119,11 +129,15 @@ unique sibling temporary file and atomically replace the configuration. Failed
 publication leaves the original bytes intact and cleans only the owned temporary
 file; a caller's old fixed `.temp` file is not reused. This is atomic publication,
 not an fsync/power-loss durability guarantee.
+On Unix publication uses the tempfile's `0600` mode (subject to umask), including
+when replacing a more widely readable config; existing permissions are not preserved.
 
 Direct Rust callers must acquire `configuration::JobLock` **before** loading and
 use `guard.path()` for loads, handlers and saves. Retain the guard through edits,
 public `run_*` helpers, all callbacks and joins. These APIs do not acquire a lock
 themselves; individually atomic saves cannot protect an already stale snapshot.
+Prepare a new config's parent directory explicitly before acquiring its guard;
+generic `JobLock::acquire` never creates directories.
 
 ```rust,ignore
 let guard = california_condor::configuration::JobLock::acquire(path)?;

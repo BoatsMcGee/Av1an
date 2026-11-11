@@ -89,6 +89,7 @@ pub struct JobLock {
 impl JobLock {
     /// Resolve the selected config and try to lock its full-basename `.lock` sidecar.
     /// Busy jobs and filesystem/unsupported-lock errors fail without loading a source.
+    /// The parent must already exist; callers creating a job prepare it explicitly.
     pub fn acquire(path: &Path) -> Result<Self> {
         let config_path = normalize_config_path(path)
             .with_context(|| format!("normalizing job config `{}`", path.display()))?;
@@ -96,22 +97,19 @@ impl JobLock {
             config_path.file_name().context("job config needs a filename")?.to_os_string();
         name.push(".lock");
         let lock_path = config_path.with_file_name(name);
-        let open = || -> io::Result<File> {
-            fs::create_dir_all(config_path.parent().expect("absolute config parent"))?;
-            File::options()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(&lock_path)
-        };
-        let file = open().with_context(|| {
-            format!(
-                "opening job lock `{}` for config `{}`",
-                lock_path.display(),
-                config_path.display()
-            )
-        })?;
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| {
+                format!(
+                    "opening job lock `{}` for config `{}`",
+                    lock_path.display(),
+                    config_path.display()
+                )
+            })?;
         match file.try_lock() {
             Ok(()) => Ok(Self {
                 _file: file,
@@ -140,7 +138,7 @@ impl JobLock {
 
 // Resolve existing components before `..`, including a symlink parent of a new
 // config. Only NotFound permits a missing component; dangling symlinks fail closed.
-fn normalize_config_path(path: &Path) -> io::Result<PathBuf> {
+pub(crate) fn normalize_config_path(path: &Path) -> io::Result<PathBuf> {
     let mut resolved = PathBuf::new();
     for component in std::env::current_dir()?.join(path).components() {
         match component {
@@ -996,6 +994,29 @@ mod tests {
             "{message}"
         );
         assert!(!file.exists());
+    }
+
+    #[test]
+    fn c11_direct_guard_does_not_prepare_missing_parents() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let file = temp.path().join("missing/deep/job.json");
+        let result = JobLock::acquire(&file);
+        assert!(
+            !temp.path().join("missing").exists(),
+            "generic acquisition must not create parents or sidecars"
+        );
+        let error = result.expect_err("caller must prepare a new job's parent deliberately");
+        assert!(format!("{error:#}").contains("job.json.lock"));
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<io::Error>()
+                .is_some_and(|error| error.kind() == io::ErrorKind::NotFound)
+        }));
+        fs::create_dir_all(file.parent().expect("parent")).expect("caller prepares parent");
+        let guard = JobLock::acquire(&file).expect("explicit new job under an existing parent");
+        assert_eq!(guard.path(), file);
+        assert!(!file.exists(), "guard does not create the config");
+        assert!(file.with_file_name("job.json.lock").is_file());
     }
 
     #[cfg(unix)]

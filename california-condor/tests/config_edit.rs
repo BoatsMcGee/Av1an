@@ -167,20 +167,134 @@ mod tests {
     }
 
     #[test]
+    fn c11_missing_existing_job_routes_leave_no_artifacts() {
+        fn snapshot(
+            directory: &std::path::Path,
+        ) -> std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>> {
+            let mut entries = std::collections::BTreeMap::new();
+            for entry in std::fs::read_dir(directory).expect("fixture directory") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    entries.insert(path.clone(), None);
+                    entries.extend(snapshot(&path));
+                } else {
+                    entries.insert(path.clone(), Some(std::fs::read(path).expect("bytes")));
+                }
+            }
+            entries
+        }
+        let mut failures = vec![];
+        for selected in [Some("typo/deep/job.json"), Some("existing/job.json"), None] {
+            for route in [
+                vec!["scenes"],
+                vec!["scenes", "0", "set", "end", "11"],
+                vec!["scenes", "all", "reset", "encoder"],
+                vec!["init", "info"],
+                vec!["init", "set", "workers", "2"],
+                vec!["init", "reset"],
+                vec!["encode", "info"],
+                vec!["encode", "reset"],
+                vec!["encode"],
+                vec!["zone"],
+            ] {
+                let temp = tempfile::tempdir().expect("fixture");
+                root_edit_fixture(temp.path());
+                std::fs::create_dir_all(temp.path().join("existing")).expect("existing parent");
+                let before = snapshot(temp.path());
+                let mut command = condor_cmd(&temp);
+                command.env("PATH", "").timeout(std::time::Duration::from_secs(5));
+                if let Some(selected) = selected {
+                    command.args(["--config-file", selected]);
+                }
+                let result = command.args(&route).output().expect("real missing-job CLI");
+                let message = String::from_utf8_lossy(&result.stderr);
+                let expected = if selected.is_some() {
+                    "No config file found at:"
+                } else {
+                    "Run 'condor init' to create a configuration."
+                };
+                if result.status.code() != Some(1) || !message.contains(expected) {
+                    failures.push(format!(
+                        "{selected:?}/{route:?}: missing guidance: {message}"
+                    ));
+                }
+                let after = snapshot(temp.path());
+                if after != before {
+                    failures.push(format!(
+                        "{selected:?}/{route:?}: created artifacts {:?}",
+                        after.keys().filter(|path| !before.contains_key(*path)).collect::<Vec<_>>()
+                    ));
+                }
+                assert!(!temp.path().join("source-opened").exists());
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn c11_only_creation_routes_prepare_missing_parents() {
+        for root in [false, true] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let source = temp.path().join("source.vpy");
+            let config_path =
+                serde_json::to_string(&temp.path().join("new/deep/job.json")).expect("literal");
+            std::fs::write(&source, format!("from pathlib import Path\nif Path({config_path}).exists(): raise RuntimeError('C11 root stopped after creation')\nimport vapoursynth as vs\nvs.core.std.BlankClip(width=32,height=16,length=2,format=vs.YUV420P8).set_output()\n")).expect("bounded source; root stops before processing");
+            let mut command = condor_cmd(&temp);
+            command
+                .timeout(std::time::Duration::from_secs(30))
+                .args(["--config-file", "new/deep/job.json"]);
+            if root {
+                command.args(["-i", "source.vpy", "-o", "out.mkv", "-w", "1"]);
+            } else {
+                command.args(["init", "source.vpy", "out.mkv"]);
+            }
+            let result = command.output().expect("actual creating CLI");
+            if root {
+                assert_eq!(result.status.code(), Some(1));
+                assert!(
+                    String::from_utf8_lossy(&result.stderr)
+                        .contains("C11 root stopped after creation")
+                );
+            } else {
+                assert!(result.status.success(), "{result:?}");
+            }
+            let file = temp.path().join("new/deep/job.json");
+            assert_eq!(load(&file).input, source);
+            assert!(temp.path().join("new/deep/job.json.lock").is_file());
+            assert!(!temp.path().join("out.mkv").exists());
+        }
+    }
+
+    #[test]
+    fn c11_non_notfound_admission_errors_do_not_create_artifacts() {
+        let temp = tempfile::tempdir().expect("fixture");
+        std::fs::write(temp.path().join("blocked"), b"not a directory").expect("fixture");
+        let result = condor_cmd(&temp)
+            .args(["--config-file", "blocked/job.json", "scenes"])
+            .output()
+            .expect("CLI");
+        assert_eq!(result.status.code(), Some(1));
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert!(!message.contains("No config file found"), "{message}");
+        assert!(message.contains("blocked/job.json"), "{message}");
+        assert_eq!(
+            std::fs::read_dir(temp.path()).expect("no artifacts").count(),
+            1
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("blocked")).expect("retained bytes"),
+            b"not a directory"
+        );
+    }
+
+    #[test]
     fn c11_guard_admits_before_create_load_and_source_but_not_offline_controls() {
         use california_condor::configuration::JobLock;
         let temp = tempfile::tempdir().expect("fixture");
         let config = root_edit_fixture(temp.path());
         let file = temp.path().join("job.json");
         let guard = JobLock::acquire(&file).expect("direct API guard before first load");
-        for route in [
-            vec!["init", "a.vpy", "out.mkv"],
-            vec!["-i", "a.vpy", "-o", "out.mkv"],
-            vec!["encode"],
-            vec!["init", "info"],
-            vec!["zone", "0,12,crf=20"],
-            vec!["scenes"],
-        ] {
+        for route in [vec!["init", "a.vpy", "out.mkv"], vec!["-i", "a.vpy", "-o", "out.mkv"]] {
             let result = condor_cmd(&temp)
                 .timeout(std::time::Duration::from_secs(5))
                 .args(["--config-file", "job.json"])
@@ -198,12 +312,23 @@ mod tests {
         }
         // A corrupt file proves busy admission precedes parsing, not just writes.
         std::fs::write(&file, b"not JSON").expect("corrupt config");
-        let result = condor_cmd(&temp)
-            .args(["--config-file", "job.json", "init", "info"])
-            .output()
-            .expect("info CLI");
-        assert!(String::from_utf8_lossy(&result.stderr).contains("another process"));
-        assert_eq!(std::fs::read(&file).expect("bytes"), b"not JSON");
+        for route in [
+            vec!["encode"],
+            vec!["init", "info"],
+            vec!["zone", "0,12,crf=20"],
+            vec!["scenes"],
+        ] {
+            let result = condor_cmd(&temp)
+                .timeout(std::time::Duration::from_secs(5))
+                .args(["--config-file", "job.json"])
+                .args(&route)
+                .output()
+                .expect("existing-job CLI");
+            assert_eq!(result.status.code(), Some(1));
+            assert!(String::from_utf8_lossy(&result.stderr).contains("another process"));
+            assert_eq!(std::fs::read(&file).expect("bytes"), b"not JSON");
+            assert!(!temp.path().join("source-opened").exists());
+        }
         drop(guard);
         config.save(&file).expect("fresh valid snapshot after release");
         let guard = JobLock::acquire(&file).expect("reacquire despite existing sidecar");

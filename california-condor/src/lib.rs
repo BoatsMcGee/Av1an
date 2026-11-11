@@ -6,13 +6,13 @@
 use std::{panic, path::Path, process};
 
 use andean_condor::core::Condor;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches};
 use tracing::{debug, info, level_filters::LevelFilter};
 
 use crate::{
     commands::{
-        Commands, CondorCli,
+        Commands, CondorCli, CondorCliError,
         handlers::{
             benchmarker::benchmarker_handler,
             concatenate::concatenate_handler,
@@ -31,7 +31,7 @@ use crate::{
         help_text::process_command_tree,
         version::print_version,
     },
-    configuration::{Configuration, JobLock},
+    configuration::{Configuration, JobLock, normalize_config_path},
     logging::init_logging,
     tui::{
         run_benchmarker_tui, run_bitrate_optimizer_tui, run_noise_detector_tui,
@@ -92,9 +92,32 @@ fn run() -> anyhow::Result<()> {
     let job_lock = if matches!(cli.command, Some(Commands::Clean { .. })) {
         None
     } else {
-        Some(JobLock::acquire(
-            cli.config_file.as_deref().unwrap_or_else(|| Path::new(DEFAULT_CONFIG_PATH)),
-        )?)
+        let selected = cli.config_file.as_deref().unwrap_or_else(|| Path::new(DEFAULT_CONFIG_PATH));
+        let path = normalize_config_path(selected)
+            .with_context(|| format!("normalizing job config `{}`", selected.display()))?;
+        if matches!(cli.command, None | Some(Commands::Init { edit: None, .. })) {
+            std::fs::create_dir_all(path.parent().context("job config needs a parent directory")?)
+                .with_context(|| format!("preparing job config parent for `{}`", path.display()))?;
+        } else {
+            // Metadata-only admission avoids artifacts for typos/missing jobs, but
+            // existing (even corrupt) JSON must not be read until after locking.
+            match std::fs::metadata(&path) {
+                Ok(_) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(if cli.config_file.is_some() {
+                        CondorCliError::ConfigFileNotFound(path)
+                    } else {
+                        CondorCliError::NoConfig
+                    }
+                    .into());
+                },
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("inspecting job config `{}`", path.display()));
+                },
+            }
+        }
+        Some(JobLock::acquire(&path)?)
     };
     let config_path = job_lock.as_ref().map(|guard| guard.path().to_path_buf());
     let logs = cli.logs.unwrap_or_else(|| cwd.join(DEFAULT_LOG_PATH));
