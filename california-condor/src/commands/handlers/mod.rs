@@ -148,10 +148,14 @@ pub(crate) fn configure_root_input(
             Ok((
                 normalized_source_path(old_path)?,
                 normalized_source_path(path)?,
+                path_abs::PathAbs::new(path)
+                    .with_context(|| format!("normalizing input path `{}`", path.display()))?
+                    .as_path()
+                    .to_path_buf(),
             ))
         })
         .transpose()?;
-    let changed = replacement.as_ref().is_some_and(|(old, new)| old != new);
+    let changed = replacement.as_ref().is_some_and(|(old, new, _)| old != new);
     if changed {
         let sequence = &configuration.condor.sequence_config;
         let refusal = || {
@@ -205,7 +209,7 @@ pub(crate) fn configure_root_input(
         configure_input(
             configuration,
             existing,
-            replacement.as_ref().filter(|_| changed).map(|(_, new)| new.as_path()),
+            replacement.as_ref().filter(|_| changed).map(|(_, _, new)| new.as_path()),
             args.decoder.as_ref(),
             args.vs_args.as_deref(),
             None,
@@ -225,7 +229,9 @@ pub(crate) fn configure_root_input(
         },
     ) = (existing, &mut input)
     {
-        *cache_path = old_cache.clone();
+        if std::mem::discriminant(old_method) == std::mem::discriminant(import_method) {
+            *cache_path = old_cache.clone();
+        }
         if let (
             VapourSynthImportMethod::DGDecNV {
                 dgindexnv_executable: old,
@@ -272,10 +278,15 @@ pub(crate) fn configure_root_input(
         warn_missing_path("input path", path);
     }
     let mut temp = configuration.temp.clone();
-    if let Some((old, new)) = replacement.as_ref().filter(|_| changed)
-        && temp.file_name() == Some(std::ffi::OsStr::new(&hash_path(old)))
-    {
-        temp.set_file_name(hash_path(new));
+    if let Some((old_identity, _, new)) = replacement.as_ref().filter(|_| changed) {
+        // Fresh init hashes lexical absolute paths; also recognize already-canonical auto roots.
+        let old_lexical = path_abs::PathAbs::new(old_path)
+            .with_context(|| format!("normalizing previous input path `{}`", old_path.display()))?;
+        if temp.file_name() == Some(std::ffi::OsStr::new(&hash_path(old_lexical.as_path())))
+            || temp.file_name() == Some(std::ffi::OsStr::new(&hash_path(old_identity)))
+        {
+            temp.set_file_name(hash_path(new));
+        }
     }
 
     // Publish only after all fallible model/filter conversions have succeeded.
@@ -284,11 +295,17 @@ pub(crate) fn configure_root_input(
     }
     configuration.condor.input = input;
     if changed {
+        let old_scenes = configuration.temp.join("scenes");
+        let sequence = &mut configuration.condor.sequence_config;
+        for directory in [
+            &mut sequence.parallel_encoder.scenes_directory,
+            &mut sequence.scene_concatenator.scenes_directory,
+        ] {
+            if directory.as_os_str().is_empty() || *directory == old_scenes {
+                *directory = temp.join("scenes");
+            }
+        }
         configuration.temp = temp;
-        configuration.condor.sequence_config.parallel_encoder.scenes_directory =
-            configuration.temp.join("scenes");
-        configuration.condor.sequence_config.scene_concatenator.scenes_directory =
-            configuration.temp.join("scenes");
     }
     Ok(())
 }

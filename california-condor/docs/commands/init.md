@@ -40,14 +40,19 @@ identity, not changes to the contents of a file at the same path.
 
 For an empty job, `condor init set input --path other.mp4` works offline. It updates
 both root input fields, clears root decoder cache/index selections, and rebases
-encoding/concatenation directories to `TEMP/scenes`. An automatically named temp
-directory gets the new source's path hash under the same parent; a custom temp root
-stays. Existing files are never deleted. Applicable filters and other settings stay.
+unset or previously derived `TEMP/scenes` directories; explicit custom scene
+directories stay. An automatically named temp directory gets the new source's
+lexical absolute path hash under the same parent, matching fresh init; a custom temp
+root stays. Auto detection recognizes old lexical or canonical hashes; a custom name
+that happens to equal either hash is indistinguishable from an auto name. Existing
+files are never deleted. Applicable filters and other settings stay.
 
 `encode --input`, `encode set input`, detection inputs and quality-reference inputs
 are stage overrides, not root replacements; they remain editable on populated jobs.
 Root edits do not rewrite those overrides. Changing filters/decoder/script variables
 at the same path is still allowed and does not validate saved results' provenance.
+A same-path VapourSynth decoder-kind change clears its cache selection; same-kind
+edits retain it. No old cache file is deleted.
 
 ### Examples
 

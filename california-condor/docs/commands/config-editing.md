@@ -111,8 +111,11 @@ requires no saved scenes and empty known encoding/concatenation work directories
 Otherwise use a new `--config-file`; no chunks are silently deleted. Equivalent
 paths keep work and caches. An empty-job replacement is offline and atomically
 updates root metadata, resets root cache/index choices, and rebases derived scenes
-directories. Auto-hashed temp names change under the same parent; custom temp roots
-stay. Stage-specific inputs (including `encode` and quality-reference inputs) remain
+directories (unset or equal to the old `TEMP/scenes`); explicit custom scene directories
+stay. Auto-hashed temp names change under the same parent using the new lexical
+absolute input path, matching fresh init; custom temp roots stay. A same-path VS
+decoder-kind change clears its cache selection; same-kind edits retain it.
+Stage-specific inputs (including `encode` and quality-reference inputs) remain
 separate, editable overrides and are not rewritten by a root edit. See [Init](init.md#input).
 
 ## Examples

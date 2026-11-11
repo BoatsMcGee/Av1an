@@ -109,7 +109,9 @@ mod tests {
         .expect_err("populated root must refuse");
         let message = format!("{error:#}");
         assert!(
-            message.contains("a.mkv") && message.contains("b.mkv") && message.contains("--config"),
+            message.contains("a.mkv")
+                && message.contains("b.mkv")
+                && message.contains("--config-file"),
             "{message}"
         );
         assert_eq!(serde_json::to_value(&configuration).expect("after"), memory);
@@ -150,7 +152,7 @@ mod tests {
             if output.status.success()
                 || !message.contains("a.vpy")
                 || !message.contains("b.vpy")
-                || !message.contains("--config")
+                || !message.contains("--config-file")
             {
                 failures.push(format!("missing source refusal: {message}"));
             }
@@ -208,6 +210,213 @@ mod tests {
             assert_eq!(after.temp, configuration.temp);
             assert_eq!(std::fs::read(&chunk).expect("chunk"), b"keep chunk");
         }
+    }
+
+    #[test]
+    fn c02_same_source_vs_cache_belongs_to_its_decoder_kind() {
+        use andean_condor::models::input::VapourSynthImportMethod;
+        use california_condor::commands::{
+            DecoderMethod,
+            config::ConfigCommand,
+            handlers::init::{InitCrud, InitSet},
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("offline.mkv");
+        let cache = temp.path().join("old.cache");
+        let executable = temp.path().join("custom-dgindexnv");
+        std::fs::write(&cache, b"old plugin cache").expect("cache");
+        let methods = [
+            (
+                DecoderMethod::VSFFMS2,
+                VapourSynthImportMethod::FFMS2 { index: Some(3) },
+            ),
+            (
+                DecoderMethod::LSMASHWorks,
+                VapourSynthImportMethod::LSMASHWorks { index: Some(3) },
+            ),
+            (
+                DecoderMethod::BestSource,
+                VapourSynthImportMethod::BestSource { index: Some(3) },
+            ),
+            (
+                DecoderMethod::DGDecodeNV,
+                VapourSynthImportMethod::DGDecNV {
+                    dgindexnv_executable: Some(executable.clone()),
+                },
+            ),
+        ];
+        for (old_decoder, old_method) in &methods {
+            for (new_decoder, _) in &methods {
+                let mut configuration = root_edit_fixture(temp.path());
+                configuration.input = source.clone();
+                configuration.condor.input = Input::VapourSynth {
+                    path: source.clone(),
+                    import_method: old_method.clone(),
+                    cache_path: Some(cache.clone()),
+                    filters: vec![],
+                };
+                let mut expected = configuration.clone();
+                let index = if *old_decoder == DecoderMethod::DGDecodeNV {
+                    None
+                } else {
+                    Some(3)
+                };
+                let method = match new_decoder {
+                    DecoderMethod::VSFFMS2 => VapourSynthImportMethod::FFMS2 { index },
+                    DecoderMethod::LSMASHWorks => VapourSynthImportMethod::LSMASHWorks { index },
+                    DecoderMethod::BestSource => VapourSynthImportMethod::BestSource { index },
+                    DecoderMethod::DGDecodeNV => VapourSynthImportMethod::DGDecNV {
+                        dgindexnv_executable: (*old_decoder == DecoderMethod::DGDecodeNV)
+                            .then(|| executable.clone()),
+                    },
+                    DecoderMethod::FFMS2 => unreachable!(),
+                };
+                expected.condor.input = Input::VapourSynth {
+                    path: source.clone(),
+                    import_method: method,
+                    cache_path: (old_decoder == new_decoder).then(|| cache.clone()),
+                    filters: vec![],
+                };
+                let file = temp.path().join("condor.json");
+                configuration.save(&file).expect("save");
+                let bytes = std::fs::read(&file).expect("saved snapshot");
+                let mut args = root_edit_args(source.clone());
+                args.decoder = Some(new_decoder.clone());
+                args.vs_args = Some(vec!["keep=yes".into()]);
+                InitCrud::apply(&mut configuration, &InitSet::Input { args })
+                    .expect("populated same-source edit");
+                assert_eq!(
+                    std::fs::read(&file).expect("direct edit must not save"),
+                    bytes
+                );
+                condor_cmd(&temp)
+                    .env("PATH", "")
+                    .args([
+                        "init",
+                        "set",
+                        "input",
+                        "--path",
+                        path_str(&source),
+                        "--decoder",
+                        &new_decoder.to_string(),
+                        "--vs-args",
+                        "keep=yes",
+                    ])
+                    .assert()
+                    .success();
+                let expected = serde_json::to_value(&expected).expect("expected");
+                assert_eq!(
+                    serde_json::to_value(&configuration).expect("direct"),
+                    expected,
+                    "{old_decoder} -> {new_decoder}"
+                );
+                assert_eq!(
+                    serde_json::to_value(load(&file)).expect("CLI"),
+                    expected,
+                    "{old_decoder} -> {new_decoder}"
+                );
+                assert_eq!(
+                    std::fs::read(&cache).expect("cache retained"),
+                    b"old plugin cache"
+                );
+                assert!(!configuration.temp.exists());
+                assert!(!temp.path().join("source-opened").exists());
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c02_alias_source_replacement_uses_fresh_init_lexical_hash() {
+        use andean_condor::models::input::VapourSynthScriptSource;
+        use california_condor::{
+            commands::{
+                config::ConfigCommand,
+                handlers::init::{InitCrud, InitSet},
+            },
+            utils::hash_path::hash_path,
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let real = temp.path().join("real");
+        std::fs::create_dir_all(&real).expect("real directory");
+        std::os::unix::fs::symlink(&real, temp.path().join("alias")).expect("alias directory");
+        let old_lexical = temp.path().join("alias/a.vpy");
+        let old_canonical = std::fs::canonicalize(&real).expect("real path").join("a.vpy");
+        let new_lexical = temp.path().join("alias/b.vpy");
+        let expected_temp = temp.path().join(hash_path(&new_lexical));
+        let mut failures = vec![];
+        for (label, old_hash_path) in [("lexical", &old_lexical), ("canonical", &old_canonical)] {
+            let mut configuration = root_edit_fixture(&real);
+            configuration.condor.scenes.clear();
+            configuration.input = "alias/a.vpy".into();
+            if let Input::VapourSynthScript { source, .. } = &mut configuration.condor.input {
+                *source = VapourSynthScriptSource::Path("alias/a.vpy".into());
+            }
+            configuration.temp = temp.path().join(hash_path(old_hash_path));
+            configuration.condor.sequence_config.parallel_encoder.scenes_directory =
+                configuration.temp.join("scenes");
+            configuration.condor.sequence_config.scene_concatenator.scenes_directory =
+                configuration.temp.join("scenes");
+            let old_scenes = configuration.temp.join("scenes");
+            std::fs::create_dir_all(&old_scenes).expect("empty old scenes");
+            let mut expected = configuration.clone();
+            expected.input = new_lexical.clone();
+            expected.temp = expected_temp.clone();
+            if let Input::VapourSynthScript { source, .. } = &mut expected.condor.input {
+                *source = VapourSynthScriptSource::Path(new_lexical.clone());
+            }
+            expected.condor.sequence_config.parallel_encoder.scenes_directory =
+                expected_temp.join("scenes");
+            expected.condor.sequence_config.scene_concatenator.scenes_directory =
+                expected_temp.join("scenes");
+            let file = temp.path().join("condor.json");
+            configuration.save(&file).expect("save");
+            let bytes = std::fs::read(&file).expect("saved snapshot");
+            let mut direct = configuration.clone();
+            // Direct calls use absolute aliases; only the CLI child resolves relative paths.
+            if let Input::VapourSynthScript { source, .. } = &mut direct.condor.input {
+                *source = VapourSynthScriptSource::Path(old_lexical.clone());
+            }
+            InitCrud::apply(
+                &mut direct,
+                &InitSet::Input {
+                    args: root_edit_args(new_lexical.clone()),
+                },
+            )
+            .expect("direct alias replacement");
+            assert_eq!(
+                std::fs::read(&file).expect("direct edit must not save"),
+                bytes
+            );
+            condor_cmd(&temp)
+                .env("PATH", "")
+                .args(["init", "set", "input", "--path", "alias/b.vpy"])
+                .assert()
+                .success();
+            for (entry, after) in [("direct", direct), ("CLI", load(&file))] {
+                if serde_json::to_value(&after).expect("actual")
+                    != serde_json::to_value(&expected).expect("expected")
+                {
+                    failures.push(format!(
+                        "{label}/{entry}: input={}, temp={} (wanted input={}, temp={})",
+                        after.input.display(),
+                        after.temp.display(),
+                        new_lexical.display(),
+                        expected_temp.display()
+                    ));
+                }
+            }
+            assert!(
+                old_scenes.is_dir(),
+                "do not delete the old empty work directory"
+            );
+            assert!(
+                !expected_temp.exists(),
+                "do not open/index/create work just to edit"
+            );
+            assert!(!real.join("source-opened").exists());
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     #[test]
@@ -286,7 +495,13 @@ mod tests {
                 } else {
                     Default::default()
                 };
-                sequence.scene_concatenator.scenes_directory = Default::default();
+                sequence.scene_concatenator.scenes_directory = if kind == "native" {
+                    temp.path().join("custom-concat")
+                } else if kind == "script" {
+                    configuration.temp.join("scenes")
+                } else {
+                    Default::default()
+                };
                 sequence.scene_concatenator.method =
                     andean_condor::models::sequence::scene_concatenator::ConcatMethod::Ivf;
                 sequence.scene_concatenator.output = Some(temp.path().join("separate.ivf"));
@@ -313,6 +528,7 @@ mod tests {
                 let original = configuration.clone();
                 let file = temp.path().join("condor.json");
                 configuration.save(&file).expect("save");
+                let bytes = std::fs::read(&file).expect("saved snapshot");
                 InitCrud::apply(
                     &mut configuration,
                     &InitSet::Input {
@@ -320,6 +536,10 @@ mod tests {
                     },
                 )
                 .expect("offline direct edit");
+                assert_eq!(
+                    std::fs::read(&file).expect("direct edit must not save"),
+                    bytes
+                );
                 condor_cmd(&temp)
                     .env("PATH", "")
                     .args(["init", "set", "input", "--path", path_str(&new_source)])
@@ -341,9 +561,17 @@ mod tests {
                 expected.input = new_source.clone();
                 expected.temp = expected_temp.clone();
                 expected.condor.sequence_config.parallel_encoder.scenes_directory =
-                    expected_temp.join("scenes");
+                    if kind == "native" {
+                        empty_work.clone()
+                    } else {
+                        expected_temp.join("scenes")
+                    };
                 expected.condor.sequence_config.scene_concatenator.scenes_directory =
-                    expected_temp.join("scenes");
+                    if kind == "native" {
+                        temp.path().join("custom-concat")
+                    } else {
+                        expected_temp.join("scenes")
+                    };
                 match &mut expected.condor.input {
                     Input::Video {
                         path,
