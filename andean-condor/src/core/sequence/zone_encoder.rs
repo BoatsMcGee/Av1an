@@ -491,7 +491,14 @@ impl ZoneEncoder {
         if cancelled.is_cancelled() {
             return Ok(vec![None; tasks.len()]);
         }
+        if tasks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let clip_info = input.clip_info()?;
+        let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
         for task in &tasks {
+            super::parallel_encoder::checked_bitrate(0, task.frame_indices.len(), framerate)
+                .with_context(|| format!("Scene {} zone bitrate preflight", task.original_index))?;
             task.encoder.validate()?;
         }
         super::parallel_encoder::artifact::preflight(validate_frame_count)?;
@@ -505,7 +512,6 @@ impl ZoneEncoder {
         let mut encoder = first.encoder.clone();
         let started = SystemTime::now();
         let header = Cursor::new(input.y4m_header(Some(total_frames))?.into_bytes());
-        let clip_info = input.clip_info()?;
         let mut reader = input.frame_reader()?;
         let zone_directory =
             tempfile::tempdir_in(&directory).context("Creating owned zone files")?;
@@ -674,26 +680,24 @@ impl ZoneEncoder {
                 return Err(error);
             },
         };
-        let framerate = {
-            let clip_info = input.clip_info()?;
-            *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64
-        };
         let results = tasks
             .iter()
             .zip(split)
             .map(|(task, (bytes, frames))| {
-                let seconds = frames as f64 / framerate;
-                Some(ParallelEncoderResult {
+                let bitrate = super::parallel_encoder::checked_bitrate(bytes, frames, framerate)
+                    .with_context(|| format!("Scene {} split zone bitrate", task.original_index))?;
+                Ok(Some(ParallelEncoderResult {
                     scene: task.original_index,
                     started,
                     ended,
                     bytes,
-                    bitrate: (bytes * 8) as f64 / seconds,
+                    bitrate,
                     result: result.clone(),
-                })
+                }))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>();
         discard();
+        let results = results?;
 
         progress_tx.send(SequenceStatus::Whole(Status::Completed {
             id: "Zone Encoder".to_owned(),

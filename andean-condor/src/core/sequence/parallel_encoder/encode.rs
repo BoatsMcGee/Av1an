@@ -454,7 +454,21 @@ impl ParallelEncoder {
         if cancelled.is_cancelled() {
             return Ok(vec![None; tasks.len()]);
         }
+        if tasks.is_empty() {
+            cancelled.publish(|| {
+                let _ = progress_tx.send(SequenceStatus::Whole(Status::Completed {
+                    id: super::DETAILS.name.to_owned(),
+                }));
+                Ok(())
+            })?;
+            return Ok(Vec::new());
+        }
+        let clip_info = input.clip_info()?;
+        let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
         for task in &tasks {
+            super::checked_bitrate(0, task.frame_indices.len(), framerate).map_err(|error| {
+                error.context(format!("Scene {} bitrate preflight", task.original_index))
+            })?;
             task.encoder.validate().map_err(|error| {
                 error.context(format!("Scene {} encoder preflight", task.original_index))
             })?;
@@ -498,7 +512,6 @@ impl ParallelEncoder {
         if workers == 0 {
             anyhow::bail!(ParallelEncoderError::NoWorkers);
         }
-        let clip_info = input.clip_info()?;
         let stop = Stop::new_cancel(workers.into(), cancelled.clone());
         let total_tasks = tasks.len();
         let results = stop.catch_panic("Parallel scheduling", || thread::scope(|scope| {
@@ -566,9 +579,8 @@ impl ParallelEncoder {
                               cancelled.check_forced()?;
                               let bytes = attempt.bytes;
                              let ended = std::time::SystemTime::now();
-                            let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
-                            // Preserve the existing nonstream bitrate calculation (unrelated to E28).
-                            let bitrate = (bytes * 8) as f64 / (task.frame_indices.len() as f64 * framerate);
+                             let bitrate = super::checked_bitrate(bytes, task.frame_indices.len(), framerate)
+                                 .map_err(|error| error.context(format!("Scene {} bitrate", task.original_index)))?;
                              let result = cancelled.publish(|| {
                               finalize_scene(SceneOutcome { temp_output: attempt.path.clone(), bytes, usable: true },
                                   &task.output, &mut attempt.progress, &stop.stopped)?;

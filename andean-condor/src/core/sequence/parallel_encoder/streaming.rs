@@ -62,6 +62,11 @@ impl ParallelEncoder {
         let window = window.max(1);
         let clip_info = input.clip_info()?;
         let framerate = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
+        for task in &tasks {
+            super::checked_bitrate(0, task.frame_indices.len(), framerate).map_err(|error| {
+                error.context(format!("Scene {} bitrate preflight", task.original_index))
+            })?;
+        }
         let headers = tasks
             .iter()
             .map(|task| {
@@ -179,6 +184,17 @@ impl ParallelEncoder {
                                                 },
                                             )?;
                                             let bytes = attempt.bytes;
+                                            let bitrate = super::checked_bitrate(
+                                                bytes,
+                                                task.frame_indices.len(),
+                                                framerate,
+                                            )
+                                            .map_err(|error| {
+                                                error.context(format!(
+                                                    "Scene {} bitrate",
+                                                    task.original_index
+                                                ))
+                                            })?;
                                             let ended = std::time::SystemTime::now();
                                             let result = cancelled.publish(|| {
                                                 finalize_scene(
@@ -196,9 +212,7 @@ impl ParallelEncoder {
                                                     started,
                                                     ended,
                                                     bytes,
-                                                    bitrate: (bytes * 8) as f64
-                                                        / (task.frame_indices.len() as f64
-                                                            / framerate),
+                                                    bitrate,
                                                     result: attempt.result.clone(),
                                                 };
                                                 results_tx.send(result.clone())?;

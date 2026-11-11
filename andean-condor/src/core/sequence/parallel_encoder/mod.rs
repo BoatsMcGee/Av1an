@@ -83,6 +83,26 @@ pub struct ParallelEncoder {
     pub input: Option<Input>,
 }
 
+/// Bits per second for the selected frames, not the encoder's elapsed wall time.
+pub(super) fn checked_bitrate(bytes: u64, frames: usize, fps: f64) -> Result<f64> {
+    ensure!(
+        frames > 0,
+        "Cannot calculate bitrate with zero selected frames"
+    );
+    ensure!(
+        fps.is_finite() && fps > 0.0,
+        "Cannot calculate bitrate with invalid FPS {fps}"
+    );
+    let seconds = frames as f64 / fps;
+    ensure!(
+        seconds.is_finite() && seconds > 0.0,
+        "Invalid bitrate duration {seconds}"
+    );
+    let bitrate = bytes as f64 * 8.0 / seconds;
+    ensure!(bitrate.is_finite(), "Non-finite bitrate {bitrate}");
+    Ok(bitrate)
+}
+
 impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for ParallelEncoder
 where
     DataHandler: SequenceDataHandler + ParallelEncoderDataHandler,
@@ -314,6 +334,15 @@ where
                 output,
             });
         }
+        if !tasks.is_empty() && !cancelled.is_cancelled() {
+            let clip_info = self.input.as_mut().unwrap_or(&mut condor.input).clip_info()?;
+            let fps = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
+            for task in &tasks {
+                checked_bitrate(0, task.frame_indices.len(), fps).map_err(|error| {
+                    error.context(format!("Scene {} bitrate preflight", task.original_index))
+                })?;
+            }
+        }
         if metadata_changed {
             let saved = (condor.save_callback)(condor.as_data());
             if let Err(error) = saved {
@@ -464,5 +493,42 @@ impl ParallelEncoder {
     #[inline]
     pub fn scene_id(index: usize) -> String {
         format!("{:>05}", index)
+    }
+}
+
+#[cfg(test)]
+mod bitrate_tests {
+    use super::checked_bitrate;
+
+    #[test]
+    fn q09_checked_bitrate_numeric_contract() {
+        for (bytes, frames, fps, expected) in [
+            (1000, 240, 24.0, 800.0),
+            (1000, 240, 24000.0 / 1001.0, 800000.0 / 1001.0),
+            (0, 240, 24.0, 0.0),
+            (u64::MAX, 8, 1.0, 18446744073709551616.0),
+            (1, 1, 1e100, 8e100),
+        ] {
+            let actual = checked_bitrate(bytes, frames, fps).expect("valid bps");
+            assert!(
+                (actual - expected).abs() <= expected.abs() * 1e-14,
+                "{actual} != {expected}"
+            );
+        }
+        for (bytes, frames, fps) in [
+            (1000, 0, 24.0),
+            (1000, 240, 0.0),
+            (1000, 240, -24.0),
+            (1000, 240, f64::NAN),
+            (1000, 240, f64::INFINITY),
+            (1000, 240, f64::NEG_INFINITY),
+            (1000, 240, f64::from_bits(1)), // Duration overflows despite finite positive FPS.
+            (1000, 1, f64::MAX),            // Duration is positive, but bps overflows.
+        ] {
+            assert!(
+                checked_bitrate(bytes, frames, fps).is_err(),
+                "accepted {bytes}/{frames}/{fps}"
+            );
+        }
     }
 }

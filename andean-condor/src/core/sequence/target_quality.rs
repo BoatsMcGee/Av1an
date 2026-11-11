@@ -3389,6 +3389,28 @@ mod tests {
                 .expect("executable");
         }
 
+        #[test]
+        fn q09_actual_probe_retains_bps_in_serialized_history() {
+            let (_temp, mut input, encoder, config, directory) = fixture();
+            let completed = probe(
+                1,
+                &directory,
+                &config,
+                &mut input,
+                &tasks(&encoder, &directory, 1),
+            )
+            .expect("real encode/metric pass");
+            for task in completed {
+                // Each scene selects two frames at 24 FPS: twelve scenes/second, eight bits/byte.
+                let bytes = std::fs::metadata(&task.output).expect("real output").len();
+                let expected = bytes as f64 * 96.0;
+                assert!((task.passes[0].bitrate - expected).abs() < 1e-8);
+                let saved = serde_json::to_value(&task.passes).expect("persistable history");
+                assert_eq!(saved[0]["bitrate"].as_f64(), Some(task.passes[0].bitrate));
+                assert_eq!(task.passes[0].scores.len(), 2);
+            }
+        }
+
         #[cfg(unix)]
         #[test]
         fn q07_cleanup_failure_aborts_before_encoder_with_path_context() {
