@@ -37,6 +37,13 @@ shape. Every recorded TQ pass must match the current selected-frame count and ha
 finite scores and a defined statistic; a mismatch or corrupt pass is an error
 before prediction or reuse. Settings changes do not automatically migrate history.
 
+On resume, the remaining probe budget is counted independently for each scene.
+Any validated measurement within the current target range completes that scene,
+even if a later measurement misses. Lowering `maximum_probes` preserves all saved
+records; raising it or changing the target resumes only eligible scenes after
+their own recorded prefixes. Skipped rounds do not re-encode or truncate more
+complete peers, touch their scratch outputs, or trigger extra saves.
+
 For a requested pass, every candidate scene must have a valid record before that
 pass can be reused unchanged, without reading retained probe outputs. Otherwise,
 all candidate outputs and the concatenated pass output are discarded and the whole

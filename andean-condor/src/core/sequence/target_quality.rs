@@ -252,6 +252,65 @@ where
                 break;
             }
 
+            let pass_directory = target_quality_directory.join(pass.to_string());
+            let tasks = condor
+                .scenes
+                .iter()
+                .zip(&scene_frame_indices)
+                .enumerate()
+                .map(|(index, (scene, frame_indices))| -> Result<Option<Task>> {
+                    let passes = scene
+                        .sequence_data
+                        .get_target_quality()
+                        .map_or_else(|_| TargetQualityData::default(), |tq| tq.clone())
+                        .passes;
+                    // Admit only this scene's next ordinal, before capability probes or scratch.
+                    // More-complete peers must never enter a lower whole-pass replacement.
+                    if passes.len() != usize::from(pass - 1)
+                        || passes.len() >= usize::from(config.maximum_probes)
+                    {
+                        return Ok(None);
+                    }
+                    let quantizer_score_history = Self::quantizer_score_history(&config, &passes)?;
+                    if quantizer_score_history
+                        .iter()
+                        .any(|(_, score)| config.metric.score_within_target(*score))
+                    {
+                        return Ok(None);
+                    }
+                    let mut encoder = config.probe_encoder(&scene.encoder);
+                    let Some(predicted_quantizer) = Self::next_probe_quantizer(
+                        &config,
+                        &encoder,
+                        &quantizer_score_history,
+                        &cancelled,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    encoder.set_quantizer(predicted_quantizer);
+                    let output = pass_directory.join(format!(
+                        "{}.{}",
+                        ParallelEncoder::scene_id(index),
+                        encoder.output_extension()
+                    ));
+                    Ok(Some(Task {
+                        original_index: index,
+                        frame_indices: frame_indices.clone(),
+                        encoder,
+                        output,
+                        passes,
+                    }))
+                })
+                .filter_map(|result: Result<Option<Task>>| result.transpose())
+                .collect::<Result<Vec<_>>>()?;
+
+            if tasks.is_empty() {
+                // Empty early ordinals can precede resumable scenes with longer prefixes.
+                pass += 1;
+                continue;
+            }
+
             progress_tx.send(SequenceStatus::Whole(Status::Processing {
                 id: DETAILS.name.to_owned(),
                 completion: SequenceCompletion::Passes {
@@ -259,78 +318,8 @@ where
                     total: pass,
                 },
             }))?;
-
-            let pass_directory = target_quality_directory.join(pass.to_string());
             if !pass_directory.exists() {
                 std::fs::create_dir_all(&pass_directory)?;
-            }
-
-            let tasks = condor
-                .scenes
-                .iter_mut()
-                .zip(&scene_frame_indices)
-                .enumerate()
-                .map(|(index, (scene, frame_indices))| {
-                    let frame_indices = frame_indices.clone();
-                    let encoder = config.probe_encoder(&scene.encoder);
-                    let output = pass_directory.join(format!(
-                        "{}.{}",
-                        ParallelEncoder::scene_id(index),
-                        encoder.output_extension()
-                    ));
-                    let passes = scene
-                        .sequence_data
-                        .get_target_quality()
-                        .map_or_else(|_| TargetQualityData::default(), |tq| tq.clone())
-                        .passes;
-
-                    Task {
-                        original_index: index,
-                        frame_indices,
-                        encoder,
-                        output,
-                        passes,
-                    }
-                })
-                .map(|task| -> Result<Option<Task>> {
-                    // Skip if last probe scored within target
-                    let previous = task
-                        .passes
-                        .get(pass.saturating_sub(2) as usize) // Previous pass
-                        .or_else(|| task.passes.last()) // Last pass
-                        .map(|quality_pass| config.metric.calculate_score(config.probing.statistic, &quality_pass.scores))
-                        .transpose()?;
-                    Ok((!previous.is_some_and(|score| config.metric.score_within_target(score))).then_some(task))
-                })
-                .filter_map(Result::transpose)
-                .map(|task| {
-                    let mut task = task?;
-                    let quantizer_score_history = Self::quantizer_score_history(&config, &task.passes)?;
-                    let Some(predicted_quantizer) = Self::next_probe_quantizer(
-                        &config,
-                        &task.encoder,
-                        &quantizer_score_history,
-                        &cancelled,
-                    )? else {
-                        return Ok(None);
-                    };
-
-                    // Modify encoder to use predicted quantizer
-                    task.encoder.set_quantizer(predicted_quantizer);
-
-                    Ok(Some(task))
-                })
-                .filter_map(|result: Result<Option<Task>>| result.transpose())
-                .collect::<Result<Vec<_>>>()?;
-
-            if tasks.is_empty() {
-                break;
-            }
-
-            if tasks.iter().all(|task| task.passes.len() >= pass as usize) {
-                // Skip already processed pass
-                pass += 1;
-                continue;
             }
 
             debug!("Starting Pass {}", pass);
@@ -3379,6 +3368,366 @@ mod tests {
             )?;
             assert!(warnings.is_empty(), "{warnings:?}");
             Ok(completed)
+        }
+
+        type SavedScenes = std::rc::Rc<std::cell::RefCell<Vec<Vec<Scene<DefaultSequenceData>>>>>;
+
+        fn q13_fixture(
+            counts: &[usize],
+            maximum_probes: u8,
+        ) -> (
+            tempfile::TempDir,
+            Condor<DefaultSequenceData, DefaultSequenceConfig>,
+            SavedScenes,
+        ) {
+            let (temp, input, encoder, mut config, directory) = fixture();
+            config.maximum_probes = maximum_probes;
+            for pass in 1..=maximum_probes {
+                std::fs::create_dir_all(
+                    directory.join(pass.to_string()).join("Scene Concatenator"),
+                )
+                .expect("concat scratch");
+            }
+            // Synthetic, admitted saved records; all appended records use real FFmpeg/FFMS2/VMAF.
+            let scenes = counts
+                .iter()
+                .enumerate()
+                .map(|(index, &count)| {
+                    let mut data = DefaultSequenceData::default();
+                    data.target_quality.passes = (0..count)
+                        .map(|pass| QualityPass {
+                            quantizer: [26.0, 30.0, 34.0][pass],
+                            scores: vec![10.0 + pass as f64; 2],
+                            bitrate: 100.0 + pass as f64,
+                            started_on: 12 + pass as u128,
+                            completed_on: 34 + pass as u128,
+                        })
+                        .collect();
+                    Scene {
+                        start_frame: index,
+                        end_frame: index + 2,
+                        sub_scenes: None,
+                        encoder: encoder.clone(),
+                        sequence_data: data,
+                    }
+                })
+                .collect();
+            let saved = SavedScenes::default();
+            let snapshots = std::rc::Rc::clone(&saved);
+            let mut condor = Condor::new(
+                input,
+                Output {
+                    path: temp.path().join("final.mkv"),
+                    tags: Default::default(),
+                    video_tags: Default::default(),
+                },
+                encoder,
+                scenes,
+                Some(DefaultSequenceConfig {
+                    target_quality: Some(config),
+                    parallel_encoder: ParallelEncoderConfig::new(temp.path()),
+                    ..Default::default()
+                }),
+                Box::new(move |data| {
+                    snapshots.borrow_mut().push(data.scenes);
+                    Ok(())
+                }),
+            );
+            condor.sequence_config.scene_concatenator.method =
+                ConcatMethod::FFmpeg(Default::default());
+            (temp, condor, saved)
+        }
+
+        fn q13_execute(
+            condor: &mut Condor<DefaultSequenceData, DefaultSequenceConfig>,
+        ) -> Vec<(u8, u64, f64, f64)> {
+            let (tx, rx) = sync::mpsc::channel();
+            let (_, warnings) = TargetQuality::default()
+                .execute_cancel(condor, tx, Default::default())
+                .expect("actual sequence execution");
+            assert!(warnings.is_empty(), "{warnings:?}");
+            rx.into_iter()
+                .filter_map(|event| match event {
+                    SequenceStatus::Subprocess {
+                        parent:
+                            Status::Processing {
+                                completion: SequenceCompletion::Passes { completed, .. },
+                                ..
+                            },
+                        child:
+                            Status::Processing {
+                                completion:
+                                    SequenceCompletion::SceneQuality {
+                                        index,
+                                        quantizer,
+                                        score,
+                                        ..
+                                    },
+                                ..
+                            },
+                    } => Some((completed, index, quantizer, score)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        #[test]
+        fn q13_execute_mixed_counts_preserves_prefixes_and_sparse_progress() {
+            let (temp, mut condor, saved) = q13_fixture(&[3, 1, 0], 2);
+            let before = condor
+                .scenes
+                .iter()
+                .map(|scene| {
+                    serde_json::to_vec(&scene.sequence_data.target_quality.passes)
+                        .expect("saved bytes")
+                })
+                .collect::<Vec<_>>();
+            let directory = temp.path().join("Target Quality");
+            let sentinels = ["1/00000.mkv", "2/00000.mkv", "1/00001.mkv", "1/history.json"];
+            for path in sentinels {
+                std::fs::write(directory.join(path), b"verified peer scratch/history")
+                    .expect("sentinel");
+            }
+            let events = q13_execute(&mut condor);
+            assert_eq!(
+                condor
+                    .scenes
+                    .iter()
+                    .map(|s| s.sequence_data.target_quality.passes.len())
+                    .collect::<Vec<_>>(),
+                [3, 2, 2]
+            );
+            assert_eq!(
+                events.iter().map(|(pass, index, ..)| (*pass, *index)).collect::<Vec<_>>(),
+                [(1, 2), (2, 1), (2, 2)]
+            );
+            for &(ordinal, index, quantizer, score) in &events {
+                let record = &condor.scenes[index as usize].sequence_data.target_quality.passes
+                    [usize::from(ordinal - 1)];
+                assert_eq!(quantizer, record.quantizer);
+                assert_eq!(score, record.scores[0].midpoint(record.scores[1]));
+            }
+            for (index, (&prefix, scene)) in [3, 1, 0].iter().zip(&condor.scenes).enumerate() {
+                let passes = &scene.sequence_data.target_quality.passes;
+                assert_eq!(
+                    serde_json::to_vec(&passes[..prefix]).expect("prefix bytes"),
+                    before[index]
+                );
+                assert_eq!((scene.start_frame, scene.end_frame), (index, index + 2));
+                for (ordinal, pass) in passes.iter().enumerate().skip(prefix) {
+                    assert_eq!(pass.scores.len(), 2);
+                    assert!(pass.scores.iter().all(|score| score.is_finite() && *score > 0.0));
+                    let bytes = std::fs::metadata(
+                        directory.join(format!("{}/{index:05}.mkv", ordinal + 1)),
+                    )
+                    .expect("real output")
+                    .len();
+                    let expected_bitrate = bytes as f64 * 96.0;
+                    assert!((pass.bitrate - expected_bitrate).abs() < 1e-8);
+                    assert!(pass.started_on > 34 && pass.completed_on >= pass.started_on);
+                }
+                let closest = passes
+                    .iter()
+                    .min_by(|a, b| {
+                        let mean = |p: &QualityPass| p.scores[0].midpoint(p.scores[1]);
+                        mean(a)
+                            .total_cmp(&mean(b))
+                            .then_with(|| b.quantizer.total_cmp(&a.quantizer))
+                    })
+                    .expect("measured final");
+                assert_eq!(scene.encoder.quantizer(), Some(closest.quantizer));
+            }
+            for path in sentinels {
+                assert_eq!(
+                    std::fs::read(directory.join(path)).expect("excluded scratch"),
+                    b"verified peer scratch/history"
+                );
+            }
+            let snapshots = saved.borrow();
+            assert_eq!(snapshots.len(), 2, "one save per accepted nonempty round");
+            assert_eq!(
+                snapshots[0]
+                    .iter()
+                    .map(|s| s.sequence_data.target_quality.passes.len())
+                    .collect::<Vec<_>>(),
+                [3, 1, 1]
+            );
+            assert_eq!(
+                serde_json::to_vec(snapshots.last().expect("last save")).expect("saved"),
+                serde_json::to_vec(&condor.scenes).expect("actual")
+            );
+            eprintln!(
+                "Q13 mixed [3,1,0] max2 -> [3,2,2], real progress={events:?}; prefixes/timestamps/sentinels unchanged, 2 actual saves"
+            );
+        }
+
+        #[test]
+        fn q13_execute_empty_earlier_rounds_reach_later_ordinal() {
+            let (_temp, mut condor, saved) = q13_fixture(&[2, 2], 3);
+            let before = condor
+                .scenes
+                .iter()
+                .map(|s| {
+                    serde_json::to_vec(&s.sequence_data.target_quality.passes).expect("prefix")
+                })
+                .collect::<Vec<_>>();
+            let events = q13_execute(&mut condor);
+            assert_eq!(
+                events.iter().map(|(pass, index, ..)| (*pass, *index)).collect::<Vec<_>>(),
+                [(3, 0), (3, 1)]
+            );
+            for (index, scene) in condor.scenes.iter().enumerate() {
+                let passes = &scene.sequence_data.target_quality.passes;
+                assert_eq!(passes.len(), 3);
+                assert_eq!(
+                    serde_json::to_vec(&passes[..2]).expect("unchanged prefix"),
+                    before[index]
+                );
+                assert_eq!(passes[2].scores.len(), 2);
+                assert!(passes[2].scores.iter().all(|s| s.is_finite() && *s > 0.0));
+            }
+            assert_eq!(saved.borrow().len(), 1, "skipped ordinals never save");
+            eprintln!(
+                "Q13 [2,2] max3 -> [3,3], only real pass3 progress={events:?}, 1 actual save"
+            );
+        }
+
+        #[test]
+        fn q13_execute_any_earlier_hit_skips_missing_encoder_then_changed_target_resumes() {
+            let (temp, mut condor, saved) = q13_fixture(&[3, 3], 4);
+            let config = condor.sequence_config.target_quality.as_mut().expect("TQ");
+            config.quantizer_range = (26, 38);
+            *config.metric.target_range_mut() = (20.0, 20.0);
+            condor.scenes[0].sequence_data.target_quality.passes[1].scores = vec![20.0; 2];
+            let prefix = serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
+                .expect("prefix");
+            let mut unavailable = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+            unavailable.set_executable(Some(temp.path().join("unavailable-custom-svt")));
+            unavailable.set_quantizer(30.0);
+            condor.scenes[0].encoder = unavailable.clone();
+            let sentinel = temp.path().join("Target Quality/4/00000.ivf");
+            std::fs::write(&sentinel, b"completed peer").expect("sentinel");
+            let first = q13_execute(&mut condor);
+            assert_eq!(
+                first.iter().map(|(pass, index, ..)| (*pass, *index)).collect::<Vec<_>>(),
+                [(4, 1)]
+            );
+            assert_eq!(
+                serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
+                    .expect("unchanged"),
+                prefix
+            );
+            assert_eq!(condor.scenes[0].encoder.quantizer(), Some(30.0));
+            assert_eq!(
+                std::fs::read(&sentinel).expect("no excluded cleanup"),
+                b"completed peer"
+            );
+            assert_eq!(saved.borrow().len(), 1);
+            let peer_history =
+                serde_json::to_vec(&condor.scenes[1].sequence_data.target_quality.passes)
+                    .expect("peer history");
+            let peer_output = temp.path().join("Target Quality/4/00001.mkv");
+            let peer_bytes = std::fs::read(&peer_output).expect("real peer output");
+            condor.scenes[0].encoder = condor.encoder.clone();
+            unavailable.set_quantizer(condor.scenes[1].encoder.quantizer().expect("measured q"));
+            condor.scenes[1].encoder = unavailable;
+            *condor
+                .sequence_config
+                .target_quality
+                .as_mut()
+                .expect("TQ")
+                .metric
+                .target_range_mut() = (0.0, 0.0);
+            let second = q13_execute(&mut condor);
+            assert_eq!(
+                second.iter().map(|(pass, index, ..)| (*pass, *index)).collect::<Vec<_>>(),
+                [(4, 0)]
+            );
+            assert_eq!(
+                condor.scenes[0].sequence_data.target_quality.passes.len(),
+                4
+            );
+            assert_eq!(
+                serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes[..3])
+                    .expect("retained old hit"),
+                prefix
+            );
+            assert_eq!(
+                serde_json::to_vec(&condor.scenes[1].sequence_data.target_quality.passes)
+                    .expect("over-budget peer"),
+                peer_history
+            );
+            assert_eq!(
+                std::fs::read(peer_output).expect("over-budget output"),
+                peer_bytes
+            );
+            assert_eq!(saved.borrow().len(), 2);
+            assert!(
+                first
+                    .iter()
+                    .chain(&second)
+                    .all(|(_, _, _, score)| score.is_finite() && *score > 20.0)
+            );
+            eprintln!(
+                "Q13 earlier middle hit excludes missing SVT; changed target resumes only that scene after its 3-record prefix, now-budget-complete missing peer excluded; progress={first:?}/{second:?}, saves=2"
+            );
+        }
+
+        #[test]
+        fn q13_execute_lowered_budget_preserves_history_without_scratch_or_extra_saves() {
+            let (temp, mut condor, saved) = q13_fixture(&[3, 1], 1);
+            let before = serde_json::to_vec(&condor.scenes).expect("scenes");
+            let no_work = temp.path().join("no-work");
+            condor.sequence_config.parallel_encoder.scenes_directory = no_work.clone();
+            assert!(q13_execute(&mut condor).is_empty());
+            assert_eq!(
+                serde_json::to_vec(&condor.scenes).expect("unchanged"),
+                before
+            );
+            assert!(saved.borrow().is_empty());
+            assert!(
+                !no_work.exists(),
+                "budget admission precedes scratch creation"
+            );
+            condor.scenes[0].encoder.set_quantizer(20.0);
+            assert!(q13_execute(&mut condor).is_empty());
+            assert_eq!(condor.scenes[0].encoder.quantizer(), Some(26.0));
+            assert!(q13_execute(&mut condor).is_empty());
+            assert_eq!(
+                saved.borrow().len(),
+                1,
+                "only changed measured-q restoration saves"
+            );
+            condor.sequence_config.parallel_encoder.scenes_directory = temp.path().to_owned();
+            condor.sequence_config.target_quality.as_mut().expect("TQ").maximum_probes = 2;
+            let raised = q13_execute(&mut condor);
+            assert_eq!(
+                raised.iter().map(|(pass, index, ..)| (*pass, *index)).collect::<Vec<_>>(),
+                [(2, 1)]
+            );
+            assert_eq!(
+                condor
+                    .scenes
+                    .iter()
+                    .map(|s| s.sequence_data.target_quality.passes.len())
+                    .collect::<Vec<_>>(),
+                [3, 2]
+            );
+            let original: Vec<Scene<DefaultSequenceData>> =
+                serde_json::from_slice(&before).expect("original scenes");
+            for (scene, old) in condor.scenes.iter().zip(original) {
+                let prefix = &scene.sequence_data.target_quality.passes
+                    [..old.sequence_data.target_quality.passes.len()];
+                assert_eq!(
+                    serde_json::to_vec(prefix).expect("prefix"),
+                    serde_json::to_vec(&old.sequence_data.target_quality.passes)
+                        .expect("original prefix")
+                );
+            }
+            assert_eq!(saved.borrow().len(), 2);
+            eprintln!(
+                "Q13 lowered max1 [3,1] no work/scratch/save, one changed-q restoration save only; raised max2 -> [3,2] with progress={raised:?}"
+            );
         }
 
         #[cfg(unix)]
