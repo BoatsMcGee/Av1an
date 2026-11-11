@@ -9,6 +9,22 @@
 | `statistic` | Object or string | Yes | `"Mean"` | Same variants as `probing.statistic` in [target-quality](./target-quality.md) |
 | `input` | Input object or null | Yes | `null` | Override input. Same shape as [condor.input](../input.md) |
 
+New measurements require a nonempty set with exactly one finite score per selected
+frame and a finite, defined statistic. Invalid batches are not attached or saved.
+Signed finite scores are allowed where defined. Harmonic gives `0` if any sample
+is zero; otherwise a non-finite or zero reciprocal sum is an error. With temporal
+CVVDP enabled, every ordered cumulative prefix must be finite and the final prefix
+is the scene result; other modes use the configured statistic.
+
+Saved QC score counts that differ from the current selection are remeasured, for
+example after changing profiles. The old record is kept if replacement measurement
+fails; only a fully valid replacement batch is attached and saved. A matching-count
+claimed record must still have finite values and a defined statistic; corruption is
+an error, not completion by count alone. The default empty record with zero
+timestamps is unmeasured. Count matching does not track settings provenance or
+migrate history. TQ instead rejects claimed history whose count no longer matches;
+see [target-quality](./target-quality.md).
+
 Example:
 
 ```json

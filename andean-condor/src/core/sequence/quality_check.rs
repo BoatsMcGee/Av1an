@@ -238,6 +238,7 @@ where
             .into_iter()
             .map(|(index, indices)| -> Result<Option<_>> {
                 if let Ok(data) = condor.scenes[index].sequence_data.get_quality_check()
+                    && data.quality.scores.len() == indices.len()
                     && !data.quality.is_unmeasured()
                 {
                     Self::validate_scene_scores(config, index, indices.len(), &data.quality.scores)

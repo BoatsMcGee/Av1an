@@ -32,8 +32,10 @@ interior steps are exhausted; equal quantizer bounds admit one probe. Steps are
 At exhaustion or `maximum_probes`, the final quantizer remains a measured probe:
 highest within the target range, otherwise closest to the target midpoint, with
 ties choosing the higher quantizer. The latter is a fallback, not a target hit.
-Existing saved histories are reused without pruning; these search changes do not
-alter the JSON shape.
+Only validated saved histories are reused, without pruning or changing the JSON
+shape. Every recorded TQ pass must match the current selected-frame count and have
+finite scores and a defined statistic; a mismatch or corrupt pass is an error
+before prediction or reuse. Settings changes do not automatically migrate history.
 
 - `VMAF`: `{ "target_range": [94.0, 96.0], "resolution": [w, h] or null, "scaler": <string>, "threads": <usize>, "model": <path> or null, "features": ["default"|"weighted"|"neg"|"motionless"|"uhd"] }`
 - `SSIMULACRA2`: `{ "target_range": [74.0, 76.0], "resolution": [w, h] or null, "threads": <u8> or null }` (default)
@@ -53,6 +55,17 @@ The rounded count is clamped to at least one frame and at most the scene length.
 scene ranges are errors, not empty measurements.
 
 `probing.statistic` variants: `"Mean"`, `"Median"`, `"Harmonic"`, `{ "Percentile": <f64> }`, `{ "StandardDeviationDistance": { "sigma": <f64> } }`, `"Mode"`, `"Minimum"`, `"Maximum"`, `"RootMeanSquare"`.
+
+Measured sets must be nonempty, contain exactly one finite score per selected
+frame, and produce a finite, defined statistic. Incomplete or invalid batches are
+not attached or saved. Percentile parameters must be finite and within `0..=100`;
+`sigma` must be finite. Signed finite scores are allowed where the statistic is
+defined. Harmonic gives `0` if any sample is zero; otherwise a non-finite or zero
+reciprocal sum is an error (`[1, -1]` is undefined; `[-1, 2]` gives `-4`).
+
+With temporal CVVDP enabled, scores are ordered cumulative prefixes: every prefix
+must be finite, and the final prefix is the scene result, not a sorted or averaged
+prefix. With temporal CVVDP disabled, the configured statistic applies normally.
 
 CLI `--profile` presets: `fast` (mean of middle 11 frames), `standard` (RMS of middle 25%), `slow` (10th percentile of all frames).
 

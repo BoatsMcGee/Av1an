@@ -233,6 +233,190 @@ fn q05_qc_execute_corrupt_last_scene_does_not_attach_save_or_complete() {
 }
 
 #[test]
+fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
+    native_children(
+        "core::sequence::m27a_tests::q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements",
+        &[
+            ("m27a-f-qc", ""),
+            ("m27a-v-qc", ""),
+            ("m27a-f-qc", "q05-last"),
+            ("m27a-v-qc", "q05-last"),
+        ],
+        || {
+            use crate::{
+                core::{Condor, input::Input, output::Output, sequence::Sequence},
+                models::{
+                    input::{ImportMethod, Input as InputModel},
+                    scene::Scene,
+                    sequence::{
+                        DefaultSequenceConfig, DefaultSequenceData,
+                        quality_check::QualityCheckConfig,
+                        target_quality::types::{MeasurementError, QualityPass},
+                    },
+                },
+            };
+            let source = y4m_fixture(&[32, 48, 64, 80, 96, 112]);
+            let output = y4m_fixture(&[40, 56, 72, 88, 104, 120]);
+            let saved = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let make_condor = |first: Vec<f64>, second: Vec<f64>, statistic, disabled| {
+                let input = Input::from_video(&InputModel::Video {
+                    path: source.path().to_owned(),
+                    import_method: ImportMethod::FFMS2 {
+                        index: None,
+                        cache_path: None,
+                    },
+                    filters: vec![],
+                })
+                .unwrap();
+                let scenes = [(0, 2), (4, 6)]
+                    .into_iter()
+                    .zip([first, second])
+                    .map(|((start_frame, end_frame), scores)| {
+                        let mut sequence_data = DefaultSequenceData::default();
+                        sequence_data.quality_check.quality = QualityPass {
+                            scores,
+                            started_on: 100,
+                            completed_on: 200,
+                            ..Default::default()
+                        };
+                        Scene {
+                            start_frame,
+                            end_frame,
+                            sub_scenes: None,
+                            encoder: Default::default(),
+                            sequence_data,
+                        }
+                    })
+                    .collect();
+                let saved = std::rc::Rc::clone(&saved);
+                Condor::new(
+                    input,
+                    Output {
+                        path: output.path().to_owned(),
+                        tags: Default::default(),
+                        video_tags: Default::default(),
+                    },
+                    Default::default(),
+                    scenes,
+                    Some(DefaultSequenceConfig {
+                        quality_check: Some(QualityCheckConfig {
+                            metric: metric(disabled),
+                            statistic,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    Box::new(move |data| {
+                        saved.borrow_mut().push(serde_json::to_vec(&data.scenes)?);
+                        Ok(())
+                    }),
+                )
+            };
+
+            // Matching counts still claim completion, so corruption must fail before scoring.
+            for scores in [vec![1.0, f64::NAN], vec![1.0, -1.0]] {
+                let mut condor =
+                    make_condor(scores, vec![10.0; 3], ProbeStatistic::Harmonic, Some(true));
+                let before = serde_json::to_vec(&condor.scenes).unwrap();
+                let (tx, rx) = mpsc::channel();
+                clear();
+                let error = QualityCheck::default()
+                    .execute(&mut condor, tx, Arc::new(AtomicBool::new(false)))
+                    .expect_err("matching-count corrupt history is not eligible for silent reuse");
+                assert!(error.is::<MeasurementError>(), "{error:#}");
+                assert!(format!("{error:#}").contains("recorded Quality Check history"));
+                assert!(
+                    calls().is_empty(),
+                    "no native scorer work for corrupt matching history"
+                );
+                assert!(saved.borrow().is_empty() && rx.try_iter().next().is_none());
+                assert_eq!(serde_json::to_vec(&condor.scenes).unwrap(), before);
+            }
+
+            // Both shorter and longer saved selections are stale, not completed current work.
+            let mut condor = make_condor(vec![10.0], vec![20.0; 3], ProbeStatistic::Mean, None);
+            let before = serde_json::to_vec(&condor.scenes).unwrap();
+            let (tx, rx) = mpsc::channel();
+            clear();
+            let result =
+                QualityCheck::default().execute(&mut condor, tx, Arc::new(AtomicBool::new(false)));
+            let reported = rx
+                .try_iter()
+                .map(|event| match event {
+                    SequenceStatus::Subprocess {
+                        child:
+                            Status::Processing {
+                                completion: SequenceCompletion::FrameScore { frame, score },
+                                ..
+                            },
+                        ..
+                    } => {
+                        assert!(score.is_finite());
+                        (frame, score)
+                    },
+                    other => panic!("unexpected completion/invalid event: {other:?}"),
+                })
+                .collect::<Vec<_>>();
+            let failed = !std::env::var("M15_FAIL").unwrap().is_empty();
+            if failed {
+                let error = result.expect_err("invalid replacement remains terminal");
+                assert!(
+                    error.is::<MeasurementError>() && error.is::<metrics::SceneScoringStarted>(),
+                    "{error:#}"
+                );
+                assert_eq!(
+                    serde_json::to_vec(&condor.scenes).unwrap(),
+                    before,
+                    "retain old records until the entire replacement is admitted"
+                );
+                assert!(
+                    saved.borrow().is_empty(),
+                    "failed replacement must not save"
+                );
+            } else {
+                let ((), warnings) = result.expect("stale saved counts must be remeasured");
+                assert!(warnings.is_empty());
+                // The ABI double sees RGB on Fmetrics and YUV on Vship; this test
+                // checks selection/attachment, not pixel conversion or metric math.
+                for (scene, values) in condor.scenes.iter().zip(reported.as_chunks::<2>().0) {
+                    let pass = &scene.sequence_data.quality_check.quality;
+                    assert_eq!(
+                        pass.scores,
+                        values.iter().map(|(_, score)| *score).collect::<Vec<_>>(),
+                        "attach each scene's fresh native results in selection order"
+                    );
+                    assert!(pass.started_on > 200 && pass.completed_on >= pass.started_on);
+                }
+                assert_eq!(
+                    *saved.borrow(),
+                    [serde_json::to_vec(&condor.scenes).unwrap()],
+                    "one save of the admitted replacement, not stale records"
+                );
+            }
+            let frames = reported.iter().map(|(frame, _)| *frame).collect::<Vec<_>>();
+            assert_eq!(
+                frames,
+                if failed {
+                    vec![0, 1, 4]
+                } else {
+                    vec![0, 1, 4, 5]
+                }
+            );
+            let p = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+                "f"
+            } else {
+                "v"
+            };
+            assert_eq!(
+                calls(),
+                format!("{p}c+\n{p}p\n{p}p\n{p}c-\n{p}c+\n{p}p\n{p}p\n{p}c-\n"),
+                "all selected pairs attempted and both scene sessions released"
+            );
+        },
+    );
+}
+
+#[test]
 fn m27a_native_scene_consumers() {
     native_children(
         "core::sequence::m27a_tests::m27a_native_scene_consumers",
