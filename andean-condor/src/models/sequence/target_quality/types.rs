@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum::{Display, EnumString, IntoStaticStr};
@@ -15,6 +15,51 @@ pub static DEFAULT_SSIMULACRA2_TARGET_RANGE: (f64, f64) = (74.0, 76.0);
 pub static DEFAULT_BUTTERAUGLI_TARGET_RANGE: (f64, f64) = (0.8, 1.2);
 pub static DEFAULT_XPSNR_TARGET_RANGE: (f64, f64) = (44.0, 46.0);
 pub static DEFAULT_CVVDP_TARGET_RANGE: (f64, f64) = (9.4, 9.6);
+
+/// Invalid measurement data, distinct from an unavailable or failed backend.
+#[derive(Debug, thiserror::Error)]
+pub enum MeasurementError {
+    #[error("empty score set")]
+    Empty,
+    #[error("expected {expected} scores, got {actual}")]
+    Count { expected: usize, actual: usize },
+    #[error("non-finite score at position {position}: {value}")]
+    NonFinite { position: usize, value: f64 },
+    #[error("score position {position} is outside the {expected} selected frames")]
+    Position { position: usize, expected: usize },
+    #[error("no metric value at position {position}")]
+    Missing { position: usize },
+    #[error("invalid statistic: {0}")]
+    Statistic(&'static str),
+    #[error("non-finite recorded {0}")]
+    Record(&'static str),
+}
+
+pub(crate) fn validate_score(value: f64, position: usize) -> Result<()> {
+    ensure!(
+        value.is_finite(),
+        MeasurementError::NonFinite { position, value }
+    );
+    Ok(())
+}
+
+/// Admit a nonempty finite set, optionally requiring an exact selection count.
+pub(crate) fn validate_scores(scores: &[f64], expected: Option<usize>) -> Result<()> {
+    if let Some(expected) = expected {
+        ensure!(
+            scores.len() == expected,
+            MeasurementError::Count {
+                expected,
+                actual: scores.len()
+            }
+        );
+    }
+    ensure!(!scores.is_empty(), MeasurementError::Empty);
+    for (position, &value) in scores.iter().enumerate() {
+        validate_score(value, position)?;
+    }
+    Ok(())
+}
 
 #[derive(
     Debug,
@@ -138,13 +183,20 @@ impl QualityMetric {
     }
 
     /// Reduce one ordered session: cumulative CVVDP uses its final prefix, all
-    /// other modes use the configured statistic. Empty cumulative input is NaN.
+    /// other modes use the configured statistic. Rejects empty/non-finite input
+    /// (including every cumulative prefix), invalid configuration and undefined
+    /// or non-finite reductions. Cumulative prefixes are never sorted.
     #[inline]
-    pub fn calculate_score(&self, statistic: ProbeStatistic, scores: &[f64]) -> f64 {
+    pub fn calculate_score(&self, statistic: ProbeStatistic, scores: &[f64]) -> Result<f64> {
+        validate_scores(scores, None)
+            .with_context(|| format!("{} measurement", self.friendly_name()))?;
+        statistic.validate()?;
         if self.is_cumulative() {
-            scores.last().copied().unwrap_or(f64::NAN)
+            Ok(scores[scores.len() - 1])
         } else {
-            statistic.calculate(scores)
+            statistic
+                .calculate(scores)
+                .with_context(|| format!("{} statistic", self.friendly_name()))
         }
     }
 
@@ -335,11 +387,34 @@ pub enum ProbeStatistic {
 }
 
 impl ProbeStatistic {
+    pub(crate) fn validate(&self) -> Result<()> {
+        match self {
+            Self::Percentile(p) => ensure!(
+                p.is_finite() && (0.0..=100.0).contains(p),
+                MeasurementError::Statistic("percentile must be finite and within 0..=100")
+            ),
+            Self::StandardDeviationDistance { sigma } => ensure!(
+                sigma.is_finite(),
+                MeasurementError::Statistic("sigma must be finite")
+            ),
+            _ => (),
+        }
+        Ok(())
+    }
+
+    /// Reduce a nonempty set of finite scores, preserving signed values.
+    ///
+    /// # Errors
+    /// Rejects invalid percentile/sigma configuration, undefined harmonic means
+    /// and non-finite arithmetic. Any zero sample makes the harmonic mean zero;
+    /// otherwise its reciprocal sum must be finite and nonzero.
     #[inline]
-    pub fn calculate(&self, scores: &[f64]) -> f64 {
+    pub fn calculate(&self, scores: &[f64]) -> Result<f64> {
+        self.validate()?;
+        validate_scores(scores, None)?;
         let mut scores = scores.to_vec();
         scores.sort_by(f64::total_cmp);
-        match self {
+        let result = match self {
             ProbeStatistic::Mean => {
                 scores.iter().fold(0.0, |acc, score| acc + score) / scores.len() as f64
             },
@@ -352,16 +427,26 @@ impl ProbeStatistic {
                 }
             },
             ProbeStatistic::Harmonic => {
-                let sum_reciprocals: f64 = scores.iter().map(|&x| 1.0 / x).sum();
-                scores.len() as f64 / sum_reciprocals
+                if scores.contains(&0.0) {
+                    0.0
+                } else {
+                    let sum_reciprocals: f64 = scores.iter().map(|&x| 1.0 / x).sum();
+                    ensure!(
+                        sum_reciprocals.is_finite() && sum_reciprocals != 0.0,
+                        MeasurementError::Statistic(
+                            "harmonic reciprocal sum must be finite and nonzero"
+                        )
+                    );
+                    scores.len() as f64 / sum_reciprocals
+                }
             },
             ProbeStatistic::Percentile(index) => *scores
                 .get((*index / 100.0 * scores.len() as f64) as usize)
                 .unwrap_or(&scores[0]),
             ProbeStatistic::StandardDeviationDistance { sigma } => {
-                let average = ProbeStatistic::Mean.calculate(&scores);
-                let minimum = ProbeStatistic::Minimum.calculate(&scores);
-                let maximum = ProbeStatistic::Maximum.calculate(&scores);
+                let average = ProbeStatistic::Mean.calculate(&scores)?;
+                let minimum = ProbeStatistic::Minimum.calculate(&scores)?;
+                let maximum = ProbeStatistic::Maximum.calculate(&scores)?;
                 let variance = scores
                     .iter()
                     .map(|x| {
@@ -370,7 +455,12 @@ impl ProbeStatistic {
                     })
                     .sum::<f64>()
                     / scores.len() as f64;
-                (average + (sigma * variance.sqrt())).clamp(minimum, maximum)
+                let distance = average + (sigma * variance.sqrt());
+                ensure!(
+                    variance.is_finite() && distance.is_finite(),
+                    MeasurementError::Statistic("non-finite variance or sigma distance")
+                );
+                distance.clamp(minimum, maximum)
             },
             ProbeStatistic::Mode => {
                 let mut counts = HashMap::new();
@@ -379,25 +469,24 @@ impl ProbeStatistic {
                     let rounded_score = score.round() as i32;
                     *counts.entry(rounded_score).or_insert(0) += 1;
                 }
-                let max_count = counts.values().copied().max().unwrap_or(0);
+                let max_count = counts.values().copied().max().ok_or(MeasurementError::Empty)?;
                 *scores
                     .iter()
                     .find(|score| counts[&(score.round() as i32)] == max_count)
-                    .unwrap_or(&0.0)
+                    .ok_or(MeasurementError::Empty)?
             },
-            ProbeStatistic::Minimum => *scores
-                .iter()
-                .min_by(|a, b| a.partial_cmp(b).expect("should not have NaN in scores set"))
-                .unwrap_or(&0.0),
-            ProbeStatistic::Maximum => *scores
-                .iter()
-                .max_by(|a, b| a.partial_cmp(b).expect("should not have NaN in scores set"))
-                .unwrap_or(&0.0),
+            ProbeStatistic::Minimum => scores[0],
+            ProbeStatistic::Maximum => scores[scores.len() - 1],
             ProbeStatistic::RootMeanSquare => {
                 let sum_of_squares: f64 = scores.iter().map(|&x| x * x).sum();
                 (sum_of_squares / scores.len() as f64).sqrt()
             },
-        }
+        };
+        ensure!(
+            result.is_finite(),
+            MeasurementError::Statistic("non-finite reduction result")
+        );
+        Ok(result)
     }
 }
 
@@ -410,6 +499,14 @@ pub struct QualityPass {
     pub started_on: u128,
     /// Must be in milliseconds since UNIX Epoch
     pub completed_on: u128,
+}
+
+impl QualityPass {
+    /// QC's initial record is not a claimed measurement. TQ history is always claimed.
+    #[inline]
+    pub fn is_unmeasured(&self) -> bool {
+        self.scores.is_empty() && self.started_on == 0 && self.completed_on == 0
+    }
 }
 
 impl Default for QualityPass {
@@ -430,6 +527,140 @@ mod tests {
     use super::{
         ProbeStatistic, ProbeStrategy, QualityMetric, SubsetProbeLength, SubsetProbePosition,
     };
+
+    #[test]
+    fn q05_statistics_reject_empty_and_nonfinite() {
+        for statistic in [
+            ProbeStatistic::Mean,
+            ProbeStatistic::Median,
+            ProbeStatistic::Harmonic,
+            ProbeStatistic::Percentile(50.0),
+            ProbeStatistic::StandardDeviationDistance { sigma: 1.0 },
+            ProbeStatistic::Mode,
+            ProbeStatistic::Minimum,
+            ProbeStatistic::Maximum,
+            ProbeStatistic::RootMeanSquare,
+        ] {
+            for scores in
+                [vec![], vec![1.0, f64::NAN], vec![f64::INFINITY], vec![f64::NEG_INFINITY]]
+            {
+                let result = std::panic::catch_unwind(|| statistic.calculate(&scores));
+                assert!(
+                    matches!(result, Ok(Err(_))),
+                    "{statistic:?}/{scores:?}: {result:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn q05_undefined_and_overflow_statistics_are_errors() {
+        for (statistic, scores) in [
+            (ProbeStatistic::Harmonic, vec![1.0, -1.0]),
+            (ProbeStatistic::Harmonic, vec![f64::from_bits(1)]),
+            (ProbeStatistic::Mean, vec![f64::MAX, f64::MAX]),
+            (ProbeStatistic::RootMeanSquare, vec![f64::MAX]),
+            (
+                ProbeStatistic::StandardDeviationDistance { sigma: 1.0 },
+                vec![-f64::MAX, f64::MAX],
+            ),
+            (
+                ProbeStatistic::StandardDeviationDistance { sigma: f64::MAX },
+                vec![-2.0, 2.0],
+            ),
+        ] {
+            assert!(
+                statistic.calculate(&scores).is_err(),
+                "{statistic:?}/{scores:?}"
+            );
+        }
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 101.0] {
+            assert!(ProbeStatistic::Percentile(value).calculate(&[1.0]).is_err());
+        }
+        for sigma in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(ProbeStatistic::StandardDeviationDistance { sigma }.calculate(&[1.0]).is_err());
+        }
+    }
+
+    #[test]
+    fn q05_finite_statistics_preserve_conventions() {
+        for (statistic, expected) in [
+            (ProbeStatistic::Mean, 0.5),
+            (ProbeStatistic::Median, 0.5),
+            (ProbeStatistic::Harmonic, -4.0),
+            (ProbeStatistic::Percentile(50.0), 2.0),
+            (
+                ProbeStatistic::StandardDeviationDistance { sigma: -1.0 },
+                -1.0,
+            ),
+            (ProbeStatistic::Mode, -1.0),
+            (ProbeStatistic::Minimum, -1.0),
+            (ProbeStatistic::Maximum, 2.0),
+            (ProbeStatistic::RootMeanSquare, 2.5_f64.sqrt()),
+        ] {
+            assert_eq!(
+                statistic.calculate(&[-1.0, 2.0]).expect("signed finite input"),
+                expected
+            );
+        }
+        for statistic in [
+            ProbeStatistic::Mean,
+            ProbeStatistic::Median,
+            ProbeStatistic::Harmonic,
+            ProbeStatistic::Percentile(50.0),
+            ProbeStatistic::StandardDeviationDistance { sigma: -1.0 },
+            ProbeStatistic::Mode,
+            ProbeStatistic::Minimum,
+            ProbeStatistic::Maximum,
+        ] {
+            assert_eq!(statistic.calculate(&[-2.0]).expect("singleton"), -2.0);
+        }
+        assert_eq!(
+            ProbeStatistic::RootMeanSquare.calculate(&[-2.0]).expect("RMS"),
+            2.0
+        );
+        assert_eq!(
+            ProbeStatistic::Mean.calculate(&[-1.0, 2.0]).expect("mean"),
+            0.5
+        );
+        assert_eq!(
+            ProbeStatistic::Harmonic.calculate(&[-1.0, 2.0]).expect("signed harmonic"),
+            -4.0
+        );
+        assert_eq!(
+            ProbeStatistic::Harmonic.calculate(&[0.0, 1.0, -1.0]).expect("zero wins"),
+            0.0
+        );
+    }
+
+    #[test]
+    fn q05_temporal_admission_checks_every_prefix_without_sorting() {
+        let metric = QualityMetric::CVVDP {
+            target_range: (0.0, 10.0),
+            resolution: None,
+            display_model: None,
+            resize_to_display: None,
+            disable_temporal: None,
+            gpu_id: None,
+        };
+        for scores in [
+            vec![],
+            vec![f64::NAN, 4.0],
+            vec![f64::INFINITY, 4.0],
+            vec![f64::NEG_INFINITY, 4.0],
+        ] {
+            assert!(
+                metric.calculate_score(ProbeStatistic::Mean, &scores).is_err(),
+                "{scores:?}"
+            );
+        }
+        let scores = [2.0, 9.0, 4.0];
+        assert_eq!(
+            metric.calculate_score(ProbeStatistic::Maximum, &scores).expect("final"),
+            4.0
+        );
+        assert_eq!(scores, [2.0, 9.0, 4.0]);
+    }
 
     #[test]
     fn q01_percentage_selects_scene_fraction() {
@@ -546,7 +777,7 @@ mod tests {
                 (ProbeStatistic::Minimum, 2.0),
                 (ProbeStatistic::Maximum, 9.0),
             ] {
-                let score = metric.calculate_score(statistic, &scores);
+                let score = metric.calculate_score(statistic, &scores).expect("score");
                 assert_eq!(
                     score,
                     if disabled == Some(true) {
@@ -557,11 +788,11 @@ mod tests {
                 );
                 assert_eq!(metric.score_within_target(score), disabled != Some(true));
                 assert_eq!(
-                    QualityMetric::default().calculate_score(statistic, &scores),
+                    QualityMetric::default().calculate_score(statistic, &scores).expect("score"),
                     independent
                 );
                 if disabled != Some(true) {
-                    assert!(metric.calculate_score(statistic, &[]).is_nan());
+                    assert!(metric.calculate_score(statistic, &[]).is_err());
                 }
             }
         }

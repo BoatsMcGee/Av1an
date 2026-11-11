@@ -45,6 +45,194 @@ fn clear() {
 }
 
 #[test]
+fn q05_native_invalid_values_are_terminal_before_callbacks() {
+    native_children(
+        "core::sequence::m27a_tests::q05_native_invalid_values_are_terminal_before_callbacks",
+        &[
+            ("m27a-f-tq", "q05-nan"),
+            ("m27a-f-tq", "q05-inf"),
+            ("m27a-f-tq", "q05-neginf"),
+            ("m27a-v-tq", "q05-nan"),
+            ("m27a-v-tq", "q05-inf"),
+            ("m27a-v-tq", "q05-neginf"),
+        ],
+        || {
+            let engine = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+                Engine::Fmetrics
+            } else {
+                Engine::Vship
+            };
+            let (tx, rx) = mpsc::channel();
+            let (compare, relay) = super::quality_check::spawn_compare_progress(tx);
+            clear();
+            let native = TargetQuality::score_native_scenes(
+                engine,
+                &mut decoder(&[1, 2]),
+                &mut decoder(&[10, 20]),
+                &metric(None),
+                &[&[0, 1]],
+                &compare,
+                &AtomicBool::new(false),
+            );
+            let error = TargetQuality::route_compare_scores(
+                Some(native),
+                Some(engine),
+                &metric(None),
+                compare,
+                relay,
+                |_| panic!("corrupt native result retried plugin"),
+                |_| Ok(()),
+            )
+            .expect_err("corrupt native score must fail");
+            assert!(format!("{error:#}").contains("non-finite"), "{error:#}");
+            assert!(
+                rx.try_iter().next().is_none(),
+                "invalid value must not publish progress/completion"
+            );
+            let p = if engine == Engine::Fmetrics { "f" } else { "v" };
+            assert_eq!(calls(), format!("{p}c+\n{p}p\n{p}c-\n"));
+            if engine == Engine::Fmetrics {
+                let butteraugli = QualityMetric::BUTTERAUGLI {
+                    target_range: (0.0, 1.0),
+                    resolution: None,
+                    threads: None,
+                    intensity_multiplier: None,
+                    norm: Some(3),
+                    gpu_id: None,
+                };
+                let (tx, _rx) = mpsc::channel();
+                let (compare, relay) = super::quality_check::spawn_compare_progress(tx);
+                let native = TargetQuality::score_native_scenes(
+                    engine,
+                    &mut decoder(&[1]),
+                    &mut decoder(&[10]),
+                    &butteraugli,
+                    &[&[0]],
+                    &compare,
+                    &AtomicBool::new(false),
+                );
+                let error = TargetQuality::route_compare_scores(
+                    Some(native),
+                    Some(engine),
+                    &butteraugli,
+                    compare,
+                    relay,
+                    |_| panic!("native-rejected nonfinite Butteraugli retried plugin"),
+                    |_| Ok(()),
+                )
+                .expect_err("corrupt native Butteraugli");
+                assert!(
+                    error.is::<av_metrics_fmetrics::FmetricsError>(),
+                    "retain original typed cause: {error:#}"
+                );
+                assert!(
+                    error.is::<crate::models::sequence::target_quality::types::MeasurementError>(),
+                    "tag native-rejected corruption: {error:#}"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn q05_qc_execute_corrupt_last_scene_does_not_attach_save_or_complete() {
+    native_children(
+        "core::sequence::m27a_tests::q05_qc_execute_corrupt_last_scene_does_not_attach_save_or_complete",
+        &[("m27a-f-qc", "q05-last"), ("m27a-v-qc", "q05-last")],
+        || {
+            use crate::{
+                core::{Condor, input::Input, output::Output, sequence::Sequence},
+                models::{
+                    input::{ImportMethod, Input as InputModel},
+                    scene::Scene,
+                    sequence::{
+                        DefaultSequenceConfig, DefaultSequenceData,
+                        quality_check::QualityCheckConfig,
+                    },
+                },
+            };
+            let source = y4m_fixture(&[32, 48, 64, 80, 96, 112]);
+            let output = y4m_fixture(&[40, 56, 72, 88, 104, 120]);
+            let input = Input::from_video(&InputModel::Video {
+                path: source.path().to_owned(),
+                import_method: ImportMethod::FFMS2 {
+                    index: None,
+                    cache_path: None,
+                },
+                filters: vec![],
+            })
+            .unwrap();
+            let scenes = [(0, 2), (4, 6)]
+                .into_iter()
+                .map(|(start_frame, end_frame)| Scene {
+                    start_frame,
+                    end_frame,
+                    sub_scenes: None,
+                    encoder: Default::default(),
+                    sequence_data: DefaultSequenceData::default(),
+                })
+                .collect::<Vec<_>>();
+            let before = serde_json::to_value(&scenes).unwrap();
+            let saves = std::rc::Rc::new(std::cell::Cell::new(0));
+            let saved = std::rc::Rc::clone(&saves);
+            let mut condor = Condor::new(
+                input,
+                Output {
+                    path: output.path().to_owned(),
+                    tags: Default::default(),
+                    video_tags: Default::default(),
+                },
+                Default::default(),
+                scenes,
+                Some(DefaultSequenceConfig {
+                    quality_check: Some(QualityCheckConfig {
+                        metric: metric(None),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                Box::new(move |_| {
+                    saved.set(saved.get() + 1);
+                    Ok(())
+                }),
+            );
+            let (tx, rx) = mpsc::channel();
+            clear();
+            let error = QualityCheck::default()
+                .execute(&mut condor, tx, Arc::new(AtomicBool::new(false)))
+                .expect_err("invalid last scene");
+            assert!(
+                error.is::<crate::models::sequence::target_quality::types::MeasurementError>(),
+                "{error:#}"
+            );
+            assert!(
+                error.is::<metrics::SceneScoringStarted>(),
+                "earlier valid frames were reported"
+            );
+            assert!(format!("{error:#}").contains("scene 1"));
+            assert_eq!(serde_json::to_value(&condor.scenes).unwrap(), before);
+            assert_eq!(saves.get(), 0);
+            let events = rx.try_iter().collect::<Vec<_>>();
+            assert_eq!(
+                events.len(),
+                3,
+                "three valid frame callbacks, no invalid frame or completion"
+            );
+            assert!(events.iter().all(|event| matches!(event, SequenceStatus::Subprocess { child: Status::Processing { completion: SequenceCompletion::FrameScore { score, .. }, .. }, .. } if score.is_finite())));
+            let p = if std::env::var("M15_SCOPE").unwrap().contains("-f-") {
+                "f"
+            } else {
+                "v"
+            };
+            assert_eq!(
+                calls(),
+                format!("{p}c+\n{p}p\n{p}p\n{p}c-\n{p}c+\n{p}p\n{p}p\n{p}c-\n")
+            );
+        },
+    );
+}
+
+#[test]
 fn m27a_native_scene_consumers() {
     native_children(
         "core::sequence::m27a_tests::m27a_native_scene_consumers",
@@ -403,6 +591,7 @@ fn tq_caller(test: &str, cancel: bool) {
                 compare,
                 relay,
                 |_| panic!("native partial failure/cancel retried a plugin"),
+                |_| Ok(()),
             );
             if cancel {
                 assert!(result.expect("cancel is an incomplete pass").is_none());
@@ -462,7 +651,8 @@ fn m27a_temporal_relay_disconnect_is_advisory() {
             &metric(None),
             compare,
             relay,
-            |_| panic!("successful native compare retried plugin")
+            |_| panic!("successful native compare retried plugin"),
+            |_| Ok(())
         )
         .unwrap(),
         Some(vec![7.0])
@@ -481,12 +671,16 @@ fn m27a_temporal_relay_disconnect_is_advisory() {
             |_| {
                 attempts += 1;
                 Ok(vec![8.0])
-            }
+            },
+            |_| Ok(())
         )
         .unwrap(),
         Some(vec![8.0])
     );
     assert_eq!(attempts, 1);
+    assert!(
+        matches!(rx.try_recv(), Ok(SequenceStatus::Whole(Status::Completed { id })) if id == "Compare")
+    );
     assert!(rx.try_iter().next().is_none());
     // Independent-frame CVVDP keeps its previous fatal relay-send policy.
     let (tx, rx) = mpsc::channel();
@@ -499,6 +693,7 @@ fn m27a_temporal_relay_disconnect_is_advisory() {
         compare,
         relay,
         |_| panic!("independent native compare retried plugin"),
+        |_| Ok(()),
     )
     .unwrap_err();
     assert!(error.is::<mpsc::SendError<SequenceStatus>>());
@@ -540,8 +735,13 @@ fn m27a_tq_plugin_cancel_after_relay_cleanup_is_incomplete() {
         let (tx, rx) = mpsc::channel();
         let receiver = (!closed).then_some(rx);
         let (compare, relay) = super::quality_check::spawn_compare_progress(tx);
-        let result =
-            TargetQuality::route_compare_scores(None, None, &metric(None), compare, relay, |tx| {
+        let result = TargetQuality::route_compare_scores(
+            None,
+            None,
+            &metric(None),
+            compare,
+            relay,
+            |tx| {
                 let _ = tx.send(SequenceStatus::Whole(Status::Processing {
                     id: "CVVDP".to_owned(),
                     completion: SequenceCompletion::Frames {
@@ -550,7 +750,9 @@ fn m27a_tq_plugin_cancel_after_relay_cleanup_is_incomplete() {
                     },
                 }));
                 Err(metrics::probe::Cancelled.into())
-            });
+            },
+            |_| Ok(()),
+        );
         assert!(result.expect("plugin cancel remains incomplete after cleanup").is_none());
         if let Some(receiver) = receiver {
             assert!(matches!(
@@ -617,6 +819,7 @@ fn m27a_temporal_finalization_waits_for_relay_and_retains_genuine_errors() {
                 compare,
                 relay,
                 |_| panic!("cancel retried plugin"),
+                |_| Ok(()),
             )
         }))
         .is_err()
@@ -823,15 +1026,15 @@ fn native_consumers(engine: Engine) {
                     let mut model = metric(disabled);
                     *model.target_range_mut() = (final_score - 0.5, final_score + 0.5);
                     assert_eq!(
-                        model.calculate_score(ProbeStatistic::Mean, scores),
+                        model.calculate_score(ProbeStatistic::Mean, scores).expect("score"),
                         final_score
                     );
-                    assert!(
-                        model.score_within_target(
-                            model.calculate_score(ProbeStatistic::Mean, scores)
-                        )
-                    );
-                    assert!(!model.score_within_target(ProbeStatistic::Mean.calculate(scores)));
+                    assert!(model.score_within_target(
+                        model.calculate_score(ProbeStatistic::Mean, scores).expect("score")
+                    ));
+                    assert!(!model.score_within_target(
+                        ProbeStatistic::Mean.calculate(scores).expect("mean")
+                    ));
                 }
                 let progress: Vec<_> = rx.try_iter().collect();
                 if qc {
@@ -1014,11 +1217,15 @@ fn native_consumers(engine: Engine) {
     .unwrap();
     assert_eq!(values, [31.0, 62.0, 155.0, 186.0]);
     assert_eq!(
-        metric(Some(true)).calculate_score(ProbeStatistic::Mean, &values[..2]),
+        metric(Some(true))
+            .calculate_score(ProbeStatistic::Mean, &values[..2])
+            .expect("score"),
         46.5
     );
     assert_eq!(
-        metric(Some(true)).calculate_score(ProbeStatistic::Mean, &values[2..]),
+        metric(Some(true))
+            .calculate_score(ProbeStatistic::Mean, &values[2..])
+            .expect("score"),
         170.5
     );
     assert_eq!(
@@ -1040,7 +1247,8 @@ fn native_consumers(engine: Engine) {
         |_, _| {},
     );
     if engine == Engine::Fmetrics {
-        assert!(values.unwrap_err().to_string().contains("history-only"));
+        let error = values.unwrap_err();
+        assert!(format!("{error:#}").contains("history-only"), "{error:#}");
         assert_eq!(calls(), "");
     } else {
         assert_eq!(values.unwrap(), [31.0, 403.0, 155.0, 156736.0]);

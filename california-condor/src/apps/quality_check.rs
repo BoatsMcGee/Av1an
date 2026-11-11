@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::{collections::BTreeMap, io::IsTerminal};
 
 use andean_condor::{
@@ -7,7 +8,7 @@ use andean_condor::{
     },
     models::{
         scene::Scene,
-        sequence::target_quality::types::{ProbeStatistic, QualityMetric},
+        sequence::target_quality::types::{MeasurementError, ProbeStatistic, QualityMetric},
     },
 };
 use ratatui::{
@@ -183,8 +184,9 @@ impl TuiApp for QualityCheckApp {
     fn after_loop(&mut self) {
         if self.cached_state.frames_compared == self.cached_state.total_frames
             && !self.cached_state.scene_scores.is_empty()
+            && let Err(error) = self.print_report()
         {
-            self.print_report();
+            eprintln!("Quality Check report failed: {error:#}");
         }
     }
 
@@ -275,12 +277,14 @@ impl TuiApp for QualityCheckApp {
 }
 
 impl QualityCheckApp {
+    /// Build the initial screen, leaving default unmeasured records empty.
+    /// Returns an error for corrupt claimed measurements or undefined reductions.
     pub fn new(
         clip_info: ClipInfo,
         scenes: &[Scene<CliSequenceData>],
         metric: QualityMetric,
         statistic: ProbeStatistic,
-    ) -> QualityCheckApp {
+    ) -> anyhow::Result<QualityCheckApp> {
         let scores: BTreeMap<u64, Vec<f64>> = scenes
             .iter()
             .enumerate()
@@ -293,14 +297,18 @@ impl QualityCheckApp {
             .collect();
         let scene_scores: BTreeMap<u64, f64> = scores
             .iter()
-            .filter_map(|(index, scores)| {
-                if scores.is_empty() {
-                    None
-                } else {
-                    Some((*index, metric.calculate_score(statistic, scores)))
-                }
+            .filter(|(index, _)| {
+                !scenes[**index as usize].sequence_data.quality_check.quality.is_unmeasured()
             })
-            .collect();
+            .map(|(index, scores)| {
+                Ok((
+                    *index,
+                    metric
+                        .calculate_score(statistic, scores)
+                        .with_context(|| format!("recorded Quality Check scene {index} pass 1"))?,
+                ))
+            })
+            .collect::<anyhow::Result<_>>()?;
         let scene_details: BTreeMap<u64, SceneReportDetails> = scenes
             .iter()
             .enumerate()
@@ -316,6 +324,15 @@ impl QualityCheckApp {
             .collect();
         let total_frames = scores.values().fold(0, |acc, scores| acc + scores.len() as u64);
         let frame_scores: Vec<f64> = scores.into_values().flatten().collect();
+        Self::compute_stats(
+            &scene_scores.values().copied().collect::<Vec<_>>(),
+            metric.is_inverse_metric(),
+        )
+        .context("recorded Quality Check scene report")?;
+        if !metric.is_cumulative() {
+            Self::compute_stats(&frame_scores, metric.is_inverse_metric())
+                .context("recorded Quality Check frame report")?;
+        }
         let frames_compared = frame_scores.len() as u64;
         let state = QualityCheckState {
             scene_scores,
@@ -324,25 +341,29 @@ impl QualityCheckApp {
             frames_compared,
             total_frames,
         };
-        QualityCheckApp {
+        Ok(QualityCheckApp {
             clip_info,
             metric,
             pass_started: std::time::Instant::now(),
             attempted_cancel: false,
             shared_progress: SharedProgress::new(state.clone()),
             cached_state: state,
-        }
+        })
     }
 
-    fn compute_stats(scores: &[f64], is_inverse: bool) -> Option<ReportStats> {
+    fn compute_stats(scores: &[f64], is_inverse: bool) -> anyhow::Result<Option<ReportStats>> {
         if scores.is_empty() {
-            return None;
+            return Ok(None);
         }
         let count = scores.len();
-        let average = scores.iter().sum::<f64>() / count as f64;
+        let average = ProbeStatistic::Mean.calculate(scores)?;
         let variance =
             scores.iter().map(|s| (s - average) * (s - average)).sum::<f64>() / count as f64;
         let std_dev = variance.sqrt();
+        anyhow::ensure!(
+            variance.is_finite(),
+            MeasurementError::Statistic("non-finite report variance")
+        );
         let mut sorted = scores.to_vec();
         sorted.sort_by(f64::total_cmp);
         let minimum = sorted.first().copied().unwrap_or(0.0);
@@ -357,7 +378,7 @@ impl QualityCheckApp {
         // Count scores outside 2 standard deviations from the average
         let outside_two_sigma =
             scores.iter().filter(|s| (**s - average).abs() > 2.0 * std_dev).count();
-        Some(ReportStats {
+        Ok(Some(ReportStats {
             count,
             average,
             minimum,
@@ -365,15 +386,15 @@ impl QualityCheckApp {
             percentile,
             std_dev,
             outside_two_sigma,
-        })
+        }))
     }
 
     /// Scenes scoring outside 2 sigma
-    fn poor_scenes(&self) -> Vec<(u64, f64)> {
+    fn poor_scenes(&self) -> anyhow::Result<Vec<(u64, f64)>> {
         let is_inverse = self.metric.is_inverse_metric();
         let scores: Vec<f64> = self.cached_state.scene_scores.values().copied().collect();
-        let Some(stats) = Self::compute_stats(&scores, is_inverse) else {
-            return Vec::new();
+        let Some(stats) = Self::compute_stats(&scores, is_inverse)? else {
+            return Ok(Vec::new());
         };
         let threshold_low = 2.0f64.mul_add(-stats.std_dev, stats.average);
         let threshold_high = 2.0f64.mul_add(stats.std_dev, stats.average);
@@ -398,26 +419,27 @@ impl QualityCheckApp {
                 a.1.total_cmp(&b.1)
             }
         });
-        poor
+        Ok(poor)
     }
 
     /// Print the quality report as aligned plain-text tables
-    fn print_report(&self) {
+    fn print_report(&self) -> anyhow::Result<()> {
         let metric_name = self.metric.friendly_name();
         let is_inverse = self.metric.is_inverse_metric();
         let percentile_label = if is_inverse { "1% High" } else { "1% Low" };
 
-        println!();
-        println!("Quality Check - {metric_name}");
-
         let scene_scores: Vec<f64> = self.cached_state.scene_scores.values().copied().collect();
         let frame_scores = &self.cached_state.frame_scores;
-        let scene_stats = Self::compute_stats(&scene_scores, is_inverse);
+        let scene_stats = Self::compute_stats(&scene_scores, is_inverse)?;
         let frame_stats = if self.metric.is_cumulative() {
             None
         } else {
-            Self::compute_stats(frame_scores, is_inverse)
+            Self::compute_stats(frame_scores, is_inverse)?
         };
+        let poor = self.poor_scenes()?;
+
+        println!();
+        println!("Quality Check - {metric_name}");
 
         // Stats table: header + Per-Scene + Per-Frame rows
         println!(
@@ -456,7 +478,6 @@ impl QualityCheckApp {
         println!();
 
         // Poor scenes table
-        let poor = self.poor_scenes();
         if !poor.is_empty() {
             println!("Scenes Outside 2σ ({})", poor.len());
             println!("{}", "─".repeat(72));
@@ -473,6 +494,7 @@ impl QualityCheckApp {
                 println!("{index:<8}{score:>12.4}{speed:>14}{quantizer:>12}");
             }
         }
+        Ok(())
     }
 }
 
@@ -505,6 +527,73 @@ pub enum QualityCheckConsoleEvent {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn q05_qc_report_rejects_nonfinite_and_overflow_instead_of_printing_fake_stats() {
+        assert!(QualityCheckApp::compute_stats(&[], false).expect("no measurement").is_none());
+        for scores in [
+            vec![f64::NAN],
+            vec![f64::INFINITY],
+            vec![f64::NEG_INFINITY],
+            vec![f64::MAX, f64::MAX],
+            vec![-f64::MAX, f64::MAX],
+        ] {
+            assert!(
+                QualityCheckApp::compute_stats(&scores, false).is_err(),
+                "{scores:?}"
+            );
+        }
+        let stats = QualityCheckApp::compute_stats(&[-1.0, 2.0], false)
+            .expect("finite negatives")
+            .expect("stats");
+        assert_eq!(
+            (stats.average, stats.minimum, stats.maximum, stats.std_dev),
+            (0.5, -1.0, 2.0, 1.5)
+        );
+    }
+    #[test]
+    fn q05_saved_qc_rejects_corrupt_measurements_but_preserves_unmeasured_screens() {
+        let (clip, scenes) = crate::test_helpers::quality_scene_fixture();
+        for scores in
+            [vec![f64::NAN], vec![f64::INFINITY], vec![f64::NEG_INFINITY], vec![1.0, -1.0]]
+        {
+            let mut corrupt = scenes.clone();
+            corrupt[1].sequence_data.quality_check.quality.scores = scores;
+            assert!(
+                QualityCheckApp::new(
+                    clip,
+                    &corrupt,
+                    QualityMetric::default(),
+                    ProbeStatistic::Harmonic
+                )
+                .is_err()
+            );
+        }
+        let mut corrupt = scenes;
+        corrupt[1].sequence_data.quality_check.quality.scores.clear();
+        corrupt[1].sequence_data.quality_check.quality.completed_on = 1;
+        assert!(
+            QualityCheckApp::new(
+                clip,
+                &corrupt,
+                QualityMetric::default(),
+                ProbeStatistic::Mean
+            )
+            .is_err()
+        );
+        for scene in &mut corrupt {
+            scene.sequence_data.quality_check.quality = Default::default();
+        }
+        let app = QualityCheckApp::new(
+            clip,
+            &corrupt,
+            QualityMetric::default(),
+            ProbeStatistic::Mean,
+        )
+        .expect("initial screen");
+        assert!(
+            app.cached_state.scene_scores.is_empty() && app.cached_state.frame_scores.is_empty()
+        );
+    }
     use std::{
         process::{Command, Stdio},
         time::{Duration, Instant},
@@ -529,7 +618,8 @@ mod tests {
                 (ProbeStatistic::Minimum, [2.0, 1.0]),
                 (ProbeStatistic::Maximum, [9.0, 8.0]),
             ] {
-                let app = QualityCheckApp::new(clip, &scenes, metric.clone(), statistic);
+                let app =
+                    QualityCheckApp::new(clip, &scenes, metric.clone(), statistic).expect("app");
                 let expected = if disabled == Some(true) {
                     independent
                 } else {
@@ -550,8 +640,9 @@ mod tests {
                     ),
                     (6, 6)
                 );
-                let mut live =
-                    QualityCheckApp::new(clip, &[], metric.clone(), statistic).cached_state;
+                let mut live = QualityCheckApp::new(clip, &[], metric.clone(), statistic)
+                    .expect("app")
+                    .cached_state;
                 for (index, score) in expected.into_iter().enumerate() {
                     assert!(QualityCheckApp::map_progress(
                         SequenceStatus::Subprocess {
@@ -578,7 +669,8 @@ mod tests {
                 }
                 assert_eq!(live.scene_scores, app.cached_state.scene_scores);
                 let control =
-                    QualityCheckApp::new(clip, &scenes, QualityMetric::default(), statistic);
+                    QualityCheckApp::new(clip, &scenes, QualityMetric::default(), statistic)
+                        .expect("app");
                 assert_eq!(
                     control.cached_state.scene_scores.values().copied().collect::<Vec<_>>(),
                     independent
@@ -603,7 +695,10 @@ mod tests {
                 disable_temporal: Some(mode == "independent"),
                 gpu_id: None,
             };
-            QualityCheckApp::new(clip, &scenes, metric, ProbeStatistic::Mean).print_report();
+            QualityCheckApp::new(clip, &scenes, metric, ProbeStatistic::Mean)
+                .expect("app")
+                .print_report()
+                .expect("report");
             return;
         }
         for mode in ["temporal", "independent"] {

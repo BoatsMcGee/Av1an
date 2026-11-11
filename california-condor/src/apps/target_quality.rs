@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::{collections::BTreeMap, io::IsTerminal};
 
 use andean_condor::{
@@ -373,18 +374,20 @@ impl TargetQualityApp {
         }
     }
 
+    /// Build the initial screen, rejecting corrupt or undefined recorded passes.
+    /// An empty history is a valid unmeasured screen, not a zero quality score.
     pub fn new(
         clip_info: ClipInfo,
         scenes: Vec<Scene<CliSequenceData>>,
         encoder: Encoder,
         probe_statistic: ProbeStatistic,
         metric: &QualityMetric,
-    ) -> TargetQualityApp {
+    ) -> anyhow::Result<TargetQualityApp> {
         let quality_passes: BTreeMap<u64, Vec<QualityPass>> = scenes
             .into_iter()
             .enumerate()
             .map(|(scene_index, scene)| {
-                (
+                Ok((
                     scene_index as u64,
                     scene
                         .sequence_data
@@ -392,18 +395,27 @@ impl TargetQualityApp {
                         .passes
                         .iter()
                         .enumerate()
-                        .map(|(pass_index, pass)| QualityPass {
-                            scene: scene_index as u64,
-                            current_pass: (pass_index + 1) as u8,
-                            total_passes: (pass_index + 1) as u8,
-                            quantizer: pass.quantizer,
-                            score: metric.calculate_score(probe_statistic, &pass.scores),
-                            bitrate: pass.bitrate,
+                        .map(|(pass_index, pass)| -> anyhow::Result<QualityPass> {
+                            Ok(QualityPass {
+                                scene: scene_index as u64,
+                                current_pass: (pass_index + 1) as u8,
+                                total_passes: (pass_index + 1) as u8,
+                                quantizer: pass.quantizer,
+                                score: metric
+                                    .calculate_score(probe_statistic, &pass.scores)
+                                    .with_context(|| {
+                                        format!(
+                                            "recorded Target Quality scene {scene_index} pass {}",
+                                            pass_index + 1
+                                        )
+                                    })?,
+                                bitrate: pass.bitrate,
+                            })
                         })
-                        .collect(),
-                )
+                        .collect::<anyhow::Result<_>>()?,
+                ))
             })
-            .collect();
+            .collect::<anyhow::Result<_>>()?;
         let state = TargetQualityState {
             quality_passes,
             current_pass: 1,
@@ -411,7 +423,7 @@ impl TargetQualityApp {
             frames_compared: 0,
             total_frames: 1,
         };
-        TargetQualityApp {
+        Ok(TargetQualityApp {
             encoder,
             clip_info,
             pass_started: std::time::Instant::now(),
@@ -419,7 +431,7 @@ impl TargetQualityApp {
             attempted_cancel: false,
             shared_progress: SharedProgress::new(state.clone()),
             cached_state: state,
-        }
+        })
     }
 }
 
@@ -453,6 +465,46 @@ pub struct QualityPass {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn q05_saved_tq_rejects_corrupt_claimed_passes() {
+        use andean_condor::models::sequence::target_quality::types::{
+            ProbeStatistic, QualityMetric,
+        };
+        let (clip, scenes) = crate::test_helpers::quality_scene_fixture();
+        for scores in [
+            vec![],
+            vec![f64::NAN],
+            vec![f64::INFINITY],
+            vec![f64::NEG_INFINITY],
+            vec![1.0, -1.0],
+        ] {
+            let mut corrupt = scenes.clone();
+            corrupt[1].sequence_data.target_quality.passes[0].scores = scores;
+            assert!(
+                TargetQualityApp::new(
+                    clip,
+                    corrupt,
+                    Default::default(),
+                    ProbeStatistic::Harmonic,
+                    &QualityMetric::default()
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            TargetQualityApp::new(
+                clip,
+                vec![],
+                Default::default(),
+                ProbeStatistic::Mean,
+                &QualityMetric::default()
+            )
+            .expect("initial screen")
+            .cached_state
+            .quality_passes
+            .is_empty()
+        );
+    }
     use std::collections::BTreeMap;
 
     use super::{TargetQualityApp, TargetQualityState};
@@ -485,7 +537,8 @@ mod tests {
                     Default::default(),
                     statistic,
                     &metric,
-                );
+                )
+                .expect("app");
                 let expected = if disabled == Some(true) {
                     independent
                 } else {
@@ -493,6 +546,7 @@ mod tests {
                 };
                 let mut live =
                     TargetQualityApp::new(clip, vec![], Default::default(), statistic, &metric)
+                        .expect("app")
                         .cached_state;
                 for (index, score) in expected.into_iter().enumerate() {
                     let passes = &app.cached_state.quality_passes[&(index as u64)];
@@ -536,7 +590,8 @@ mod tests {
                     Default::default(),
                     statistic,
                     &QualityMetric::default(),
-                );
+                )
+                .expect("app");
                 assert_eq!(
                     control.cached_state.quality_passes[&0][0].score,
                     independent[0]

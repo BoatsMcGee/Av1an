@@ -16,6 +16,11 @@ pub mod vapoursynth_filters;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum VapourSynthError {
+    #[error("VapourSynth measurement failed: {source}")]
+    Measurement {
+        #[source]
+        source: std::sync::Arc<dyn std::error::Error + Send + Sync>,
+    },
     #[error("VapourSynth internal error ({message})")]
     Internal { message: String },
     #[error("VapourSynth Plugin {plugin} not found")]

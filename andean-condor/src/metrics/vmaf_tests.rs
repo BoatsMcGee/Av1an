@@ -11,6 +11,55 @@ use super::*;
 const EXACT: &str = "metrics::vmaf::m18_tests::m18_driver_events";
 
 #[test]
+fn q05_vmaf_invalid_last_value_has_no_score_callbacks() {
+    if let Ok(scenario) = std::env::var("M18_DRIVER_CHILD") {
+        driver_child(&scenario);
+        return;
+    }
+    let directory = tempfile::tempdir().expect("Q05 fixture");
+    let library = directory.path().join(if cfg!(target_os = "macos") {
+        "libvmaf.dylib"
+    } else {
+        "libvmaf.so"
+    });
+    let output = Command::new("cc")
+        .args(["-shared", "-fPIC", "-std=c99", "-Wall", "-Wextra", "-Werror", "-o"])
+        .arg(library)
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../av-metrics-vmaf/tests/fixtures/m09_ownership.c"
+        ))
+        .output()
+        .expect("cc");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for bad in ["1", "2", "3"] {
+        let output = Command::new(std::env::current_exe().expect("executable"))
+            .args([
+                "--exact",
+                "metrics::vmaf::m18_tests::q05_vmaf_invalid_last_value_has_no_score_callbacks",
+                "--nocapture",
+            ])
+            .env("M18_DRIVER_CHILD", "q05-invalid")
+            .env("Q05_BAD_SCORE", bad)
+            .env("M18_MODE", "1")
+            .env("M18_EVENTS", directory.path().join(bad))
+            .env("VMAF_LIB_DIR", directory.path())
+            .output()
+            .expect("child");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
 fn m25_driver_invalid_override_preserves_error_before_callbacks() {
     if std::env::var_os("M25_DRIVER_CHILD").is_some() {
         driver_child("m25_override");
@@ -178,12 +227,23 @@ fn driver_child(scenario: &str) {
                 events().contains("flush0"),
                 "real score only after finalization"
             );
-            assert_eq!(score, 90.0 + position as f64);
+            if scenario != "q05-invalid" {
+                assert_eq!(score, 90.0 + position as f64);
+            }
             reported.push((selected[position], score));
             log("score", position);
         },
     );
     match scenario {
+        "q05-invalid" => {
+            let error = scores.expect_err("invalid final native value");
+            assert!(format!("{error:#}").contains("non-finite"), "{error:#}");
+            assert_eq!(submitted, [0, 1, 2]);
+            assert!(
+                reported.is_empty(),
+                "ALL values validated before first score callback"
+            );
+        },
         "m25_override" => {
             let error = scores.expect_err("invalid explicit directory must fail");
             let message = error.to_string();

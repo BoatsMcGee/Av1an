@@ -853,7 +853,8 @@ fn tui_screens() -> Vec<Screen> {
             encoder(),
             ProbeStatistic::Mean,
             &Default::default(),
-        );
+        )
+        .expect("valid screenshot measurements");
         app.on_snapshot(TargetQualityState {
             quality_passes: passes,
             current_pass: 2,
@@ -882,7 +883,8 @@ fn tui_screens() -> Vec<Screen> {
             encoder(),
             ProbeStatistic::Mean,
             &Default::default(),
-        );
+        )
+        .expect("valid screenshot measurements");
         app.on_snapshot(TargetQualityState {
             quality_passes: passes,
             current_pass: 2,

@@ -70,7 +70,8 @@ pub(crate) fn score_scene_frames(
         let mut offset = 0;
         let mut reference_next = 0;
         let mut reported = false;
-        for scene in scenes.iter().filter(|scene| !scene.is_empty()) {
+        for (scene_index, scene) in scenes.iter().enumerate().filter(|(_, scene)| !scene.is_empty())
+        {
             if cancelled.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
                 return Err(probe::Cancelled.into());
             }
@@ -104,6 +105,10 @@ pub(crate) fn score_scene_frames(
                 _ => anyhow::bail!("no native scene scorer for {engine}"),
             }
             .map_err(|error| {
+                let error = error.context(format!(
+                    "{engine} {} scene {scene_index}",
+                    config.friendly_name()
+                ));
                 if reported {
                     error.context(SceneScoringStarted)
                 } else {

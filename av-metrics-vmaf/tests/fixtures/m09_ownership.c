@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 typedef struct {
     int pix_fmt;
@@ -224,6 +225,10 @@ int vmaf_score_at_index(Context *ctx, void *handle, double *out, unsigned index)
     if (setting("M18_MODE") == 2 && index == 1) return -74;
     if (index >= ctx->next_index) return -22;
     *out = setting("M18_MODE") ? 90.0 + index : 99.0;
+    /* Corrupt the LAST value: the driver must validate all before publishing any. */
+    if (index == 2 && setting("Q05_BAD_SCORE"))
+        *out = setting("Q05_BAD_SCORE") == 1 ? NAN :
+               setting("Q05_BAD_SCORE") == 2 ? INFINITY : -INFINITY;
     return 0;
 }
 int vmaf_feature_score_pooled(Context *ctx, const char *name, int method,

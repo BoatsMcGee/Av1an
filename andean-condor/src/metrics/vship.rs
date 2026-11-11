@@ -351,16 +351,26 @@ pub(super) fn score_probed_frames_from(
                 .map_err(describe_error)?;
 
             let value = match metric {
-                VshipMetric::Butteraugli => {
-                    frame_score.butteraugli_value(butteraugli_uses_q_norm).ok_or_else(|| {
-                        anyhow::anyhow!("libvship returned no Butteraugli norm for this pair")
-                    })?
-                },
-                _ => frame_score.value(metric).ok_or_else(|| {
-                    anyhow::anyhow!("libvship returned no score for {}", metric.as_str())
-                })?,
+                VshipMetric::Butteraugli => frame_score
+                    .butteraugli_value(butteraugli_uses_q_norm)
+                    .ok_or({
+                        crate::models::sequence::target_quality::types::MeasurementError::Missing {
+                            position,
+                        }
+                    })
+                    .context("vship butteraugli result")?,
+                _ => frame_score
+                    .value(metric)
+                    .ok_or({
+                        crate::models::sequence::target_quality::types::MeasurementError::Missing {
+                            position,
+                        }
+                    })
+                    .with_context(|| format!("vship {} result", config.friendly_name()))?,
             };
 
+            crate::models::sequence::target_quality::types::validate_score(value, position)
+                .with_context(|| format!("vship {} result", config.friendly_name()))?;
             previous = Some(source_index);
             on_score(position, value);
             scores.push(value);
@@ -376,13 +386,8 @@ pub(super) fn score_probed_frames_from(
         "vship pass"
     );
 
-    if scores.len() != selected.len() {
-        bail!(
-            "libvship scored {} frames but {} were selected",
-            scores.len(),
-            selected.len()
-        );
-    }
+    crate::models::sequence::target_quality::types::validate_scores(&scores, Some(selected.len()))
+        .with_context(|| format!("vship {} result", config.friendly_name()))?;
 
     Ok(scores)
 }

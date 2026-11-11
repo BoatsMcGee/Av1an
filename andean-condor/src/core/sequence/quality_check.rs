@@ -4,7 +4,7 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use thiserror::Error;
 use tracing::error;
 
@@ -22,7 +22,9 @@ use crate::{
             quality_check::{
                 QualityCheckConfig, QualityCheckConfigHandler, QualityCheckDataHandler,
             },
-            target_quality::types::{QualityMetric, QualityPass},
+            target_quality::types::{
+                MeasurementError, QualityMetric, QualityPass, validate_scores,
+            },
         },
     },
     vapoursynth::{
@@ -81,7 +83,7 @@ pub(super) fn spawn_compare_progress(
                         completion: SequenceCompletion::Frames { completed, total },
                     }))?;
                 },
-                SequenceStatus::Whole(Status::Completed { .. }) => {
+                SequenceStatus::Whole(Status::Completed { id }) if id == "Compare" => {
                     progress_tx.send(SequenceStatus::Whole(Status::Completed {
                         id: "Compare".to_owned(),
                     }))?;
@@ -234,13 +236,18 @@ where
             })
             .collect::<Result<Vec<_>>>()?
             .into_iter()
-            .filter(|(index, indices)| {
-                !condor.scenes[*index]
-                    .sequence_data
-                    .get_quality_check()
-                    .is_ok_and(|data| data.quality.scores.len() == indices.len())
+            .map(|(index, indices)| -> Result<Option<_>> {
+                if let Ok(data) = condor.scenes[index].sequence_data.get_quality_check()
+                    && !data.quality.is_unmeasured()
+                {
+                    Self::validate_scene_scores(config, index, indices.len(), &data.quality.scores)
+                        .context("recorded Quality Check history")?;
+                    return Ok(None);
+                }
+                Ok(Some((index, indices)))
             })
-            .collect::<Vec<_>>();
+            .filter_map(Result::transpose)
+            .collect::<Result<Vec<_>>>()?;
         let input = if let Some(input) = self.input.as_mut() {
             input
         } else if let Some(input_model) = &config.input {
@@ -284,12 +291,53 @@ where
                 &condor.output.path,
                 config,
                 &scene_frame_indices,
-                progress_tx,
+                &progress_tx,
                 &cancelled,
             )?
         };
 
-        for ((index, _), measurement) in scene_frame_indices.iter().zip(measurements) {
+        Self::attach_measurements(
+            &mut condor.scenes,
+            config,
+            &scene_frame_indices,
+            measurements,
+        )?;
+
+        let mut data = condor.as_data();
+        data.scenes = condor.scenes.clone();
+        (condor.save_callback)(data).expect("failed to save data");
+
+        Ok(((), warnings))
+    }
+}
+
+impl QualityCheck {
+    fn validate_scene_scores(
+        config: &QualityCheckConfig,
+        index: usize,
+        expected: usize,
+        scores: &[f64],
+    ) -> Result<()> {
+        validate_scores(scores, Some(expected))
+            .and_then(|()| config.metric.calculate_score(config.statistic, scores).map(|_| ()))
+            .with_context(|| {
+                format!(
+                    "Quality Check {} scene {index} pass 1",
+                    config.metric.friendly_name()
+                )
+            })
+    }
+
+    fn attach_measurements<Data: SequenceDataHandler + QualityCheckDataHandler>(
+        scenes: &mut [crate::models::scene::Scene<Data>],
+        config: &QualityCheckConfig,
+        selection: &[(usize, Vec<usize>)],
+        measurements: Vec<SceneMeasurement>,
+    ) -> Result<()> {
+        Self::validate_measurements(config, selection, &measurements)?;
+        // Stage handler changes too: a failing mutable accessor cannot half-attach a batch.
+        let mut staged = scenes.to_vec();
+        for ((index, _), measurement) in selection.iter().zip(measurements) {
             let quality_pass = QualityPass {
                 quantizer: 0.0,
                 scores: measurement.scores,
@@ -297,14 +345,94 @@ where
                 started_on: measurement.started_on,
                 completed_on: measurement.completed_on,
             };
-            condor.scenes[*index].sequence_data.get_quality_check_mut()?.quality = quality_pass;
+            staged[*index].sequence_data.get_quality_check_mut()?.quality = quality_pass;
         }
+        scenes.clone_from_slice(&staged);
+        Ok(())
+    }
 
-        let mut data = condor.as_data();
-        data.scenes = condor.scenes.clone();
-        (condor.save_callback)(data).expect("failed to save data");
+    fn validate_measurements(
+        config: &QualityCheckConfig,
+        selection: &[(usize, Vec<usize>)],
+        measurements: &[SceneMeasurement],
+    ) -> Result<()> {
+        ensure!(
+            measurements.len() == selection.len(),
+            MeasurementError::Count {
+                expected: selection.len(),
+                actual: measurements.len()
+            }
+        );
+        for ((index, indices), measurement) in selection.iter().zip(measurements) {
+            Self::validate_scene_scores(config, *index, indices.len(), &measurement.scores)?;
+        }
+        Ok(())
+    }
 
-        Ok(((), warnings))
+    fn record_plugin_score(
+        config: &QualityCheckConfig,
+        selection: &[(usize, Vec<usize>)],
+        state: &mut PluginSceneState,
+        local_index: usize,
+        score: f64,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
+    ) -> Result<()> {
+        let total = selection.iter().map(|(_, indices)| indices.len()).sum();
+        ensure!(
+            local_index < total,
+            MeasurementError::Position {
+                position: local_index,
+                expected: total
+            }
+        );
+        let mut offset = 0;
+        let (scene, (index, indices)) = selection
+            .iter()
+            .enumerate()
+            .find(|(_, (_, indices))| {
+                if local_index < offset + indices.len() {
+                    true
+                } else {
+                    offset += indices.len();
+                    false
+                }
+            })
+            .expect("bounds checked selection position");
+        crate::models::sequence::target_quality::types::validate_score(score, local_index)
+            .with_context(|| {
+                format!(
+                    "vapoursynth Quality Check {} scene {index} pass 1",
+                    config.metric.friendly_name()
+                )
+            })?;
+        let (scores, completed, started_on, completed_on) = state;
+        if scores[scene].len() + 1 == indices.len() {
+            let mut proposed = scores[scene].clone();
+            proposed.push(score);
+            Self::validate_scene_scores(config, *index, indices.len(), &proposed)?;
+        }
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("Time is valid")
+            .as_millis();
+        if scores[scene].is_empty() {
+            started_on[scene] = now;
+        }
+        scores[scene].push(score);
+        if scores[scene].len() == indices.len() {
+            completed[scene] = true;
+            completed_on[scene] = now;
+        }
+        // Scene summaries wait for admission of the entire batch, not just this callback.
+        Self::report_frame_score(
+            &[indices[local_index - offset]],
+            total,
+            0,
+            score,
+            local_index + 1,
+            progress_tx,
+        );
+        Ok(())
     }
 }
 
@@ -361,7 +489,11 @@ impl QualityCheck {
             },
         )?;
 
-        Self::group_native_scores(&scores, total_frames, scene_frame_indices)
+        let measurements = Self::group_native_scores(&scores, total_frames, scene_frame_indices)
+            .context("vmaf VMAF Quality Check pass 1")?;
+        Self::validate_measurements(config, scene_frame_indices, &measurements)
+            .context("vmaf VMAF Quality Check pass 1")?;
+        Ok(measurements)
     }
 
     /// Submission drives progress while native temporal scores are unavailable.
@@ -421,7 +553,7 @@ impl QualityCheck {
         completed: usize,
         total: usize,
         progress_tx: &sync::mpsc::Sender<SequenceStatus>,
-    ) {
+    ) -> Result<()> {
         let _ = progress_tx.send(SequenceStatus::Subprocess {
             parent: Status::Processing {
                 id: DETAILS.name.to_owned(),
@@ -436,11 +568,12 @@ impl QualityCheck {
                 completion: SequenceCompletion::SceneQuality {
                     index: index as u64,
                     quantizer: 0.0,
-                    score: config.metric.calculate_score(config.statistic, scores),
+                    score: config.metric.calculate_score(config.statistic, scores)?,
                     bitrate: 0.0,
                 },
             },
         });
+        Ok(())
     }
 
     /// Group the per-frame scores back into scenes, recording when each span
@@ -451,14 +584,19 @@ impl QualityCheck {
         total_frames: usize,
         scene_frame_indices: &[(usize, Vec<usize>)],
     ) -> Result<Vec<SceneMeasurement>> {
-        if scores.len() < total_frames {
-            error!(
-                expected = total_frames,
-                actual = scores.len(),
-                "produced fewer scores than selected frames"
-            );
-            bail!(QualityCheckError::QualityMeasurementFailed);
+        if total_frames == 0 && scores.is_empty() && scene_frame_indices.is_empty() {
+            return Ok(Vec::new());
         }
+        validate_scores(scores, Some(total_frames))
+            .context("Quality Check flattened measurement")?;
+        let expected = scene_frame_indices.iter().map(|(_, indices)| indices.len()).sum();
+        ensure!(
+            total_frames == expected,
+            MeasurementError::Count {
+                expected,
+                actual: total_frames
+            }
+        );
 
         let now = || {
             SystemTime::now()
@@ -546,7 +684,8 @@ impl QualityCheck {
             // would ignore the abort and score the whole selection again.
             Err(error)
                 if error.is::<metrics::probe::Cancelled>()
-                    || error.is::<metrics::SceneScoringStarted>() =>
+                    || error.is::<metrics::SceneScoringStarted>()
+                    || error.is::<MeasurementError>() =>
             {
                 return Err(error);
             },
@@ -558,7 +697,22 @@ impl QualityCheck {
             },
         };
 
-        Self::group_native_scores(&scores, total_frames, scene_frame_indices).map(Some)
+        let measurements = Self::group_native_scores(&scores, total_frames, scene_frame_indices)
+            .with_context(|| {
+                format!(
+                    "{engine} {} Quality Check pass 1",
+                    config.metric.friendly_name()
+                )
+            })?;
+        Self::validate_measurements(config, scene_frame_indices, &measurements).with_context(
+            || {
+                format!(
+                    "{engine} {} Quality Check pass 1",
+                    config.metric.friendly_name()
+                )
+            },
+        )?;
+        Ok(Some(measurements))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -622,7 +776,7 @@ impl QualityCheck {
         output_path: &std::path::Path,
         config: &QualityCheckConfig,
         scene_frame_indices: &[(usize, Vec<usize>)],
-        progress_tx: sync::mpsc::Sender<SequenceStatus>,
+        progress_tx: &sync::mpsc::Sender<SequenceStatus>,
         cancelled: &Arc<AtomicBool>,
     ) -> Result<Vec<SceneMeasurement>> {
         let temporal = metrics::scene_temporal(&config.metric);
@@ -706,20 +860,7 @@ impl QualityCheck {
             }
         };
 
-        // Map local frame index to the global frame index
-        let global_frames = scene_frame_indices
-            .iter()
-            .flat_map(|(_, indices)| indices.iter().copied())
-            .collect::<Vec<_>>();
-        let total_frames = global_frames.len();
-
-        // Exclusive ends also allow empty scenes without inventing a last frame.
-        let mut scene_end_local_index = Vec::with_capacity(scene_frame_indices.len());
-        let mut local_index = 0;
-        for (_, indices) in scene_frame_indices {
-            local_index += indices.len();
-            scene_end_local_index.push(local_index);
-        }
+        let total_frames = scene_frame_indices.iter().map(|(_, indices)| indices.len()).sum();
 
         let (compare_progress_tx, compare_thread) = spawn_compare_progress(progress_tx.clone());
 
@@ -733,111 +874,70 @@ impl QualityCheck {
         )));
         let on_frame = {
             let progress_tx = progress_tx.clone();
-            let scene_end_local_index = scene_end_local_index.clone();
-            let scene_indices =
-                scene_frame_indices.iter().map(|(index, _)| *index).collect::<Vec<_>>();
+            let selection = scene_frame_indices.to_vec();
             let config = config.clone();
             let scene_state_clone = Arc::clone(&scene_state);
 
             move |local_index: usize, score: &f64| -> Result<(), VapourSynthError> {
-                let frame = global_frames[local_index];
-                let _ = progress_tx.send(SequenceStatus::Subprocess {
-                    parent: Status::Processing {
-                        id: DETAILS.name.to_owned(),
-                        completion: SequenceCompletion::Custom {
-                            name: DETAILS.name.to_owned(),
-                            completed: (local_index + 1) as f64,
-                            total: total_frames as f64,
-                        },
-                    },
-                    child: Status::Processing {
-                        id: "Quality".to_owned(),
-                        completion: SequenceCompletion::FrameScore {
-                            frame: frame as u64,
-                            score: *score,
-                        },
-                    },
-                });
-
-                let scene_index = scene_end_local_index
-                    .iter()
-                    .position(|end| *end > local_index)
-                    .expect("local index belongs to a scene");
                 let mut scene_state =
                     scene_state_clone.lock().expect("scene state mutex should acquire lock");
-                let (scene_scores, scene_completed, scene_started_on, scene_completed_on) =
-                    &mut *scene_state;
-                if scene_scores[scene_index].is_empty() {
-                    scene_started_on[scene_index] = SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .expect("Time is valid")
-                        .as_millis();
-                }
-                scene_scores[scene_index].push(*score);
-                if !scene_completed[scene_index]
-                    && scene_end_local_index[scene_index] == local_index + 1
-                {
-                    scene_completed[scene_index] = true;
-                    scene_completed_on[scene_index] = SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .expect("Time is valid")
-                        .as_millis();
-                    Self::report_scene_score(
-                        &config,
-                        scene_indices[scene_index],
-                        &scene_scores[scene_index],
-                        local_index + 1,
-                        total_frames,
-                        &progress_tx,
-                    );
-                }
-
-                Ok(())
+                Self::record_plugin_score(
+                    &config,
+                    &selection,
+                    &mut scene_state,
+                    local_index,
+                    *score,
+                    &progress_tx,
+                )
+                .map_err(|error| VapourSynthError::Measurement {
+                    source: error.into_boxed_dyn_error().into(),
+                })
             }
         };
 
         // The SSIMULACRA2, Butteraugli and CVVDP branches are the fallback for
         // the metrics libvship also implements: they are reached only when
         // `measure_vship` found no usable libvship, or its scoring failed.
-        let mut comparison_error = None;
-        match &config.metric {
-            // Handled by `measure_vmaf` before this graph is built: VMAF reads
-            // decoded frames through libvmaf instead of a VapourSynth filter.
-            QualityMetric::VMAF { .. } => {
-                unreachable!("VMAF is measured by `measure_vmaf`, not here");
-            },
-            QualityMetric::SSIMULACRA2 {
-                resolution,
-                threads,
-                gpu_id,
-                ..
-            } => {
-                let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
-                    let resize = Bicubic {
-                        width: Some(width),
-                        height: Some(height),
-                        ..Default::default()
-                    };
-                    (
-                        resize.invoke(core, &reference_node)?,
-                        resize.invoke(core, &distorted_node)?,
-                    )
-                } else {
-                    (reference_node, distorted_node)
-                };
-                if VSHIPSSIMULACRA2::plugin_is_installed(core) {
-                    let plugin = VSHIPSSIMULACRA2 {
-                        num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
-                        gpu_id: gpu_id.map(u32::from),
-                        ..Default::default()
-                    };
-                    let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                    VSHIPSSIMULACRA2::collect_frame_values(
-                        &node,
-                        compare_progress_tx,
-                        on_frame,
-                        |frame| {
-                            VSHIPSSIMULACRA2::PROPERTY_NAMES
+        let comparison = (|| -> Result<()> {
+            match &config.metric {
+                // Handled by `measure_vmaf` before this graph is built: VMAF reads
+                // decoded frames through libvmaf instead of a VapourSynth filter.
+                QualityMetric::VMAF { .. } => {
+                    unreachable!("VMAF is measured by `measure_vmaf`, not here");
+                },
+                QualityMetric::SSIMULACRA2 {
+                    resolution,
+                    threads,
+                    gpu_id,
+                    ..
+                } => {
+                    let (reference_node, distorted_node) =
+                        if let Some((width, height)) = *resolution {
+                            let resize = Bicubic {
+                                width: Some(width),
+                                height: Some(height),
+                                ..Default::default()
+                            };
+                            (
+                                resize.invoke(core, &reference_node)?,
+                                resize.invoke(core, &distorted_node)?,
+                            )
+                        } else {
+                            (reference_node, distorted_node)
+                        };
+                    if VSHIPSSIMULACRA2::plugin_is_installed(core) {
+                        let plugin = VSHIPSSIMULACRA2 {
+                            num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
+                            gpu_id: gpu_id.map(u32::from),
+                            ..Default::default()
+                        };
+                        let node = plugin.invoke(core, &reference_node, &distorted_node)?;
+                        VSHIPSSIMULACRA2::collect_frame_values(
+                            &node,
+                            compare_progress_tx,
+                            on_frame,
+                            |frame| {
+                                VSHIPSSIMULACRA2::PROPERTY_NAMES
                                 .iter()
                                 .find_map(|property_name| {
                                     frame.props().get_float(property_name).ok()
@@ -848,16 +948,16 @@ impl QualityCheck {
                                         VSHIPSSIMULACRA2::PROPERTY_NAMES.join(", ")
                                     ))
                                 })
-                        },
-                    )?
-                } else if SSIMULACRA2::plugin_is_installed(core) {
-                    let node = SSIMULACRA2::invoke(core, &reference_node, &distorted_node)?;
-                    SSIMULACRA2::collect_frame_values(
-                        &node,
-                        compare_progress_tx,
-                        on_frame,
-                        |frame| {
-                            SSIMULACRA2::PROPERTY_NAMES
+                            },
+                        )?
+                    } else if SSIMULACRA2::plugin_is_installed(core) {
+                        let node = SSIMULACRA2::invoke(core, &reference_node, &distorted_node)?;
+                        SSIMULACRA2::collect_frame_values(
+                            &node,
+                            compare_progress_tx,
+                            on_frame,
+                            |frame| {
+                                SSIMULACRA2::PROPERTY_NAMES
                                 .iter()
                                 .find_map(|property_name| {
                                     frame.props().get_float(property_name).ok()
@@ -868,158 +968,163 @@ impl QualityCheck {
                                         SSIMULACRA2::PROPERTY_NAMES.join(", ")
                                     ))
                                 })
+                            },
+                        )?
+                    } else {
+                        error!("No VapourSynth SSIMULACRA2 plugin found");
+                        bail!(QualityCheckError::QualityMeasurementFailed);
+                    }
+                },
+                QualityMetric::BUTTERAUGLI {
+                    resolution,
+                    threads,
+                    intensity_multiplier,
+                    norm,
+                    gpu_id,
+                    ..
+                } => {
+                    let (reference_node, distorted_node) =
+                        if let Some((width, height)) = *resolution {
+                            let resize = Bicubic {
+                                width: Some(width),
+                                height: Some(height),
+                                ..Default::default()
+                            };
+                            (
+                                resize.invoke(core, &reference_node)?,
+                                resize.invoke(core, &distorted_node)?,
+                            )
+                        } else {
+                            (reference_node, distorted_node)
+                        };
+                    let plugin = BUTTERAUGLI {
+                        num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
+                        intensity_multiplier: *intensity_multiplier,
+                        q_norm: norm.map(|norm| norm as u32),
+                        gpu_id: gpu_id.map(u32::from),
+                        ..Default::default()
+                    };
+                    let node = plugin.invoke(core, &reference_node, &distorted_node)?;
+                    let property_names = norm.and_then(|_| Some(BUTTERAUGLI::QNORM_PROPERTY_NAMES));
+                    let property_names = property_names.unwrap_or(BUTTERAUGLI::PROPERTY_NAMES);
+                    BUTTERAUGLI::collect_frame_values(
+                        &node,
+                        compare_progress_tx,
+                        on_frame,
+                        move |frame| {
+                            property_names
+                                .iter()
+                                .find_map(|property_name| {
+                                    frame.props().get_float(property_name).ok()
+                                })
+                                .ok_or_else(|| {
+                                    BUTTERAUGLI::new_error(format!(
+                                        "Score not found on any of the following properties: {}",
+                                        property_names.join(", ")
+                                    ))
+                                })
                         },
                     )?
-                } else {
-                    error!("No VapourSynth SSIMULACRA2 plugin found");
-                    bail!(QualityCheckError::QualityMeasurementFailed);
-                }
-            },
-            QualityMetric::BUTTERAUGLI {
-                resolution,
-                threads,
-                intensity_multiplier,
-                norm,
-                gpu_id,
-                ..
-            } => {
-                let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
-                    let resize = Bicubic {
-                        width: Some(width),
-                        height: Some(height),
+                },
+                QualityMetric::XPSNR { resolution, .. } => {
+                    let (reference_node, distorted_node) =
+                        if let Some((width, height)) = *resolution {
+                            let resize = Bicubic {
+                                width: Some(width),
+                                height: Some(height),
+                                ..Default::default()
+                            };
+                            (
+                                resize.invoke(core, &reference_node)?,
+                                resize.invoke(core, &distorted_node)?,
+                            )
+                        } else {
+                            (reference_node, distorted_node)
+                        };
+                    let plugin = XPSNR {
+                        temporal: Some(false),
+                        verbose: Some(false),
                         ..Default::default()
                     };
-                    (
-                        resize.invoke(core, &reference_node)?,
-                        resize.invoke(core, &distorted_node)?,
-                    )
-                } else {
-                    (reference_node, distorted_node)
-                };
-                let plugin = BUTTERAUGLI {
-                    num_stream: threads.map_or(Some(4), |threads| Some(threads as u32)),
-                    intensity_multiplier: *intensity_multiplier,
-                    q_norm: norm.map(|norm| norm as u32),
-                    gpu_id: gpu_id.map(u32::from),
-                    ..Default::default()
-                };
-                let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                let property_names = norm.and_then(|_| Some(BUTTERAUGLI::QNORM_PROPERTY_NAMES));
-                let property_names = property_names.unwrap_or(BUTTERAUGLI::PROPERTY_NAMES);
-                BUTTERAUGLI::collect_frame_values(
-                    &node,
-                    compare_progress_tx,
-                    on_frame,
-                    move |frame| {
-                        property_names
+                    let node = plugin.invoke(core, &reference_node, &distorted_node)?;
+                    // XPSNR returns a score per plane, combine them into the
+                    // weighted XPSNR score.
+                    XPSNR::collect_frame_values(&node, compare_progress_tx, on_frame, |frame| {
+                        let plane_scores = XPSNR::PROPERTY_NAMES
                             .iter()
-                            .find_map(|property_name| frame.props().get_float(property_name).ok())
-                            .ok_or_else(|| {
-                                BUTTERAUGLI::new_error(format!(
-                                    "Score not found on any of the following properties: {}",
-                                    property_names.join(", ")
-                                ))
-                            })
-                    },
-                )?
-            },
-            QualityMetric::XPSNR { resolution, .. } => {
-                let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
-                    let resize = Bicubic {
-                        width: Some(width),
-                        height: Some(height),
-                        ..Default::default()
-                    };
-                    (
-                        resize.invoke(core, &reference_node)?,
-                        resize.invoke(core, &distorted_node)?,
-                    )
-                } else {
-                    (reference_node, distorted_node)
-                };
-                let plugin = XPSNR {
-                    temporal: Some(false),
-                    verbose: Some(false),
-                    ..Default::default()
-                };
-                let node = plugin.invoke(core, &reference_node, &distorted_node)?;
-                // XPSNR returns a score per plane, combine them into the
-                // weighted XPSNR score.
-                XPSNR::collect_frame_values(&node, compare_progress_tx, on_frame, |frame| {
-                    let plane_scores = XPSNR::PROPERTY_NAMES
-                        .iter()
-                        .map(|property_name| {
-                            frame.props().get_float(property_name).map_err(|error| {
-                                XPSNR::new_error(format!(
-                                    "Score not found on required property \"{property_name}\": \
+                            .map(|property_name| {
+                                frame.props().get_float(property_name).map_err(|error| {
+                                    XPSNR::new_error(format!(
+                                        "Score not found on required property \"{property_name}\": \
                                      {error}"
-                                ))
+                                    ))
+                                })
                             })
-                        })
-                        .collect::<Result<Vec<f64>, _>>()?;
-                    match plane_scores.as_slice() {
-                        [y, u, v] => Ok(XPSNR::weight_xpsnr(*y, *u, *v)),
-                        _ => Err(XPSNR::new_error(
-                            "XPSNR should return three plane scores".to_owned(),
-                        )),
-                    }
-                })?
-            },
-            QualityMetric::CVVDP {
-                resolution,
-                display_model,
-                resize_to_display,
-                disable_temporal,
-                gpu_id,
-                ..
-            } => {
-                let (reference_node, distorted_node) = if let Some((width, height)) = *resolution {
-                    let resize = Bicubic {
-                        width: Some(width),
-                        height: Some(height),
+                            .collect::<Result<Vec<f64>, _>>()?;
+                        match plane_scores.as_slice() {
+                            [y, u, v] => Ok(XPSNR::weight_xpsnr(*y, *u, *v)),
+                            _ => Err(XPSNR::new_error(
+                                "XPSNR should return three plane scores".to_owned(),
+                            )),
+                        }
+                    })?
+                },
+                QualityMetric::CVVDP {
+                    resolution,
+                    display_model,
+                    resize_to_display,
+                    disable_temporal,
+                    gpu_id,
+                    ..
+                } => {
+                    let (reference_node, distorted_node) =
+                        if let Some((width, height)) = *resolution {
+                            let resize = Bicubic {
+                                width: Some(width),
+                                height: Some(height),
+                                ..Default::default()
+                            };
+                            (
+                                resize.invoke(core, &reference_node)?,
+                                resize.invoke(core, &distorted_node)?,
+                            )
+                        } else {
+                            (reference_node, distorted_node)
+                        };
+                    let plugin = CVVDP {
+                        model_name: *display_model,
+                        resize_to_display: *resize_to_display,
+                        disable_temporal: *disable_temporal,
+                        gpu_id: gpu_id.map(u32::from),
                         ..Default::default()
                     };
-                    (
-                        resize.invoke(core, &reference_node)?,
-                        resize.invoke(core, &distorted_node)?,
-                    )
-                } else {
-                    (reference_node, distorted_node)
-                };
-                let plugin = CVVDP {
-                    model_name: *display_model,
-                    resize_to_display: *resize_to_display,
-                    disable_temporal: *disable_temporal,
-                    gpu_id: gpu_id.map(u32::from),
-                    ..Default::default()
-                };
-                if temporal {
-                    match plugin.collect_scene_values(
-                        core,
-                        &reference_node,
-                        &distorted_node,
-                        &scenes,
-                        OutputIndexing::Aligned,
-                        compare_progress_tx,
-                        cancelled,
-                        on_frame,
-                    ) {
-                        Ok(values) => values,
-                        Err(error) => {
-                            comparison_error = Some(error);
-                            Vec::new()
-                        },
-                    }
-                } else {
-                    let node = plugin.invoke(
-                        core,
-                        &reference_node,
-                        &distorted_node,
-                        // Preserve source gaps; node indices became contiguous when spliced.
-                        scene_frame_indices.iter().flat_map(|(_, indices)| indices.iter().copied()),
-                    )?;
-                    CVVDP::collect_frame_values(&node, compare_progress_tx, on_frame, |frame| {
-                        CVVDP::PROPERTY_NAMES
+                    if temporal {
+                        plugin.collect_scene_values(
+                            core,
+                            &reference_node,
+                            &distorted_node,
+                            &scenes,
+                            OutputIndexing::Aligned,
+                            compare_progress_tx,
+                            cancelled,
+                            on_frame,
+                        )?
+                    } else {
+                        let node = plugin.invoke(
+                            core,
+                            &reference_node,
+                            &distorted_node,
+                            // Preserve source gaps; node indices became contiguous when spliced.
+                            scene_frame_indices
+                                .iter()
+                                .flat_map(|(_, indices)| indices.iter().copied()),
+                        )?;
+                        CVVDP::collect_frame_values(
+                            &node,
+                            compare_progress_tx,
+                            on_frame,
+                            |frame| {
+                                CVVDP::PROPERTY_NAMES
                             .iter()
                             .find_map(|property_name| frame.props().get_float(property_name).ok())
                             .ok_or_else(|| {
@@ -1028,20 +1133,14 @@ impl QualityCheck {
                                     CVVDP::PROPERTY_NAMES.join(", ")
                                 ))
                             })
-                    })?
-                }
-            },
-        };
-        if temporal {
-            finish_temporal_compare(comparison_error.map_or(Ok(()), Err), compare_thread)?;
-        }
-
-        if !temporal {
-            progress_tx.send(SequenceStatus::Whole(Status::Completed {
-                id: "Compare".to_owned(),
-            }))?;
-        }
-        drop(progress_tx);
+                            },
+                        )?
+                    }
+                },
+            };
+            Ok(())
+        })();
+        finish_temporal_compare(comparison, compare_thread)?;
 
         if cancelled.load(sync::atomic::Ordering::Relaxed) {
             bail!(QualityCheckError::Cancelled);
@@ -1056,6 +1155,21 @@ impl QualityCheck {
                 completed_on: scene_completed_on[index],
             })
             .collect::<Vec<_>>();
+
+        Self::validate_measurements(config, scene_frame_indices, &measurements)?;
+        for ((index, _), measurement) in scene_frame_indices.iter().zip(&measurements) {
+            Self::report_scene_score(
+                config,
+                *index,
+                &measurement.scores,
+                total_frames,
+                total_frames,
+                progress_tx,
+            )?;
+        }
+        let _ = progress_tx.send(SequenceStatus::Whole(Status::Completed {
+            id: "Compare".to_owned(),
+        }));
 
         Ok(measurements)
     }
@@ -1073,6 +1187,8 @@ struct SceneMeasurement {
     started_on: u128,
     completed_on: u128,
 }
+
+type PluginSceneState = (Vec<Vec<f64>>, Vec<bool>, Vec<u128>, Vec<u128>);
 
 #[derive(Debug, Clone, Error)]
 pub enum QualityCheckError {
@@ -1094,6 +1210,162 @@ pub enum QualityCheckError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn q05_qc_attachment_is_atomic_for_the_whole_batch() {
+        use crate::models::{
+            scene::Scene,
+            sequence::{DefaultSequenceData, target_quality::types::ProbeStatistic},
+        };
+        let original = (0..2)
+            .map(|index| Scene {
+                start_frame: index * 2,
+                end_frame: index * 2 + 2,
+                sub_scenes: None,
+                encoder: Default::default(),
+                sequence_data: DefaultSequenceData::default(),
+            })
+            .collect::<Vec<_>>();
+        let before = serde_json::to_value(&original).expect("scenes");
+        let selection = [(0, vec![0, 1]), (1, vec![2, 3])];
+        for bad in [
+            vec![],
+            vec![1.0],
+            vec![1.0, 2.0, 3.0],
+            vec![1.0, f64::NAN],
+            vec![1.0, f64::INFINITY],
+            vec![1.0, f64::NEG_INFINITY],
+            vec![1.0, -1.0],
+        ] {
+            let mut scenes = original.clone();
+            let config = QualityCheckConfig {
+                statistic: ProbeStatistic::Harmonic,
+                ..Default::default()
+            };
+            let measurements = [vec![2.0, 2.0], bad]
+                .into_iter()
+                .map(|scores| SceneMeasurement {
+                    scores,
+                    started_on: 1,
+                    completed_on: 2,
+                })
+                .collect();
+            let error =
+                QualityCheck::attach_measurements(&mut scenes, &config, &selection, measurements)
+                    .expect_err("bad final scene");
+            assert!(error.is::<MeasurementError>(), "{error:#}");
+            let message = format!("{error:#}");
+            assert!(message.contains("SSIMULACRA2 scene 1 pass 1"), "{message}");
+            assert_eq!(
+                serde_json::to_value(&scenes).expect("unchanged scenes"),
+                before
+            );
+        }
+        for count in [0, 1, 3] {
+            let mut scenes = original.clone();
+            let measurements = std::iter::repeat_with(|| SceneMeasurement {
+                scores: vec![2.0, 2.0],
+                started_on: 1,
+                completed_on: 2,
+            })
+            .take(count)
+            .collect();
+            let error = QualityCheck::attach_measurements(
+                &mut scenes,
+                &Default::default(),
+                &selection,
+                measurements,
+            )
+            .expect_err("measurement count");
+            assert!(
+                matches!(error.downcast_ref::<MeasurementError>(), Some(MeasurementError::Count { expected: 2, actual }) if *actual == count)
+            );
+            assert_eq!(serde_json::to_value(&scenes).expect("scenes"), before);
+        }
+        let mut scenes = original;
+        let measurements = std::iter::repeat_with(|| SceneMeasurement {
+            scores: vec![-1.0, 2.0],
+            started_on: 1,
+            completed_on: 2,
+        })
+        .take(2)
+        .collect();
+        QualityCheck::attach_measurements(
+            &mut scenes,
+            &Default::default(),
+            &selection,
+            measurements,
+        )
+        .expect("valid batch");
+        assert!(
+            scenes
+                .iter()
+                .all(|scene| scene.sequence_data.quality_check.quality.completed_on == 2)
+        );
+    }
+
+    #[test]
+    fn q05_plugin_callback_validates_before_index_progress_or_completion() {
+        use crate::models::sequence::target_quality::types::ProbeStatistic;
+        let selection = [(7, vec![4, 5])];
+        for (position, score) in [
+            (2, 1.0),
+            (usize::MAX, 1.0),
+            (0, f64::NAN),
+            (0, f64::INFINITY),
+            (0, f64::NEG_INFINITY),
+        ] {
+            let mut state = (vec![vec![]], vec![false], vec![0], vec![0]);
+            let (tx, rx) = sync::mpsc::channel();
+            let error = QualityCheck::record_plugin_score(
+                &Default::default(),
+                &selection,
+                &mut state,
+                position,
+                score,
+                &tx,
+            )
+            .expect_err("bad callback");
+            assert!(error.is::<MeasurementError>());
+            assert!(state.0[0].is_empty() && !state.1[0] && state.3[0] == 0);
+            assert!(rx.try_iter().next().is_none());
+        }
+        let mut state = (vec![vec![]], vec![false], vec![0], vec![0]);
+        let (tx, rx) = sync::mpsc::channel();
+        let config = QualityCheckConfig {
+            statistic: ProbeStatistic::Harmonic,
+            ..Default::default()
+        };
+        QualityCheck::record_plugin_score(&config, &selection, &mut state, 0, 1.0, &tx)
+            .expect("first value");
+        assert!(
+            QualityCheck::record_plugin_score(&config, &selection, &mut state, 1, -1.0, &tx)
+                .is_err()
+        );
+        assert_eq!(state.0[0], [1.0]);
+        assert!(!state.1[0] && state.3[0] == 0);
+        assert_eq!(
+            rx.try_iter().count(),
+            1,
+            "no scene summary or invalid final frame event"
+        );
+    }
+    #[test]
+    fn q05_qc_owning_group_rejects_missing_extra_and_nonfinite() {
+        let scenes = [(3, vec![0]), (7, vec![2])];
+        for scores in [
+            vec![],
+            vec![1.0],
+            vec![1.0, 2.0, 3.0],
+            vec![1.0, f64::NAN],
+            vec![1.0, f64::INFINITY],
+            vec![1.0, f64::NEG_INFINITY],
+        ] {
+            assert!(
+                super::QualityCheck::group_native_scores(&scores, 2, &scenes).is_err(),
+                "{scores:?}"
+            );
+        }
+    }
     #[test]
     fn m27_live_scene_quality_producer_uses_final_prefix() {
         use super::*;
@@ -1117,7 +1389,8 @@ mod tests {
                     ..Default::default()
                 };
                 let (tx, rx) = sync::mpsc::channel();
-                QualityCheck::report_scene_score(&config, 7, &[2.0, 9.0, 4.0], 3, 6, &tx);
+                QualityCheck::report_scene_score(&config, 7, &[2.0, 9.0, 4.0], 3, 6, &tx)
+                    .expect("score");
                 match rx.try_recv().expect("live scene event") {
                     SequenceStatus::Subprocess {
                         parent:

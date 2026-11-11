@@ -4,6 +4,7 @@
 #include "../../../av-metrics-vship/tests/headers/VshipAPI.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 typedef struct { int history; double sum; } State;
 static void event(const char *name) {
@@ -28,6 +29,10 @@ static int fail(const char *name) {
     return s && !strcmp(s, name);
 }
 static double marker(State *s, int sample) {
+    if (fail("q05-nan")) return NAN;
+    if (fail("q05-inf")) return INFINITY;
+    if (fail("q05-neginf")) return -INFINITY;
+    if (fail("q05-last") && sample >= 470) return NAN;
     double value = sample + 1000 * s->history + 10 * s->sum;
     s->history = sample;
     s->sum += sample;
@@ -43,7 +48,9 @@ const char *fmetrics_error_str(FmetricsErr e) { (void)e; return "M15 combined re
 FmetricsWorkspace *fmetrics_workspace_create(void) { audit("fw+"); return (FmetricsWorkspace *)calloc(1, sizeof(State)); }
 void fmetrics_workspace_destroy(FmetricsWorkspace *p) { free(p); }
 FmetricsErr fmetrics_ssimu2_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, double *s) {
-    (void)w; (void)a; (void)b; *s = 42; return FMETRICS_OK;
+    (void)w; (void)a; (void)b;
+    *s = fail("q05-nan") ? NAN : fail("q05-inf") ? INFINITY : fail("q05-neginf") ? -INFINITY : 42;
+    return FMETRICS_OK;
 }
 FmetricsErr fmetrics_iwssim_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, double *s) { return fmetrics_ssimu2_cmp(w,a,b,s); }
 FmetricsErr fmetrics_msssim_cmp(FmetricsWorkspace *w, const FmetricsImg *a, const FmetricsImg *b, double *s) { return fmetrics_ssimu2_cmp(w,a,b,s); }

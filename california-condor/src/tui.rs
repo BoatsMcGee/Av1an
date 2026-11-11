@@ -451,7 +451,7 @@ pub fn run_target_quality_tui(
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
         let mut tq_app =
-            TargetQualityApp::new(clip_info, initial_scenes, encoder, probe_statistic, &metric);
+            TargetQualityApp::new(clip_info, initial_scenes, encoder, probe_statistic, &metric)?;
         tq_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
@@ -507,7 +507,7 @@ pub fn run_quality_check_tui(
     let ctrlc_cancelled = Arc::clone(&cancelled);
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
-        let mut qc_app = QualityCheckApp::new(clip_info, &initial_scenes, metric, statistic);
+        let mut qc_app = QualityCheckApp::new(clip_info, &initial_scenes, metric, statistic)?;
         qc_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });

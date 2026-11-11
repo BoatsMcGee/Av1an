@@ -84,7 +84,11 @@ pub fn quality_scene_fixture() -> (
                 completed_on: 200,
             };
             let mut sequence_data = CliSequenceData::default();
-            sequence_data.quality_check.quality = pass.clone();
+            sequence_data.quality_check.quality = if pass.scores.is_empty() {
+                QualityPass::default()
+            } else {
+                pass.clone()
+            };
             sequence_data.target_quality.passes = if pass.scores.is_empty() {
                 vec![]
             } else {

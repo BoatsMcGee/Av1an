@@ -251,9 +251,17 @@ pub(super) fn score_probed_frames_from(
             }
             .map_err(describe_error)?;
 
-            let value = frame_score.value(metric).ok_or_else(|| {
-                anyhow::anyhow!("fmetrics returned no score for {}", metric.as_str())
-            })?;
+            let value = frame_score
+                .value(metric)
+                .ok_or({
+                    crate::models::sequence::target_quality::types::MeasurementError::Missing {
+                        position,
+                    }
+                })
+                .with_context(|| format!("fmetrics {} result", config.friendly_name()))?;
+
+            crate::models::sequence::target_quality::types::validate_score(value, position)
+                .with_context(|| format!("fmetrics {} result", config.friendly_name()))?;
 
             on_score(position, value);
             scores.push(value);
@@ -270,13 +278,8 @@ pub(super) fn score_probed_frames_from(
         "fmetrics pass"
     );
 
-    if scores.len() != selected.len() {
-        bail!(
-            "fmetrics scored {} frames but {} were selected",
-            scores.len(),
-            selected.len()
-        );
-    }
+    crate::models::sequence::target_quality::types::validate_scores(&scores, Some(selected.len()))
+        .with_context(|| format!("fmetrics {} result", config.friendly_name()))?;
 
     Ok(scores)
 }
@@ -309,7 +312,20 @@ fn metric_planes(planes: PlaneSet<'_>) -> Result<MetricPlaneSet<'_>> {
 /// Turn a scorer error into a message that says what to do about it.
 #[inline]
 fn describe_error(error: av_metrics_fmetrics::FmetricsError) -> anyhow::Error {
-    anyhow::anyhow!(error)
+    let corrupt = matches!(
+        error,
+        av_metrics_fmetrics::FmetricsError::NonFiniteButteraugli { .. }
+    );
+    let error = anyhow::anyhow!(error);
+    if corrupt {
+        error.context(
+            crate::models::sequence::target_quality::types::MeasurementError::Statistic(
+                "backend reported a non-finite Butteraugli result",
+            ),
+        )
+    } else {
+        error
+    }
 }
 
 #[cfg(test)]

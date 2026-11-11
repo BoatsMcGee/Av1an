@@ -6,7 +6,7 @@ use std::{
     time::SystemTime,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use itertools::Itertools;
 use thiserror::Error;
 use tracing::{debug, error, trace};
@@ -35,7 +35,10 @@ use crate::{
             target_quality::{
                 TargetQualityConfig, TargetQualityConfigHandler, TargetQualityData,
                 TargetQualityDataHandler,
-                types::{InterpolationMethod, QualityMetric, QualityPass},
+                types::{
+                    InterpolationMethod, MeasurementError, QualityMetric, QualityPass,
+                    validate_scores,
+                },
             },
         },
     },
@@ -210,6 +213,13 @@ where
             .iter()
             .map(|scene| config.probing.strategy.frame_indices(scene.start_frame, scene.end_frame))
             .collect::<Result<Vec<_>>>()?;
+        // Validate every claimed history before restoring even the first scene.
+        for (index, (scene, indices)) in condor.scenes.iter().zip(&scene_frame_indices).enumerate()
+        {
+            if let Ok(data) = scene.sequence_data.get_target_quality() {
+                Self::validate_history(&config, index, indices.len(), &data.passes)?;
+            }
+        }
         let input = if let Some(input) = self.input.as_mut() {
             input
         } else if let Some(input_model) = &config.input {
@@ -228,7 +238,7 @@ where
             let Ok(data) = scene.sequence_data.get_target_quality() else {
                 continue;
             };
-            let history = Self::quantizer_score_history(&config, &data.passes);
+            let history = Self::quantizer_score_history(&config, &data.passes)?;
             if let Some(q) = Self::measured_quantizer(&config.metric, &history) {
                 scene.encoder.set_quantizer(q);
             }
@@ -279,20 +289,20 @@ where
                         passes,
                     }
                 })
-                .filter(|task| {
+                .map(|task| -> Result<Option<Task>> {
                     // Skip if last probe scored within target
-                    !task
+                    let previous = task
                         .passes
                         .get(pass.saturating_sub(2) as usize) // Previous pass
                         .or_else(|| task.passes.last()) // Last pass
-                        .is_some_and(|quality_pass| {
-                            config.metric.score_within_target(
-                                config.metric.calculate_score(config.probing.statistic, &quality_pass.scores),
-                            )
-                        })
+                        .map(|quality_pass| config.metric.calculate_score(config.probing.statistic, &quality_pass.scores))
+                        .transpose()?;
+                    Ok((!previous.is_some_and(|score| config.metric.score_within_target(score))).then_some(task))
                 })
-                .map(|mut task| {
-                    let quantizer_score_history = Self::quantizer_score_history(&config, &task.passes);
+                .filter_map(Result::transpose)
+                .map(|task| {
+                    let mut task = task?;
+                    let quantizer_score_history = Self::quantizer_score_history(&config, &task.passes)?;
                     let Some(predicted_quantizer) = Self::next_probe_quantizer(
                         &config,
                         &task.encoder,
@@ -421,25 +431,25 @@ where
             let (completed_tasks, pass_warnings) = probed?;
             relayed?;
 
+            let mut staged = condor.scenes.clone();
+            let mut completions = Vec::with_capacity(completed_tasks.len());
             for completed_task in completed_tasks {
                 // Update Target Quality Passes
-                condor.scenes[completed_task.original_index]
+                staged[completed_task.original_index]
                     .sequence_data
                     .get_target_quality_mut()?
                     .passes = completed_task.passes.clone();
 
                 let quantizer_score_history =
-                    Self::quantizer_score_history(&config, &completed_task.passes);
+                    Self::quantizer_score_history(&config, &completed_task.passes)?;
                 let final_quantizer =
                     Self::measured_quantizer(&config.metric, &quantizer_score_history)
                         .ok_or(TargetQualityError::QualityMeasurementFailed)?;
-                condor.scenes[completed_task.original_index]
-                    .encoder
-                    .set_quantizer(final_quantizer);
+                staged[completed_task.original_index].encoder.set_quantizer(final_quantizer);
 
                 let quality_pass = completed_task.passes.last().expect("passes is not empty");
 
-                progress_tx.send(SequenceStatus::Subprocess {
+                completions.push(SequenceStatus::Subprocess {
                     parent: Status::Processing {
                         id: DETAILS.name.to_owned(),
                         completion: SequenceCompletion::Passes {
@@ -453,9 +463,13 @@ where
                             &config,
                             completed_task.original_index,
                             quality_pass,
-                        ),
+                        )?,
                     },
-                })?;
+                });
+            }
+            condor.scenes = staged;
+            for completion in completions {
+                progress_tx.send(completion)?;
             }
 
             if !pass_warnings.is_empty() {
@@ -617,16 +631,63 @@ impl TargetQuality {
     fn quantizer_score_history(
         config: &TargetQualityConfig,
         passes: &[QualityPass],
-    ) -> Vec<(f64, f64)> {
+    ) -> Result<Vec<(f64, f64)>> {
         passes
             .iter()
-            .map(|pass| {
-                (
+            .enumerate()
+            .map(|(index, pass)| {
+                ensure!(
+                    pass.quantizer.is_finite(),
+                    MeasurementError::Record("quantizer")
+                );
+                Ok((
                     pass.quantizer,
-                    config.metric.calculate_score(config.probing.statistic, &pass.scores),
-                )
+                    config
+                        .metric
+                        .calculate_score(config.probing.statistic, &pass.scores)
+                        .with_context(|| {
+                            format!(
+                                "Target Quality {} history pass {}",
+                                config.metric.friendly_name(),
+                                index + 1
+                            )
+                        })?,
+                ))
             })
             .collect()
+    }
+
+    fn validate_history(
+        config: &TargetQualityConfig,
+        scene: usize,
+        expected: usize,
+        passes: &[QualityPass],
+    ) -> Result<()> {
+        for (index, pass) in passes.iter().enumerate() {
+            validate_scores(&pass.scores, Some(expected))
+                .and_then(|()| {
+                    ensure!(
+                        pass.quantizer.is_finite(),
+                        MeasurementError::Record("quantizer")
+                    );
+                    ensure!(
+                        pass.bitrate.is_finite(),
+                        MeasurementError::Record("bitrate")
+                    );
+                    config
+                        .metric
+                        .calculate_score(config.probing.statistic, &pass.scores)
+                        .map(|_| ())
+                })
+                .with_context(|| {
+                    format!(
+                        "Target Quality {} scene {scene} history pass {}",
+                        config.metric.friendly_name(),
+                        index + 1
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     fn quantizer_bounds(
@@ -665,13 +726,13 @@ impl TargetQuality {
         config: &TargetQualityConfig,
         index: usize,
         pass: &QualityPass,
-    ) -> SequenceCompletion {
-        SequenceCompletion::SceneQuality {
+    ) -> Result<SequenceCompletion> {
+        Ok(SequenceCompletion::SceneQuality {
             index: index as u64,
             quantizer: pass.quantizer,
-            score: config.metric.calculate_score(config.probing.statistic, &pass.scores),
+            score: config.metric.calculate_score(config.probing.statistic, &pass.scores)?,
             bitrate: pass.bitrate,
-        }
+        })
     }
 
     #[inline]
@@ -960,6 +1021,12 @@ impl TargetQuality {
         }
         for task in tasks {
             task.encoder.validate()?;
+            Self::validate_history(
+                config,
+                task.original_index,
+                task.frame_indices.len(),
+                &task.passes,
+            )?;
         }
         super::parallel_encoder::artifact::preflight(options.validate_frame_count)?;
         let warnings: Vec<anyhow::Error> = vec![];
@@ -1452,13 +1519,14 @@ impl TargetQuality {
                 },
             })
         };
-        let Some(mut scores) = Self::route_compare_scores(
+        let Some(scores) = Self::route_compare_scores(
             native_scores,
             engine,
             &config.metric,
             compare_progress_tx,
             compare_thread,
             plugin,
+            |scores| Self::validate_task_scores(config, tasks, scores),
         )?
         else {
             return Ok((Vec::new(), warnings));
@@ -1478,9 +1546,11 @@ impl TargetQuality {
             .map(|result| (result.scene, result))
             .collect::<HashMap<_, _>>();
 
+        let grouped = Self::group_task_scores(config, tasks, scores)?;
         let tasks = tasks
             .iter()
-            .map(|task| {
+            .zip(grouped)
+            .map(|(task, scores)| {
                 let mut completed_task = task.clone();
                 // A task skipped as already encoded has no result, so its size
                 // comes from the file and its timings from its
@@ -1494,7 +1564,7 @@ impl TargetQuality {
                 );
                 completed_task.passes.push(QualityPass {
                     quantizer: task.encoder.quantizer().expect("quantizer exists"),
-                    scores: scores.drain(0..task.frame_indices.len()).collect(),
+                    scores,
                     bitrate,
                     started_on: task.passes.last().map_or_else(
                         || {
@@ -1517,6 +1587,49 @@ impl TargetQuality {
         Ok((tasks, warnings))
     }
 
+    fn group_task_scores(
+        config: &TargetQualityConfig,
+        tasks: &[Task],
+        mut scores: Vec<f64>,
+    ) -> Result<Vec<Vec<f64>>> {
+        Self::validate_task_scores(config, tasks, &scores)?;
+        Ok(tasks
+            .iter()
+            .map(|task| scores.drain(..task.frame_indices.len()).collect())
+            .collect())
+    }
+
+    fn validate_task_scores(
+        config: &TargetQualityConfig,
+        tasks: &[Task],
+        scores: &[f64],
+    ) -> Result<()> {
+        let expected = tasks.iter().map(|task| task.frame_indices.len()).sum();
+        validate_scores(scores, Some(expected)).with_context(|| {
+            format!(
+                "Target Quality {} flattened measurement",
+                config.metric.friendly_name()
+            )
+        })?;
+        let mut offset = 0;
+        for task in tasks {
+            let end = offset + task.frame_indices.len();
+            config
+                .metric
+                .calculate_score(config.probing.statistic, &scores[offset..end])
+                .with_context(|| {
+                    format!(
+                        "Target Quality {} scene {} pass {}",
+                        config.metric.friendly_name(),
+                        task.original_index,
+                        task.passes.len() + 1
+                    )
+                })?;
+            offset = end;
+        }
+        Ok(())
+    }
+
     /// Whether `pass` was recorded for every scene.
     ///
     /// A pass is scored for all its scenes at once, so a pass recorded for some
@@ -1536,25 +1649,25 @@ impl TargetQuality {
         compare_progress_tx: sync::mpsc::Sender<SequenceStatus>,
         compare_thread: thread::JoinHandle<Result<()>>,
         plugin: impl FnOnce(sync::mpsc::Sender<SequenceStatus>) -> Result<Vec<f64>>,
+        admit: impl Fn(&[f64]) -> Result<()>,
     ) -> Result<Option<Vec<f64>>> {
         let is_vmaf = matches!(metric, QualityMetric::VMAF { .. });
         let temporal = metrics::scene_temporal(metric);
         let mut terminal_error = None;
         let scores = match native {
-            Some(Ok(scores)) if !scores.is_empty() => Some(scores),
-            Some(Ok(_)) if is_vmaf => bail!(TargetQualityError::QualityMeasurementFailed),
-            Some(Ok(_)) => {
-                error!(engine = ?engine.map(Engine::as_str), metric = metric.friendly_name(), "native scoring produced no scores, falling back to the VapourSynth plugin");
+            Some(Ok(scores)) => Some(scores),
+            Some(Err(error)) if is_vmaf => {
+                terminal_error = Some(error);
                 None
             },
             Some(Err(error))
                 if error.is::<metrics::probe::Cancelled>()
-                    || error.is::<metrics::SceneScoringStarted>() =>
+                    || error.is::<metrics::SceneScoringStarted>()
+                    || error.is::<MeasurementError>() =>
             {
                 terminal_error = Some(error);
                 None
             },
-            Some(Err(error)) if is_vmaf => return Err(error),
             Some(Err(error)) => {
                 log_native_fallback(&error, engine, metric);
                 None
@@ -1562,29 +1675,41 @@ impl TargetQuality {
             None => None,
         };
         let terminal = terminal_error.is_some();
+        let source = if scores.is_some() || terminal {
+            engine.map_or("native", Engine::as_str)
+        } else {
+            "vapoursynth"
+        };
+        let completion_tx = compare_progress_tx.clone();
         let comparison = if let Some(error) = terminal_error {
             // Disconnect before joining; retaining this sender would deadlock.
             drop(compare_progress_tx);
             Err(error)
         } else if let Some(scores) = scores {
-            let _ = compare_progress_tx.send(SequenceStatus::Whole(Status::Completed {
-                id: "Compare".to_owned(),
-            }));
             drop(compare_progress_tx);
             Ok(scores)
         } else {
             plugin(compare_progress_tx)
         };
-        let comparison = if temporal {
+        let comparison = comparison
+            .and_then(|scores| {
+                validate_scores(&scores, None)?;
+                admit(&scores)?;
+                Ok(scores)
+            })
+            .with_context(|| format!("{source} {} measurement", metric.friendly_name()));
+        if comparison.is_ok() {
+            let _ = completion_tx.send(SequenceStatus::Whole(Status::Completed {
+                id: "Compare".to_owned(),
+            }));
+        }
+        drop(completion_tx);
+        let comparison = if temporal || comparison.is_err() {
             finish_temporal_compare(comparison, compare_thread)
-        } else if terminal {
+        } else {
+            // Preserve the successful non-temporal pass's fatal relay-send policy.
             compare_thread.join().expect("compare progress thread should join")?;
             comparison
-        } else {
-            // Preserve legacy non-temporal plugin error routing and relay policy.
-            let scores = comparison?;
-            compare_thread.join().expect("compare progress thread should join")?;
-            Ok(scores)
         };
         match comparison {
             Err(error) if (temporal || terminal) && error.is::<metrics::probe::Cancelled>() => {
@@ -1841,7 +1966,16 @@ pub(super) fn log_native_fallback(
 mod tests {
     use std::sync;
 
-    use super::{SequenceCompletion, SequenceStatus, Status, TargetQuality, Task};
+    use super::{
+        SequenceCompletion, SequenceStatus, Status, TargetQuality, Task, spawn_compare_progress,
+    };
+    use crate::{
+        metrics::Engine,
+        models::sequence::target_quality::{
+            TargetQualityConfig,
+            types::{MeasurementError, QualityPass},
+        },
+    };
 
     use crate::{
         core::{
@@ -2288,7 +2422,8 @@ mod tests {
             assert!(warnings.is_empty(), "{warnings:?}");
             task = completed.into_iter().next().expect("accepted task");
         }
-        let history = TargetQuality::quantizer_score_history(&config, &task.passes);
+        let history =
+            TargetQuality::quantizer_score_history(&config, &task.passes).expect("history");
         assert!(
             history[0].1 > history[1].1,
             "fixture must distinguish quantizers: {history:?}"
@@ -2359,7 +2494,7 @@ mod tests {
         assert_eq!(measured[2].scores.len(), 4);
         let final_q = scene.encoder.quantizer().expect("final quantizer");
         assert!(measured.iter().any(|pass| pass.quantizer == final_q));
-        let accepted = TargetQuality::quantizer_score_history(&config, measured);
+        let accepted = TargetQuality::quantizer_score_history(&config, measured).expect("history");
         eprintln!("Q04 accepted={accepted:?}, target={target}, final={final_q}");
         assert_eq!(
             TargetQuality::verified_quantizer(&config.metric, &accepted),
@@ -2649,8 +2784,9 @@ mod tests {
                 },
                 ..Default::default()
             };
-            let history = TargetQuality::quantizer_score_history(&config, &passes);
-            match TargetQuality::quality_completion(&config, 7, &passes[0]) {
+            let history =
+                TargetQuality::quantizer_score_history(&config, &passes).expect("history");
+            match TargetQuality::quality_completion(&config, 7, &passes[0]).expect("completion") {
                 SequenceCompletion::SceneQuality {
                     index,
                     quantizer,
@@ -2805,6 +2941,137 @@ mod tests {
             &[task_with_passes(0, 1)],
             2
         ));
+    }
+
+    #[test]
+    fn q05_tq_owning_group_rejects_missing_extra_and_nonfinite() {
+        let mut tasks = [task_with_passes(3, 0), task_with_passes(7, 0)];
+        for task in &mut tasks {
+            task.frame_indices = vec![task.original_index];
+        }
+        for scores in [
+            vec![],
+            vec![1.0],
+            vec![1.0, 2.0, 3.0],
+            vec![1.0, f64::NAN],
+            vec![1.0, f64::INFINITY],
+            vec![1.0, f64::NEG_INFINITY],
+        ] {
+            let result = std::panic::catch_unwind(|| {
+                TargetQuality::group_task_scores(&Default::default(), &tasks, scores)
+            });
+            assert!(
+                matches!(result, Ok(Err(_))),
+                "missing/extra/nonfinite must return Err, never drain/panic: {result:?}"
+            );
+            assert!(tasks.iter().all(|task| task.passes.is_empty()));
+        }
+    }
+
+    #[test]
+    fn q05_tq_route_admits_all_scenes_before_completion_and_never_retries_corruption() {
+        use crate::models::sequence::target_quality::types::ProbeStatistic;
+        let mut tasks = [task_with_passes(3, 0), task_with_passes(7, 0)];
+        for task in &mut tasks {
+            task.frame_indices = vec![task.original_index, task.original_index + 1];
+        }
+        let mut config = TargetQualityConfig::default();
+        config.probing.statistic = ProbeStatistic::Harmonic;
+        for scores in [
+            vec![],
+            vec![2.0; 3],
+            vec![2.0; 5],
+            vec![2.0, 2.0, 1.0, f64::NAN],
+            vec![2.0, 2.0, 1.0, f64::INFINITY],
+            vec![2.0, 2.0, 1.0, f64::NEG_INFINITY],
+            vec![2.0, 2.0, 1.0, -1.0],
+        ] {
+            for plugin in [false, true] {
+                let (tx, rx) = sync::mpsc::channel();
+                let (compare, relay) = spawn_compare_progress(tx);
+                let native = (!plugin).then(|| Ok(scores.clone()));
+                let error = TargetQuality::route_compare_scores(
+                    native,
+                    Some(Engine::Fmetrics),
+                    &config.metric,
+                    compare,
+                    relay,
+                    |tx| {
+                        assert!(plugin, "corruption retried plugin");
+                        drop(tx);
+                        Ok(scores.clone())
+                    },
+                    |values| TargetQuality::validate_task_scores(&config, &tasks, values),
+                )
+                .expect_err("invalid batch");
+                assert!(error.is::<MeasurementError>(), "{error:#}");
+                if scores == [2.0, 2.0, 1.0, -1.0] {
+                    assert!(format!("{error:#}").contains("scene 7 pass 1"), "{error:#}");
+                }
+                assert!(tasks.iter().all(|task| task.passes.is_empty()));
+                assert!(
+                    matches!(rx.try_recv(), Err(sync::mpsc::TryRecvError::Disconnected)),
+                    "no completed event; relay joined/disconnected"
+                );
+            }
+        }
+        let (tx, rx) = sync::mpsc::channel();
+        let (compare, relay) = spawn_compare_progress(tx);
+        let mut fallbacks = 0;
+        let scores = TargetQuality::route_compare_scores(
+            Some(Err(anyhow::anyhow!(
+                av_metrics_fmetrics::FmetricsError::LibraryNotFound {
+                    reason: "Q05 test library absent".to_owned()
+                }
+            )
+            .context("opening native library"))),
+            Some(Engine::Fmetrics),
+            &config.metric,
+            compare,
+            relay,
+            |tx| {
+                fallbacks += 1;
+                drop(tx);
+                Ok(vec![2.0; 4])
+            },
+            |values| TargetQuality::validate_task_scores(&config, &tasks, values),
+        )
+        .expect("availability fallback")
+        .expect("complete");
+        assert_eq!(fallbacks, 1);
+        assert_eq!(scores, [2.0; 4]);
+        assert!(
+            matches!(rx.try_recv(), Ok(SequenceStatus::Whole(Status::Completed { id })) if id == "Compare")
+        );
+    }
+
+    #[test]
+    fn q05_claimed_tq_history_rejects_bad_counts_values_and_reductions() {
+        use crate::models::sequence::target_quality::types::ProbeStatistic;
+        let mut config = TargetQualityConfig::default();
+        config.probing.statistic = ProbeStatistic::Harmonic;
+        for scores in [
+            vec![],
+            vec![1.0],
+            vec![1.0; 3],
+            vec![1.0, f64::NAN],
+            vec![1.0, f64::INFINITY],
+            vec![1.0, -1.0],
+        ] {
+            let error = TargetQuality::validate_history(
+                &config,
+                7,
+                2,
+                &[QualityPass {
+                    scores,
+                    ..Default::default()
+                }],
+            )
+            .expect_err("claimed corrupt history");
+            assert!(error.is::<MeasurementError>());
+            assert!(format!("{error:#}").contains("scene 7 history pass 1"));
+        }
+        TargetQuality::validate_history(&config, 7, 2, &[]).expect("no history is unmeasured");
     }
 
     #[test]

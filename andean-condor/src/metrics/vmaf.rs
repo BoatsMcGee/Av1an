@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use av_metrics_vmaf::{
     BackendPreference, PlaneSet as MetricPlaneSet, PlaneSource as MetricPlaneSource, VideoFormat,
     VmafConfig as ScorerConfig, VmafError, VmafModel, VmafScorer,
@@ -178,6 +178,8 @@ pub fn score_probed_frames(
 /// Reports configuration, decode, cancellation and native errors as in
 /// [`score_probed_frames`]. Failed/rejected pairs have no submission callback;
 /// finalization/query failures have no score callbacks or partial result vector.
+/// Incomplete/non-finite native results are measurement errors; all values are
+/// validated before the first score callback.
 #[inline]
 #[expect(
     clippy::too_many_arguments,
@@ -261,13 +263,8 @@ pub fn score_probed_frames_with_progress(
         "vmaf pass phases"
     );
 
-    if scores.len() != selected.len() {
-        bail!(
-            "VMAF scored {} frames but {} were selected",
-            scores.len(),
-            selected.len()
-        );
-    }
+    crate::models::sequence::target_quality::types::validate_scores(&scores, Some(selected.len()))
+        .context("vmaf VMAF result")?;
 
     for (position, score) in scores.iter().enumerate() {
         on_score(position, *score);
