@@ -56,6 +56,8 @@ scene ranges are errors, not empty measurements.
 
 `probing.statistic` variants: `"Mean"`, `"Median"`, `"Harmonic"`, `{ "Percentile": <f64> }`, `{ "StandardDeviationDistance": { "sigma": <f64> } }`, `"Mode"`, `"Minimum"`, `"Maximum"`, `"RootMeanSquare"`.
 
+Percentiles select sorted index `floor(p / 100 * len)`, capped at the final index: `0` is the minimum and `100` the maximum.
+
 Measured sets must be nonempty, contain exactly one finite score per selected
 frame, and produce a finite, defined statistic. Incomplete or invalid batches are
 not attached or saved. Percentile parameters must be finite and within `0..=100`;

@@ -440,9 +440,10 @@ impl ProbeStatistic {
                     scores.len() as f64 / sum_reciprocals
                 }
             },
-            ProbeStatistic::Percentile(index) => *scores
-                .get((*index / 100.0 * scores.len() as f64) as usize)
-                .unwrap_or(&scores[0]),
+            ProbeStatistic::Percentile(index) => {
+                let index = ((*index / 100.0 * scores.len() as f64) as usize).min(scores.len() - 1);
+                scores[index]
+            },
             ProbeStatistic::StandardDeviationDistance { sigma } => {
                 let average = ProbeStatistic::Mean.calculate(&scores)?;
                 let minimum = ProbeStatistic::Minimum.calculate(&scores)?;
@@ -631,6 +632,46 @@ mod tests {
             ProbeStatistic::Harmonic.calculate(&[0.0, 1.0, -1.0]).expect("zero wins"),
             0.0
         );
+    }
+
+    #[test]
+    fn q06_percentile_caps_at_maximum_without_changing_lower_ranks() {
+        let scores = [4.0, 1.0, 3.0, 2.0];
+        for (percentile, expected) in
+            [(0.0, 1.0), (25.0, 2.0), (50.0, 3.0), (75.0, 4.0), (99.0, 4.0), (100.0, 4.0)]
+        {
+            let statistic = ProbeStatistic::Percentile(percentile);
+            assert_eq!(statistic.calculate(&scores).expect("percentile"), expected);
+            assert_eq!(
+                QualityMetric::default()
+                    .calculate_score(statistic, &scores)
+                    .expect("independent"),
+                expected
+            );
+        }
+        for percentile in [0.0, 100.0] {
+            let statistic = ProbeStatistic::Percentile(percentile);
+            assert_eq!(statistic.calculate(&[-2.0]).expect("singleton"), -2.0);
+            assert!(statistic.calculate(&[]).is_err());
+        }
+        for percentile in [-1.0, 101.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(ProbeStatistic::Percentile(percentile).calculate(&scores).is_err());
+        }
+        let temporal = QualityMetric::CVVDP {
+            target_range: (0.0, 10.0),
+            resolution: None,
+            display_model: None,
+            resize_to_display: None,
+            disable_temporal: None,
+            gpu_id: None,
+        };
+        assert_eq!(
+            temporal
+                .calculate_score(ProbeStatistic::Percentile(100.0), &scores)
+                .expect("final prefix"),
+            2.0
+        );
+        assert_eq!(scores, [4.0, 1.0, 3.0, 2.0]);
     }
 
     #[test]
