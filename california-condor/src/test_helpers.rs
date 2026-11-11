@@ -281,8 +281,9 @@ fn generate_test_clip_inner(path: &Path) {
 /// RAII guard that temporarily changes the process working directory and
 /// restores the previous one when dropped (even on panic).
 ///
-/// This prevents the process-wide CWD from pointing at a deleted temporary
-/// directory after a test finishes, which would break subsequent tests.
+/// Retained for compatibility. This mutates process-wide state: restoration
+/// does not protect concurrent tests or children that inherit the temporary
+/// cwd. Use only in a process with no concurrent cwd users or child spawns.
 pub struct CwdGuard(PathBuf);
 
 impl CwdGuard {
@@ -300,6 +301,117 @@ impl Drop for CwdGuard {
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.0);
     }
+}
+
+/// Run a default-path handler body in exactly one bounded libtest child.
+/// The parent owns its cwd fixture until reaping; neither side changes cwd.
+#[cfg(test)]
+pub(crate) fn isolated_default_path_test(test_name: &str, body: impl FnOnce(&Path)) {
+    use std::{env, fs, sync::mpsc, thread, time::Duration};
+
+    const CHILD: &str = "CONDOR_I09A_CHILD";
+    const FIXTURE: &str = "CONDOR_I09A_FIXTURE";
+    const WATCHDOG: Duration = Duration::from_secs(60);
+    const POLL: Duration = Duration::from_millis(5);
+
+    if let Some(marker) = env::var_os(CHILD) {
+        assert_eq!(marker, test_name, "exact default-path child marker");
+        let fixture = PathBuf::from(env::var_os(FIXTURE).expect("child fixture env"));
+        assert_eq!(env::current_dir().expect("child cwd"), fixture);
+        // Empty create-new markers are atomic and reject duplicate entry.
+        fs::File::create_new(fixture.join("entered")).expect("child entered marker");
+        let deadline = std::time::Instant::now() + WATCHDOG;
+        while !fixture.join("release").is_file() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child release watchdog"
+            );
+            // Condition wait only; no retry of handler work or latency assertion.
+            thread::sleep(POLL);
+        }
+        body(&fixture);
+        fs::File::create_new(fixture.join("completed")).expect("child completed marker");
+        println!("I09a default body completed: {test_name}");
+        return;
+    }
+    assert!(
+        env::var_os(FIXTURE).is_none(),
+        "fixture without child marker"
+    );
+
+    // Keep the shared clip's OnceLock initialization in the parent so two
+    // fresh re-exec processes cannot both generate the same cached file.
+    get_test_video();
+    let cwd = env::current_dir().expect("parent cwd");
+    let temp = tempfile::tempdir().expect("parent-owned child fixture");
+    let fixture = temp.path().canonicalize().expect("absolute fixture cwd");
+    thread::scope(|scope| {
+        let (stop, stopped) = mpsc::channel();
+        let observed_fixture = &fixture;
+        let observed_cwd = &cwd;
+        let observer = scope.spawn(move || {
+            let mut entered = false;
+            loop {
+                assert_eq!(
+                    env::current_dir().expect("parent observer cwd"),
+                    *observed_cwd
+                );
+                if !entered && observed_fixture.join("entered").is_file() {
+                    // The child is paused immediately before the real body:
+                    // check the parent now, not merely after restoration.
+                    assert_eq!(
+                        env::current_dir().expect("paused parent cwd"),
+                        *observed_cwd
+                    );
+                    fs::File::create_new(observed_fixture.join("release"))
+                        .expect("release child body");
+                    entered = true;
+                }
+                match stopped.recv_timeout(POLL) {
+                    Err(mpsc::RecvTimeoutError::Timeout) => {},
+                    _ => break,
+                }
+            }
+            assert_eq!(
+                env::current_dir().expect("final parent observer cwd"),
+                *observed_cwd
+            );
+            entered
+        });
+        // assert_cmd kills and waits on watchdog expiry before returning.
+        let output = assert_cmd::Command::new(env::current_exe().expect("libtest executable"))
+            .args(["--exact", test_name, "--nocapture"])
+            .env(CHILD, test_name)
+            .env(FIXTURE, &fixture)
+            .current_dir(&fixture)
+            .timeout(WATCHDOG)
+            .output()
+            .expect("run default-path child");
+        let _ = stop.send(());
+        let entered = observer.join().expect("parent cwd observer");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "default-path child failed: {output:?}"
+        );
+        assert!(
+            stdout.contains("running 1 test\n")
+                && stdout.contains(&format!("test {test_name} ... ok"))
+                && stdout.contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
+                && stdout.contains(&format!("I09a default body completed: {test_name}")),
+            "child must execute exactly the named body: {output:?}"
+        );
+        assert!(entered, "child must enter the default-path body");
+        assert!(
+            fixture.join("completed").is_file(),
+            "body assertions completed"
+        );
+        assert!(
+            fixture.join("condor.json").is_file(),
+            "real default config saved"
+        );
+    });
+    assert_eq!(env::current_dir().expect("parent cwd after reaping"), cwd);
 }
 
 /// Build a default Configuration given a test video, output path, and temp

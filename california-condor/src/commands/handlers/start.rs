@@ -294,7 +294,6 @@ mod tests {
         },
         vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
     };
-    use serial_test::serial;
 
     use super::*;
     use crate::{
@@ -302,41 +301,43 @@ mod tests {
             ConcatenationMethod, DecoderMethod, EncoderMethod, QualityMetric as QualityMetricBase,
         },
         test_helpers::{
-            CwdGuard, check_benchmarker, check_bitrate_optimizer, check_encoder, check_input,
+            check_benchmarker, check_bitrate_optimizer, check_encoder, check_input,
             check_noise_detector, check_noise_scaler, check_output, check_parallel_encoder,
             check_scene_concatenator, check_scene_detector, check_speed_scaler,
-            check_target_quality, default_config, get_test_video, vapoursynth_script,
+            check_target_quality, default_config, get_test_video, isolated_default_path_test,
+            vapoursynth_script,
         },
         utils::hash_path::hash_path,
     };
 
-    #[serial(needs_cwd)]
     #[test]
-    fn start_creates_default_config() {
+    fn i09a_start_creates_default_config() {
+        isolated_default_path_test(
+            "commands::handlers::start::tests::i09a_start_creates_default_config",
+            start_creates_default_config,
+        );
+    }
+
+    fn start_creates_default_config(temp: &Path) {
         let test_video = get_test_video();
         let input_abs = path_abs::PathAbs::new(&test_video.path)
             .expect("path_abs should succeed")
             .as_path()
             .to_path_buf();
-        let temp = tempfile::tempdir().expect("temp directory");
-        let temp_abs = path_abs::PathAbs::new(temp.path().join(hash_path(&input_abs)))
+        let temp_abs = path_abs::PathAbs::new(temp.join(hash_path(&input_abs)))
             .expect("path_abs should succeed")
             .as_path()
             .to_path_buf();
-        let output = temp.path().join("out.mkv");
+        let output = temp.join("out.mkv");
         let output_abs = path_abs::PathAbs::new(&output)
             .expect("path_abs should succeed")
             .as_path()
             .to_path_buf();
-        let config_path = temp.path().join("condor.json");
+        let config_path = temp.join("condor.json");
         let config_path_abs = path_abs::PathAbs::new(&config_path)
             .expect("path_abs should succeed")
             .as_path()
             .to_path_buf();
-
-        // Must run inside the temp directory so the default config path
-        // resolves there
-        let _cwd_guard = CwdGuard::set(temp.path());
 
         let expected_config = default_config(&test_video, &output, &temp_abs);
 
