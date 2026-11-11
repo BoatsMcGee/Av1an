@@ -281,37 +281,16 @@ where
                 })
                 .map(|mut task| {
                     let quantizer_score_history = Self::quantizer_score_history(&config, &task.passes);
-                    let sorted_quantizer_score_history = quantizer_score_history
-                        .iter()
-                        .sorted_by(|(_, score1), (_, score2)| {
-                            score1.partial_cmp(score2).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .collect::<Vec<_>>();
-                    let inverse_metric = matches!(config.metric, QualityMetric::BUTTERAUGLI { .. });
                     let target_score =
                         config.metric.target_range().0.midpoint(config.metric.target_range().1);
-                    let lower_quantizer_bound = sorted_quantizer_score_history
-                        .iter()
-                        .find(|(_quantizer, score)| {
-                            if inverse_metric {
-                                *score < target_score
-                            } else {
-                                *score > target_score
-                            }
-                        })
-                        .map_or(config.quantizer_range.0 as f64, |(quantizer, _)| *quantizer);
-                    let upper_quantizer_bound = sorted_quantizer_score_history
-                        .iter()
-                        .rfind(|(_quantizer, score)| {
-                            if inverse_metric {
-                                *score > target_score
-                            } else {
-                                *score < target_score
-                            }
-                        })
-                        .map_or(config.quantizer_range.1 as f64, |(quantizer, _)| *quantizer);
+                    let quantizer_bounds = Self::quantizer_bounds(
+                        config.quantizer_range,
+                        target_score,
+                        &quantizer_score_history,
+                        config.metric.is_inverse_metric(),
+                    );
                     let predicted_quantizer = TargetQuality::predict_quantizer(
-                        (lower_quantizer_bound, upper_quantizer_bound),
+                        quantizer_bounds,
                         target_score,
                         config.interpolators,
                         &quantizer_score_history,
@@ -466,37 +445,16 @@ where
                 // Perform additional prediction
                 let quantizer_score_history =
                     Self::quantizer_score_history(&config, &completed_task.passes);
-                let sorted_quantizer_score_history = quantizer_score_history
-                    .iter()
-                    .sorted_by(|(_, score1), (_, score2)| {
-                        score1.partial_cmp(score2).unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .collect::<Vec<_>>();
-                let inverse_metric = matches!(config.metric, QualityMetric::BUTTERAUGLI { .. });
                 let target_score =
                     config.metric.target_range().0.midpoint(config.metric.target_range().1);
-                let lower_quantizer_bound = sorted_quantizer_score_history
-                    .iter()
-                    .find(|(_quantizer, score)| {
-                        if inverse_metric {
-                            *score < target_score
-                        } else {
-                            *score > target_score
-                        }
-                    })
-                    .map_or(config.quantizer_range.0 as f64, |(quantizer, _)| *quantizer);
-                let upper_quantizer_bound = sorted_quantizer_score_history
-                    .iter()
-                    .rfind(|(_quantizer, score)| {
-                        if inverse_metric {
-                            *score > target_score
-                        } else {
-                            *score < target_score
-                        }
-                    })
-                    .map_or(config.quantizer_range.1 as f64, |(quantizer, _)| *quantizer);
+                let quantizer_bounds = Self::quantizer_bounds(
+                    config.quantizer_range,
+                    target_score,
+                    &quantizer_score_history,
+                    config.metric.is_inverse_metric(),
+                );
                 let predicted_quantizer = TargetQuality::predict_quantizer(
-                    (lower_quantizer_bound, upper_quantizer_bound),
+                    quantizer_bounds,
                     target_score,
                     config.interpolators,
                     &quantizer_score_history,
@@ -596,6 +554,32 @@ impl TargetQuality {
                 )
             })
             .collect()
+    }
+
+    fn quantizer_bounds(
+        quantizer_range: (u32, u32),
+        target_score: f64,
+        quantizer_score_history: &[(f64, f64)],
+        inverse_metric: bool,
+    ) -> (f64, f64) {
+        let sorted = quantizer_score_history
+            .iter()
+            .sorted_by(|(_, score1), (_, score2)| {
+                score1.partial_cmp(score2).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .collect::<Vec<_>>();
+        // Exact target probes stay in the verified-quantizer flow, not the strict bracket.
+        let above = sorted.iter().find(|(_, score)| *score > target_score);
+        let below = sorted.iter().rfind(|(_, score)| *score < target_score);
+        let (lower, upper) = if inverse_metric {
+            (below, above)
+        } else {
+            (above, below)
+        };
+        (
+            lower.map_or(quantizer_range.0 as f64, |(quantizer, _)| *quantizer),
+            upper.map_or(quantizer_range.1 as f64, |(quantizer, _)| *quantizer),
+        )
     }
 
     fn quality_completion(
@@ -1767,6 +1751,110 @@ mod tests {
             sequence::target_quality::types::QualityMetric,
         },
     };
+
+    #[test]
+    fn q03_inverse_bounds_use_nearest_probes() {
+        let history = [(20.0, 0.5), (28.0, 0.9), (34.0, 1.2), (40.0, 1.6)];
+        assert_eq!(
+            TargetQuality::quantizer_bounds((5, 55), 1.0, &history, true),
+            (28.0, 34.0)
+        );
+    }
+
+    #[test]
+    fn q03_bounds_preserve_direction_defaults_strictness_and_stable_ties() {
+        let cases = [
+            (
+                "inverse unsorted",
+                true,
+                &[(34.0, 1.2), (20.0, 0.5), (40.0, 1.6), (28.0, 0.9)][..],
+                (28.0, 34.0),
+            ),
+            (
+                "higher mirror unsorted",
+                false,
+                &[(34.0, 0.8), (20.0, 1.5), (40.0, 0.4), (28.0, 1.1)],
+                (28.0, 34.0),
+            ),
+            ("inverse empty", true, &[], (7.0, 51.0)),
+            ("higher empty", false, &[], (7.0, 51.0)),
+            (
+                "inverse below singleton",
+                true,
+                &[(28.0, 0.9)],
+                (28.0, 51.0),
+            ),
+            ("inverse above singleton", true, &[(34.0, 1.2)], (7.0, 34.0)),
+            ("higher below singleton", false, &[(34.0, 0.8)], (7.0, 34.0)),
+            (
+                "higher above singleton",
+                false,
+                &[(28.0, 1.1)],
+                (28.0, 51.0),
+            ),
+            ("inverse exact singleton", true, &[(30.0, 1.0)], (7.0, 51.0)),
+            ("higher exact singleton", false, &[(30.0, 1.0)], (7.0, 51.0)),
+            (
+                "inverse below only",
+                true,
+                &[(20.0, 0.5), (28.0, 0.9)],
+                (28.0, 51.0),
+            ),
+            (
+                "inverse above only",
+                true,
+                &[(34.0, 1.2), (40.0, 1.6)],
+                (7.0, 34.0),
+            ),
+            (
+                "higher above only",
+                false,
+                &[(20.0, 1.5), (28.0, 1.1)],
+                (28.0, 51.0),
+            ),
+            (
+                "higher below only",
+                false,
+                &[(34.0, 0.8), (40.0, 0.4)],
+                (7.0, 34.0),
+            ),
+            (
+                "inverse stable ties and exact target",
+                true,
+                &[
+                    (20.0, 0.5),
+                    (28.0, 0.9),
+                    (27.0, 0.9),
+                    (30.0, 1.0),
+                    (35.0, 1.2),
+                    (34.0, 1.2),
+                    (40.0, 1.6),
+                ],
+                (27.0, 35.0),
+            ),
+            (
+                "higher stable ties and exact target",
+                false,
+                &[
+                    (20.0, 1.5),
+                    (28.0, 1.1),
+                    (27.0, 1.1),
+                    (30.0, 1.0),
+                    (35.0, 0.8),
+                    (34.0, 0.8),
+                    (40.0, 0.4),
+                ],
+                (28.0, 34.0),
+            ),
+        ];
+        for (name, inverse, history, expected) in cases {
+            assert_eq!(
+                TargetQuality::quantizer_bounds((7, 51), 1.0, history, inverse),
+                expected,
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn m27_target_history_gateway_and_verified_quantizer_use_scene_finals() {
