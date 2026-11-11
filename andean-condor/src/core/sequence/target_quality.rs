@@ -222,6 +222,18 @@ where
 
         let mut pass = 1;
 
+        // A resumed/exhausted search may schedule no tasks, but its final q must
+        // still come from recorded measurements. Empty histories leave scenes untouched.
+        for scene in &mut condor.scenes {
+            let Ok(data) = scene.sequence_data.get_target_quality() else {
+                continue;
+            };
+            let history = Self::quantizer_score_history(&config, &data.passes);
+            if let Some(q) = Self::measured_quantizer(&config.metric, &history) {
+                scene.encoder.set_quantizer(q);
+            }
+        }
+
         loop {
             if pass > config.maximum_probes {
                 break;
@@ -281,40 +293,14 @@ where
                 })
                 .map(|mut task| {
                     let quantizer_score_history = Self::quantizer_score_history(&config, &task.passes);
-                    let target_score =
-                        config.metric.target_range().0.midpoint(config.metric.target_range().1);
-                    let quantizer_bounds = Self::quantizer_bounds(
-                        config.quantizer_range,
-                        target_score,
+                    let Some(predicted_quantizer) = Self::next_probe_quantizer(
+                        &config,
+                        &task.encoder,
                         &quantizer_score_history,
-                        config.metric.is_inverse_metric(),
-                    );
-                    let predicted_quantizer = TargetQuality::predict_quantizer(
-                        quantizer_bounds,
-                        target_score,
-                        config.interpolators,
-                        &quantizer_score_history,
-                        match task.encoder {
-                            Encoder::X264 { .. } | Encoder::X265 { .. } => 0.25,
-                            Encoder::SVTAV1 { .. }
-                                if task.encoder.supports_capability_cancel(
-                                    EncoderCapability::SvtAv1QuarterStepCrf,
-                                    &cancelled,
-                                )? =>
-                            {
-                                0.25
-                            },
-                            _ => 1.0,
-                        },
-                    )?;
-
-                    // Skip already processed quantizer
-                    if quantizer_score_history
-                        .iter()
-                        .any(|(quantizer, _)| *quantizer == predicted_quantizer)
-                    {
+                        &cancelled,
+                    )? else {
                         return Ok(None);
-                    }
+                    };
 
                     // Modify encoder to use predicted quantizer
                     task.encoder.set_quantizer(predicted_quantizer);
@@ -442,35 +428,22 @@ where
                     .get_target_quality_mut()?
                     .passes = completed_task.passes.clone();
 
-                // Perform additional prediction
                 let quantizer_score_history =
                     Self::quantizer_score_history(&config, &completed_task.passes);
-                let target_score =
-                    config.metric.target_range().0.midpoint(config.metric.target_range().1);
-                let quantizer_bounds = Self::quantizer_bounds(
-                    config.quantizer_range,
-                    target_score,
+                let next_quantizer = Self::next_probe_quantizer(
+                    &config,
+                    &completed_task.encoder,
                     &quantizer_score_history,
-                    config.metric.is_inverse_metric(),
-                );
-                let predicted_quantizer = TargetQuality::predict_quantizer(
-                    quantizer_bounds,
-                    target_score,
-                    config.interpolators,
-                    &quantizer_score_history,
-                    match completed_task.encoder {
-                        Encoder::X264 { .. } | Encoder::X265 { .. } => 0.25,
-                        Encoder::SVTAV1 { .. } => 1.0, // TODO: Implement svt_av1_supports_quarter_steps()
-                        _ => 1.0,
-                    },
+                    &cancelled,
                 )?;
+                trace!(
+                    ?next_quantizer,
+                    "Next untested probe (not a measured final quantizer)"
+                );
 
-                // Update Scene Encoder quantizer. A probe that met the target
-                // is used as is; only scenes without one fall
-                // back to the prediction.
                 let final_quantizer =
-                    TargetQuality::verified_quantizer(&config.metric, &quantizer_score_history)
-                        .unwrap_or(predicted_quantizer);
+                    Self::measured_quantizer(&config.metric, &quantizer_score_history)
+                        .ok_or(TargetQualityError::QualityMeasurementFailed)?;
                 condor.scenes[completed_task.original_index]
                     .encoder
                     .set_quantizer(final_quantizer);
@@ -518,6 +491,117 @@ where
 
 impl TargetQuality {
     pub const DETAILS: SequenceDetails = DETAILS;
+
+    fn next_probe_quantizer(
+        config: &TargetQualityConfig,
+        encoder: &Encoder,
+        history: &[(f64, f64)],
+        cancelled: &crate::utils::cancellation::Cancellation,
+    ) -> Result<Option<f64>> {
+        cancelled.check_forced()?;
+        let target = config.metric.target_range().0.midpoint(config.metric.target_range().1);
+        let bracket = Self::quantizer_bounds(
+            config.quantizer_range,
+            target,
+            history,
+            config.metric.is_inverse_metric(),
+        );
+        let bounds = (
+            bracket.0.max(config.quantizer_range.0 as f64),
+            bracket.1.min(config.quantizer_range.1 as f64),
+        );
+        let step = match encoder {
+            Encoder::X264 { .. } | Encoder::X265 { .. } => 0.25,
+            Encoder::SVTAV1 { .. }
+                if encoder.supports_capability_cancel(
+                    EncoderCapability::SvtAv1QuarterStepCrf,
+                    cancelled,
+                )? =>
+            {
+                0.25
+            },
+            _ => 1.0,
+        };
+        let predicted =
+            Self::predict_quantizer(bounds, target, config.interpolators, history, step)?;
+        Ok(Self::untested_quantizer(bounds, predicted, history, step))
+    }
+
+    fn untested_quantizer(
+        bounds: (f64, f64),
+        predicted: f64,
+        history: &[(f64, f64)],
+        step: f64,
+    ) -> Option<f64> {
+        // predict_quantizer validates these bounds and step before any tick arithmetic.
+        let lower = bounds.0 / step;
+        let upper = bounds.1 / step;
+        let available = |tick: i64| {
+            let q = tick as f64 * step;
+            (bounds.0..=bounds.1).contains(&q) && !history.iter().any(|(tested, _)| *tested == q)
+        };
+        let interior = (lower.floor() as i64 + 1, upper.ceil() as i64 - 1);
+        let candidate = (predicted / step).round();
+        if candidate.is_finite()
+            && (interior.0 as f64..=interior.1 as f64).contains(&candidate)
+            && available(candidate as i64)
+        {
+            return Some(candidate * step);
+        }
+        let midpoint = lower.midpoint(upper);
+        let nearest = |first: i64, last: i64| {
+            let mut left = (midpoint.floor() as i64).min(last);
+            let mut right = (left + 1).max(first);
+            // ponytail: O(history²) exclusion checks, sorted ticks if histories grow;
+            // never enumerate the grid, even for the full u32 configured range.
+            for _ in 0..=history.len() {
+                let tick = if left >= first
+                    && (right > last || midpoint - left as f64 <= right as f64 - midpoint)
+                {
+                    let tick = left;
+                    left -= 1;
+                    tick
+                } else if right <= last {
+                    let tick = right;
+                    right += 1;
+                    tick
+                } else {
+                    return None;
+                };
+                if available(tick) {
+                    return Some(tick as f64 * step);
+                }
+            }
+            None
+        };
+        nearest(interior.0, interior.1).or_else(|| {
+            // Only aligned endpoints can remain after interior exhaustion;
+            // both are equally far from the midpoint, so try the lower first.
+            [lower.ceil() as i64, upper.floor() as i64]
+                .into_iter()
+                .find(|tick| (*tick < interior.0 || *tick > interior.1) && available(*tick))
+                .map(|tick| tick as f64 * step)
+        })
+    }
+
+    fn validate_quantizer_grid(range: (f64, f64), step: f64) -> Result<()> {
+        anyhow::ensure!(
+            range.0.is_finite() && range.1.is_finite() && range.0 <= range.1,
+            "Target Quality quantizer range must be finite and ordered: {range:?}"
+        );
+        anyhow::ensure!(
+            step.is_finite() && step > 0.0,
+            "Target Quality quantizer step must be positive and finite: {step}"
+        );
+        // Keep ticks and their immediate neighbors exactly representable, including
+        // public callers with much larger ranges or smaller steps than encoder CRFs.
+        let max_tick = ((1_u64 << 52) - 1) as f64;
+        anyhow::ensure!(
+            (range.0 / step).abs() <= max_tick && (range.1 / step).abs() <= max_tick,
+            "Target Quality quantizer grid exceeds exact tick arithmetic: range {range:?}, step {step}"
+        );
+        Ok(())
+    }
 
     /// Pure admission check shared with the TUI before it opens override inputs.
     /// Disabled/empty stages do no probing; cancellation is checked by their callers first.
@@ -580,8 +664,8 @@ impl TargetQuality {
             lower.map_or(quantizer_range.0 as f64, |(quantizer, _)| *quantizer),
             upper.map_or(quantizer_range.1 as f64, |(quantizer, _)| *quantizer),
         );
-        if inverse_metric && bounds.0 > bounds.1 {
-            // Noisy inverse probes can cross; configured bounds keep prediction's clamp valid.
+        if bounds.0 > bounds.1 {
+            // Either metric direction can cross under noise; use the safe configured range.
             (quantizer_range.0 as f64, quantizer_range.1 as f64)
         } else {
             bounds
@@ -1560,6 +1644,28 @@ impl TargetQuality {
             .max_by(f64::total_cmp)
     }
 
+    // A closest measurement is a fallback, not evidence that the target was met.
+    fn measured_quantizer(metric: &QualityMetric, history: &[(f64, f64)]) -> Option<f64> {
+        Self::verified_quantizer(metric, history).or_else(|| {
+            let target = metric.target_range().0.midpoint(metric.target_range().1);
+            history
+                .iter()
+                .min_by(|(qa, sa), (qb, sb)| {
+                    (sa - target)
+                        .abs()
+                        .total_cmp(&(sb - target).abs())
+                        .then_with(|| qb.total_cmp(qa))
+                })
+                .map(|(q, _)| *q)
+        })
+    }
+
+    /// Interpolates and rounds a prediction; it may already have been measured.
+    /// Task admission separately selects an untested interior grid point.
+    ///
+    /// # Errors
+    /// Rejects nonfinite/reversed ranges, nonpositive/nonfinite steps, and grids
+    /// whose tick magnitudes exceed 2^52 - 1, before rounding or clamping.
     #[inline]
     pub fn predict_quantizer(
         quantizer_range: (f64, f64),
@@ -1568,6 +1674,7 @@ impl TargetQuality {
         quantizer_score_history: &[(f64, f64)],
         step: f64,
     ) -> Result<f64> {
+        Self::validate_quantizer_grid(quantizer_range, step)?;
         let midpoint = quantizer_range.0.midpoint(quantizer_range.1);
 
         let predicted_quantizer = match quantizer_score_history.len() {
@@ -1759,6 +1866,537 @@ mod tests {
     };
 
     #[test]
+    fn q04_duplicate_rounding_admits_an_untested_interior_probe() {
+        use crate::models::sequence::target_quality::TargetQualityConfig;
+        let config = TargetQualityConfig {
+            quantizer_range: (26, 30),
+            metric: QualityMetric::SSIMULACRA2 {
+                target_range: (75.0, 75.0),
+                resolution: None,
+                threads: None,
+                gpu_id: None,
+            },
+            ..Default::default()
+        };
+        let encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, false);
+        let history = [(26.0, 76.05), (30.0, 67.5)];
+        assert_eq!(
+            TargetQuality::predict_quantizer(
+                (26.0, 30.0),
+                75.0,
+                config.interpolators,
+                &history,
+                1.0
+            )
+            .expect("old interpolation remains public"),
+            26.0
+        );
+        assert_eq!(
+            TargetQuality::next_probe_quantizer(&config, &encoder, &history, &Default::default())
+                .expect("next probe"),
+            Some(28.0)
+        );
+        let single = TargetQualityConfig {
+            quantizer_range: (26, 26),
+            ..config
+        };
+        assert_eq!(
+            TargetQuality::next_probe_quantizer(&single, &encoder, &[], &Default::default())
+                .expect("single initial probe"),
+            Some(26.0)
+        );
+        assert_eq!(
+            TargetQuality::next_probe_quantizer(
+                &single,
+                &encoder,
+                &[(26.0, 76.05)],
+                &Default::default()
+            )
+            .expect("single exhausted probe"),
+            None
+        );
+    }
+
+    #[test]
+    fn q04_grid_literal_matrix() {
+        let cases = [
+            (
+                "quarter fallback",
+                (26.0, 27.0),
+                26.0,
+                0.25,
+                &[(26.0, 76.05), (27.0, 67.5)][..],
+                Some(26.5),
+            ),
+            (
+                "interior interpolation first",
+                (26.0, 30.0),
+                27.0,
+                1.0,
+                &[(26.0, 76.05), (30.0, 67.5)],
+                Some(27.0),
+            ),
+            (
+                "untested endpoint loses to interior",
+                (26.0, 30.0),
+                26.0,
+                1.0,
+                &[],
+                Some(28.0),
+            ),
+            (
+                "outside uses midpoint",
+                (26.0, 30.0),
+                40.0,
+                1.0,
+                &[],
+                Some(28.0),
+            ),
+            (
+                "unsorted repeated tied history",
+                (26.0, 30.0),
+                26.0,
+                1.0,
+                &[(30.0, 67.5), (28.0, 76.05), (26.0, 76.05), (28.0, 76.05)],
+                Some(27.0),
+            ),
+            (
+                "midpoint tested lower tie",
+                (26.0, 30.0),
+                28.0,
+                1.0,
+                &[(28.0, 75.0)],
+                Some(27.0),
+            ),
+            (
+                "midpoint and lower tested",
+                (26.0, 30.0),
+                28.0,
+                1.0,
+                &[(28.0, 75.0), (27.0, 76.0)],
+                Some(29.0),
+            ),
+            ("initial", (26.0, 30.0), 28.0, 1.0, &[], Some(28.0)),
+            ("equal initial", (26.0, 26.0), 26.0, 1.0, &[], Some(26.0)),
+            (
+                "equal measured",
+                (26.0, 26.0),
+                26.0,
+                1.0,
+                &[(26.0, 75.0)],
+                None,
+            ),
+            (
+                "adjacent measured",
+                (26.0, 27.0),
+                26.0,
+                1.0,
+                &[(26.0, 76.05), (27.0, 67.5)],
+                None,
+            ),
+            (
+                "fully exhausted",
+                (26.0, 28.0),
+                26.0,
+                1.0,
+                &[(26.0, 76.0), (28.0, 74.0), (27.0, 75.0)],
+                None,
+            ),
+            (
+                "missing side configured endpoint",
+                (26.0, 28.0),
+                27.0,
+                1.0,
+                &[(27.0, 76.0), (28.0, 74.0)],
+                Some(26.0),
+            ),
+            (
+                "bounds not grid aligned",
+                (26.1, 27.9),
+                26.1,
+                1.0,
+                &[],
+                Some(27.0),
+            ),
+            ("no grid point", (26.1, 26.9), 26.5, 1.0, &[], None),
+            (
+                "large sparse range",
+                (0.0, u32::MAX as f64),
+                0.0,
+                0.25,
+                &[(0.0, 1.0), (2_147_483_647.5, 2.0)],
+                Some(2_147_483_647.25),
+            ),
+        ];
+        for (name, bounds, predicted, step, history, expected) in cases {
+            let actual = TargetQuality::untested_quantizer(bounds, predicted, history, step);
+            assert_eq!(actual, expected, "{name}");
+            if let Some(q) = actual {
+                assert!((bounds.0..=bounds.1).contains(&q), "{name}");
+                assert_eq!(q / step, (q / step).round(), "{name}");
+                assert!(!history.iter().any(|(tested, _)| *tested == q), "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn q04_public_prediction_rejects_invalid_grid_before_arithmetic() {
+        use crate::models::sequence::target_quality::types::InterpolationMethod;
+        for (range, step, context) in [
+            ((30.0, 26.0), 1.0, "range"),
+            ((f64::NAN, 30.0), 1.0, "range"),
+            ((26.0, f64::INFINITY), 1.0, "range"),
+            ((26.0, 30.0), 0.0, "step"),
+            ((26.0, 30.0), -1.0, "step"),
+            ((26.0, 30.0), f64::NAN, "step"),
+            ((26.0, 30.0), f64::INFINITY, "step"),
+            ((26.0, 30.0), f64::MIN_POSITIVE, "grid"),
+            ((-f64::MAX, f64::MAX), 1.0, "grid"),
+        ] {
+            let error = TargetQuality::predict_quantizer(
+                range,
+                75.0,
+                (InterpolationMethod::Linear, InterpolationMethod::Linear),
+                &[],
+                step,
+            )
+            .expect_err("invalid public grid");
+            assert!(format!("{error:#}").contains(context), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn q04_final_selection_prefers_verified_then_closest_measured_with_higher_q_ties() {
+        let metric = ssimulacra2();
+        for (history, expected) in [
+            (&[][..], None),
+            (&[(28.0, 70.0)], Some(28.0)),
+            (&[(26.0, 76.05), (30.0, 67.5)], Some(26.0)),
+            (&[(24.0, 77.0), (28.0, 73.0)], Some(28.0)),
+            (&[(28.0, 73.0), (24.0, 77.0)], Some(28.0)),
+            (&[(26.0, 75.0), (28.0, 74.1), (30.0, 73.9)], Some(28.0)),
+        ] {
+            assert_eq!(
+                TargetQuality::measured_quantizer(&metric, history),
+                expected
+            );
+        }
+        let inverse = QualityMetric::BUTTERAUGLI {
+            target_range: (1.0, 1.0),
+            resolution: None,
+            threads: None,
+            intensity_multiplier: None,
+            norm: None,
+            gpu_id: None,
+        };
+        assert_eq!(
+            TargetQuality::measured_quantizer(&inverse, &[(20.0, 0.5), (28.0, 1.1), (30.0, 1.5)]),
+            Some(28.0)
+        );
+    }
+
+    // Finite explicit binaries exercise the actual cached capability probe;
+    // they establish step routing, not native SVT acceptance.
+    #[cfg(unix)]
+    #[test]
+    fn q04_actual_svt_step_resolver_uses_requested_binary_cache_and_forced_cancellation() {
+        use crate::{
+            models::sequence::target_quality::TargetQualityConfig,
+            utils::cancellation::{Cancellation, Cancelled},
+        };
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("executables");
+        let config = TargetQualityConfig {
+            quantizer_range: (26, 27),
+            metric: QualityMetric::SSIMULACRA2 {
+                target_range: (75.0, 75.0),
+                resolution: None,
+                threads: None,
+                gpu_id: None,
+            },
+            ..Default::default()
+        };
+        for (name, exit, expected, post_expected) in
+            [("quarter", 0, Some(26.5), Some(26.25)), ("integer", 1, None, None)]
+        {
+            let path = temp.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\nset -eu\n[ \"$3\" = --crf ]\n[ \"$4\" = 50.75 ]\nprintf probe >> \"$0.calls\"\n/bin/cat >/dev/null\nexit {exit}\n")).expect("fixture source");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .expect("executable");
+            let mut encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
+            encoder.set_executable(Some(path.clone()));
+            let history = [(26.0, 76.05), (27.0, 67.5)];
+            let cancellation = Cancellation::default();
+            for _ in 0..2 {
+                assert_eq!(
+                    TargetQuality::next_probe_quantizer(&config, &encoder, &history, &cancellation)
+                        .expect("actual resolver"),
+                    expected
+                );
+            }
+            let completed = [(26.0, 76.05), (27.0, 67.5), (26.5, 74.0)];
+            assert_eq!(
+                TargetQuality::next_probe_quantizer(&config, &encoder, &completed, &cancellation)
+                    .expect("same post-pass path"),
+                post_expected
+            );
+            assert_eq!(
+                std::fs::read(path.with_extension("calls")).expect("capability invocation"),
+                b"probe",
+                "cache is keyed by the actual requested binary"
+            );
+            cancellation.request().expect("graceful");
+            cancellation.request().expect("forced");
+            let error =
+                TargetQuality::next_probe_quantizer(&config, &encoder, &history, &cancellation)
+                    .expect_err("force must not become integer-step fallback");
+            assert_eq!(error.downcast_ref::<Cancelled>(), Some(&Cancelled::Forced));
+        }
+        for base in [EncoderBase::X264, EncoderBase::X265] {
+            let encoder = Encoder::default_from_base(&base, false);
+            assert_eq!(
+                TargetQuality::next_probe_quantizer(
+                    &config,
+                    &encoder,
+                    &[(26.0, 76.05), (27.0, 67.5)],
+                    &Default::default()
+                )
+                .expect("quarter step"),
+                Some(26.5)
+            );
+        }
+    }
+
+    // Real FFmpeg encodes, FFMS2 decode and libvmaf measurement; the resume
+    // history is produced by probe_pass, not a test score formula or fake backend.
+    #[test]
+    fn q04_execute_resumed_duplicate_measures_another_probe_and_final_quantizer() {
+        use crate::{
+            core::{Condor, input::Input, output::Output, sequence::Sequence},
+            models::{
+                encoder::cli_parameter::CLIParameter,
+                input::{ImportMethod, Input as InputModel},
+                scene::Scene,
+                sequence::{
+                    DefaultSequenceConfig, DefaultSequenceData,
+                    parallel_encoder::ParallelEncoderConfig, scene_concatenator::ConcatMethod,
+                    target_quality::TargetQualityConfig,
+                },
+            },
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("source.mkv");
+        let generated = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=128x128:rate=24",
+                "-frames:v",
+                "4",
+                "-c:v",
+                "ffv1",
+            ])
+            .arg(&source)
+            .output()
+            .expect("existing FFmpeg fixture generator");
+        assert!(generated.status.success(), "{generated:?}");
+        let input_model = InputModel::Video {
+            path: source,
+            import_method: ImportMethod::FFMS2 {
+                index: None,
+                cache_path: None,
+            },
+            filters: vec![],
+        };
+        let mut input = Input::from_data(&input_model).expect("FFMS2 input");
+        let mut encoder = Encoder::default_from_base(&EncoderBase::FFmpeg, false);
+        encoder.parameters_mut().extend(CLIParameter::new_strings(
+            "-",
+            " ",
+            &[("c:v", "libx264"), ("preset", "ultrafast")],
+        ));
+        let mut config = TargetQualityConfig {
+            quantizer_range: (26, 30),
+            maximum_probes: 3,
+            metric: QualityMetric::VMAF {
+                target_range: (75.0, 75.0),
+                resolution: None,
+                scaler: "bicubic".into(),
+                threads: 0,
+                model: None,
+                features: vec![],
+            },
+            ..Default::default()
+        };
+        let directory = temp.path().join("Target Quality");
+        // The existing FFmpeg concat entry point requires its caller's scratch directory.
+        for pass in 1..=3 {
+            std::fs::create_dir_all(directory.join(pass.to_string()).join("Scene Concatenator"))
+                .expect("concat scratch");
+        }
+        let concat = ConcatMethod::FFmpeg(Default::default());
+        let (tx, rx) = sync::mpsc::channel();
+        let cancellation = Default::default();
+        let mut task = Task {
+            original_index: 0,
+            frame_indices: vec![0, 1, 2, 3],
+            encoder: encoder.clone(),
+            output: Default::default(),
+            passes: vec![],
+        };
+        for (pass, q) in [(1, 26.0), (2, 30.0)] {
+            task.encoder.set_quantizer(q);
+            task.output = directory.join(pass.to_string()).join("00000.mkv");
+            let (completed, warnings) = TargetQuality::probe_pass_with_options(
+                pass,
+                &directory,
+                &config,
+                &mut input,
+                None,
+                1,
+                &concat,
+                &[task],
+                tx.clone(),
+                &cancellation,
+                Default::default(),
+            )
+            .expect("real measured resume history");
+            assert!(warnings.is_empty(), "{warnings:?}");
+            task = completed.into_iter().next().expect("accepted task");
+        }
+        let history = TargetQuality::quantizer_score_history(&config, &task.passes);
+        assert!(
+            history[0].1 > history[1].1,
+            "fixture must distinguish quantizers: {history:?}"
+        );
+        // A target 5% of the way from q26 to q30 interpolates to q26.2,
+        // rounding to the already measured integer q26.
+        let target = history[1].1.mul_add(0.05, history[0].1 * 0.95);
+        *config.metric.target_range_mut() = (target, target);
+        assert_eq!(
+            TargetQuality::predict_quantizer(
+                (26.0, 30.0),
+                target,
+                config.interpolators,
+                &history,
+                1.0
+            )
+            .expect("prediction"),
+            26.0
+        );
+        let scene = Scene {
+            start_frame: 0,
+            end_frame: 4,
+            sub_scenes: None,
+            encoder: encoder.clone(),
+            sequence_data: DefaultSequenceData {
+                target_quality: crate::models::sequence::target_quality::TargetQualityData {
+                    passes: task.passes,
+                },
+                ..Default::default()
+            },
+        };
+        let mut sequence_config = DefaultSequenceConfig {
+            target_quality: Some(config.clone()),
+            parallel_encoder: ParallelEncoderConfig::new(temp.path()),
+            ..Default::default()
+        };
+        sequence_config.scene_concatenator.method = concat;
+        let saved = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let snapshots = std::sync::Arc::clone(&saved);
+        let mut condor = Condor::new(
+            input,
+            Output {
+                path: temp.path().join("final.mkv"),
+                tags: Default::default(),
+                video_tags: Default::default(),
+            },
+            encoder,
+            vec![scene],
+            Some(sequence_config),
+            Box::new(move |data| {
+                snapshots.lock().expect("snapshots").push(data.scenes);
+                Ok(())
+            }),
+        );
+        let mut sequence = TargetQuality::default();
+        let (_, warnings) = sequence
+            .execute_cancel(&mut condor, tx, cancellation)
+            .expect("actual orchestration");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let scene = &condor.scenes[0];
+        let measured = &scene.sequence_data.target_quality.passes;
+        assert_eq!(
+            measured.len(),
+            3,
+            "duplicate prediction must not end the search"
+        );
+        assert_eq!(measured[2].quantizer, 28.0);
+        assert_eq!(measured[2].scores.len(), 4);
+        let final_q = scene.encoder.quantizer().expect("final quantizer");
+        assert!(measured.iter().any(|pass| pass.quantizer == final_q));
+        let accepted = TargetQuality::quantizer_score_history(&config, measured);
+        eprintln!("Q04 accepted={accepted:?}, target={target}, final={final_q}");
+        assert_eq!(
+            TargetQuality::verified_quantizer(&config.metric, &accepted),
+            None,
+            "target intentionally missed at maximum probes"
+        );
+        let closest = accepted
+            .iter()
+            .min_by(|(qa, sa), (qb, sb)| {
+                (sa - target)
+                    .abs()
+                    .total_cmp(&(sb - target).abs())
+                    .then_with(|| qb.total_cmp(qa))
+            })
+            .expect("measured closest")
+            .0;
+        assert_eq!(final_q, closest);
+        assert_eq!(
+            saved.lock().expect("saved").last().expect("persisted")[0].encoder.quantizer(),
+            Some(final_q)
+        );
+        assert!(rx.try_iter().any(|status| matches!(
+            status,
+            SequenceStatus::Subprocess {
+                child: Status::Processing {
+                    completion: SequenceCompletion::SceneQuality {
+                        quantizer: 28.0,
+                        ..
+                    },
+                    ..
+                },
+                ..
+            }
+        )));
+
+        // Also stop at the maximum immediately after an initial measurement:
+        // the next prediction exists but is unmeasured and must never be final.
+        let one_probe = temp.path().join("one-probe");
+        std::fs::create_dir_all(one_probe.join("Target Quality/1/Scene Concatenator"))
+            .expect("scratch");
+        condor.sequence_config.parallel_encoder.scenes_directory = one_probe;
+        condor.sequence_config.target_quality.as_mut().expect("TQ").maximum_probes = 1;
+        condor.scenes[0].sequence_data.target_quality.passes.clear();
+        let (tx, _rx) = sync::mpsc::channel();
+        sequence
+            .execute_cancel(&mut condor, tx, Default::default())
+            .expect("one real probe");
+        let scene = &condor.scenes[0];
+        assert_eq!(scene.sequence_data.target_quality.passes.len(), 1);
+        assert_eq!(scene.sequence_data.target_quality.passes[0].quantizer, 28.0);
+        assert_eq!(
+            scene.encoder.quantizer(),
+            Some(28.0),
+            "never finalize the next unmeasured prediction after max probes"
+        );
+    }
+
+    #[test]
     fn q03_inverse_bounds_use_nearest_probes() {
         let history = [(20.0, 0.5), (28.0, 0.9), (34.0, 1.2), (40.0, 1.6)];
         assert_eq!(
@@ -1890,11 +2528,12 @@ mod tests {
     }
 
     #[test]
-    fn q03_noisy_higher_bounds_remain_unchanged() {
+    fn q03_noisy_higher_bounds_use_q04_safe_configured_fallback() {
+        // Q04 deliberately extends the Q03 inverse safety guard to either direction.
         let history = [(20.0, 1.6), (40.0, 0.5), (31.0, 1.02), (30.0, 0.98)];
         assert_eq!(
             TargetQuality::quantizer_bounds((7, 51), 1.0, &history, false),
-            (31.0, 30.0)
+            (7.0, 51.0)
         );
     }
 

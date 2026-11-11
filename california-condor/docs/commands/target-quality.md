@@ -77,6 +77,18 @@ If not specified, `ssimulacra2` is used.
 
 The finite quality metric score that Target Quality will aim for.
 
+Probes use integer quantizer steps, or quarter steps for x264/x265 and an SVT-AV1
+executable that passes the quarter-step capability check. A repeated prediction
+does not stop the search: untested steps strictly inside the current bracket take
+priority, with an untested configured boundary available after the interior is
+exhausted. Probing stops on a target hit, exhausted bracket, or maximum probe count.
+
+The final scene quantizer is always measured: the highest quantizer within the
+acceptable target range, or, if none qualifies, the measurement closest to the
+target midpoint (ties prefer the higher quantizer). This fallback does not mean
+the target was achieved; an unmeasured next prediction is never used as the final
+quantizer.
+
 ### Examples
 
 - `> condor target-quality --metric ssimulacra2 --target 85`

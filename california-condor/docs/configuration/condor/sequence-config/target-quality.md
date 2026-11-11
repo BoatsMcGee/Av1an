@@ -25,6 +25,16 @@ checks. FFmpeg's arbitrary native codecs have no universal CRF range here. Inval
 loaded JSON can be inspected, explicitly repaired, or disabled with `target-quality
 reset`, but cannot be saved or admitted to Target Quality work unchanged.
 
+The search prefers untested steps inside its current bracket, even when rounding
+repeats a previous probe. It tries an unmeasured configured boundary only after
+interior steps are exhausted; equal quantizer bounds admit one probe. Steps are
+`0.25` for x264/x265 and quarter-capable SVT-AV1 binaries, otherwise `1`.
+At exhaustion or `maximum_probes`, the final quantizer remains a measured probe:
+highest within the target range, otherwise closest to the target midpoint, with
+ties choosing the higher quantizer. The latter is a fallback, not a target hit.
+Existing saved histories are reused without pruning; these search changes do not
+alter the JSON shape.
+
 - `VMAF`: `{ "target_range": [94.0, 96.0], "resolution": [w, h] or null, "scaler": <string>, "threads": <usize>, "model": <path> or null, "features": ["default"|"weighted"|"neg"|"motionless"|"uhd"] }`
 - `SSIMULACRA2`: `{ "target_range": [74.0, 76.0], "resolution": [w, h] or null, "threads": <u8> or null }` (default)
 - `BUTTERAUGLI`: `{ "target_range": [0.8, 1.2], "resolution": [w, h] or null, "threads": <u8> or null, "intensity_multiplier": <f64> or null, "norm": <u8> or null }`
