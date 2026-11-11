@@ -1434,15 +1434,7 @@ impl Encoder {
                     .ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("    av1"))?;
-                Some(
-                    version_line
-                        .split_once('-')
-                        .expect("unexpected aom version string format")
-                        .1
-                        .replace("(default)", "")
-                        .trim()
-                        .to_string(),
-                )
+                Some(aom_style_version(version_line))
             },
             Encoder::RAV1E {
                 ..
@@ -1466,15 +1458,7 @@ impl Encoder {
                     .ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("    vp9"))?;
-                Some(
-                    version_line
-                        .split_once('-')
-                        .expect("unexpected vpx version string format")
-                        .1
-                        .replace("(default)", "")
-                        .trim()
-                        .to_string(),
-                )
+                Some(aom_style_version(version_line))
             },
             Encoder::SVTAV1 {
                 ..
@@ -1498,15 +1482,7 @@ impl Encoder {
                     .ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("    av2"))?;
-                Some(
-                    version_line
-                        .split_once('-')
-                        .expect("unexpected avm version string format")
-                        .1
-                        .replace("(default)", "")
-                        .trim()
-                        .to_string(),
-                )
+                Some(aom_style_version(version_line))
             },
             Encoder::X264 {
                 ..
@@ -1518,14 +1494,7 @@ impl Encoder {
                     .ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("x264"))?;
-                Some(
-                    version_line
-                        .split_once(" ")
-                        .expect("unexpected x264 version string format")
-                        .1
-                        .trim()
-                        .to_string(),
-                )
+                Some(after_first_space(version_line))
             },
             Encoder::X265 {
                 ..
@@ -1537,14 +1506,7 @@ impl Encoder {
                     .ok()?;
                 let stderr = String::from_utf8_lossy(&result.stderr);
                 let version_line = stderr.lines().find(|line| line.starts_with("x265"))?;
-                Some(
-                    version_line
-                        .split_once(':')
-                        .expect("unexpected x265 version string format")
-                        .1
-                        .trim()
-                        .to_string(),
-                )
+                Some(after_first_colon(version_line))
             },
             Encoder::VVenC {
                 ..
@@ -1568,6 +1530,41 @@ impl Encoder {
             },
         }
     }
+}
+
+/// The text after the first `-` in an aomenc/vpxenc/avmenc version line, with
+/// the trailing `(default)` marker removed.
+///
+/// Those encoders print `    av1    - <description> <version> (default)`, so
+/// the version is the tail of the description rather than a field of its own.
+/// A line without a `-` yields the whole line rather than panicking: the
+/// version is diagnostics, and an unexpected format is not worth aborting the
+/// host over.
+fn aom_style_version(version_line: &str) -> String {
+    version_line
+        .split_once('-')
+        .map_or(version_line, |(_, tail)| tail)
+        .replace("(default)", "")
+        .trim()
+        .to_string()
+}
+
+/// The text after the first space in an x264 version line.
+fn after_first_space(version_line: &str) -> String {
+    version_line
+        .split_once(' ')
+        .map_or(version_line, |(_, tail)| tail)
+        .trim()
+        .to_string()
+}
+
+/// The text after the first colon in an x265 version line.
+fn after_first_colon(version_line: &str) -> String {
+    version_line
+        .split_once(':')
+        .map_or(version_line, |(_, tail)| tail)
+        .trim()
+        .to_string()
 }
 
 impl Default for Encoder {
@@ -1819,5 +1816,46 @@ mod tests {
                 "the final pass must be the one that writes the output"
             );
         }
+    }
+
+    /// The aomenc/vpxenc/avmenc version line carries the version in the tail
+    /// of its description, after the `(default)` marker is dropped.
+    #[test]
+    fn aom_style_version_extracts_the_tail() {
+        assert_eq!(
+            aom_style_version(
+                "    av1    - AOMedia Project AV1 Encoder Psy101 3.13.0-rc1 (default)"
+            ),
+            "AOMedia Project AV1 Encoder Psy101 3.13.0-rc1"
+        );
+        assert_eq!(
+            aom_style_version("    av2    - AOMedia Project AV2 Encoder 1.0.0 (default)"),
+            "AOMedia Project AV2 Encoder 1.0.0"
+        );
+    }
+
+    /// A version line without the expected separator must not abort the host:
+    /// the version is diagnostics, so the whole line is reported instead.
+    #[test]
+    fn version_parsers_survive_an_unexpected_format() {
+        assert_eq!(
+            aom_style_version("    av1 no separator here"),
+            "av1 no separator here"
+        );
+        assert_eq!(after_first_space("x264"), "x264");
+        assert_eq!(after_first_colon("x265 no colon"), "x265 no colon");
+    }
+
+    /// The separators each encoder actually uses are honoured.
+    #[test]
+    fn version_parsers_use_the_right_separator() {
+        assert_eq!(
+            after_first_space("x264 0.165.3222 b35605a"),
+            "0.165.3222 b35605a"
+        );
+        assert_eq!(
+            after_first_colon("x265 [info]: HEVC encoder version 4.1+1-32e25ffcf"),
+            "HEVC encoder version 4.1+1-32e25ffcf"
+        );
     }
 }
