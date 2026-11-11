@@ -104,47 +104,31 @@ pub fn configure_parallel_encoder(
     if let Some(value) = max_tries {
         candidate.max_tries = value;
     }
-    candidate.validate()?;
-    // `--filters` describes the input being encoded, not the parallel encoder's
-    // own override, so it always applies to the main input. Applying it
-    // first lets an override built below inherit the filters via
-    // `adopt_filters`.
-    let mut main_input = configuration.condor.input.clone();
-    if let Some(filters) = filters {
-        apply_input_filters(&mut main_input, filters)?;
+    if let Some(workers) = workers {
+        candidate.workers = Some(workers);
     }
+    candidate.validate()?;
+    let mut main_input = configuration.condor.input.clone();
 
-    let override_input = if input_path.is_some() || decoder.is_some() || vs_args.is_some() {
-        let existing_input = configuration
-            .condor
-            .sequence_config
-            .parallel_encoder
-            .input
-            .as_ref()
-            .unwrap_or(&main_input);
-        Some(configure_input(
+    if input_path.is_some() || decoder.is_some() || vs_args.is_some() {
+        candidate.input = Some(configure_input(
             configuration,
-            existing_input,
+            candidate.input.as_ref().unwrap_or(&main_input),
             input_path,
             decoder,
             vs_args,
             None,
             None,
-        )?)
-    } else {
-        None
-    };
+        )?);
+    }
+    // Filter the effective encoder input; an override must not alter the root reference.
+    if let Some(filters) = filters {
+        apply_input_filters(candidate.input.as_mut().unwrap_or(&mut main_input), filters)?;
+    }
 
-    // Both conversions must succeed before either input's filters are replaced.
+    // Publish inputs and execution settings only after every fallible conversion succeeds.
     configuration.condor.input = main_input;
-    if let Some(input) = override_input {
-        configuration.condor.sequence_config.parallel_encoder.input = Some(input);
-    }
-
-    if let Some(workers) = workers {
-        configuration.condor.sequence_config.parallel_encoder.workers = Some(workers);
-    }
-    configuration.condor.sequence_config.parallel_encoder.max_tries = candidate.max_tries;
+    configuration.condor.sequence_config.parallel_encoder = candidate;
 
     Ok(())
 }
@@ -704,7 +688,7 @@ mod tests {
     use super::*;
     use crate::{
         commands::handlers::init::init_handler,
-        test_helpers::{check_basic_config, check_input, default_config, get_test_video},
+        test_helpers::{check_basic_config, default_config, get_test_video},
         utils::hash_path::hash_path,
     };
 
@@ -1195,8 +1179,7 @@ mod tests {
             ccr: None,
         }));
         expected_config.condor.sequence_config.parallel_encoder = ParallelEncoderConfig {
-            // `--filters` describes the input being encoded, so it applies to
-            // `condor.input` and the override inherits it.
+            // Explicit override filters must not replace the root reference's filters.
             input: Some(Input::VapourSynth {
                 path: input_abs.clone(),
                 import_method: VapourSynthImportMethod::DGDecNV {
@@ -1210,13 +1193,6 @@ mod tests {
             validate_frame_count: true,
             max_tries: 3,
         };
-        if let Input::VapourSynth {
-            filters: main_filters,
-            ..
-        } = &mut expected_config.condor.input
-        {
-            *main_filters = custom_filters.clone();
-        }
         // immutable shadow
         let expected_config = expected_config;
 
@@ -1271,11 +1247,9 @@ mod tests {
         assert!(config.condor.scenes.is_empty(), "scenes is empty");
     }
 
-    /// `--filters` describes the input being encoded, so it must reach
-    /// `condor.input` even when the config already carries a
-    /// `parallel_encoder.input` override.
+    /// Filter-only edits reach the saved override without replacing the root reference.
     #[test]
-    fn encode_filters_target_main_input_with_override_present() {
+    fn c08_encode_handler_filters_target_existing_override() {
         let test_video = get_test_video();
         let input_abs = path_abs::PathAbs::new(&test_video.path)
             .expect("path_abs should succeed")
@@ -1313,8 +1287,6 @@ mod tests {
         )
         .expect("init_handler should succeed");
 
-        // The filters belong to the main input; an existing override keeps
-        // its own.
         let (mut config, _) =
             load_configuration(Some(&config_path)).expect("load_configuration should succeed");
         config.condor.sequence_config.parallel_encoder.input = Some(Input::VapourSynth {
@@ -1325,7 +1297,12 @@ mod tests {
             cache_path: None,
             filters: vec![],
         });
-        let override_before = config.condor.sequence_config.parallel_encoder.input.clone();
+        let mut expected = config.clone();
+        if let Some(Input::VapourSynth { filters, .. }) =
+            &mut expected.condor.sequence_config.parallel_encoder.input
+        {
+            *filters = custom_filters.clone();
+        }
         config.save(&config_path).expect("save should succeed");
 
         let (config, _) = encode_handler(
@@ -1347,14 +1324,8 @@ mod tests {
         .expect("encode_handler should succeed");
 
         assert_eq!(
-            config.condor.input.vapoursynth_filters(),
-            custom_filters,
-            "main input receives the filters"
-        );
-        check_input(
-            config.condor.sequence_config.parallel_encoder.input.as_ref(),
-            override_before.as_ref(),
-            "parallel encoder input",
+            serde_json::to_value(&config).expect("actual configuration"),
+            serde_json::to_value(&expected).expect("only override filters replaced"),
         );
     }
 }

@@ -26,7 +26,7 @@ encode settings; worker panels name their actual scene codecs.
 | ----------------------------------------------------- | ----------------- | ----------- | ---------------------- |
 | [Input](#input--i)                                    | `-i`, `--input`   | Path        | Config input           |
 | [Decoder](#decoder---decoder)                         | `--decoder`       | [`DECODER`](../types/decoder.md)   | `bestsource`           |
-| [Filters](#filters---filters)                         | `--filters`       | [Filters](../types/filters.md)     | `resize:scaler=bicubic;format=yuv420p10le` |
+| [Filters](#filters---filters)                         | `--filters`       | [Filters](../types/filters.md)     | Saved effective-input filters |
 | [VapourSynth Arguments](#vapoursynth-arguments---vs-args) | `--vs-args`   | [String List](../types/vs-args.md) |                        |
 | [Workers](#workers--w---workers)                      | `-w`, `--workers` | Integer     | Benchmarker decides    |
 | [Total attempts](#total-attempts---max-tries)           | `--max-tries`      | Integer ≥1  | Saved value, else `3`   |
@@ -59,11 +59,27 @@ Method used for decoding the input video. Methods besides `ffms2` require extern
 
 ## Filters `--filters`
 
-VapourSynth filters to apply to the input. See [Filters](../types/filters.md).
+Filters replace those on the effective encoder input: the saved parallel-encoder
+override when present, otherwise the main input. A filter-only edit needs no
+`--input`, `--decoder` or `--vs-args` and does not create an override.
+See [Filters](../types/filters.md) for decoder support; native FFMS2 rejects
+unsupported explicit formats and cannot run VapourSynth-only filters.
+
+When another input flag creates or rebuilds an override, omitted filters inherit
+from the previous effective input. Explicit filters replace them on the rebuilt
+override. Neither case changes the main input or separate Target Quality/Quality
+Check reference overrides. Without a parallel-encoder override, filtering the
+main input also intentionally changes the reference used by stages that read it.
+
+Migration: older versions applied encode filters to the main input even with an
+override present. Review saved main-input filters from those edits; this repair
+does not restore them automatically. Use `init set input --filters …` when you
+intend to edit the main input explicitly.
 
 ### Default
 
-If not specified, `resize:scaler=bicubic;format=yuv420p10le` (YUV 4:2:0 10-bit) is used.
+Omitting `--filters` preserves the effective input's saved filters. New jobs
+start with `resize:scaler=bicubic;format=yuv420p10le` (YUV 4:2:0 10-bit).
 
 ## VapourSynth Arguments `--vs-args`
 
@@ -174,7 +190,7 @@ A picture-altering filter (`crop`, `hflip`, `negate`, ...) changes what gets enc
 `info`, `set` and `reset` read, change and reset the saved parallel-encoder and encoder settings without running the command:
 
 - `set workers N` — how many encoder processes run at once (`≥ 1`); `reset workers` clears it so Benchmarker decides.
-- `set input [--path P] [--decoder D] [--filters …] [--vs-args …] [--stream-concurrently [on|off]]` — the input Parallel Encoder reads instead of the main input; `--filters` applies to the main input.
+- `set input [--path P] [--decoder D] [--filters …] [--vs-args …] [--stream-concurrently [on|off]]` — edits the effective encoder input using the [filter routing and inheritance rules](#filters---filters) above; a filter-only edit changes the saved override, or the main input when no override exists.
 - `set scenes-directory PATH` — the directory the encoded scenes are written to.
 - `set encoder ENCODER` — switches the encoder and starts from its defaults.
 - `set executable PATH` — stores a custom binary path or PATH name unchanged, even when unavailable while editing. Validation/encoding fails if it cannot be resolved; there is no stock-binary fallback. `reset executable` restores lookup of the base's stock name on PATH.

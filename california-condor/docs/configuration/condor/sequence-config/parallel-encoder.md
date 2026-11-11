@@ -10,6 +10,11 @@
 | `input` | Input object or null | Yes | `null` | Override input. Same shape as [condor.input](../input.md) |
 | `validate_frame_count` | Boolean | No | `true` | Decode-count completed chunks with `ffprobe` before publishing or resuming. Set `false` only for filters intentionally changing the frame count. |
 
+Encode-time `--filters` edits this `input` when set, otherwise `condor.input`.
+Rebuilding an override inherits filters from the previous effective input unless
+explicitly replaced. With an override, these edits preserve the main reference;
+separate metric-reference inputs are not edited. See [routing and migration](../../../commands/encode.md#filters---filters).
+
 Count validation requires `ffprobe` on `PATH` with a decoder for the output codec.
 The saved policy also applies to automatic worker discovery and Target Quality
 individual/zone outputs. Strict stages check for `ffprobe` before encoding;

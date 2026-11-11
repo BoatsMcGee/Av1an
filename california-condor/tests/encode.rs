@@ -29,6 +29,621 @@ mod tests {
     const WIDTH: usize = 960;
     const HEIGHT: usize = 540;
 
+    fn c08_configuration(
+        directory: &std::path::Path,
+    ) -> california_condor::configuration::Configuration {
+        use andean_condor::models::{
+            input::{ChromaSampling, Ffms2Filter, ImportMethod},
+            sequence::{quality_check::QualityCheckConfig, target_quality::TargetQualityConfig},
+        };
+        let video = TestVideo {
+            path: directory.join("root.mkv"),
+            width: 32,
+            height: 16,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![],
+        };
+        let mut configuration =
+            default_config(&video, &directory.join("out.mkv"), &directory.join("work"));
+        configuration.condor.input = Input::Video {
+            path: video.path,
+            import_method: ImportMethod::FFMS2 {
+                index: Some(0),
+                cache_path: Some(directory.join("root.ffindex")),
+            },
+            filters: vec![Ffms2Filter::OutputFormat {
+                bit_depth: Some(10),
+                chroma: Some(ChromaSampling::Yuv420),
+                width: None,
+                height: None,
+            }],
+        };
+        let mut reference = configuration.condor.input.clone();
+        if let Input::Video { path, .. } = &mut reference {
+            *path = directory.join("metric.mkv");
+        }
+        configuration.condor.sequence_config.target_quality = Some(TargetQualityConfig {
+            input: Some(reference.clone()),
+            metric_input: Some(reference.clone()),
+            ..Default::default()
+        });
+        configuration.condor.sequence_config.quality_check = Some(QualityCheckConfig {
+            input: Some(reference),
+            ..Default::default()
+        });
+        configuration
+    }
+
+    #[test]
+    fn c08_filter_only_crud_preserves_override_identity_and_references_offline() {
+        use andean_condor::models::input::{
+            Ffms2Filter, ImportMethod, VapourSynthImportMethod, VapourSynthScriptSource,
+        };
+        use california_condor::commands::{
+            config::{ConfigCommand, InputOverride},
+            handlers::encode::{EncodeCrud, EncodeSet},
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let filters = vec![VapourSynthFilter::Resize {
+            scaler: Some(Scaler::Point),
+            width: Some(16),
+            height: Some(8),
+            format: None,
+        }];
+        let native = Input::Video {
+            path: temp.path().join("override.mkv"),
+            import_method: ImportMethod::FFMS2 {
+                index: Some(3),
+                cache_path: Some(temp.path().join("keep.ffindex")),
+            },
+            filters: vec![],
+        };
+        let indexed = Input::VapourSynth {
+            path: temp.path().join("override.mkv"),
+            import_method: VapourSynthImportMethod::FFMS2 { index: Some(3) },
+            cache_path: Some(temp.path().join("keep.vsindex")),
+            filters: vec![],
+        };
+        let scripts = [
+            VapourSynthScriptSource::Path(temp.path().join("missing.vpy")),
+            VapourSynthScriptSource::Text("raise RuntimeError('must not execute')".into()),
+        ]
+        .map(|source| Input::VapourSynthScript {
+            source,
+            variables: [("keep".into(), "yes".into())].into(),
+            index: 3,
+            filters: vec![],
+            stream_concurrently: false,
+        });
+        for input in [native, indexed, scripts[0].clone(), scripts[1].clone()] {
+            let mut configuration = c08_configuration(temp.path());
+            configuration.condor.sequence_config.parallel_encoder.input = Some(input.clone());
+            let mut expected = configuration.clone();
+            let mut filtered = input;
+            match &mut filtered {
+                Input::Video { filters, .. } => {
+                    *filters = vec![Ffms2Filter::OutputFormat {
+                        bit_depth: None,
+                        chroma: None,
+                        width: Some(16),
+                        height: Some(8),
+                    }];
+                },
+                Input::VapourSynth {
+                    filters: target, ..
+                }
+                | Input::VapourSynthScript {
+                    filters: target, ..
+                } => *target = filters.clone(),
+            }
+            expected.condor.sequence_config.parallel_encoder.input = Some(filtered);
+            let file = temp.path().join("condor.json");
+            configuration.save(&file).expect("save");
+            let disk = std::fs::read(&file).expect("snapshot");
+            EncodeCrud::apply(
+                &mut configuration,
+                &EncodeSet::Input {
+                    args: InputOverride {
+                        path: None,
+                        decoder: None,
+                        filters: Some(filters.clone()),
+                        vs_args: None,
+                        stream_concurrently: None,
+                    },
+                },
+            )
+            .expect("filter-only edit without rebuilding or opening source");
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("after"),
+                serde_json::to_value(expected).expect("only override filters changed")
+            );
+            assert_eq!(std::fs::read(&file).expect("no implicit save"), disk);
+        }
+        assert_eq!(
+            std::fs::read_dir(temp.path()).expect("no indexes or sources opened").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn c08_new_override_inherits_effective_filters_and_main_only_stays_main() {
+        use andean_condor::models::input::{Ffms2Filter, ImportMethod};
+        use california_condor::commands::{
+            DecoderMethod, handlers::encode::configure_parallel_encoder,
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let original = c08_configuration(temp.path());
+        for with_override in [false, true] {
+            let mut configuration = original.clone();
+            if with_override {
+                configuration.condor.sequence_config.parallel_encoder.input = Some(Input::Video {
+                    path: temp.path().join("old.mkv"),
+                    import_method: ImportMethod::FFMS2 {
+                        index: Some(2),
+                        cache_path: None,
+                    },
+                    filters: vec![Ffms2Filter::OutputFormat {
+                        bit_depth: Some(12),
+                        chroma: None,
+                        width: Some(24),
+                        height: Some(12),
+                    }],
+                });
+            }
+            let snapshot = serde_json::to_value(&configuration).expect("snapshot");
+            configure_parallel_encoder(&mut configuration, None, None, None, None, None, None)
+                .expect("no flags");
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("no flags"),
+                snapshot
+            );
+            let mut expected = configuration.clone();
+            expected.condor.sequence_config.parallel_encoder.workers = Some(2);
+            expected.condor.sequence_config.parallel_encoder.max_tries = 4;
+            configure_parallel_encoder(
+                &mut configuration,
+                None,
+                None,
+                None,
+                None,
+                Some(2),
+                Some(4),
+            )
+            .expect("workers and attempts only");
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("settings only"),
+                serde_json::to_value(&expected).expect("inputs unchanged")
+            );
+            let mut inherited = if with_override {
+                expected
+                    .condor
+                    .sequence_config
+                    .parallel_encoder
+                    .input
+                    .clone()
+                    .expect("override")
+            } else {
+                expected.condor.input.clone()
+            };
+            if let Input::Video { path, .. } = &mut inherited {
+                *path = temp.path().join("new.mkv");
+            }
+            expected.condor.sequence_config.parallel_encoder.input = Some(inherited);
+            configure_parallel_encoder(
+                &mut configuration,
+                Some(&temp.path().join("new.mkv")),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("new path inherits prior effective filters");
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("inherited"),
+                serde_json::to_value(&expected).expect("root and metric inputs unchanged")
+            );
+            configure_parallel_encoder(
+                &mut configuration,
+                None,
+                Some(&DecoderMethod::VSFFMS2),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("native to VS deferred filters");
+            configure_parallel_encoder(
+                &mut configuration,
+                None,
+                Some(&DecoderMethod::FFMS2),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("VS to native filters");
+            // Generic decoder rebuilding does not carry a native index cache through VS.
+            if let Some(Input::Video {
+                import_method: ImportMethod::FFMS2 { cache_path, .. },
+                ..
+            }) = &mut expected.condor.sequence_config.parallel_encoder.input
+            {
+                *cache_path = None;
+            }
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("roundtrip"),
+                serde_json::to_value(expected).expect("inherited conversions retained")
+            );
+        }
+        let mut configuration = original.clone();
+        let filters = [VapourSynthFilter::Resize {
+            scaler: None,
+            width: Some(16),
+            height: Some(8),
+            format: Some(FFPixelFormat::YUV420P),
+        }];
+        let mut expected = original;
+        if let Input::Video { filters, .. } = &mut expected.condor.input {
+            *filters = vec![Ffms2Filter::OutputFormat {
+                bit_depth: Some(8),
+                chroma: Some(andean_condor::models::input::ChromaSampling::Yuv420),
+                width: Some(16),
+                height: Some(8),
+            }];
+        }
+        configure_parallel_encoder(
+            &mut configuration,
+            None,
+            None,
+            Some(&filters),
+            None,
+            None,
+            None,
+        )
+        .expect("main-only edit");
+        assert_eq!(
+            serde_json::to_value(configuration).expect("main only"),
+            serde_json::to_value(expected)
+                .expect("no override created; separate metric inputs unchanged")
+        );
+        assert_eq!(
+            std::fs::read_dir(temp.path()).expect("offline edits").count(),
+            0
+        );
+    }
+
+    #[test]
+    fn c08_failed_filter_and_decoder_candidates_preserve_configuration_and_disk() {
+        use andean_condor::models::input::VapourSynthImportMethod;
+        use california_condor::commands::{
+            DecoderMethod,
+            config::{ConfigAction, ConfigCommand, InputOverride},
+            handlers::encode::{
+                self, EncodeCrud, EncodeSet, configure_parallel_encoder, encode_handler,
+            },
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        for (decoder, filter, message) in [
+            (
+                None,
+                VapourSynthFilter::Resize {
+                    scaler: None,
+                    width: Some(16),
+                    height: None,
+                    format: Some(FFPixelFormat::NV12),
+                },
+                "nv12",
+            ),
+            (
+                None,
+                VapourSynthFilter::Resize {
+                    scaler: None,
+                    width: Some(0),
+                    height: None,
+                    format: None,
+                },
+                "width",
+            ),
+            (
+                Some(DecoderMethod::FFMS2),
+                VapourSynthFilter::Resize {
+                    scaler: None,
+                    width: None,
+                    height: None,
+                    format: Some(FFPixelFormat::GBRP),
+                },
+                "gbrp",
+            ),
+        ] {
+            let mut configuration = c08_configuration(temp.path());
+            let input = if decoder.is_some() {
+                Input::VapourSynth {
+                    path: temp.path().join("missing.mkv"),
+                    import_method: VapourSynthImportMethod::FFMS2 { index: Some(2) },
+                    cache_path: None,
+                    filters: vec![filter.clone()],
+                }
+            } else {
+                configuration.condor.input.clone()
+            };
+            configuration.condor.sequence_config.parallel_encoder.input = Some(input);
+            let before = serde_json::to_value(&configuration).expect("snapshot");
+            let file = temp.path().join("condor.json");
+            configuration.save(&file).expect("save");
+            let disk = std::fs::read(&file).expect("disk");
+            let error = configure_parallel_encoder(
+                &mut configuration,
+                Some(&temp.path().join("new.mkv")),
+                decoder.as_ref(),
+                Some(std::slice::from_ref(&filter)),
+                None,
+                Some(7),
+                Some(9),
+            )
+            .expect_err("invalid candidate");
+            assert!(error.to_string().contains(message), "{error:#}");
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("atomic"),
+                before
+            );
+            let setting = EncodeSet::Input {
+                args: InputOverride {
+                    path: None,
+                    decoder: decoder.clone(),
+                    filters: Some(vec![filter.clone()]),
+                    vs_args: None,
+                    stream_concurrently: None,
+                },
+            };
+            assert!(EncodeCrud::apply(&mut configuration, &setting).is_err());
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("atomic CRUD"),
+                before
+            );
+            assert!(encode::config(Some(&file), &ConfigAction::Set { setting }).is_err());
+            assert!(
+                encode_handler(
+                    Some(&file),
+                    None,
+                    None,
+                    decoder.as_ref(),
+                    Some(&[filter]),
+                    None,
+                    Some(7),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(9)
+                )
+                .is_err()
+            );
+            assert_eq!(std::fs::read(&file).expect("disk unchanged"), disk);
+        }
+        let mut configuration = c08_configuration(temp.path());
+        let before = serde_json::to_value(&configuration).expect("snapshot");
+        assert!(
+            configure_parallel_encoder(
+                &mut configuration,
+                None,
+                None,
+                None,
+                None,
+                Some(7),
+                Some(0)
+            )
+            .is_err()
+        );
+        assert_eq!(
+            serde_json::to_value(configuration).expect("invalid budget atomic"),
+            before
+        );
+        assert_eq!(
+            std::fs::read_dir(temp.path()).expect("no source/index work").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn c08_cli_filters_only_edits_override_without_native_work() {
+        use andean_condor::models::input::Ffms2Filter;
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut configuration = c08_configuration(temp.path());
+        let mut input = configuration.condor.input.clone();
+        if let Input::Video { path, .. } = &mut input {
+            *path = temp.path().join("override.mkv");
+        }
+        configuration.condor.sequence_config.parallel_encoder.input = Some(input);
+        let mut expected = configuration.clone();
+        if let Some(Input::Video { filters, .. }) =
+            &mut expected.condor.sequence_config.parallel_encoder.input
+        {
+            *filters = vec![Ffms2Filter::OutputFormat {
+                bit_depth: None,
+                chroma: None,
+                width: Some(16),
+                height: Some(8),
+            }];
+        }
+        let file = temp.path().join("condor.json");
+        for args in [
+            vec!["encode", "set", "input", "--filters", "resize:width=16;height=8"],
+            vec!["encode", "--filters", "resize:width=16;height=8"],
+        ] {
+            configuration.save(&file).expect("restore saved override");
+            let output = condor_cmd(&temp).env("PATH", "").args(&args).output().expect("real CLI");
+            if args.contains(&"set") {
+                assert!(output.status.success(), "{output:?}");
+            } else {
+                assert!(
+                    !output.status.success(),
+                    "missing root must prevent execution"
+                );
+            }
+            assert_eq!(
+                serde_json::to_value(load(&file)).expect("CLI saved edit"),
+                serde_json::to_value(&expected).expect("only effective filters changed")
+            );
+        }
+        let disk = std::fs::read(&file).expect("saved good edit");
+        for filter in ["resize:format=nv12", "resize:width=0"] {
+            condor_cmd(&temp)
+                .env("PATH", "")
+                .args(["encode", "set", "input", "--filters", filter])
+                .assert()
+                .failure();
+            assert_eq!(std::fs::read(&file).expect("failed CLI bytes"), disk);
+        }
+        let mut entries = std::fs::read_dir(temp.path())
+            .expect("offline side effects")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(entries, ["condor.json", "logs"]);
+    }
+
+    #[test]
+    fn c08_native_effective_inputs_decode_literal_filtered_shapes() {
+        use andean_condor::models::input::ImportMethod;
+        use california_condor::{
+            commands::handlers::encode::configure_parallel_encoder, tui::open_input,
+        };
+        use std::sync::{Arc, atomic::AtomicBool};
+        let temp = tempfile::tempdir().expect("fixture");
+        for (name, size) in [("root.mkv", "32x16"), ("override.mkv", "48x24")] {
+            let generated = std::process::Command::new("ffmpeg")
+                .args([
+                    "-v",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &format!("color=c=black:s={size}:r=24"),
+                    "-frames:v",
+                    "2",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:v",
+                    "ffv1",
+                ])
+                .arg(temp.path().join(name))
+                .output()
+                .expect("FFmpeg required for finite fixture");
+            assert!(
+                generated.status.success(),
+                "{}",
+                String::from_utf8_lossy(&generated.stderr)
+            );
+        }
+        let root_bytes = std::fs::read(temp.path().join("root.mkv")).expect("root bytes");
+        let override_bytes =
+            std::fs::read(temp.path().join("override.mkv")).expect("override bytes");
+        let mut original = c08_configuration(temp.path());
+        if let Input::Video { filters, .. } = &mut original.condor.input {
+            filters.clear();
+        }
+        let override_input = Input::Video {
+            path: temp.path().join("override.mkv"),
+            import_method: ImportMethod::FFMS2 {
+                index: Some(0),
+                cache_path: Some(temp.path().join("override.ffindex")),
+            },
+            filters: vec![],
+        };
+        let filters = [VapourSynthFilter::Resize {
+            scaler: None,
+            width: Some(16),
+            height: Some(8),
+            format: Some(FFPixelFormat::YUV420P),
+        }];
+        for case in ["existing-override", "new-override", "main-only"] {
+            let mut configuration = original.clone();
+            if case == "existing-override" {
+                configuration.condor.sequence_config.parallel_encoder.input =
+                    Some(override_input.clone());
+            }
+            let before = serde_json::to_value(&configuration.condor.input).expect("root reference");
+            let path = temp.path().join("override.mkv");
+            configure_parallel_encoder(
+                &mut configuration,
+                (case == "new-override").then_some(path.as_path()),
+                None,
+                Some(&filters),
+                None,
+                None,
+                None,
+            )
+            .expect("effective input edit");
+            let effective = if case == "main-only" {
+                assert!(configuration.condor.sequence_config.parallel_encoder.input.is_none());
+                &configuration.condor.input
+            } else {
+                assert_eq!(
+                    serde_json::to_value(&configuration.condor.input).expect("root unchanged"),
+                    before
+                );
+                configuration
+                    .condor
+                    .sequence_config
+                    .parallel_encoder
+                    .input
+                    .as_ref()
+                    .expect("override")
+            };
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let (mut decoded, info) =
+                open_input(effective, &cancelled).expect("actual FFMS2 filtered decode");
+            assert_eq!(info.resolution, (16, 8), "{case}");
+            assert_eq!(
+                decoded.y4m_frame(0).expect("real first frame").into_inner().len(),
+                6 + 16 * 8 * 3 / 2,
+                "{case}: FRAME header plus 8-bit 420 planes"
+            );
+            let (mut reference, info) =
+                open_input(&original.condor.input, &cancelled).expect("unmodified root decode");
+            assert_eq!(info.resolution, (32, 16));
+            assert_eq!(
+                reference.y4m_frame(0).expect("reference frame").into_inner().len(),
+                6 + 32 * 16 * 3 / 2
+            );
+            let (mut source, info) =
+                open_input(&override_input, &cancelled).expect("unmodified override source decode");
+            assert_eq!(info.resolution, (48, 24));
+            assert_eq!(
+                source.y4m_frame(0).expect("source frame").into_inner().len(),
+                6 + 48 * 24 * 3 / 2
+            );
+            assert_eq!(
+                serde_json::to_value(&configuration.condor.sequence_config.target_quality)
+                    .expect("TQ"),
+                serde_json::to_value(&original.condor.sequence_config.target_quality)
+                    .expect("TQ unchanged")
+            );
+            assert_eq!(
+                serde_json::to_value(&configuration.condor.sequence_config.quality_check)
+                    .expect("QC"),
+                serde_json::to_value(&original.condor.sequence_config.quality_check)
+                    .expect("QC unchanged")
+            );
+            eprintln!(
+                "C08 {case}: effective=16x8, root=32x16, override source=48x24; decoded frame payloads verified"
+            );
+        }
+        assert_eq!(
+            std::fs::read(temp.path().join("root.mkv")).expect("root unchanged"),
+            root_bytes
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("override.mkv")).expect("override unchanged"),
+            override_bytes
+        );
+    }
+
     #[test]
     fn c03_real_native_encode_publishes_new_root_chunk_and_owning_progress() {
         use andean_condor::{
