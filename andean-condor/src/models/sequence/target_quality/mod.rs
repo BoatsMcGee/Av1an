@@ -24,6 +24,12 @@ where
     pub metric: QualityMetric,
     pub maximum_probes: u8,
     pub quantizer_range: (u32, u32),
+    /// Methods for 3 and 4 recorded probes, respectively (not score directions).
+    /// With 0/1 records use midpoint, 2 use linear, and 5+ use whole-history PCHIP.
+    /// Linear/PCHIP need 2 points; quadratic/Fritsch–Carlson/natural need 3;
+    /// Catmull/Akima/cubic polynomial need 4 (Catmull covers only the inner interval).
+    /// Insufficient points, rejection or nonfinite output use bracketing linear,
+    /// then midpoint. Duplicate scores or an out-of-observed-range target use midpoint.
     pub interpolators: (InterpolationMethod, InterpolationMethod),
     pub input: Option<InputModel>,
     pub metric_input: Option<InputModel>,

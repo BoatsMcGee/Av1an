@@ -351,13 +351,19 @@ pub enum TargetQualitySet {
         #[arg(value_name = "MIN-MAX", value_parser = parse_quantizer_range)]
         range: (u32, u32),
     },
-    /// The interpolators used between probe results.
+    /// Methods used with 3 and 4 recorded probes, respectively.
+    ///
+    /// With 0/1 records use midpoint, 2 use linear, and 5+ use whole-history PCHIP.
+    /// Linear/PCHIP need 2 points; quadratic/Fritsch-Carlson/natural need 3;
+    /// Catmull/Akima/cubic-polynomial need 4. Catmull covers only the inner interval.
+    /// Insufficient points, rejection or nonfinite output use bracketing linear,
+    /// then midpoint. Duplicate scores or targets outside observed scores use midpoint.
     Interpolators {
-        /// Interpolator used below a probe's value.
-        #[arg(value_name = "Interpolator")]
+        /// Method used with 3 recorded probes, before the fourth probe.
+        #[arg(value_name = "FIRST")]
         first: Interpolator,
-        /// Interpolator used above a probe's value.
-        #[arg(value_name = "Interpolator")]
+        /// Method used with 4 recorded probes, before the fifth probe.
+        #[arg(value_name = "SECOND")]
         second: Interpolator,
     },
     /// The input Target Quality encodes and measures.
@@ -744,6 +750,92 @@ mod tests {
         test_helpers::{check_basic_config, default_config, get_test_video},
         utils::hash_path::hash_path,
     };
+
+    #[test]
+    fn q08_cli_interpolators_roundtrip_all_names_and_positions() {
+        use crate::commands::{Commands, CondorCli};
+        use clap::Parser;
+        let temp = tempfile::tempdir().expect("config scratch");
+        let video = crate::test_helpers::TestVideo {
+            path: temp.path().join("must-not-open.mkv"),
+            width: 32,
+            height: 32,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: andean_condor::ffmpeg::FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        let mut configuration = default_config(&video, &temp.path().join("out.mkv"), temp.path());
+        let names = [
+            ("linear", "Linear"),
+            ("quadratic", "Quadratic"),
+            ("natural", "Natural"),
+            ("fritsch-carlson", "FritschCarlson"),
+            ("pchip", "Pchip"),
+            ("catmull", "Catmull"),
+            ("akima", "Akima"),
+            ("cubic-polynomial", "CubicPolynomial"),
+        ];
+        for (first, first_json) in names {
+            for (second, second_json) in names {
+                let cli = CondorCli::try_parse_from([
+                    "condor",
+                    "target-quality",
+                    "set",
+                    "interpolators",
+                    first,
+                    second,
+                ])
+                .expect("advertised names parse in both positions");
+                let Some(Commands::TargetQuality {
+                    edit: Some(ConfigAction::Set { setting }),
+                    ..
+                }) = cli.command
+                else {
+                    panic!("target quality edit");
+                };
+                TargetQualityCrud::apply(&mut configuration, &setting)
+                    .expect("offline config edit");
+                let expected = serde_json::json!([first_json, second_json]);
+                assert_eq!(
+                    TargetQualityCrud::render(
+                        &configuration,
+                        Some(&TargetQualityKey::Interpolators)
+                    )
+                    .expect("render tuple"),
+                    expected
+                );
+                let saved = serde_json::to_vec(&configuration).expect("save JSON");
+                let loaded: Configuration = serde_json::from_slice(&saved).expect("reload JSON");
+                assert_eq!(
+                    TargetQualityCrud::render(&loaded, Some(&TargetQualityKey::Interpolators))
+                        .expect("reloaded tuple"),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn q08_cli_help_explains_phase_and_fallback_instead_of_score_direction() {
+        use clap::Parser;
+        let help = crate::commands::CondorCli::try_parse_from([
+            "condor",
+            "target-quality",
+            "set",
+            "interpolators",
+            "--help",
+        ])
+        .expect_err("help exits without work")
+        .to_string();
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        for description in
+            ["3 recorded probes", "4 recorded probes", "bracketing linear", "midpoint"]
+        {
+            assert!(help.contains(description), "missing {description}: {help}");
+        }
+        assert!(!help.contains("below a probe") && !help.contains("above a probe"));
+    }
 
     #[test]
     fn target_quality_default_config() {

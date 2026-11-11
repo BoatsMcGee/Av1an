@@ -7,7 +7,7 @@
 | `metric` | Object | Yes | `{ "SSIMULACRA2": { "target_range": [74.0, 76.0], "resolution": null, "threads": null } }` | One key: `VMAF`, `SSIMULACRA2`, `BUTTERAUGLI`, `XPSNR`, `CVVDP`. CLI `--metric` |
 | `maximum_probes` | Integer (u8) | Yes | `4` | Positive max probes per scene (`1..=255`) |
 | `quantizer_range` | Array `[u32, u32]` | Yes | Per-encoder (see [condor.encoder](../encoder.md)) | `[min, max]`, `min ≤ max`; both endpoints must pass encoder settings checks. CLI `--min-q`/`--max-q` |
-| `interpolators` | Array `[string, string]` | Yes | `["FritschCarlson", "Pchip"]` | Interpolation methods: `"Linear"`, `"Quadratic"`, `"Natural"`, `"FritschCarlson"`, `"Pchip"`, `"Catmull"`, `"Akima"`, `"CubicPolynomial"` |
+| `interpolators` | Array `[string, string]` | Yes | `["FritschCarlson", "Pchip"]` | Methods for 3 and 4 recorded probes, respectively: `"Linear"`, `"Quadratic"`, `"Natural"`, `"FritschCarlson"`, `"Pchip"`, `"Catmull"`, `"Akima"`, `"CubicPolynomial"` |
 | `input` | Input object or null | Yes | `null` | Override encode input. Same shape as [condor.input](../input.md) |
 | `metric_input` | Input object or null | Yes | `null` | Override metric reference input |
 | `probing` | Object | Yes | `{ "encoder_options": null, "strategy": "Whole", "statistic": "Mean" }` | Probe strategy + statistic. CLI `--profile` presets |
@@ -49,6 +49,25 @@ earlier pass is an error, not an inferred measurement. Cancellation accepts no
 incomplete pass. No-new-probe resumes also save a restored measured final quantizer
 when it differs from the scene's configured value, without an extra save on repeat.
 This does not verify source/settings provenance or migrate older records.
+
+The interpolation tuple selects phases, **not** below/above a score: 0/1 records
+use the configured quantizer midpoint, 2 use linear, 3 use the first method, 4 use
+the second method, and 5+ retain whole-history PCHIP. Every method is legal in
+either slot. Linear and PCHIP require 2 points, quadratic/Fritsch–Carlson/natural
+require 3, and Catmull/Akima/cubic polynomial require 4. Catmull covers only the
+inner interval of its four points. Natural and PCHIP use all available phase
+points; quadratic and Fritsch–Carlson use the first three sorted scores unless
+the target is after the third score, then the last three. Linear uses the nearest
+score-bracketing pair. Insufficient points, a rejected interpolation, or nonfinite
+output fall back to that linear pair, then midpoint. Any duplicate scores
+(including flat histories), or a target outside observed scores, use midpoint;
+no records are pruned and fallback does not extrapolate.
+
+The public predictor rejects nonfinite targets and any nonfinite history
+quantizer/score before sorting or selecting even an empty/single-history midpoint.
+Finite estimates outside the requested quantizer bracket are rounded to the step
+and clamped, not discarded. Predictions still pass through untested-grid admission
+and do not guarantee a target hit; final selection remains measured as described above.
 
 - `VMAF`: `{ "target_range": [94.0, 96.0], "resolution": [w, h] or null, "scaler": <string>, "threads": <usize>, "model": <path> or null, "features": ["default"|"weighted"|"neg"|"motionless"|"uhd"] }`
 - `SSIMULACRA2`: `{ "target_range": [74.0, 76.0], "resolution": [w, h] or null, "threads": <u8> or null }` (default)

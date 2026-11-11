@@ -1872,9 +1872,21 @@ impl TargetQuality {
     /// Interpolates and rounds a prediction; it may already have been measured.
     /// Task admission separately selects an untested interior grid point.
     ///
+    /// With 0/1 records use the configured midpoint; with 2 use linear; with 3/4
+    /// use the first/second configured method; with 5+ use PCHIP over all records.
+    /// Linear needs 2 points, quadratic/Fritsch–Carlson/natural need 3, PCHIP
+    /// needs 2, and Catmull/Akima/cubic polynomial need 4. Catmull only covers
+    /// the inner interval. Insufficient points, rejection, or nonfinite results
+    /// fall back to the nearest score-bracketing linear pair, then midpoint.
+    /// Duplicate scores (including flat histories) or targets outside the observed
+    /// score range use midpoint without pruning records or extrapolating.
+    /// Finite estimates are rounded to the step and clamped to the requested range.
+    ///
     /// # Errors
-    /// Rejects nonfinite/reversed ranges, nonpositive/nonfinite steps, and grids
-    /// whose tick magnitudes exceed 2^52 - 1, before rounding or clamping.
+    /// Rejects nonfinite targets or history quantizers/scores before sorting or
+    /// prediction, including empty/single histories. Also rejects nonfinite/reversed
+    /// ranges, nonpositive/nonfinite steps, and grids whose tick magnitudes exceed
+    /// 2^52 - 1, before rounding or clamping.
     #[inline]
     pub fn predict_quantizer(
         quantizer_range: (f64, f64),
@@ -1884,102 +1896,102 @@ impl TargetQuality {
         step: f64,
     ) -> Result<f64> {
         Self::validate_quantizer_grid(quantizer_range, step)?;
+        ensure!(target_score.is_finite(), "target score must be finite");
+        for (index, (quantizer, score)) in quantizer_score_history.iter().enumerate() {
+            ensure!(
+                quantizer.is_finite(),
+                "history[{index}].quantizer must be finite"
+            );
+            ensure!(score.is_finite(), "history[{index}].score must be finite");
+        }
         let midpoint = quantizer_range.0.midpoint(quantizer_range.1);
 
         let predicted_quantizer = match quantizer_score_history.len() {
             0..=1 => midpoint,
             n => {
-                // Sort history by quantizer
+                // Sort history by score.
                 let mut sorted = quantizer_score_history.to_vec();
-                sorted.sort_by(|(_, s1), (_, s2)| {
-                    s1.partial_cmp(s2).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                sorted.sort_by(|(_, s1), (_, s2)| s1.total_cmp(s2));
 
                 let (scores, quantizers): (Vec<f64>, Vec<f64>) =
                     sorted.iter().map(|(q, s)| (*s, *q)).unzip();
 
-                let result = match n {
-                    2 => {
-                        // 3rd probe: linear interpolation
+                if scores.windows(2).any(|pair| pair[0] == pair[1])
+                    || !(scores[0]..=scores[n - 1]).contains(&target_score)
+                {
+                    midpoint
+                } else {
+                    let linear = || {
+                        let k = scores
+                            .windows(2)
+                            .position(|pair| pair[0] <= target_score && target_score <= pair[1])?;
                         interpolators::linear(
-                            &[scores[0], scores[1]],
-                            &[quantizers[0], quantizers[1]],
+                            scores[k..k + 2].try_into().ok()?,
+                            quantizers[k..k + 2].try_into().ok()?,
                             target_score,
                         )
-                    },
-                    3 => {
-                        // 4th probe: configurable method
-                        match interpolators.0 {
-                            InterpolationMethod::Linear => interpolators::linear(
-                                &[scores[0], scores[1]],
-                                &[quantizers[0], quantizers[1]],
-                                target_score,
-                            ),
-                            InterpolationMethod::Quadratic => interpolators::quadratic(
-                                &[scores[0], scores[1], scores[2]],
-                                &[quantizers[0], quantizers[1], quantizers[2]],
-                                target_score,
-                            ),
-                            InterpolationMethod::Natural => interpolators::natural_cubic_spline(
-                                &scores,
-                                &quantizers,
-                                target_score,
-                            ),
-                            InterpolationMethod::FritschCarlson => interpolators::fritsch_carlson(
-                                &[scores[0], scores[1], scores[2]],
-                                &[quantizers[0], quantizers[1], quantizers[2]],
-                                target_score,
-                            ),
-                            _ => None,
-                        }
-                    },
-                    4 => {
-                        // 5th probe: configurable method
-                        let s: &[f64; 4] = &scores[..4].try_into()?;
-                        let q: &[f64; 4] = &quantizers[..4].try_into()?;
+                    };
+                    let method = match n {
+                        2 => InterpolationMethod::Linear,
+                        3 => interpolators.0,
+                        4 => interpolators.1,
+                        _ => InterpolationMethod::Pchip,
+                    };
+                    let result = match method {
+                        InterpolationMethod::Linear => linear(),
+                        InterpolationMethod::Quadratic | InterpolationMethod::FritschCarlson => {
+                            // Use a contiguous triple containing the target, not always the first.
+                            let k = usize::from(n == 4 && target_score > scores[2]);
+                            let s = scores[k..k + 3].try_into()?;
+                            let q = quantizers[k..k + 3].try_into()?;
+                            if method == InterpolationMethod::Quadratic {
+                                interpolators::quadratic(s, q, target_score)
+                            } else {
+                                interpolators::fritsch_carlson(s, q, target_score)
+                            }
+                        },
+                        InterpolationMethod::Natural => {
+                            interpolators::natural_cubic_spline(&scores, &quantizers, target_score)
+                        },
+                        InterpolationMethod::Pchip => {
+                            interpolators::pchip(&scores, &quantizers, target_score)
+                        },
+                        InterpolationMethod::Catmull
+                        | InterpolationMethod::Akima
+                        | InterpolationMethod::CubicPolynomial
+                            if n < 4 =>
+                        {
+                            None
+                        },
+                        InterpolationMethod::Catmull => interpolators::catmull_rom(
+                            scores[..4].try_into()?,
+                            quantizers[..4].try_into()?,
+                            target_score,
+                        ),
+                        InterpolationMethod::Akima => interpolators::akima(
+                            scores[..4].try_into()?,
+                            quantizers[..4].try_into()?,
+                            target_score,
+                        ),
+                        InterpolationMethod::CubicPolynomial => interpolators::cubic_polynomial(
+                            scores[..4].try_into()?,
+                            quantizers[..4].try_into()?,
+                            target_score,
+                        ),
+                    };
 
-                        match interpolators.1 {
-                            InterpolationMethod::Linear => {
-                                interpolators::linear(&[s[0], s[1]], &[q[0], q[1]], target_score)
-                            },
-                            InterpolationMethod::Quadratic => interpolators::quadratic(
-                                &[s[0], s[1], s[2]],
-                                &[q[0], q[1], q[2]],
-                                target_score,
-                            ),
-                            InterpolationMethod::Natural => interpolators::natural_cubic_spline(
-                                &scores,
-                                &quantizers,
-                                target_score,
-                            ),
-                            InterpolationMethod::FritschCarlson => interpolators::fritsch_carlson(
-                                &[s[0], s[1], s[2]],
-                                &[q[0], q[1], q[2]],
-                                target_score,
-                            ),
-                            InterpolationMethod::Pchip => interpolators::pchip(s, q, target_score),
-                            InterpolationMethod::Catmull => {
-                                interpolators::catmull_rom(s, q, target_score)
-                            },
-                            InterpolationMethod::Akima => interpolators::akima(s, q, target_score),
-                            InterpolationMethod::CubicPolynomial => {
-                                interpolators::cubic_polynomial(s, q, target_score)
-                            },
-                        }
-                    },
-                    // 6th and later probes: pchip over every point, which is monotone and so
-                    // cannot predict a quantizer outside the probed range
-                    _ => interpolators::pchip(&scores, &quantizers, target_score),
-                };
-
-                result.unwrap_or_else(|| {
-                    trace!("Interpolation failed, falling back to binary search (midpoint)");
-                    midpoint
-                })
+                    result
+                        .filter(|q| q.is_finite())
+                        .or_else(|| linear().filter(|q| q.is_finite()))
+                        .unwrap_or_else(|| {
+                            trace!("Interpolation failed, falling back to configured midpoint");
+                            midpoint
+                        })
+                }
             },
         };
 
-        // Round the result of the interpolation to the nearest integer
+        // Round the result of the interpolation to the nearest step.
         Ok(((predicted_quantizer / step).round() * step)
             .clamp(quantizer_range.0, quantizer_range.1))
     }
@@ -2076,6 +2088,311 @@ mod tests {
         encoder::{Encoder, EncoderBase, photon_noise::PhotonNoise},
         sequence::target_quality::types::QualityMetric,
     };
+
+    const Q08_METHODS: [crate::models::sequence::target_quality::types::InterpolationMethod; 8] = {
+        use crate::models::sequence::target_quality::types::InterpolationMethod::*;
+        [
+            Linear,
+            Quadratic,
+            Natural,
+            FritschCarlson,
+            Pchip,
+            Catmull,
+            Akima,
+            CubicPolynomial,
+        ]
+    };
+
+    #[test]
+    fn q08_three_record_pchip_runs_the_curve_not_midpoint() {
+        use crate::models::sequence::target_quality::types::InterpolationMethod::Pchip;
+        assert_eq!(
+            TargetQuality::predict_quantizer(
+                (0.0, 40.0),
+                1.5,
+                (Pchip, Pchip),
+                &[(1.0, 0.0), (4.0, 1.0), (9.0, 2.0)],
+                1.0 / 1024.0,
+            )
+            .expect("three-point PCHIP"),
+            6.34375
+        );
+    }
+
+    #[test]
+    fn q08_three_record_four_point_methods_use_bracketing_linear_not_midpoint() {
+        use crate::models::sequence::target_quality::types::InterpolationMethod::*;
+        for method in [Catmull, Akima, CubicPolynomial] {
+            assert_eq!(
+                TargetQuality::predict_quantizer(
+                    (0.0, 40.0),
+                    1.5,
+                    (method, Pchip),
+                    &[(1.0, 0.0), (4.0, 1.0), (9.0, 2.0)],
+                    0.25,
+                )
+                .expect("insufficient-point fallback"),
+                6.5,
+                "{method:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn q08_public_prediction_method_phase_matrix() {
+        // q = (score + 1)^2. Literal curve evaluations, not a second dispatch implementation.
+        // Hermite at t=1/2 is (q0+q1)/2 + (m0-m1)/8.
+        let history = [(1.0, 0.0), (4.0, 1.0), (9.0, 2.0), (16.0, 3.0), (25.0, 4.0), (36.0, 5.0)];
+        let cases = [
+            (0, 0.5, [20.0; 8]),
+            (1, 0.5, [20.0; 8]),
+            (2, 0.5, [2.5; 8]),
+            (3, 1.5, [6.5, 6.25, 6.3125, 6.34375, 6.34375, 6.5, 6.5, 6.5]),
+            (
+                4,
+                1.5,
+                [6.5, 6.25, 6.2, 6.34375, 6.239583333333333, 6.375, 6.25, 6.25],
+            ),
+            (5, 1.5, [6.239583333333333; 8]),
+            (6, 1.5, [6.239583333333333; 8]),
+        ];
+        for (count, target, expected) in cases {
+            // Deliberately unsorted: admission must order by score, not by quantizer or arrival.
+            let mut samples = history[..count].to_vec();
+            samples.reverse();
+            for (method, want) in Q08_METHODS.into_iter().zip(expected) {
+                let got = TargetQuality::predict_quantizer(
+                    (0.0, 40.0),
+                    target,
+                    (method, method),
+                    &samples,
+                    1.0 / 1024.0,
+                )
+                .expect("finite prediction");
+                assert!(
+                    (got - want).abs() <= 1.0 / 2048.0,
+                    "{method:?}, {count} records: {got} != {want}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn q08_public_prediction_windows_and_tuple_positions() {
+        use crate::models::sequence::target_quality::types::InterpolationMethod::*;
+        let history = [(1.0, 0.0), (4.0, 1.0), (9.0, 2.0), (16.0, 3.0)];
+        for (count, target, methods, want) in [
+            (3, 1.5, (Quadratic, Natural), 6.25),
+            (4, 1.5, (Quadratic, Natural), 6.2),
+            (4, 2.5, (Linear, Linear), 12.5),
+            (4, 2.5, (Linear, Quadratic), 12.25),
+            (4, 2.5, (Linear, FritschCarlson), 12.354166666666666),
+            (4, 2.5, (Linear, Natural), 12.35),
+            (4, 2.5, (Linear, Pchip), 12.354166666666666),
+            // Catmull rejects the outer interval: use its nearest bracketing pair.
+            (4, 0.5, (Linear, Catmull), 2.5),
+            (4, 2.5, (Linear, Catmull), 12.5),
+            (4, 2.5, (Linear, Akima), 12.375),
+            (4, 2.5, (Linear, CubicPolynomial), 12.25),
+        ] {
+            let got = TargetQuality::predict_quantizer(
+                (0.0, 40.0),
+                target,
+                methods,
+                &history[..count],
+                1.0 / 1024.0,
+            )
+            .expect("window prediction");
+            assert!(
+                (got - want).abs() <= 1.0 / 2048.0,
+                "{methods:?}, {count}/{target}: {got} != {want}"
+            );
+        }
+        // The fifth and sixth records must participate, not just trigger a phase switch.
+        for history in [
+            &[(1.0, 0.0), (4.0, 1.0), (9.0, 2.0), (16.0, 3.0), (25.0, 4.0)][..],
+            &[(1.0, 0.0), (4.0, 1.0), (9.0, 2.0), (16.0, 3.0), (25.0, 4.0), (36.0, 5.0)][..],
+        ] {
+            let got = TargetQuality::predict_quantizer(
+                (0.0, 40.0),
+                history.len() as f64 - 1.0,
+                (Catmull, Quadratic),
+                history,
+                0.25,
+            )
+            .expect("whole history PCHIP");
+            assert_eq!(got, if history.len() == 5 { 25.0 } else { 36.0 });
+        }
+    }
+
+    #[test]
+    fn q08_public_prediction_duplicate_flat_and_outside_fallback_matrix() {
+        let history = [(1.0, 0.0), (4.0, 1.0), (9.0, 2.0), (16.0, 3.0), (25.0, 4.0), (36.0, 5.0)];
+        for method in Q08_METHODS {
+            for count in 2..=6 {
+                let mut duplicate = history[..count].to_vec();
+                duplicate[count - 1].1 = duplicate[count - 2].1;
+                let flat: Vec<_> = history[..count].iter().map(|(q, _)| (*q, 0.0)).collect();
+                for (samples, target) in [
+                    (&duplicate[..], 0.5),
+                    (&flat[..], 0.0),
+                    (&history[..count], -1.0),
+                    (&history[..count], 10.0),
+                ] {
+                    assert_eq!(
+                        TargetQuality::predict_quantizer(
+                            (0.0, 40.0),
+                            target,
+                            (method, method),
+                            samples,
+                            0.25,
+                        )
+                        .expect("bounded midpoint"),
+                        20.0,
+                        "{method:?}/{count}/{samples:?}/{target}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn q08_public_prediction_keeps_noisy_measurements_and_clamps_finite_estimates() {
+        let noisy = [(1.0, 0.0), (9.0, 1.0), (4.0, 2.0), (16.0, 3.0), (25.0, 4.0), (36.0, 5.0)];
+        for method in Q08_METHODS {
+            for count in 2..=6 {
+                assert_eq!(
+                    TargetQuality::predict_quantizer(
+                        (0.0, 40.0),
+                        1.0,
+                        (method, method),
+                        &noisy[..count],
+                        0.25,
+                    )
+                    .expect("retain measured knot"),
+                    9.0,
+                    "{method:?}/{count}"
+                );
+                let got = TargetQuality::predict_quantizer(
+                    (0.0, 40.0),
+                    0.5,
+                    (method, method),
+                    &noisy[..count],
+                    0.25,
+                )
+                .expect("noisy interior prediction");
+                assert!(got.is_finite() && (0.0..=40.0).contains(&got));
+                for (range, want) in [((0.0, 2.0), 2.0), ((10.0, 20.0), 10.0)] {
+                    assert_eq!(
+                        TargetQuality::predict_quantizer(
+                            range,
+                            1.0,
+                            (method, method),
+                            &noisy[..count],
+                            0.25,
+                        )
+                        .expect("finite estimate is clamped"),
+                        want,
+                        "{method:?}/{count}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn q08_public_prediction_rejects_nonfinite_inputs_even_before_midpoint() {
+        let history = [(1.0, 0.0), (4.0, 1.0), (9.0, 2.0), (16.0, 3.0), (25.0, 4.0), (36.0, 5.0)];
+        for method in Q08_METHODS {
+            for count in 0..=6 {
+                for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                    let error = TargetQuality::predict_quantizer(
+                        (0.0, 40.0),
+                        invalid,
+                        (method, method),
+                        &history[..count],
+                        0.25,
+                    )
+                    .expect_err("nonfinite target must be rejected");
+                    assert!(error.to_string().contains("target score"), "{error:#}");
+                    for index in 0..count {
+                        for field in ["quantizer", "score"] {
+                            let mut samples = history[..count].to_vec();
+                            if field == "quantizer" {
+                                samples[index].0 = invalid;
+                            } else {
+                                samples[index].1 = invalid;
+                            }
+                            let error = TargetQuality::predict_quantizer(
+                                (0.0, 40.0),
+                                0.5,
+                                (method, method),
+                                &samples,
+                                0.25,
+                            )
+                            .expect_err("every nonfinite record must be rejected");
+                            let message = error.to_string();
+                            assert!(
+                                message.contains(&format!("history[{index}].{field}")),
+                                "{message}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn q08_public_prediction_filters_algorithm_overflow_before_clamping() {
+        use crate::models::sequence::target_quality::types::InterpolationMethod::*;
+        let tiny = [(1.0, 0.0), (4.0, 1e-200), (9.0, 2e-200), (16.0, 3e-200)];
+        // Lagrange products underflow to zero; the nearest linear pair still gives 6.5.
+        for (count, methods) in [(3, (Quadratic, Linear)), (4, (Linear, CubicPolynomial))] {
+            assert_eq!(
+                TargetQuality::predict_quantizer(
+                    (0.0, 40.0),
+                    1.5e-200,
+                    methods,
+                    &tiny[..count],
+                    0.25,
+                )
+                .expect("finite linear fallback"),
+                6.5
+            );
+        }
+        // Even the secant overflows: no infinity/NaN may reach the final clamp.
+        let huge = [(f64::MAX, 0.0), (-f64::MAX, 1.0)];
+        for method in Q08_METHODS {
+            assert_eq!(
+                TargetQuality::predict_quantizer((0.0, 40.0), 0.5, (method, method), &huge, 0.25,)
+                    .expect("finite midpoint fallback"),
+                20.0
+            );
+            let extreme = [
+                (f64::MAX, 0.0),
+                (-f64::MAX, 1.0),
+                (f64::MAX, 2.0),
+                (-f64::MAX, 3.0),
+                (f64::MAX, 4.0),
+                (-f64::MAX, 5.0),
+            ];
+            for count in 2..=6 {
+                let got = TargetQuality::predict_quantizer(
+                    (0.0, 40.0),
+                    0.5,
+                    (method, method),
+                    &extreme[..count],
+                    0.25,
+                )
+                .expect("overflow must stay bounded in every phase");
+                assert!(
+                    got.is_finite() && (0.0..=40.0).contains(&got),
+                    "{method:?}/{count}: {got}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn q04_duplicate_rounding_admits_an_untested_interior_probe() {
