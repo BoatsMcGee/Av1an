@@ -407,23 +407,93 @@ mod tests {
             let file = base.join("condor.json");
             configuration.save(&file).expect("save");
             let bytes = std::fs::read(&file).expect("bytes");
-            let before = serde_json::to_value(&configuration).expect("before");
+            let mut expected = configuration.clone();
             if kind != "loop" {
                 std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o000))
                     .expect("deny access");
             }
+            // chmod may be bypassed (for example by container root); probe the actual operation.
+            let access = match kind {
+                "loop" => None,
+                "normalize" => Some(std::fs::canonicalize(&selected).map(|_| ())),
+                _ => Some(
+                    std::fs::read_dir(if kind == "old-read" {
+                        protected.clone()
+                    } else {
+                        selected.join("scenes")
+                    })
+                    .and_then(|mut entries| entries.next().transpose().map(|_| ())),
+                ),
+            };
             let result = configure_temp(&mut configuration, Some(&selected));
             std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o700))
                 .expect("restore before assertions and cleanup");
-            let error = result.expect_err("filesystem errors cannot masquerade as missing/empty");
-            let message = format!("{error:#}");
-            let context = match kind {
-                "loop" => "normalizing temp directory",
-                "normalize" => "normalizing temp directory",
-                _ => "inspecting work directory",
+            let denied = match access {
+                None => true,
+                Some(Err(error)) => {
+                    assert_eq!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied,
+                        "{kind}: unexpected probe error: {error}"
+                    );
+                    eprintln!("C03 {kind}: permission denial enforced by the actual operation");
+                    true
+                },
+                Some(Ok(())) => {
+                    eprintln!(
+                        "C03 {kind}: chmod 000 did not deny the actual operation; permission-denial proof unavailable; checking allowed/nonempty-work policy behavior"
+                    );
+                    false
+                },
             };
-            assert!(message.contains(context), "{kind}: {message}");
-            assert_eq!(serde_json::to_value(&configuration).expect("after"), before);
+            if denied {
+                let error =
+                    result.expect_err("filesystem errors cannot masquerade as missing/empty");
+                let message = format!("{error:#}");
+                let context = if matches!(kind, "loop" | "normalize") {
+                    "normalizing temp directory"
+                } else {
+                    "inspecting work directory"
+                };
+                assert!(message.contains(context), "{kind}: {message}");
+                if kind != "loop" {
+                    assert!(
+                        error.chain().any(|cause| cause
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(
+                                |error| error.kind() == std::io::ErrorKind::PermissionDenied
+                            )),
+                        "{kind}: {message}"
+                    );
+                }
+            } else if kind == "normalize" {
+                result.expect("accessible empty job permits a temp edit");
+                expected.temp = selected.clone();
+                expected.condor.sequence_config.parallel_encoder.scenes_directory =
+                    selected.join("scenes");
+                expected.condor.sequence_config.scene_concatenator.scenes_directory =
+                    selected.join("scenes");
+            } else {
+                let error = result.expect_err("readable nonempty work must still refuse");
+                let message = format!("{error:#}");
+                let work = if kind == "old-read" {
+                    protected.clone()
+                } else {
+                    selected.join("scenes")
+                };
+                assert!(
+                    message.contains("cannot change temp directory")
+                        && message.contains("--config-file")
+                        && message.contains(path_str(&expected.temp))
+                        && message.contains(path_str(&selected))
+                        && message.contains(path_str(&work)),
+                    "{kind}: {message}"
+                );
+            }
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("after"),
+                serde_json::to_value(expected).expect("expected")
+            );
             assert_eq!(std::fs::read(&file).expect("bytes"), bytes);
         }
         // None is an unconditional no-op, even when the saved root cannot be normalized.
@@ -1226,12 +1296,19 @@ mod tests {
             }
             candidate.save(&file).expect("save");
             let before = std::fs::read(&file).expect("before");
+            let mut expected = candidate.clone();
             std::fs::set_permissions(&protected, std::fs::Permissions::from_mode(0o000))
                 .expect("deny access");
             let replacement = if work_directory {
                 "b.vpy"
             } else {
                 "protected/source.vpy"
+            };
+            let access = if work_directory {
+                std::fs::read_dir(&protected)
+                    .and_then(|mut entries| entries.next().transpose().map(|_| ()))
+            } else {
+                std::fs::canonicalize(protected.join("source.vpy")).map(|_| ())
             };
             let output = condor_cmd(&temp)
                 .env("PATH", "")
@@ -1241,13 +1318,82 @@ mod tests {
                 .expect("restore access before assertions/cleanup");
             let output = output.expect("CLI");
             let message = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                !output.status.success()
-                    && message.contains("protected")
-                    && message.contains("Permission denied"),
-                "{message}"
+            let denied = match access {
+                Err(error) => {
+                    assert_eq!(
+                        error.kind(),
+                        std::io::ErrorKind::PermissionDenied,
+                        "unexpected probe error: {error}"
+                    );
+                    eprintln!(
+                        "C02 work_directory={work_directory}: permission denial enforced by the actual operation"
+                    );
+                    true
+                },
+                Ok(()) => {
+                    eprintln!(
+                        "C02 work_directory={work_directory}: chmod 000 did not deny the actual operation; permission-denial proof unavailable; checking allowed/nonempty-work policy behavior"
+                    );
+                    false
+                },
+            };
+            if denied {
+                let context = if work_directory {
+                    "inspecting work directory"
+                } else {
+                    "normalizing input"
+                };
+                assert!(
+                    !output.status.success()
+                        && message.contains(context)
+                        && message.contains("protected")
+                        && message.contains("Permission denied"),
+                    "{message}"
+                );
+            } else if work_directory {
+                assert!(
+                    !output.status.success()
+                        && message.contains("cannot change job input")
+                        && message.contains("a.vpy")
+                        && message.contains("b.vpy")
+                        && message.contains("--config-file"),
+                    "{message}"
+                );
+            } else {
+                assert!(
+                    output.status.success(),
+                    "accessible source edit must succeed: {message}"
+                );
+                let source = protected.join("source.vpy");
+                expected.input = source.clone();
+                let Input::VapourSynthScript {
+                    source: saved_source,
+                    ..
+                } = &mut expected.condor.input
+                else {
+                    panic!("script fixture")
+                };
+                *saved_source =
+                    andean_condor::models::input::VapourSynthScriptSource::Path(source.clone());
+                expected.temp =
+                    temp.path().join(california_condor::utils::hash_path::hash_path(&source));
+                expected.condor.sequence_config.parallel_encoder.scenes_directory =
+                    expected.temp.join("scenes");
+                expected.condor.sequence_config.scene_concatenator.scenes_directory =
+                    expected.temp.join("scenes");
+            }
+            if denied || work_directory {
+                assert_eq!(std::fs::read(&file).expect("after"), before);
+            }
+            assert_eq!(
+                serde_json::to_value(load(&file)).expect("after"),
+                serde_json::to_value(expected).expect("expected")
             );
-            assert_eq!(std::fs::read(&file).expect("after"), before);
+            assert_eq!(
+                std::fs::read(protected.join("source.vpy")).expect("source sentinel"),
+                b"must not open"
+            );
+            assert!(!temp.path().join("source-opened").exists());
         }
     }
 
