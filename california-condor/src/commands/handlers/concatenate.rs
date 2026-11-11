@@ -448,6 +448,49 @@ mod tests {
     };
 
     #[test]
+    fn c07_native_zero_ancillary_tracks_leave_the_map_absent() {
+        let video = get_test_video();
+        let temp = tempfile::tempdir().expect("native fixture");
+        let output = temp.path().join("out.mkv");
+        for method in [
+            ConcatMethod::MKVMerge(Default::default()),
+            ConcatMethod::FFmpeg(Default::default()),
+        ] {
+            let mut config = default_config(&video, &output, temp.path());
+            config.condor.sequence_config.scene_concatenator.method = method;
+            let before = serde_json::to_vec(&config).expect("snapshot");
+            apply_discard(
+                &mut config,
+                &[DiscardCategory::Audio, DiscardCategory::Subtitle, DiscardCategory::Attachment],
+            )
+            .expect("genuine video-only source is not a failed identification");
+            assert_eq!(serde_json::to_vec(&config).expect("after"), before);
+        }
+        let path = temp.path().join("one-frame.y4m");
+        let mut data = b"YUV4MPEG2 W2 H2 F24:1 Ip A1:1 C420jpeg\nFRAME\n".to_vec();
+        data.extend([16, 16, 16, 16, 128, 128]);
+        std::fs::write(&path, data).expect("finite Y4M");
+        let video = crate::test_helpers::TestVideo { path, ..video };
+        let mut config = default_config(&video, &output, temp.path());
+        let before = serde_json::to_vec(&config).expect("snapshot");
+        apply_discard(
+            &mut config,
+            &[DiscardCategory::Audio, DiscardCategory::Chapters],
+        )
+        .expect_err("native unrecognized Y4M cannot silently skip MKV discard");
+        assert_eq!(serde_json::to_vec(&config).expect("after"), before);
+        config.condor.sequence_config.scene_concatenator.method =
+            ConcatMethod::FFmpeg(Default::default());
+        let before = serde_json::to_vec(&config).expect("snapshot");
+        apply_discard(
+            &mut config,
+            &[DiscardCategory::Audio, DiscardCategory::Subtitle, DiscardCategory::Attachment],
+        )
+        .expect("native FFmpeg fallback keeps video-only no-match behavior");
+        assert_eq!(serde_json::to_vec(&config).expect("after"), before);
+    }
+
+    #[test]
     fn detect_scenes_default_config() {
         let test_video = get_test_video();
         let input_abs = path_abs::PathAbs::new(&test_video.path)

@@ -65,6 +65,7 @@ If not specified, every track of the input is copied, which is the same as leavi
 
 - The input is probed once, when the command runs; the saved entries are not refreshed if the input later gains or loses tracks.
 - The `ffprobe` fallback supplies FFmpeg stream indices for the `ffmpeg` method, because `mkvmerge` reports its own track IDs, which differ for attachments. If `mkvmerge` cannot read the input, `ffprobe` alone describes it.
+- mkvmerge warnings (exit 1) are accepted only with recognized, supported identification and no reported errors. Failed or unrecognized identification stops `--discard` without saving changes, unless the `ffmpeg` method can use its required `ffprobe` result. A valid video-only source with no matching tracks leaves the track map unset.
 - `--discard` has no effect with `--method ivf`, which never carries source tracks.
 - When the input is a VapourSynth script there is no container to probe, so the flag is skipped with a warning.
 

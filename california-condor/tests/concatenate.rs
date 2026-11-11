@@ -16,6 +16,139 @@ mod tests {
 
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn c07_concatenate_discard_saves_fallback_indices_or_fails_atomically() {
+        use std::{os::unix::fs::PermissionsExt, time::Duration};
+
+        for case in ["rejected", "fallback", "warning", "invalid-ffprobe"] {
+            let temp = tempfile::tempdir().expect("CLI fixture");
+            let source = temp.path().join("source.mkv");
+            let output = temp.path().join("out.mkv");
+            std::fs::write(&source, b"source sentinel").expect("source");
+            std::fs::write(&output, b"output sentinel").expect("output");
+            let video = TestVideo {
+                path: source.clone(),
+                width: 2,
+                height: 2,
+                frames: 1,
+                fps_rational: (24, 1),
+                format: andean_condor::ffmpeg::FFPixelFormat::YUV420P,
+                scenes: vec![],
+            };
+            let mut config = default_config(&video, &output, &temp.path().join("work"));
+            config.condor.output.overwrite = true;
+            if matches!(case, "fallback" | "invalid-ffprobe") {
+                config.condor.sequence_config.scene_concatenator.method =
+                    ConcatMethod::FFmpeg(Default::default());
+            }
+            let file = temp.path().join("condor.json");
+            config.save(&file).expect("existing job");
+            let before = std::fs::read(&file).expect("before");
+            let tools = temp.path().join("tools");
+            std::fs::create_dir_all(&tools).expect("isolated PATH");
+            let mkvmerge = if matches!(case, "warning" | "invalid-ffprobe") {
+                (
+                    r#"{"container":{"recognized":true,"supported":true},"errors":[],"warnings":["recoverable warning"],"tracks":[{"id":0,"type":"video"},{"id":3,"type":"audio"}]}"#,
+                    1,
+                )
+            } else {
+                (r#"{"errors":["native identify error"]}"#, 2)
+            };
+            let ffprobe = if case == "invalid-ffprobe" {
+                "{invalid"
+            } else {
+                r#"{"streams":[{"index":0,"codec_type":"video"},{"index":7,"codec_type":"audio"},{"index":11,"codec_type":"subtitle"},{"index":15,"codec_type":"attachment"}]}"#
+            };
+            for (name, json, status) in
+                [("mkvmerge", mkvmerge.0, mkvmerge.1), ("ffprobe", ffprobe, 0)]
+            {
+                let script = format!(
+                    "#!/bin/sh\nprintf '%s\\n' '{name}' \"$@\" >> \"$C07_CALLS\"\nprintf '%s\\n' '{json}'\nprintf '%s\\n' 'native diagnostic' >&2\nexit {status}\n"
+                );
+                let path = tools.join(name);
+                std::fs::write(&path, script).expect("fake process");
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+                    .expect("executable");
+            }
+            // The sentinel is deliberately undecodable: after saving, opening the
+            // source must fail before a TUI/concatenation/encoding pipeline starts.
+            let result = condor_cmd(&temp)
+                .env("PATH", &tools)
+                .env("C07_CALLS", temp.path().join("calls"))
+                .env("RUST_LOG", "california_condor=debug")
+                .args(["concatenate", "--discard", "audio,chapters,metadata"])
+                .timeout(Duration::from_secs(20))
+                .output()
+                .expect("bounded CLI");
+            assert!(
+                !result.status.success(),
+                "{case}: undecodable source must stop"
+            );
+            let message = String::from_utf8_lossy(&result.stderr);
+            let calls = std::fs::read_to_string(temp.path().join("calls")).expect("probes called");
+            if matches!(case, "rejected" | "invalid-ffprobe") {
+                assert_eq!(
+                    std::fs::read(&file).expect("after"),
+                    before,
+                    "{case}: {message}"
+                );
+                assert!(
+                    message.contains(source.to_str().expect("path")),
+                    "{case}: {message}"
+                );
+                if case == "rejected" {
+                    assert!(
+                        message.contains("mkvmerge") && message.contains("native diagnostic"),
+                        "{message}"
+                    );
+                    assert!(!calls.contains("ffprobe"));
+                } else {
+                    assert!(message.contains("ffprobe"), "{message}");
+                    assert!(
+                        !calls.contains("mkvmerge"),
+                        "invalid ffprobe cannot use MKV-only success"
+                    );
+                }
+            } else {
+                let concat = load(&file).condor.sequence_config.scene_concatenator;
+                match concat.method {
+                    ConcatMethod::FFmpeg(ffmpeg) => {
+                        assert!(
+                            message.contains("probing the FFmpeg streams only")
+                                && message.contains("native identify error")
+                                && message.contains("native diagnostic"),
+                            "fallback retains native diagnostics: {message}"
+                        );
+                        let tracks = ffmpeg.tracks.expect("real fallback discard saved");
+                        assert_eq!(tracks.len(), 3);
+                        assert!(!tracks[&7].copy());
+                        assert!(tracks[&11].copy());
+                        assert!(tracks[&15].copy());
+                        assert!(!ffmpeg.chapters.expect("chapters").copy);
+                        assert!(!ffmpeg.metadata.expect("metadata").copy);
+                        assert!(calls.contains("ffprobe\n-v\nerror\n-show_entries\nstream=index,codec_type\n-of\njson\n"));
+                    },
+                    ConcatMethod::MKVMerge(mkvmerge) => {
+                        let tracks = mkvmerge.tracks.expect("valid warning discard saved");
+                        assert_eq!(tracks.len(), 1);
+                        assert!(!tracks[&3].copy());
+                    },
+                    ConcatMethod::Ivf => panic!("method changed"),
+                }
+            }
+            assert_eq!(
+                std::fs::read(&source).expect("source unchanged"),
+                b"source sentinel"
+            );
+            assert_eq!(
+                std::fs::read(&output).expect("output unchanged"),
+                b"output sentinel"
+            );
+            eprintln!("C07 CLI {case}: {message}");
+        }
+    }
+
     #[test]
     fn c06_inline_cli_identity_survives_instantiation_for_final_recheck() {
         use andean_condor::{

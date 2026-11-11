@@ -10,6 +10,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    process::ExitStatus,
 };
 
 use serde::Deserialize;
@@ -82,8 +83,9 @@ impl ProbedSource {
 ///
 /// # Errors
 ///
-/// Fails when the source cannot be probed at all: no `mkvmerge` identification
-/// and, without `with_ffmpeg_streams`, no `ffprobe` fallback either.
+/// Requires successful `ffprobe` output when `with_ffmpeg_streams` is set.
+/// Otherwise requires recognized, supported mkvmerge identification without
+/// errors, from a process exiting 0 (success) or 1 (warnings).
 pub fn probe(path: &Path, with_ffmpeg_streams: bool) -> Result<ProbedSource, TrackProbeError> {
     let streams = if with_ffmpeg_streams {
         Some(ffprobe_streams(path)?)
@@ -152,8 +154,7 @@ pub fn summarize(source: &ProbedSource) -> String {
 
 /// Everything a probe can report.
 ///
-/// Only the first five variants stop a probe; the last two are notable,
-/// non-fatal outcomes that are logged instead.
+/// The last two variants describe non-fatal outcomes and are logged instead.
 #[derive(Debug, Error)]
 pub enum TrackProbeError {
     #[error(
@@ -162,11 +163,27 @@ pub enum TrackProbeError {
         path = .path.display()
     )]
     MkvmergeNotRunnable { path: PathBuf, source: io::Error },
-    #[error("mkvmerge could not identify {path}: {stderr}", path = .path.display())]
+    #[error(
+        "mkvmerge could not identify {path} ({status}): {source}; stdout: {stdout}; stderr: {stderr}",
+        path = .path.display()
+    )]
     MkvmergeIdentifyFailed {
         path: PathBuf,
+        status: ExitStatus,
+        stdout: String,
         stderr: String,
         source: serde_json::Error,
+    },
+    #[error(
+        "mkvmerge rejected identification of {path} ({status}): {reason}; stdout: {stdout}; stderr: {stderr}",
+        path = .path.display()
+    )]
+    MkvmergeRejected {
+        path: PathBuf,
+        status: ExitStatus,
+        reason: String,
+        stdout: String,
+        stderr: String,
     },
     #[error(
         "failed to run ffprobe to inspect {path}: {source}. Install FFmpeg, or drop --discard",
@@ -199,16 +216,37 @@ fn mkvmerge_identify(path: &Path) -> Result<MkvmergeIdentify, TrackProbeError> {
             source,
         })?;
 
-    // mkvmerge exits 1 for warnings while still printing the full
-    // identification, so the JSON is what decides success.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let identified = serde_json::from_str(stdout.trim()).map_err(|source| {
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let rejected = |reason| TrackProbeError::MkvmergeRejected {
+        path: path.to_path_buf(),
+        status: output.status,
+        reason,
+        stdout: stdout.clone(),
+        stderr: stderr.clone(),
+    };
+    // Exit 1 allows warnings, not errors or an unrecognized/unsupported source.
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return Err(rejected("identification process failed".to_owned()));
+    }
+    let identified: MkvmergeIdentify = serde_json::from_str(&stdout).map_err(|source| {
         TrackProbeError::MkvmergeIdentifyFailed {
             path: path.to_path_buf(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            status: output.status,
+            stdout: stdout.clone(),
+            stderr: stderr.clone(),
             source,
         }
     })?;
+    if !identified.errors.is_empty() {
+        return Err(rejected(identified.errors.join("; ")));
+    }
+    if !identified.container.recognized || !identified.container.supported {
+        return Err(rejected(format!(
+            "container recognized={}, supported={}",
+            identified.container.recognized, identified.container.supported
+        )));
+    }
     Ok(identified)
 }
 
@@ -291,10 +329,19 @@ impl MkvmergeIdentify {
 /// `--discard` needs.
 #[derive(Debug, Deserialize)]
 struct MkvmergeIdentify {
+    container: MkvmergeContainer,
+    #[serde(default)]
+    errors: Vec<String>,
     #[serde(default)]
     tracks: Vec<MkvmergeTrackInfo>,
     #[serde(default)]
     attachments: Vec<MkvmergeAttachmentInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MkvmergeContainer {
+    recognized: bool,
+    supported: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,8 +386,373 @@ struct FfprobeStream {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn fake_probe(directory: &Path, name: &str, json: &str, status: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        // Only shell builtins: an isolated PATH cannot accidentally run a native tool.
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$C07_CALLS\"\nprintf '%s\\n' '{json}'\nprintf '%s\\n' 'native diagnostic' >&2\n{status}\n"
+        );
+        let path = directory.join(name);
+        std::fs::write(&path, script).expect("fake probe");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("executable probe");
+    }
+
+    /// Re-exec keeps PATH local to a bounded child, never a process-global mutation.
+    #[cfg(unix)]
+    #[test]
+    fn c07_identification_admission_and_ffmpeg_fallback() {
+        let valid = r#"{"container":{"recognized":true,"supported":true},"errors":[],"warnings":["recoverable warning"],"tracks":[{"id":0,"type":"video"},{"id":3,"type":"audio"}]}"#;
+        let cases = [
+            ("ok", valid, "exit 0", "accept"),
+            ("warning", valid, "exit 1", "accept"),
+            (
+                "empty-recognized",
+                r#"{"container":{"recognized":true,"supported":true},"errors":[]}"#,
+                "exit 0",
+                "empty",
+            ),
+            ("fatal-status", valid, "exit 2", "process"),
+            (
+                "error-status",
+                r#"{"errors":["native identify error"]}"#,
+                "exit 2",
+                "process",
+            ),
+            (
+                "error-zero",
+                r#"{"container":{"recognized":true,"supported":true},"errors":["native identify error"]}"#,
+                "exit 0",
+                "semantic-error",
+            ),
+            (
+                "error-warning",
+                r#"{"container":{"recognized":true,"supported":true},"errors":["native identify error"]}"#,
+                "exit 1",
+                "semantic-error",
+            ),
+            (
+                "unrecognized",
+                r#"{"container":{"recognized":false,"supported":false},"errors":[]}"#,
+                "exit 0",
+                "container",
+            ),
+            (
+                "unsupported",
+                r#"{"container":{"recognized":true,"supported":false},"errors":[]}"#,
+                "exit 1",
+                "container",
+            ),
+            ("no-container", r#"{"errors":[]}"#, "exit 0", "parse"),
+            (
+                "malformed-container",
+                r#"{"container":[],"errors":[]}"#,
+                "exit 0",
+                "parse",
+            ),
+            (
+                "missing-flags",
+                r#"{"container":{},"errors":[]}"#,
+                "exit 0",
+                "parse",
+            ),
+            (
+                "absent-recognized",
+                r#"{"container":{"supported":true},"errors":[]}"#,
+                "exit 0",
+                "parse",
+            ),
+            (
+                "absent-supported",
+                r#"{"container":{"recognized":true},"errors":[]}"#,
+                "exit 0",
+                "parse",
+            ),
+            (
+                "malformed-flags",
+                r#"{"container":{"recognized":"yes","supported":true},"errors":[]}"#,
+                "exit 0",
+                "parse",
+            ),
+            ("malformed-json", "{not json", "exit 0", "parse"),
+            ("signal", valid, "kill -TERM $$", "process"),
+            ("not-runnable", "", "exit 0", "io"),
+            (
+                "ffmpeg-fallback",
+                r#"{"errors":["native identify error"]}"#,
+                "exit 2",
+                "fallback",
+            ),
+            (
+                "ffmpeg-semantic-fallback",
+                r#"{"container":{"recognized":false,"supported":false},"errors":[]}"#,
+                "exit 0",
+                "fallback",
+            ),
+            ("invalid-ffprobe", valid, "exit 0", "ffprobe-parse"),
+        ];
+        let mut failures = Vec::new();
+        for (case, json, status, expected) in cases {
+            let directory = tempfile::tempdir().expect("isolated probes");
+            if expected != "io" {
+                fake_probe(directory.path(), "mkvmerge", json, status);
+            }
+            fake_probe(
+                directory.path(),
+                "ffprobe",
+                if expected == "ffprobe-parse" {
+                    "{invalid"
+                } else {
+                    r#"{"streams":[{"index":0,"codec_type":"video"},{"index":7,"codec_type":"audio"},{"index":11,"codec_type":"subtitle"},{"index":15,"codec_type":"attachment"}]}"#
+                },
+                "exit 0",
+            );
+            let mut child = assert_cmd::Command::new(std::env::current_exe().expect("test binary"));
+            let assertion = child
+                .args(["--exact", "utils::track_probe::tests::c07_process_child", "--nocapture"])
+                // Other legacy tests change the parent's process-wide CWD.
+                .current_dir(directory.path())
+                .env("PATH", directory.path())
+                .env("C07_EXPECTED", expected)
+                .env("C07_CALLS", directory.path().join("calls"))
+                .env("C07_SOURCE", directory.path().join("source.mkv"))
+                .timeout(std::time::Duration::from_secs(20))
+                .assert();
+            let output = assertion.get_output();
+            if !output.status.success() {
+                failures.push(case);
+                eprintln!(
+                    "C07 {case}: {} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            eprintln!("C07 {case}: {expected}");
+        }
+        assert!(failures.is_empty(), "C07 admission failures: {failures:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c07_process_child() {
+        use crate::{
+            commands::{DiscardCategory, handlers::concatenate::apply_discard},
+            test_helpers::{TestVideo, default_config},
+        };
+        use andean_condor::models::sequence::scene_concatenator::ConcatMethod;
+        let Ok(expected) = std::env::var("C07_EXPECTED") else {
+            return;
+        };
+        let path = PathBuf::from(std::env::var_os("C07_SOURCE").expect("source path"));
+        std::fs::write(&path, b"source sentinel").expect("source");
+        let with_ffmpeg = matches!(expected.as_str(), "fallback" | "ffprobe-parse");
+        let result = probe(&path, with_ffmpeg);
+        if expected == "empty" {
+            assert!(
+                result
+                    .expect("admitted identification may omit ancillary lists")
+                    .tracks
+                    .is_empty()
+            );
+            return;
+        }
+        if expected == "accept" {
+            let source = result.expect("recognized status 0/1 admitted");
+            assert_eq!(source.mkvmerge_ids(TrackKind::Video), [0]);
+            assert_eq!(source.mkvmerge_ids(TrackKind::Audio), [3]);
+            let calls = std::fs::read_to_string(std::env::var_os("C07_CALLS").expect("calls"))
+                .expect("probe invoked");
+            assert_eq!(
+                calls,
+                format!(
+                    "--identify\n--identification-format\njson\n{}\n",
+                    path.display()
+                )
+            );
+            return;
+        }
+
+        let output = path.with_file_name("out.mkv");
+        std::fs::write(&output, b"output sentinel").expect("output");
+        let video = TestVideo {
+            path: path.clone(),
+            width: 2,
+            height: 2,
+            frames: 1,
+            fps_rational: (24, 1),
+            format: andean_condor::ffmpeg::FFPixelFormat::YUV420P,
+            scenes: vec![],
+        };
+        let mut config = default_config(&video, &output, path.parent().expect("parent"));
+        if with_ffmpeg {
+            config.condor.sequence_config.scene_concatenator.method =
+                ConcatMethod::FFmpeg(Default::default());
+        }
+        if expected == "fallback" {
+            let source = result.expect("FFmpeg fallback after mkvmerge rejection");
+            assert_eq!(source.ffmpeg_indices(TrackKind::Video), [0]);
+            assert_eq!(source.ffmpeg_indices(TrackKind::Audio), [7]);
+            assert_eq!(source.ffmpeg_indices(TrackKind::Subtitle), [11]);
+            assert_eq!(source.ffmpeg_indices(TrackKind::Attachment), [15]);
+            assert!(source.tracks.iter().all(|track| track.mkvmerge_id.is_none()));
+            apply_discard(&mut config, &[DiscardCategory::Audio]).expect("real discard");
+            let ConcatMethod::FFmpeg(ffmpeg) =
+                &config.condor.sequence_config.scene_concatenator.method
+            else {
+                panic!("FFmpeg")
+            };
+            let tracks = ffmpeg.tracks.as_ref().expect("selection created, not silently empty");
+            assert_eq!(tracks.len(), 3);
+            assert!(!tracks[&7].copy());
+            assert!(tracks[&11].copy());
+            assert!(tracks[&15].copy());
+            return;
+        }
+
+        let error = result.expect_err("failed identification must not become an empty source");
+        let message = error.to_string();
+        assert!(message.contains(path.to_str().expect("path")), "{message}");
+        match expected.as_str() {
+            "parse" => {
+                let TrackProbeError::MkvmergeIdentifyFailed {
+                    path: actual,
+                    source,
+                    status,
+                    stdout,
+                    stderr,
+                } = &error
+                else {
+                    panic!("{error:?}")
+                };
+                assert_eq!(actual, &path);
+                assert_eq!(status.code(), Some(0));
+                assert!(!stdout.is_empty());
+                assert_eq!(stderr, "native diagnostic");
+                assert!(source.is_data() || source.is_syntax() || source.is_eof());
+                assert!(std::error::Error::source(&error).is_some());
+            },
+            "io" => assert!(
+                matches!(error, TrackProbeError::MkvmergeNotRunnable { ref path, ref source } if path == &video.path && source.kind() == io::ErrorKind::NotFound)
+            ),
+            "ffprobe-parse" => assert!(matches!(
+                error,
+                TrackProbeError::FfprobeOutputUnreadable { .. }
+            )),
+            "semantic-error" | "container" | "process" => {
+                let TrackProbeError::MkvmergeRejected {
+                    path: actual,
+                    status,
+                    reason,
+                    stdout,
+                    stderr,
+                } = &error
+                else {
+                    panic!("{error:?}")
+                };
+                assert_eq!(actual, &path);
+                assert!(!stdout.is_empty());
+                assert_eq!(stderr, "native diagnostic");
+                assert!(
+                    std::error::Error::source(&error).is_none(),
+                    "no fabricated serde cause"
+                );
+                match expected.as_str() {
+                    "semantic-error" => {
+                        assert!(matches!(status.code(), Some(0 | 1)));
+                        assert_eq!(reason, "native identify error");
+                    },
+                    "container" => {
+                        assert!(matches!(status.code(), Some(0 | 1)));
+                        assert!(
+                            reason.contains("recognized=") && reason.contains("supported=false")
+                        );
+                    },
+                    "process" => {
+                        assert!(matches!(status.code(), Some(2) | None));
+                        assert!(
+                            message.contains(&status.to_string())
+                                && message.contains("native diagnostic"),
+                            "{message}"
+                        );
+                    },
+                    _ => unreachable!(),
+                }
+            },
+            _ => panic!("unknown child case {expected}"),
+        }
+        let before = serde_json::to_vec(&config).expect("snapshot");
+        apply_discard(
+            &mut config,
+            &[DiscardCategory::Audio, DiscardCategory::Chapters, DiscardCategory::Metadata],
+        )
+        .expect_err("discard must stop before any mutation");
+        assert_eq!(serde_json::to_vec(&config).expect("after"), before);
+        assert_eq!(
+            std::fs::read(&path).expect("source unchanged"),
+            b"source sentinel"
+        );
+        assert_eq!(
+            std::fs::read(&output).expect("output unchanged"),
+            b"output sentinel"
+        );
+    }
+
+    #[test]
+    fn c07_native_y4m_rejects_mkvmerge_and_uses_ffmpeg() {
+        let temp = tempfile::tempdir().expect("native fixture");
+        let path = temp.path().join("one-frame.y4m");
+        let mut data = b"YUV4MPEG2 W2 H2 F24:1 Ip A1:1 C420jpeg\nFRAME\n".to_vec();
+        data.extend([16, 16, 16, 16, 128, 128]);
+        std::fs::write(&path, data).expect("tiny finite Y4M");
+        let native = std::process::Command::new("mkvmerge")
+            .args(["--identify", "--identification-format", "json"])
+            .arg(&path)
+            .output()
+            .expect("installed mkvmerge is required");
+        eprintln!(
+            "C07 native Y4M: {} {}",
+            native.status,
+            String::from_utf8_lossy(&native.stdout)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&native.stdout).expect("native JSON");
+        assert_eq!(json["container"]["recognized"], false);
+        assert_eq!(json["container"]["supported"], false);
+        let error = probe(&path, false).expect_err("unrecognized is not a valid empty source");
+        assert!(error.to_string().contains(path.to_str().expect("path")));
+        let source = probe(&path, true).expect("native ffprobe fallback");
+        assert_eq!(source.ffmpeg_indices(TrackKind::Video), [0]);
+        assert!(source.mkvmerge_ids(TrackKind::Video).is_empty());
+        assert_eq!(
+            summarize(&source),
+            "1 video, 0 audio, 0 subtitle, 0 attachment"
+        );
+    }
+
+    #[test]
+    fn c07_native_multitrack_and_video_only_controls() {
+        let path = crate::test_helpers::get_test_multitrack_video();
+        let source = probe(&path, true).expect("native multitrack identification");
+        assert_eq!(source.mkvmerge_ids(TrackKind::Video), [0]);
+        assert_eq!(source.mkvmerge_ids(TrackKind::Audio), [1, 2]);
+        assert_eq!(source.mkvmerge_ids(TrackKind::Subtitle), [3]);
+        assert_eq!(source.mkvmerge_ids(TrackKind::Attachment), [1]);
+        assert_eq!(source.ffmpeg_indices(TrackKind::Audio), [1, 2]);
+        assert_eq!(source.ffmpeg_indices(TrackKind::Subtitle), [3]);
+        assert_eq!(source.ffmpeg_indices(TrackKind::Attachment), [4]);
+        let video = crate::test_helpers::get_test_video();
+        let source = probe(&video.path, true).expect("native video-only identification");
+        assert_eq!(source.mkvmerge_ids(TrackKind::Video), [0]);
+        assert_eq!(
+            summarize(&source),
+            "1 video, 0 audio, 0 subtitle, 0 attachment"
+        );
+    }
+
     fn mkvmerge_identify_json() -> &'static str {
         r#"{
+          "container": {"recognized": true, "supported": true},
+          "errors": [],
           "attachments": [
             {"content_type": "font/ttf", "file_name": "font.ttf", "id": 1}
           ],
