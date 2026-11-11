@@ -105,6 +105,9 @@ mod tests {
             "{error:#}"
         );
         assert_eq!(std::fs::read(&file).expect("no save"), before);
+        // Positive settings-only control; legacy claimed chunks now require C14
+        // admission rather than being resaved by a run handler.
+        config.condor.scenes[0].sequence_data.parallel_encoder = Default::default();
         config.condor.sequence_config.target_quality = Some(TargetQualityConfig::default());
         config.save(&file).expect("configured job");
         let (edited, _) = target_quality_handler(

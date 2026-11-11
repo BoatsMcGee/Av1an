@@ -42,6 +42,7 @@ pub fn concatenate_handler(
     configuration.validate_output(true)?;
     apply_discard(&mut configuration, discard.unwrap_or_default())?;
 
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))

@@ -4,6 +4,10 @@ use anyhow::{Result, bail, ensure};
 use av1_grain::write_grain_table;
 use tracing::{debug, error};
 
+use crate::models::sequence::{
+    provenance::{self, ResultProvenance},
+    target_quality::{TargetQualityConfigHandler, TargetQualityDataHandler},
+};
 use crate::{
     core::{
         Condor,
@@ -105,8 +109,9 @@ pub(super) fn checked_bitrate(bytes: u64, frames: usize, fps: f64) -> Result<f64
 
 impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for ParallelEncoder
 where
-    DataHandler: SequenceDataHandler + ParallelEncoderDataHandler,
-    ConfigHandler: SequenceConfigHandler + ParallelEncoderConfigHandler,
+    DataHandler: SequenceDataHandler + ParallelEncoderDataHandler + TargetQualityDataHandler,
+    ConfigHandler:
+        SequenceConfigHandler + ParallelEncoderConfigHandler + TargetQualityConfigHandler,
 {
     #[inline]
     fn details(&self) -> SequenceDetails {
@@ -239,6 +244,43 @@ where
 
         let mut warnings = vec![];
         let config = condor.sequence_config.parallel_encoder()?.clone();
+        let tq = condor.sequence_config.target_quality()?.clone();
+        let root_model = condor.input.as_data();
+        let input_model = self
+            .input
+            .as_ref()
+            .map(Input::as_data)
+            .or_else(|| config.input.clone())
+            .unwrap_or_else(|| root_model.clone());
+        let probe_model = provenance::probe_input(&root_model, &config, tq.as_ref()).clone();
+        let metric_model = tq.as_ref().and_then(|c| c.metric_input.as_ref());
+        // Admit the entire batch before metadata withdrawal, saves, or resumed events.
+        for (index, scene) in condor.scenes.iter().enumerate() {
+            provenance::admit_target(&probe_model, metric_model, scene, tq.as_ref(), index)?;
+            provenance::admit_selection(scene, tq.as_ref(), index)?;
+            let output = config.scenes_directory.join(format!(
+                "{}.{}",
+                Self::scene_id(index),
+                scene.encoder.output_extension()
+            ));
+            let data = scene.sequence_data.get_parallel_encoder()?;
+            if data.bytes.is_some()
+                || data.started_on.is_some()
+                || data.completed_on.is_some()
+                || output.symlink_metadata().is_ok()
+            {
+                provenance::admit_encode(
+                    &input_model,
+                    &probe_model,
+                    metric_model,
+                    scene,
+                    tq.as_ref(),
+                    &output,
+                    index,
+                )
+                .map_err(|e| e.context(format!("saved artifact {}", output.display())))?;
+            }
+        }
         let workers = config.workers.unwrap_or(1);
         let scenes_directory = &config.scenes_directory;
         if condor.scenes.is_empty() {
@@ -334,8 +376,19 @@ where
                 output,
             });
         }
+        let mut configured_input =
+            if self.input.is_none() && !tasks.is_empty() && !cancelled.is_cancelled() {
+                config.input.as_ref().map(Input::from_data).transpose()?
+            } else {
+                None
+            };
         if !tasks.is_empty() && !cancelled.is_cancelled() {
-            let clip_info = self.input.as_mut().unwrap_or(&mut condor.input).clip_info()?;
+            let clip_info = self
+                .input
+                .as_mut()
+                .or(configured_input.as_mut())
+                .unwrap_or(&mut condor.input)
+                .clip_info()?;
             let fps = *clip_info.frame_rate.numer() as f64 / *clip_info.frame_rate.denom() as f64;
             for task in &tasks {
                 checked_bitrate(0, task.frame_indices.len(), fps).map_err(|error| {
@@ -404,17 +457,39 @@ where
             save_callback,
         } = condor;
         let input_data = condor_input.as_data();
-        let input = self.input.as_mut().unwrap_or(condor_input);
+        let before = provenance::measurement_inputs(&input_model, None, None)?;
+        let input = self.input.as_mut().or(configured_input.as_mut()).unwrap_or(condor_input);
 
         let (results_tx, results_rx) = crossbeam_channel::unbounded();
         let finished_scenes = Arc::new(crate::utils::semaphore::Semaphore::new(0));
         let mut on_results = |results: Vec<ParallelEncoderResult>| -> Result<()> {
+            ensure!(
+                before == provenance::measurement_inputs(&input_model, None, None)?,
+                "Encoding input changed during processing; recompute or use a new job"
+            );
+            let mut staged = scenes.clone();
+            let mut published = Vec::new();
             for encoder_result in results {
-                if let Some(scene) = scenes.get_mut(encoder_result.scene)
+                if let Some(scene) = staged.get_mut(encoder_result.scene)
                     && encoder_result.result.status.success()
                     && encoder_result.bytes != 0
                 {
+                    let path = config.scenes_directory.join(format!(
+                        "{}.{}",
+                        Self::scene_id(encoder_result.scene),
+                        scene.encoder.output_extension()
+                    ));
+                    let context = provenance::encode_context(
+                        &input_model,
+                        &probe_model,
+                        metric_model,
+                        scene,
+                        tq.as_ref(),
+                        &path,
+                        encoder_result.scene,
+                    )?;
                     let parallel_encode_data = scene.sequence_data.get_parallel_encoder_mut()?;
+                    parallel_encode_data.provenance = Some(ResultProvenance::new(context));
                     parallel_encode_data.bytes = Some(encoder_result.bytes);
                     parallel_encode_data.started_on = Some(
                         encoder_result
@@ -430,6 +505,7 @@ where
                             .expect("Time is valid")
                             .as_millis(),
                     );
+                    published.push(encoder_result.scene);
                 }
             }
 
@@ -437,10 +513,18 @@ where
                 input: input_data.clone(),
                 output: output.as_data(),
                 encoder: encoder.clone(),
-                scenes: scenes.clone(),
+                scenes: staged.clone(),
                 sequence_config: sequence_config.clone(),
             };
-            (save_callback)(data)?;
+            *scenes = staged;
+            if let Err(error) = (save_callback)(data) {
+                // Retain observations for diagnostics, but a failed publication
+                // callback cannot authorize a later saved-job resume.
+                for index in published {
+                    scenes[index].sequence_data.get_parallel_encoder_mut()?.provenance = None;
+                }
+                return Err(error);
+            }
             Ok(())
         };
         let mut stream = task::ResultStream {

@@ -556,7 +556,9 @@ fn e14_r1_child() {
         data.bytes = Some(final_path.metadata().expect("bytes").len());
         data.started_on = Some(10);
         data.completed_on = Some(20);
-        let history = serde_json::to_value(&*data).expect("history");
+        crate::core::sequence::c14_tests::current_encoding_fixture(&mut condor);
+        let data = &condor.scenes[0].sequence_data.parallel_encoder;
+        let history = serde_json::to_value(data).expect("history");
         let saved_job = serde_json::to_vec(&condor.as_data()).expect("saved historical job");
         fs::write(root.join("saved-job.json"), &saved_job)
             .expect("persist history before validation");
@@ -564,6 +566,15 @@ fn e14_r1_child() {
             let other = condor.scenes[0].clone();
             condor.scenes.push(other);
             fs::copy(&final_path, scenes_dir.join("00001.264")).expect("second candidate");
+            crate::core::sequence::c14_tests::current_encoding_fixture(&mut condor);
+            let resume_histories = condor
+                .scenes
+                .iter()
+                .map(|scene| {
+                    serde_json::to_value(&scene.sequence_data.parallel_encoder)
+                        .expect("current per-path history")
+                })
+                .collect::<Vec<_>>();
             let mut queued = condor.scenes[0].clone();
             queued.sequence_data = Default::default();
             condor.scenes.push(queued);
@@ -602,10 +613,10 @@ fn e14_r1_child() {
                 !root.join("starts").exists(),
                 "no new encode after Graceful"
             );
-            for scene in &condor.scenes[..2] {
+            for (scene, expected) in condor.scenes[..2].iter().zip(&resume_histories) {
                 assert_eq!(
                     serde_json::to_value(&scene.sequence_data.parallel_encoder).expect("history"),
-                    history
+                    *expected
                 );
             }
         } else {

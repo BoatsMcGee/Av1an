@@ -60,12 +60,71 @@ mod tests {
             ]);
             config.condor.scenes[0].sequence_data.parallel_encoder.bytes = Some(123);
             config.condor.scenes[0].sequence_data.target_quality.passes.push(QualityPass {
+                provenance: None,
+                backend: None,
                 quantizer: 17.0,
                 scores: vec![50.0],
                 bitrate: 1000.0,
                 started_on: 100,
                 completed_on: 200,
             });
+            // These tests require current saved work so execution can reach the
+            // global-flag handler; C14 owns the intentionally unstamped fixtures.
+            use andean_condor::models::sequence::{
+                provenance::{self, MetricBackend, ResultProvenance},
+                target_quality::{
+                    TargetQualityConfig,
+                    types::{ProbeStrategy, QualityMetric, SubsetProbeLength, SubsetProbePosition},
+                },
+            };
+            config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
+                metric: QualityMetric::VMAF {
+                    target_range: (50.0, 50.0),
+                    resolution: None,
+                    scaler: "bicubic".into(),
+                    threads: 0,
+                    model: None,
+                    features: vec![],
+                },
+                ..Default::default()
+            });
+            let tq = config.condor.sequence_config.target_quality.as_mut().expect("TQ");
+            tq.probing.strategy = ProbeStrategy::Subset {
+                position: SubsetProbePosition::Start,
+                length: SubsetProbeLength::Frames(1),
+            };
+            let pe = &config.condor.sequence_config.parallel_encoder;
+            let input = provenance::probe_input(&config.condor.input, pe, Some(tq));
+            let scene = &mut config.condor.scenes[0];
+            scene.encoder.set_quantizer(17.0);
+            let mut pass = scene.sequence_data.target_quality.passes[0].clone();
+            pass.backend = Some(MetricBackend::current(andean_condor::metrics::Engine::Vmaf));
+            pass.provenance = Some(ResultProvenance::new(
+                provenance::target_context(input, tq.metric_input.as_ref(), scene, tq, &pass)
+                    .expect("explicit current probe fixture"),
+            ));
+            scene.sequence_data.target_quality.passes[0] = pass;
+            scene.sequence_data.target_quality.selection = Some(ResultProvenance::new(
+                provenance::selection_context(scene, tq)
+                    .expect("explicit current selection fixture"),
+            ));
+            fs::create_dir_all(&pe.scenes_directory).expect("fixture chunks");
+            let chunk = pe.scenes_directory.join("00000.264");
+            fs::write(&chunk, [0_u8; 123])
+                .expect("synthetic current chunk, not native integrity acceptance");
+            let context = provenance::encode_context(
+                pe.input.as_ref().unwrap_or(&config.condor.input),
+                input,
+                tq.metric_input.as_ref(),
+                scene,
+                Some(tq),
+                &chunk,
+                0,
+            )
+            .expect("explicit current encode fixture");
+            scene.sequence_data.parallel_encoder.provenance = Some(ResultProvenance::new(context));
+            scene.sequence_data.parallel_encoder.started_on = Some(100);
+            scene.sequence_data.parallel_encoder.completed_on = Some(200);
         }
         config.save(&temp.path().join("condor.json")).expect("save fixture");
         config

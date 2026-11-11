@@ -31,6 +31,7 @@ pub mod bitrate_optimizer;
 pub mod noise_detector;
 pub mod noise_scaler;
 pub mod parallel_encoder;
+pub mod provenance;
 pub mod quality_check;
 pub mod scene_concatenator;
 pub mod scene_detector;

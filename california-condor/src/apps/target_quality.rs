@@ -605,6 +605,8 @@ mod tests {
                     assert_eq!(
                         json,
                         serde_json::json!({
+                            "provenance": null,
+                            "backend": null,
                             "quantizer": pass.quantizer,
                             "scores": pass.scores,
                             "bitrate": 123.0,

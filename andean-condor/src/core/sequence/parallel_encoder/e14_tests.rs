@@ -277,6 +277,9 @@ fn e14_public_child() {
             Ok(())
         }),
     );
+    if resume && kind != "bare" {
+        crate::core::sequence::c14_tests::current_encoding_fixture(&mut condor);
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     let token = Cancellation::default();
     let result = std::thread::scope(|scope| {
@@ -417,7 +420,7 @@ fn e14_public_child() {
             assert!(text.contains(diagnostic), "{text}");
         }
         assert!(text.to_lowercase().contains("scene 0"), "{text}");
-        let withheld_history = resume && matches!(kind, "corrupt" | "wrong");
+        let withheld_history = resume && matches!(kind, "corrupt" | "wrong" | "missing");
         if withheld_history {
             assert_eq!(
                 (data.bytes, data.started_on, data.completed_on),

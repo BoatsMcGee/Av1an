@@ -146,7 +146,9 @@ pub(crate) const fn scene_temporal(metric: &QualityMetric) -> bool {
 /// Recorded so a number is never compared across engines by accident: the same
 /// metric name yields different values on each, because a GPU implementation, a
 /// CPU implementation and a filter plugin are three different measurements.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub enum Engine {
     /// libvship, on the GPU.
     Vship,

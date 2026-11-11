@@ -434,6 +434,11 @@ fn persist_success_after_worker_failure(root: &Path, input: Input, fail_save: bo
     }
     let metadata = &condor.scenes[1].sequence_data.parallel_encoder;
     assert_eq!(
+        metadata.provenance.is_some(),
+        !fail_save,
+        "failed callback withholds resume certification without dropping successful byte observations"
+    );
+    assert_eq!(
         metadata.bytes,
         Some(5),
         "successful active output must retain completion metadata after peer failure"

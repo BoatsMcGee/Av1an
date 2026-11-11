@@ -67,6 +67,7 @@ pub fn encode_handler(
     )?;
 
     configuration.validate_encoder_settings()?;
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
     if encoder.is_some()
         || passes.is_some()

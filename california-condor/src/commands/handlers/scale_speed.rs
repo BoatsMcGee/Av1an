@@ -24,6 +24,7 @@ pub fn scale_speed_handler(
 
     configure_scale_speed(&mut configuration, quantizers, speeds)?;
 
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))

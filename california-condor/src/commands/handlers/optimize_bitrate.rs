@@ -20,6 +20,7 @@ pub fn optimize_bitrate_handler(
 
     configure_bitrate_optimizer(&mut configuration, sigma_threshold)?;
 
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))

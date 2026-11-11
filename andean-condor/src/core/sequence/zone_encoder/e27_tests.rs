@@ -321,6 +321,7 @@ fn e27_sequence_runtime_child() {
             data.bytes = Some(17);
             data.started_on = Some(10);
             data.completed_on = Some(20);
+            crate::core::sequence::c14_tests::current_encoding_fixture(&mut condor);
         }
         let error = if serial {
             SerialEncoder::new(&scenes_dir).execute(&mut condor, tx, cancelled)

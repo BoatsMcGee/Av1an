@@ -67,6 +67,7 @@ pub fn target_quality_handler(
         profile,
     )?;
 
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))

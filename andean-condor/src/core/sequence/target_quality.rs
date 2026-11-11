@@ -10,6 +10,7 @@ use itertools::Itertools;
 use thiserror::Error;
 use tracing::{debug, error, trace};
 
+use crate::models::sequence::provenance::{self, MetricBackend, ResultProvenance};
 use crate::{
     core::{
         Condor,
@@ -243,6 +244,25 @@ impl TargetQuality {
         }
         let config = config.clone().expect("TargetQualityConfig is Some");
         Self::validate_config(condor)?;
+        let root_model = condor.input.as_data();
+        let input_model = self.input.as_ref().map_or_else(
+            || provenance::probe_input(&root_model, parallel_encoder_config, Some(&config)).clone(),
+            Input::as_data,
+        );
+        let metric_model = self
+            .metric_input
+            .as_ref()
+            .map(Input::as_data)
+            .or_else(|| config.metric_input.clone());
+        for (index, scene) in condor.scenes.iter().enumerate() {
+            provenance::admit_target(
+                &input_model,
+                metric_model.as_ref(),
+                scene,
+                Some(&config),
+                index,
+            )?;
+        }
         let scene_frame_indices = condor
             .scenes
             .iter()
@@ -281,6 +301,15 @@ impl TargetQuality {
             {
                 scene.encoder.set_quantizer(q);
                 restored_quantizers = true;
+            }
+            if !history.is_empty() {
+                let selection =
+                    ResultProvenance::new(provenance::selection_context(scene, &config)?);
+                let data = scene.sequence_data.get_target_quality_mut()?;
+                if data.selection.as_ref() != Some(&selection) {
+                    data.selection = Some(selection);
+                    restored_quantizers = true;
+                }
             }
         }
 
@@ -446,12 +475,22 @@ impl TargetQuality {
                 Ok(())
             });
 
+            let before = provenance::measurement_inputs(
+                &input_model,
+                metric_model.as_ref(),
+                Some(&config.metric),
+            )?;
+            let mut configured_metric_input = if self.metric_input.is_none() {
+                config.metric_input.as_ref().map(Input::from_data).transpose()?
+            } else {
+                None
+            };
             let probed = probe(
                 pass,
                 target_quality_directory,
                 &config,
                 input,
-                self.metric_input.as_mut(),
+                self.metric_input.as_mut().or(configured_metric_input.as_mut()),
                 workers,
                 &scene_concatenator_config.method,
                 tasks.as_slice(),
@@ -468,14 +507,61 @@ impl TargetQuality {
             );
             let (completed_tasks, pass_warnings) = probed?;
             relayed?;
+            ensure!(
+                before
+                    == provenance::measurement_inputs(
+                        &input_model,
+                        metric_model.as_ref(),
+                        Some(&config.metric)
+                    )?,
+                "Target Quality inputs changed during measurement; recompute or use a new job"
+            );
             if completed_tasks.is_empty() {
                 warnings.extend(pass_warnings);
                 break;
             }
 
+            let previous_lengths = condor
+                .scenes
+                .iter()
+                .map(|scene| scene.sequence_data.get_target_quality().map(|data| data.passes.len()))
+                .collect::<Result<Vec<_>>>()?;
             let mut staged = condor.scenes.clone();
             let mut completions = Vec::with_capacity(completed_tasks.len());
-            for completed_task in completed_tasks {
+            for mut completed_task in completed_tasks {
+                let index = completed_task.original_index;
+                let previous = staged[index].sequence_data.get_target_quality()?.passes.len();
+                Self::validate_history(
+                    &config,
+                    index,
+                    scene_frame_indices[index].len(),
+                    &completed_task.passes,
+                )?;
+                // Only newly successful measurements are stamped; never certify a prefix.
+                for quality in completed_task.passes.iter_mut().skip(previous) {
+                    quality.provenance = Some(ResultProvenance::new(provenance::target_context(
+                        &input_model,
+                        metric_model.as_ref(),
+                        &staged[index],
+                        &config,
+                        quality,
+                    )?));
+                }
+                if let Some(previous_backend) = staged[index]
+                    .sequence_data
+                    .get_target_quality()?
+                    .passes
+                    .first()
+                    .and_then(|p| p.backend.as_ref())
+                {
+                    ensure!(
+                        completed_task
+                            .passes
+                            .iter()
+                            .all(|p| p.backend.as_ref() == Some(previous_backend)),
+                        "scene {index} TQ backend changed; explicitly recompute history or use a new job"
+                    );
+                }
                 // Update Target Quality Passes
                 staged[completed_task.original_index]
                     .sequence_data
@@ -488,6 +574,9 @@ impl TargetQuality {
                     Self::measured_quantizer(&config.metric, &quantizer_score_history)
                         .ok_or(TargetQualityError::QualityMeasurementFailed)?;
                 staged[completed_task.original_index].encoder.set_quantizer(final_quantizer);
+                let selection =
+                    ResultProvenance::new(provenance::selection_context(&staged[index], &config)?);
+                staged[index].sequence_data.get_target_quality_mut()?.selection = Some(selection);
 
                 let quality_pass = completed_task.passes.last().expect("passes is not empty");
 
@@ -522,7 +611,21 @@ impl TargetQuality {
             ordinal += 1;
             let mut data = condor_data.clone();
             data.scenes = condor.scenes.clone();
-            (condor.save_callback)(data).expect("failed to save data");
+            if let Err(error) = (condor.save_callback)(data) {
+                for (scene, previous) in condor.scenes.iter_mut().zip(previous_lengths) {
+                    for quality in scene
+                        .sequence_data
+                        .get_target_quality_mut()?
+                        .passes
+                        .iter_mut()
+                        .skip(previous)
+                    {
+                        quality.provenance = None;
+                    }
+                    scene.sequence_data.get_target_quality_mut()?.selection = None;
+                }
+                return Err(error).context("Saving measured Target Quality results");
+            }
             restored_quantizers = false;
 
             cancelled.check_forced()?;
@@ -679,7 +782,7 @@ impl TargetQuality {
         Ok(())
     }
 
-    fn quantizer_score_history(
+    pub(crate) fn quantizer_score_history(
         config: &TargetQualityConfig,
         passes: &[QualityPass],
     ) -> Result<Vec<(f64, f64)>> {
@@ -708,7 +811,7 @@ impl TargetQuality {
             .collect()
     }
 
-    fn validate_history(
+    pub(crate) fn validate_history(
         config: &TargetQualityConfig,
         scene: usize,
         expected: usize,
@@ -1429,6 +1532,7 @@ impl TargetQuality {
         // plugin branches below run. For the vship metrics the plugin
         // branch is reached only when libvship was unavailable or
         // failed.
+        let mut plugin_backend = None;
         let plugin = |compare_progress_tx| -> Result<Vec<f64>> {
             // The branches below score over a VapourSynth graph built from the
             // metric input, so everything here - the graph itself,
@@ -1458,6 +1562,7 @@ impl TargetQuality {
                 vapoursynth_decoder.get_node_modifier(),
             )?;
             let core = get_core(env)?;
+            plugin_backend = Some(MetricBackend::plugin_for_metric(core, &config.metric)?);
 
             let reference_node = if temporal {
                 reference_node
@@ -1651,7 +1756,7 @@ impl TargetQuality {
                 },
             })
         };
-        let Some(scores) = Self::route_compare_scores(
+        let Some((scores, actual)) = Self::route_compare_scores(
             native_scores,
             engine,
             &config.metric,
@@ -1662,6 +1767,11 @@ impl TargetQuality {
         )?
         else {
             return Ok((Vec::new(), warnings));
+        };
+        let actual = if actual == Engine::VapourSynth {
+            plugin_backend.context("successful plugin branch has no admission identity")?
+        } else {
+            MetricBackend::current(actual)
         };
 
         drop(progress_tx);
@@ -1690,6 +1800,8 @@ impl TargetQuality {
                 // current pass and its dependent suffix only after full admission.
                 completed_task.passes.truncate(previous_passes);
                 completed_task.passes.push(QualityPass {
+                    provenance: None,
+                    backend: Some(actual.clone()),
                     quantizer: task.encoder.quantizer().expect("quantizer exists"),
                     scores,
                     bitrate: result.bitrate,
@@ -1780,7 +1892,7 @@ impl TargetQuality {
         compare_thread: thread::JoinHandle<Result<()>>,
         plugin: impl FnOnce(sync::mpsc::Sender<SequenceStatus>) -> Result<Vec<f64>>,
         admit: impl Fn(&[f64]) -> Result<()>,
-    ) -> Result<Option<Vec<f64>>> {
+    ) -> Result<Option<(Vec<f64>, Engine)>> {
         let is_vmaf = matches!(metric, QualityMetric::VMAF { .. });
         let temporal = metrics::scene_temporal(metric);
         let mut terminal_error = None;
@@ -1805,6 +1917,15 @@ impl TargetQuality {
             None => None,
         };
         let terminal = terminal_error.is_some();
+        let actual = if scores.is_some() {
+            if is_vmaf {
+                Engine::Vmaf
+            } else {
+                engine.context("native success has no engine")?
+            }
+        } else {
+            Engine::VapourSynth
+        };
         let source = if scores.is_some() || terminal {
             engine.map_or("native", Engine::as_str)
         } else {
@@ -1845,7 +1966,7 @@ impl TargetQuality {
             Err(error) if (temporal || terminal) && error.is::<metrics::probe::Cancelled>() => {
                 Ok(None)
             },
-            result => result.map(Some),
+            result => result.map(|scores| Some((scores, actual))),
         }
     }
 
@@ -1889,7 +2010,10 @@ impl TargetQuality {
     }
 
     // A closest measurement is a fallback, not evidence that the target was met.
-    fn measured_quantizer(metric: &QualityMetric, history: &[(f64, f64)]) -> Option<f64> {
+    pub(crate) fn measured_quantizer(
+        metric: &QualityMetric,
+        history: &[(f64, f64)],
+    ) -> Option<f64> {
         Self::verified_quantizer(metric, history).or_else(|| {
             let target = metric.target_range().0.midpoint(metric.target_range().1);
             history
@@ -2891,6 +3015,7 @@ mod tests {
             encoder: encoder.clone(),
             sequence_data: AcceptedData {
                 target_quality: TargetQualityData {
+                    selection: None,
                     passes: task.passes,
                 },
                 ..Default::default()
@@ -2920,6 +3045,7 @@ mod tests {
                 Ok(())
             }),
         );
+        crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
         let mut sequence = TargetQuality::default();
         let (_, warnings) = sequence
             .execute_cancel(&mut condor, tx, cancellation)
@@ -3419,6 +3545,76 @@ mod tests {
 
         type SavedScenes = std::rc::Rc<std::cell::RefCell<Vec<Vec<Scene<DefaultSequenceData>>>>>;
 
+        #[test]
+        fn c14_fallback_router_stamps_actual_branch_at_owning_attachment() {
+            let (_temp, mut condor, saved) = q13_fixture(&[0], 1);
+            let config = condor.sequence_config.target_quality.as_mut().expect("TQ");
+            config.metric = QualityMetric::default();
+            *config.metric.target_range_mut() = (70.0, 80.0);
+            let (tx, _rx) = sync::mpsc::channel();
+            let mut calls = 0;
+            TargetQuality::default()
+                .execute_with_probe(
+                    &mut condor,
+                    &tx,
+                    &Default::default(),
+                    |_, _, config, _, _, _, _, tasks, progress, _, _| {
+                        calls += 1;
+                        let (compare, relay) = spawn_compare_progress(progress);
+                        let (scores, actual) = TargetQuality::route_compare_scores(
+                            Some(Err(anyhow::anyhow!(
+                                "bounded native ABI failure before scores"
+                            ))),
+                            Some(Engine::Fmetrics),
+                            &config.metric,
+                            compare,
+                            relay,
+                            |sender| {
+                                drop(sender);
+                                Ok(vec![75.0; 2])
+                            },
+                            |scores| TargetQuality::validate_task_scores(config, tasks, scores),
+                        )?
+                        .context("successful fallback")?;
+                        let mut completed = tasks.to_vec();
+                        let quantizer = completed[0].encoder.quantizer().expect("q");
+                        assert_eq!(actual, Engine::VapourSynth);
+                        completed[0].passes.push(QualityPass {
+                            quantizer,
+                            scores,
+                            started_on: 1,
+                            completed_on: 2,
+                            backend: Some(MetricBackend::available_plugin(&config.metric)?),
+                            ..Default::default()
+                        });
+                        Ok((completed, vec![]))
+                    },
+                )
+                .expect("owning fallback attachment");
+            assert_eq!(calls, 1);
+            assert_eq!(saved.borrow().len(), 1);
+            let pass = &condor.scenes[0].sequence_data.target_quality.passes[0];
+            assert_eq!(
+                pass.backend.as_ref().expect("actual").engine,
+                Engine::VapourSynth
+            );
+            assert_eq!(
+                pass.provenance.as_ref().expect("stamp").context["backend"]["actual"]["engine"],
+                "VapourSynth"
+            );
+            let (tx, _rx) = sync::mpsc::channel();
+            TargetQuality::default()
+                .execute_with_probe(
+                    &mut condor,
+                    &tx,
+                    &Default::default(),
+                    |_, _, _, _, _, _, _, _, _, _, _| {
+                        panic!("matching actual fallback must resume without another measurement")
+                    },
+                )
+                .expect("fallback matching resume");
+        }
+
         fn q13_fixture(
             counts: &[usize],
             maximum_probes: u8,
@@ -3443,6 +3639,8 @@ mod tests {
                     let mut data = DefaultSequenceData::default();
                     data.target_quality.passes = (0..count)
                         .map(|pass| QualityPass {
+                            provenance: None,
+                            backend: Some(MetricBackend::current(Engine::Vmaf)),
                             quantizer: [26.0, 30.0, 34.0][pass],
                             scores: vec![10.0 + pass as f64; 2],
                             bitrate: 100.0 + pass as f64,
@@ -3483,6 +3681,7 @@ mod tests {
             );
             condor.sequence_config.scene_concatenator.method =
                 ConcatMethod::FFmpeg(Default::default());
+            crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
             (temp, condor, saved)
         }
 
@@ -3565,6 +3764,8 @@ mod tests {
                         let quantizer = task.encoder.quantizer().expect("scheduled q");
                         assert!(!task.passes.iter().any(|p| p.quantizer == quantizer));
                         task.passes.push(QualityPass {
+                            provenance: None,
+                            backend: Some(MetricBackend::current(Engine::Vmaf)),
                             quantizer,
                             scores: vec![
                                 if case == "early-hit" {
@@ -3655,6 +3856,8 @@ mod tests {
             // Only the prefix is synthetic. The wrapper must encode/score the one new record.
             condor.scenes[0].sequence_data.target_quality.passes = vec![
                 QualityPass {
+                    provenance: None,
+                    backend: Some(MetricBackend::current(Engine::Vmaf)),
                     quantizer: 30.0,
                     scores: vec![10.0; 2],
                     bitrate: 100.0,
@@ -3664,6 +3867,7 @@ mod tests {
                 254
             ];
             condor.scenes[0].encoder.set_quantizer(30.0);
+            crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
             let before = serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
                 .expect("synthetic prefix bytes");
             // Retain the existing concat-directory fixture workaround; do not fix it here.
@@ -3833,6 +4037,7 @@ mod tests {
                 let mut unavailable = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
                 unavailable.set_executable(Some(temp.path().join("unavailable-custom-svt")));
                 condor.scenes[0].encoder = unavailable;
+                crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
                 let before =
                     serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
                         .expect("prefix bytes");
@@ -4044,12 +4249,13 @@ mod tests {
             config.quantizer_range = (26, 38);
             *config.metric.target_range_mut() = (20.0, 20.0);
             condor.scenes[0].sequence_data.target_quality.passes[1].scores = vec![20.0; 2];
-            let prefix = serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
-                .expect("prefix");
             let mut unavailable = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
             unavailable.set_executable(Some(temp.path().join("unavailable-custom-svt")));
             unavailable.set_quantizer(30.0);
             condor.scenes[0].encoder = unavailable.clone();
+            crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
+            let prefix = serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
+                .expect("current fixture prefix");
             let sentinel = temp.path().join("Target Quality/4/00000.ivf");
             std::fs::write(&sentinel, b"completed peer").expect("sentinel");
             let first = q13_execute(&mut condor);
@@ -4068,9 +4274,6 @@ mod tests {
                 b"completed peer"
             );
             assert_eq!(saved.borrow().len(), 1);
-            let peer_history =
-                serde_json::to_vec(&condor.scenes[1].sequence_data.target_quality.passes)
-                    .expect("peer history");
             let peer_output = temp.path().join("Target Quality/4/00001.mkv");
             let peer_bytes = std::fs::read(&peer_output).expect("real peer output");
             condor.scenes[0].encoder = condor.encoder.clone();
@@ -4083,6 +4286,12 @@ mod tests {
                 .expect("TQ")
                 .metric
                 .target_range_mut() = (0.0, 0.0);
+            crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
+            let prefix = serde_json::to_vec(&condor.scenes[0].sequence_data.target_quality.passes)
+                .expect("current fixture prefix");
+            let peer_history =
+                serde_json::to_vec(&condor.scenes[1].sequence_data.target_quality.passes)
+                    .expect("current fixture peer");
             let second = q13_execute(&mut condor);
             assert_eq!(
                 second.iter().map(|(pass, index, ..)| (*pass, *index)).collect::<Vec<_>>(),
@@ -4291,6 +4500,8 @@ mod tests {
             let mut tasks = tasks(&encoder, &directory, 1);
             for task in &mut tasks {
                 task.passes.push(QualityPass {
+                    provenance: None,
+                    backend: Some(MetricBackend::current(Engine::Vmaf)),
                     quantizer: 26.0,
                     scores: vec![75.0, 76.0],
                     bitrate: 100.0,
@@ -4494,6 +4705,8 @@ mod tests {
                         Ok(())
                     }),
                 );
+                crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
+                let history = condor.scenes[0].sequence_data.target_quality.passes.clone();
                 for _ in 0..2 {
                     let (tx, _rx) = sync::mpsc::channel();
                     TargetQuality::default()
@@ -4604,7 +4817,6 @@ mod tests {
                         }
                     })
                     .collect::<Vec<_>>();
-                let before = serde_json::to_value(&scenes).expect("before");
                 let snapshots = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                 let saved = std::rc::Rc::clone(&snapshots);
                 let mut condor = Condor::new(
@@ -4629,6 +4841,7 @@ mod tests {
                 );
                 condor.sequence_config.scene_concatenator.method =
                     ConcatMethod::FFmpeg(Default::default());
+                crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
                 let mut sequence = TargetQuality::default();
                 if mode.starts_with("native-") {
                     // Pause frame 1 in the real native VMAF reference decoder.
@@ -4652,7 +4865,11 @@ mod tests {
                         })
                         .expect("real lazy native reference input"),
                     );
+                    condor.sequence_config.target_quality.as_mut().expect("TQ").metric_input =
+                        sequence.metric_input.as_ref().map(Input::as_data);
+                    crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
                 }
+                let before = serde_json::to_value(&condor.scenes).expect("current fixture before");
                 let cancellation = Cancellation::default();
                 let signal = cancellation.clone();
                 let barrier = script.clone();
@@ -4745,6 +4962,8 @@ mod tests {
                 }
                 condor.sequence_config.target_quality.as_mut().expect("TQ").quantizer_range =
                     (34, 34);
+                condor.sequence_config.target_quality.as_mut().expect("TQ").metric_input = None;
+                crate::core::sequence::c14_tests::current_target_fixture(&mut condor);
                 let (tx, _rx) = sync::mpsc::channel();
                 TargetQuality::default()
                     .execute_cancel(&mut condor, tx, Default::default())
@@ -4753,8 +4972,12 @@ mod tests {
                 for (index, scene) in condor.scenes.iter().enumerate() {
                     let passes = &scene.sequence_data.get_target_quality().expect("TQ").passes;
                     assert_eq!(passes.len(), 2);
+                    let mut raw_prefix = passes[..1].to_vec();
+                    for pass in &mut raw_prefix {
+                        pass.provenance = None;
+                    }
                     assert_eq!(
-                        serde_json::to_value(&passes[..1]).expect("prefix"),
+                        serde_json::to_value(&raw_prefix).expect("raw measured prefix"),
                         serde_json::to_value(&measured[index].passes).expect("prefix")
                     );
                     assert_eq!(
@@ -4890,7 +5113,8 @@ mod tests {
         .expect("availability fallback")
         .expect("complete");
         assert_eq!(fallbacks, 1);
-        assert_eq!(scores, [2.0; 4]);
+        assert_eq!(scores.0, [2.0; 4]);
+        assert_eq!(scores.1, Engine::VapourSynth);
         assert!(
             matches!(rx.try_recv(), Ok(SequenceStatus::Whole(Status::Completed { id })) if id == "Compare")
         );

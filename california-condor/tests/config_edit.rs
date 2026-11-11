@@ -18,6 +18,103 @@ mod tests {
     use super::*;
 
     #[test]
+    fn c14_cli_legacy_admission_precedes_handler_resave() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut config = root_edit_fixture(temp.path());
+        config.condor.scenes[0].sequence_data.parallel_encoder.bytes = Some(123);
+        let file = temp.path().join("job.json");
+        let mut value = serde_json::to_value(&config).expect("legacy model");
+        value["condor"]["scenes"][0]["sequence_data"]["parallel_encoder"]
+            .as_object_mut()
+            .expect("object")
+            .remove("provenance");
+        let original = serde_json::to_vec(&value).expect("original unformatted JSON");
+        std::fs::write(&file, &original).expect("legacy bytes");
+        let result = condor_cmd(&temp)
+            .args(["--config-file", "job.json", "encode", "-w", "2"])
+            .output()
+            .expect("actual CLI");
+        assert_eq!(
+            std::fs::read(&file).expect("preserved bytes"),
+            original,
+            "run handler must not resave untrusted results"
+        );
+        let message = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            message.contains("scene 0") && message.contains("new job"),
+            "{message}"
+        );
+        assert!(!temp.path().join("source-opened").exists());
+        // Isolate the encoding owner for unknown/future and current-mismatch
+        // admission; none of these claimed records can be repaired by a save.
+        config.condor.scenes[0].sequence_data = Default::default();
+        config.condor.scenes[0].sequence_data.parallel_encoder.bytes = Some(123);
+        for revision in [0, 999, 1] {
+            let mut value = serde_json::to_value(&config).expect("claimed result");
+            value["condor"]["scenes"][0]["sequence_data"]["parallel_encoder"]["provenance"] =
+                serde_json::json!({"revision": revision, "context": {}});
+            let original = serde_json::to_vec(&value).expect("original exact bytes");
+            std::fs::write(&file, &original).expect("original");
+            let result = condor_cmd(&temp)
+                .args(["--config-file", "job.json", "encode", "-w", "2"])
+                .output()
+                .expect("CLI admission");
+            let message = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                message.contains("scene 0") && message.contains("new job"),
+                "revision {revision}: {message}"
+            );
+            assert_eq!(std::fs::read(&file).expect("unchanged bytes"), original);
+            assert!(!temp.path().join("source-opened").exists());
+        }
+    }
+
+    #[test]
+    fn c14_settings_only_upgrade_and_save_do_not_certify_legacy_results() {
+        use california_condor::configuration::Configuration;
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut config = root_edit_fixture(temp.path());
+        config.condor.scenes[0].sequence_data = Default::default();
+        let file = temp.path().join("job.json");
+        let mut value = serde_json::to_value(&config).expect("old settings");
+        for scene in value["condor"]["scenes"].as_array_mut().expect("scenes") {
+            scene["sequence_data"]["parallel_encoder"]
+                .as_object_mut()
+                .expect("record")
+                .remove("provenance");
+            scene["sequence_data"]["quality_check"]["quality"]
+                .as_object_mut()
+                .expect("quality")
+                .remove("provenance");
+            scene["sequence_data"]["quality_check"]["quality"]
+                .as_object_mut()
+                .expect("quality")
+                .remove("backend");
+        }
+        std::fs::write(&file, serde_json::to_vec(&value).expect("legacy JSON")).expect("saved");
+        condor_cmd(&temp)
+            .args(["--config-file", "job.json", "init", "set", "workers", "2"])
+            .assert()
+            .success();
+        let mut upgraded = Configuration::load(&file).expect("raw load").expect("job");
+        assert!(upgraded.admit_results().is_ok());
+        assert!(
+            !temp.path().join("source-opened").exists(),
+            "offline settings upgrade does not open a decoder"
+        );
+        let record = &mut upgraded.condor.scenes[0].sequence_data.parallel_encoder;
+        assert!(record.provenance.is_none());
+        record.bytes = Some(999);
+        upgraded.save(&file).expect("explicit raw offline save remains possible");
+        let claimed = Configuration::load(&file).expect("legacy raw results parse").expect("job");
+        assert!(claimed.condor.scenes[0].sequence_data.parallel_encoder.provenance.is_none());
+        assert!(
+            claimed.admit_results().is_err(),
+            "save never mints result provenance"
+        );
+    }
+
+    #[test]
     fn c12_benchmarker_preserves_omitted_memory_and_persists_update_reset() {
         use california_condor::{
             commands::{
@@ -30,6 +127,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("fixture");
         let guard = JobLock::acquire(&temp.path().join("job.json")).expect("transaction guard");
         let mut configuration = root_edit_fixture(temp.path());
+        configuration.condor.scenes[0].sequence_data = Default::default();
         configuration.condor.sequence_config.benchmarker = BenchmarkerConfig {
             threshold: 7,
             max_memory: Some(4096),
@@ -96,7 +194,8 @@ mod tests {
     #[test]
     fn c11_cli_job_contention_survives_save_and_crash_without_lost_edits() {
         let temp = tempfile::tempdir().expect("fixture");
-        let config = root_edit_fixture(temp.path());
+        let mut config = root_edit_fixture(temp.path());
+        config.condor.scenes[0].sequence_data = Default::default();
         let file = temp.path().join("job.json");
         config.save(&file).expect("job");
         config.save(&temp.path().join("job.other")).expect("independent extension");
@@ -411,6 +510,7 @@ mod tests {
         };
         let temp = tempfile::tempdir().expect("fixture");
         let mut config = root_edit_fixture(temp.path());
+        config.condor.scenes[0].sequence_data = Default::default();
         config.condor.sequence_config.zoner = Some(ZonerConfig {
             zones: vec![parse_zone("0 12 svt-av1 \"--preset 3\"").expect("zone")],
         });

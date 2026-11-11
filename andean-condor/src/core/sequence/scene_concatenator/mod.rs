@@ -8,6 +8,11 @@ use std::{
     thread,
 };
 
+use crate::models::sequence::{
+    parallel_encoder::{ParallelEncoderConfigHandler, ParallelEncoderDataHandler},
+    provenance,
+    target_quality::{TargetQualityConfigHandler, TargetQualityDataHandler},
+};
 use crate::{
     core::process::{InterruptedOutput, OwnedProcess},
     utils::cancellation::Cancellation,
@@ -55,8 +60,11 @@ pub static DETAILS: SequenceDetails = SequenceDetails {
 pub struct SceneConcatenator {}
 impl<DataHandler, ConfigHandler> Sequence<DataHandler, ConfigHandler> for SceneConcatenator
 where
-    DataHandler: SequenceDataHandler,
-    ConfigHandler: SequenceConfigHandler + SceneConcatenatorConfigHandler,
+    DataHandler: SequenceDataHandler + ParallelEncoderDataHandler + TargetQualityDataHandler,
+    ConfigHandler: SequenceConfigHandler
+        + SceneConcatenatorConfigHandler
+        + ParallelEncoderConfigHandler
+        + TargetQualityConfigHandler,
 {
     #[inline]
     fn details(&self) -> SequenceDetails {
@@ -169,6 +177,28 @@ where
         let cancelled = cancelled.admit()?;
         Self::admit_final(condor)?;
         let warnings = vec![];
+
+        let root = condor.input.as_data();
+        let pe = condor.sequence_config.parallel_encoder()?;
+        let tq = condor.sequence_config.target_quality()?.as_ref();
+        let input = pe.input.as_ref().unwrap_or(&root);
+        let probe = provenance::probe_input(&root, pe, tq);
+        let metric = tq.and_then(|c| c.metric_input.as_ref());
+        for (index, scene) in condor.scenes.iter().enumerate() {
+            let config = condor.sequence_config.scene_concatenator()?;
+            let path = config.scenes_directory.join(format!(
+                "{}.{}",
+                ParallelEncoder::scene_id(index),
+                scene.encoder.output_extension()
+            ));
+            provenance::admit_encode(input, probe, metric, scene, tq, &path, index)?;
+            super::parallel_encoder::artifact::validate(
+                &path,
+                scene.end_frame - scene.start_frame,
+                pe.validate_frame_count,
+                &cancelled,
+            )?;
+        }
 
         let framerate = condor.input.clip_info()?.frame_rate;
         let input_path = {
@@ -582,6 +612,11 @@ mod tests {
             );
             let bin = root.join("bin");
             std::fs::create_dir_all(&bin).expect("bin");
+            std::os::unix::fs::symlink(
+                which::which("ffprobe").expect("required installed ffprobe"),
+                bin.join("ffprobe"),
+            )
+            .expect("isolated artifact validator");
             let script = bin.join("ffmpeg");
             std::fs::write(
                 &script,
@@ -685,6 +720,8 @@ out.write_bytes((r/'reference.mkv').read_bytes())
             job.scenes[0].encoder.output_extension()
         ));
         std::fs::write(chunk, &reference).expect("real encoded scene");
+        job.sequence_config.parallel_encoder.scenes_directory = root.clone();
+        crate::core::sequence::c14_tests::current_encoding_fixture(&mut job);
         let token = Cancellation::default();
         let controller = (case == "force" || case == "graceful").then(|| {
             let root = root.clone();

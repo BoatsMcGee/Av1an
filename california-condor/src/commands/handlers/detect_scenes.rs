@@ -52,6 +52,7 @@ pub fn detect_scenes_handler(
         max_scene_seconds,
     )?;
 
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))

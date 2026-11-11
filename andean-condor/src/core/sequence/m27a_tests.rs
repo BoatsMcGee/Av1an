@@ -84,8 +84,6 @@ fn c06_qc_output_case(test: &str, root_kind: &str) {
             completed_on: 200,
             ..Default::default()
         };
-        let history = serde_json::to_vec(&scenes[0]).unwrap();
-        let before = serde_json::to_vec(&scenes).unwrap();
         let saved = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let recorded = std::rc::Rc::clone(&saved);
         let mut config = DefaultSequenceConfig {
@@ -119,6 +117,13 @@ fn c06_qc_output_case(test: &str, root_kind: &str) {
                 Ok(())
             }),
         );
+        if root_kind == "missing-override" {
+            job.scenes[0].sequence_data.quality_check.quality = QualityPass::default();
+        } else {
+            super::c14_tests::current_quality_fixture(&mut job);
+        }
+        let history = serde_json::to_vec(&job.scenes[0]).unwrap();
+        let before = serde_json::to_vec(&job.scenes).unwrap();
         let mut qc = QualityCheck::default();
         let (_, warnings) = qc.validate(&mut job).unwrap();
         let (tx, rx) = mpsc::channel();
@@ -516,7 +521,7 @@ fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
                     })
                     .collect();
                 let saved = std::rc::Rc::clone(&saved);
-                Condor::new(
+                let mut job = Condor::new(
                     input,
                     Output {
                         path: output.path().to_owned(),
@@ -538,7 +543,9 @@ fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
                         saved.borrow_mut().push(serde_json::to_vec(&data.scenes)?);
                         Ok(())
                     }),
-                )
+                );
+                super::c14_tests::current_quality_fixture(&mut job);
+                job
             };
 
             // Matching counts still claim completion, so corruption must fail before scoring.
@@ -1059,7 +1066,7 @@ fn m27a_temporal_relay_disconnect_is_advisory() {
     assert_eq!(
         TargetQuality::route_compare_scores(
             Some(Ok(vec![7.0])),
-            None,
+            Some(Engine::Fmetrics),
             &metric(None),
             compare,
             relay,
@@ -1067,7 +1074,7 @@ fn m27a_temporal_relay_disconnect_is_advisory() {
             |_| Ok(())
         )
         .unwrap(),
-        Some(vec![7.0])
+        Some((vec![7.0], Engine::Fmetrics))
     );
     // A pre-progress failure still requests the existing fallback, exactly once.
     let (tx, rx) = mpsc::channel();
@@ -1087,7 +1094,7 @@ fn m27a_temporal_relay_disconnect_is_advisory() {
             |_| Ok(())
         )
         .unwrap(),
-        Some(vec![8.0])
+        Some((vec![8.0], Engine::VapourSynth))
     );
     assert_eq!(attempts, 1);
     assert!(
@@ -1100,7 +1107,7 @@ fn m27a_temporal_relay_disconnect_is_advisory() {
     let (compare, relay) = super::quality_check::spawn_compare_progress(tx);
     let error = TargetQuality::route_compare_scores(
         Some(Ok(vec![7.0])),
-        None,
+        Some(Engine::Fmetrics),
         &metric(Some(true)),
         compare,
         relay,

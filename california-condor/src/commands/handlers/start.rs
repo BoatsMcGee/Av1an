@@ -275,6 +275,7 @@ pub fn start_handler(
     if !config_already_existed {
         debug!("Saving new Configuration to {}", config_path.display());
     }
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
     if encoder.is_some()
         || passes.is_some()

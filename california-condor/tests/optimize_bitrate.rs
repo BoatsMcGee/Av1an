@@ -77,6 +77,37 @@ mod tests {
                 ..Default::default()
             }];
         });
+        // Explicit current measurement/selection fixture: this test exercises the
+        // optimizer policy, not migration or native measurement correctness.
+        use andean_condor::{
+            metrics::{self, Engine},
+            models::sequence::provenance::{self, MetricBackend, ResultProvenance},
+        };
+        let tq = config.condor.sequence_config.target_quality.as_ref().expect("TQ");
+        let pe = &config.condor.sequence_config.parallel_encoder;
+        let input = provenance::probe_input(&config.condor.input, pe, Some(tq));
+        let engine = metrics::engine(
+            &tq.metric,
+            !matches!(input, andean_condor::models::input::Input::Video { .. }),
+        )
+        .unwrap_or(Engine::VapourSynth);
+        let backend = if engine == Engine::VapourSynth {
+            MetricBackend::available_plugin(&tq.metric).expect("installed fixture plugin")
+        } else {
+            MetricBackend::current(engine)
+        };
+        for scene in &mut config.condor.scenes {
+            let mut pass = scene.sequence_data.target_quality.passes[0].clone();
+            pass.backend = Some(backend.clone());
+            pass.provenance = Some(ResultProvenance::new(
+                provenance::target_context(input, tq.metric_input.as_ref(), scene, tq, &pass)
+                    .expect("current probe context"),
+            ));
+            scene.sequence_data.target_quality.passes[0] = pass;
+            scene.sequence_data.target_quality.selection = Some(ResultProvenance::new(
+                provenance::selection_context(scene, tq).expect("current selection context"),
+            ));
+        }
         config.save(&config_path).expect("configuration save should succeed");
 
         condor_cmd(&temp)

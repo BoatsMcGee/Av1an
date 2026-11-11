@@ -231,6 +231,8 @@ mod tests {
 
     fn measured(quantizer: f64, bitrate: f64) -> QualityPass {
         QualityPass {
+            provenance: None,
+            backend: None,
             quantizer,
             bitrate,
             scores: vec![80.0],
@@ -251,7 +253,10 @@ mod tests {
                 end_frame: 1,
             }]),
             encoder,
-            sequence_data: Data(Some(TargetQualityData { passes })),
+            sequence_data: Data(Some(TargetQualityData {
+                passes,
+                selection: None,
+            })),
         }
     }
 

@@ -32,6 +32,7 @@ pub fn scale_noise_handler(
         scale_chroma,
     )?;
 
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))

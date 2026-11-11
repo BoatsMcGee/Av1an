@@ -77,6 +77,8 @@ pub fn quality_scene_fixture() -> (
         .enumerate()
         .map(|(i, scores)| {
             let pass = QualityPass {
+                provenance: None,
+                backend: None,
                 quantizer: 20.0,
                 scores,
                 bitrate: 123.0,

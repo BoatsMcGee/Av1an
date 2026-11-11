@@ -496,6 +496,16 @@ fn instantiate_saved_condor(
     configuration: &Configuration,
     save_file: &Path,
 ) -> Result<Condor<configuration::CliSequenceData, configuration::CliSequenceConfig>> {
+    configuration.admit_results()?;
+    instantiate_editable_condor(configuration, save_file)
+}
+
+// Explicit scene edits retain stale records for inspection/reset; constructing a
+// runtime input is not permission for any result consumer to reuse those records.
+fn instantiate_editable_condor(
+    configuration: &Configuration,
+    save_file: &Path,
+) -> Result<Condor<configuration::CliSequenceData, configuration::CliSequenceConfig>> {
     let config_copy = configuration.clone();
     let save_file_copy = save_file.to_path_buf();
     debug!("Instantiating Condor with {:?}", {
@@ -639,7 +649,7 @@ pub fn run_scene_detector(configuration: &Configuration, save_file: &Path) -> Re
 /// without a TUI.
 #[tracing::instrument(skip_all)]
 pub fn run_zoner(configuration: &Configuration, save_file: &Path) -> Result<()> {
-    let mut condor = instantiate_saved_condor(configuration, save_file)?;
+    let mut condor = instantiate_editable_condor(configuration, save_file)?;
 
     Zoner::run(&mut condor)?;
 

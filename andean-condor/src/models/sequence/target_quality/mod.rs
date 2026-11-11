@@ -112,12 +112,18 @@ where
     Self: Default,
 {
     pub passes: Vec<QualityPass>,
+    /// Selection over certified raw measurements, before later bitrate/speed edits.
+    #[serde(default)]
+    pub selection: Option<super::provenance::ResultProvenance>,
 }
 
 impl Default for TargetQualityData {
     #[inline]
     fn default() -> Self {
-        Self { passes: Vec::new() }
+        Self {
+            passes: Vec::new(),
+            selection: None,
+        }
     }
 }
 

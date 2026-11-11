@@ -923,6 +923,7 @@ fn e15_public_child() {
             scene.sequence_data = DefaultSequenceData::default();
             condor.scenes.push(scene);
         }
+        crate::core::sequence::c14_tests::current_encoding_fixture(&mut condor);
     }
     let (tx, rx) = std::sync::mpsc::channel();
     if kind == "budget0" {

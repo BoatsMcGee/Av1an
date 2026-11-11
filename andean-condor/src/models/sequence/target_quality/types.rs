@@ -493,6 +493,10 @@ impl ProbeStatistic {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QualityPass {
+    #[serde(default)]
+    pub provenance: Option<super::super::provenance::ResultProvenance>,
+    #[serde(default)]
+    pub backend: Option<super::super::provenance::MetricBackend>,
     pub quantizer: f64,
     pub scores: Vec<f64>,
     pub bitrate: f64,
@@ -514,6 +518,8 @@ impl Default for QualityPass {
     #[inline]
     fn default() -> Self {
         Self {
+            provenance: None,
+            backend: None,
             quantizer: 0.0,
             scores: Vec::new(),
             bitrate: 0.0,

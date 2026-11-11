@@ -46,6 +46,7 @@ pub fn detect_noise_handler(
         denoised_filters,
     )?;
 
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))

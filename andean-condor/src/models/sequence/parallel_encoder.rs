@@ -80,6 +80,8 @@ where
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ParallelEncoderData {
+    #[serde(default)]
+    pub provenance: Option<super::provenance::ResultProvenance>,
     /// Must be milliseconds since UNIX Epoch
     pub started_on: Option<u128>,
     /// Must be milliseconds since UNIX Epoch

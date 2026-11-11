@@ -25,6 +25,7 @@ pub fn benchmarker_handler(
     configure_temp(&mut configuration, temp_path)?;
     configure_benchmarker(&mut configuration, threshold, max_memory)?;
 
+    configuration.admit_results()?;
     configuration.save(&config_path)?;
 
     Ok((configuration, config_path))

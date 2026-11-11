@@ -117,6 +117,50 @@ Created by [init](./commands/init.md). Contains `input`, `output`, `temp`, and `
 
 The file includes a `$schema` URL (baked via `CONDOR_SCHEMA_URL` in `build.rs`, fallback to release `configuration.schema.json`).
 
+### Result revisions and resume
+
+Successful Target Quality probes, Quality Check measurements and finalized parallel
+chunks carry a processing revision and structured input/settings context. Old JSON
+still loads for inspection and offline edits. Settings-only jobs need no result
+certification; saving or upgrading JSON never certifies old measurements or encodes.
+Previous successful tests do **not** certify preexisting encodes, including results
+from earlier fmetrics or CVVDP math/conversion behavior.
+
+Execution refuses legacy, future-revision or changed-context results before run
+handlers resave the job. It preserves original records, chunks and final output.
+Changing a probe's source, filters, scene, encoder, metric, model or backend also
+withholds its derived quantizer/chunk eligibility, even when encoding or concatenation
+is called directly. Matching chunks still undergo the configured integrity checks.
+Target/budget-only edits retain raw TQ measurements for current-policy reselection;
+dependent chunks must match that selection policy. Worker/retry changes do not
+invalidate pixels. Serial-encoder outputs have no saved-job resume certification.
+
+Prefer a new job with a different config and empty work directory when recomputing.
+For an explicit metadata reset, inspect the affected scene first, then use the
+applicable commands (replace `0` with its index):
+
+```sh
+condor scenes 0 reset target-quality
+condor scenes 0 reset quality-check
+condor scenes 0 reset parallel-encoder
+```
+
+These reset **records only**; they do not remove physical chunks. Preserve or move
+old chunks yourself before recomputing into an empty work directory. Do not copy a
+new revision/context onto old results to bypass admission.
+
+Source identity uses canonical path, length and modification time, not a content
+digest: ordinary replacement is detected, but same-length edits preserving timestamps
+are outside this non-adversarial check. Inline script text, arguments, declared
+decoder/index settings and filters are recorded; hidden files read by scripts/plugins
+cannot be inferred. VMAF custom/override model SHA-256 content identities and stock
+fallback candidates are recorded; `VMAF_MODEL_PATH` remains exclusive. Native backend versions and plugin
+file/function admission identities are checked, not universal native-binary attestation.
+Plugins loaded only by a private script may conservatively refuse resume if their
+eligibility cannot be established without evaluating that script. Provenance does
+not certify frame callback order; the existing QC plugin arrival-order limitation
+remains.
+
 ### External Validation
 
 You can validate `condor.json` externally, such as in an IDE or editor with JSON Schema support, using the `$schema` URL in the file. Example: open `condor.json` in VS Code with JSON language mode; the `$schema` property enables completion and validation automatically. Schema can be regenerated with `cargo run -p california-condor --bin generate-schema`.

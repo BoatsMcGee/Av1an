@@ -198,6 +198,46 @@ pub struct Configuration {
 }
 
 impl Configuration {
+    /// Execution admission only; raw load/save remain usable for inspection and explicit reset.
+    /// Never stamps results and never rewrites or removes a file on refusal.
+    pub fn admit_results(&self) -> Result<()> {
+        use andean_condor::models::sequence::provenance;
+        let model = &self.condor;
+        let pe = &model.sequence_config.parallel_encoder;
+        let tq = model.sequence_config.target_quality.as_ref();
+        let probe = provenance::probe_input(&model.input, pe, tq);
+        let metric = tq.and_then(|c| c.metric_input.as_ref());
+        let input = pe.input.as_ref().unwrap_or(&model.input);
+        let qc = model.sequence_config.quality_check.as_ref();
+        let reference = qc.and_then(|c| c.input.as_ref()).unwrap_or(&model.input);
+        let output = model.sequence_config.scene_concatenator.effective_output(&model.output.path);
+        for (index, scene) in model.scenes.iter().enumerate() {
+            provenance::admit_target(probe, metric, scene, tq, index)?;
+            provenance::admit_quality(
+                reference,
+                output,
+                scene,
+                qc,
+                &scene.sequence_data.quality_check.quality,
+                index,
+            )?;
+            let path = pe.scenes_directory.join(format!(
+                "{}.{}",
+                andean_condor::core::sequence::parallel_encoder::ParallelEncoder::scene_id(index),
+                scene.encoder.output_extension()
+            ));
+            let data = &scene.sequence_data.parallel_encoder;
+            if data.bytes.is_some()
+                || data.started_on.is_some()
+                || data.completed_on.is_some()
+                || path.symlink_metadata().is_ok()
+            {
+                provenance::admit_encode(input, probe, metric, scene, tq, &path, index)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Admit the effective final destination; offline edits check aliases without existence policy.
     #[inline]
     pub fn validate_output(&self, execution: bool) -> Result<()> {
