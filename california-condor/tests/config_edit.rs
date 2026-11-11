@@ -71,6 +71,171 @@ mod tests {
     }
 
     #[test]
+    fn c09_misplaced_root_options_fail_before_logging_config_or_native_work() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let configuration = root_edit_fixture(temp.path());
+        let file = temp.path().join("condor.json");
+        configuration.save(&file).expect("save fixture");
+        let before = std::fs::read(&file).expect("snapshot");
+        let source = std::fs::read(temp.path().join("a.vpy")).expect("source");
+        let mut failures = vec![];
+        for args in [
+            vec!["-w", "8", "encode"],
+            vec!["--skip-scd", "encode"],
+            vec!["-i", "a.vpy", "encode"],
+            vec!["-o", "new.mkv", "scenes"],
+            vec!["--encoder", "aom", "encode"],
+            vec!["--params", "--cpu-used=8", "encode"],
+            vec!["--target-metric", "vmaf", "target-quality"],
+            vec!["--overwrite", "concatenate"],
+        ] {
+            let output = condor_cmd(&temp).env("PATH", "").args(&args).output().expect("CLI");
+            let message = String::from_utf8_lossy(&output.stderr);
+            if output.status.code() != Some(2)
+                || !message.contains("cannot be used with")
+                || !message.contains("Usage:")
+            {
+                failures.push(format!(
+                    "{args:?}: expected placement conflict, got {message}"
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        assert_eq!(std::fs::read(file).expect("unchanged config"), before);
+        assert_eq!(
+            std::fs::read(temp.path().join("a.vpy")).expect("source"),
+            source
+        );
+        for path in ["logs", "source-opened", "out.mkv", "new.mkv"] {
+            assert!(!temp.path().join(path).exists(), "no {path}");
+        }
+        assert!(!configuration.temp.exists());
+    }
+
+    #[test]
+    fn c09_temp_rejects_unsupported_runs_and_crud_before_logging_or_save() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let configuration = root_edit_fixture(temp.path());
+        let file = temp.path().join("condor.json");
+        configuration.save(&file).expect("save fixture");
+        let before = std::fs::read(&file).expect("snapshot");
+        let mut routes = vec![
+            vec!["zone"],
+            vec!["scenes"],
+            vec!["clean"],
+            vec!["detect-noise"],
+            vec!["scale-noise"],
+            vec!["scale-speed"],
+            vec!["optimize-bitrate"],
+        ];
+        for route in [
+            "init",
+            "encode",
+            "detect-scenes",
+            "target-quality",
+            "concatenate",
+            "quality-check",
+            "benchmark",
+            "detect-noise",
+            "scale-noise",
+            "scale-speed",
+            "optimize-bitrate",
+        ] {
+            routes.extend([vec![route, "info"], vec![route, "reset"]]);
+        }
+        routes.extend([
+            vec!["init", "set", "workers", "2"],
+            vec!["target-quality", "set", "metric", "vmaf"],
+        ]);
+        let mut failures = vec![];
+        for route in routes {
+            for before_command in [true, false] {
+                let flags = vec!["--temp", "unused-work"];
+                let args = if before_command {
+                    [flags, route.clone()].concat()
+                } else {
+                    [route.clone(), flags].concat()
+                };
+                let output = condor_cmd(&temp).env("PATH", "").args(&args).output().expect("CLI");
+                let message = String::from_utf8_lossy(&output.stderr);
+                if output.status.code() != Some(2)
+                    || !message.contains("--temp")
+                    || !message.contains("remove --temp")
+                    || !message.contains("Usage:")
+                {
+                    failures.push(format!("{args:?}: {message}"));
+                }
+                assert_eq!(std::fs::read(&file).expect("unchanged"), before, "{args:?}");
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        for path in ["logs", "unused-work", "source-opened", "out.mkv"] {
+            assert!(!temp.path().join(path).exists(), "no {path}");
+        }
+    }
+
+    #[test]
+    fn c09_global_config_logging_and_offline_tq_crud_remain_supported() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let configuration = root_edit_fixture(temp.path());
+        let file = temp.path().join("custom.json");
+        for route in ["init", "target-quality"] {
+            for before_command in [false, true] {
+                configuration.save(&file).expect("fresh absent TQ");
+                let globals =
+                    vec!["--config-file", "custom.json", "--logs", "custom.log", "--verbose"];
+                let action = vec![
+                    route,
+                    "set",
+                    if route == "init" {
+                        "target-metric"
+                    } else {
+                        "metric"
+                    },
+                    "vmaf",
+                ];
+                let args = if before_command {
+                    [globals.clone(), action].concat()
+                } else {
+                    [action, globals.clone()].concat()
+                };
+                condor_cmd(&temp).env("PATH", "").args(args).assert().success();
+                let quality = load(&file)
+                    .condor
+                    .sequence_config
+                    .target_quality
+                    .expect("CRUD materializes TQ");
+                assert!(matches!(
+                    quality.metric,
+                    andean_condor::models::sequence::target_quality::types::QualityMetric::VMAF { .. }
+                ));
+                condor_cmd(&temp)
+                    .env("PATH", "")
+                    .args([vec![route, "set", "target", "90"], globals].concat())
+                    .assert()
+                    .success();
+                assert_eq!(
+                    load(&file)
+                        .condor
+                        .sequence_config
+                        .target_quality
+                        .expect("TQ")
+                        .metric
+                        .target_range(),
+                    (89.0, 91.0)
+                );
+                assert_eq!(
+                    serde_json::to_value(load(&file).condor.scenes).expect("history"),
+                    serde_json::to_value(&configuration.condor.scenes).expect("snapshot")
+                );
+            }
+        }
+        assert!(temp.path().join("custom.log").exists());
+        assert!(!temp.path().join("source-opened").exists());
+        assert!(!temp.path().join("condor.json").exists());
+    }
+
+    #[test]
     fn c06_output_crud_rejects_alias_without_mutation() {
         use california_condor::commands::{
             config::ConfigCommand,

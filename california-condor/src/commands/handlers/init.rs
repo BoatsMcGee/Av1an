@@ -28,7 +28,9 @@ use crate::{
             config::{edit, ensure_override_requested},
             configure_root_input, configure_temp,
             encode::{configure_encoder, configure_parallel_encoder},
-            target_quality::{TargetQualityCrud, configure_target_quality},
+            target_quality::{
+                TargetQualityCrud, configure_target_quality, require_target_quality_target,
+            },
             warn_missing_executable, warn_unused_vs_args,
         },
     },
@@ -76,6 +78,7 @@ pub fn init_handler(
         bail!(err);
     }
 
+    require_target_quality_target(false, target, target_metric.is_some())?;
     // Reject encoder flags before opening/indexing the source to build a new configuration.
     let mut selected_encoder = Encoder::default_from_base(&EncoderBase::SVTAV1, false);
     configure_encoder(

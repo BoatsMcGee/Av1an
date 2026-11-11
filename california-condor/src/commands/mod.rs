@@ -33,7 +33,8 @@ mod e15_tests;
     name = "condor",
     about = "A simple, extensible Commandline tool for the Condor chunked encoding framework.",
     version = "0.0.1",
-    disable_version_flag = true
+    disable_version_flag = true,
+    after_help = "Put execution options after the selected command (e.g. condor encode -w 8). Root execution options require no subcommand. --config-file, --logs and --verbose work at either level. Target Quality run options need --target or an existing saved target."
 )]
 pub struct CondorCli {
     #[command(subcommand)]
@@ -124,6 +125,53 @@ pub struct CondorCli {
 }
 
 impl CondorCli {
+    /// Admit only explicit globals before a subcommand; defaults are not supplied options.
+    pub(crate) fn admit_root_arguments(
+        matches: &clap::ArgMatches,
+        cmd: &mut clap::Command,
+    ) -> Result<(), clap::Error> {
+        // COMPAT: Clap's args_conflicts_with_subcommands also rejects globals at the root.
+        let conflicting_arg = cmd
+            .get_arguments()
+            .find(|arg| {
+                !arg.is_global_set()
+                    && matches.value_source(arg.get_id().as_str())
+                        == Some(clap::parser::ValueSource::CommandLine)
+            })
+            .map(ToString::to_string);
+        if let Some(command) = matches.subcommand_name()
+            && let Some(arg) = conflicting_arg
+        {
+            let message = format!(
+                "{arg} cannot be used with subcommand '{command}' at the root; put execution options after the selected command, or omit the subcommand for a root run"
+            );
+            return Err(cmd.error(clap::error::ErrorKind::ArgumentConflict, message));
+        }
+        Ok(())
+    }
+
+    /// Rejects the global temp flag on routes that never consume it, before logging or loading.
+    pub(crate) fn reject_unused_temp(&self, cmd: &mut clap::Command) {
+        if self.temp.is_some()
+            && !matches!(
+                &self.command,
+                None | Some(Commands::Init { edit: None, .. })
+                    | Some(Commands::Encode { edit: None, .. })
+                    | Some(Commands::DetectScenes { edit: None, .. })
+                    | Some(Commands::TargetQuality { edit: None, .. })
+                    | Some(Commands::Concatenate { edit: None, .. })
+                    | Some(Commands::QualityCheck { edit: None, .. })
+                    | Some(Commands::Benchmark { edit: None, .. })
+            )
+        {
+            cmd.error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "this command does not use --temp; remove --temp. It is supported only for root, init-create, encode, detect-scenes, target-quality, concatenate, quality-check and benchmark runs, not configuration edits",
+            )
+            .exit();
+        }
+    }
+
     /// Rejects `condor scenes INDEX add` as a usage error.
     ///
     /// `add` places the scene it inserts itself, so an index before it is not
@@ -911,6 +959,103 @@ mod tests {
 
     mod cli_parser {
         use super::*;
+
+        #[test]
+        fn c09_root_execution_options_conflict_with_subcommands() {
+            for flags in [
+                vec!["-w", "8"],
+                vec!["--skip-scd"],
+                vec!["-i", "source.vpy"],
+                vec!["-o", "out.mkv"],
+                vec!["--encoder", "aom"],
+                vec!["--params", "--cpu-used=8"],
+                vec!["--target", "75"],
+                vec!["--target-metric", "vmaf"],
+                vec!["--tq-input", "source.vpy"],
+                vec!["--overwrite"],
+                vec!["--disable-color-data"],
+            ] {
+                for command in ["encode", "detect-scenes", "scenes"] {
+                    let args = [vec!["condor"], flags.clone(), vec![command]].concat();
+                    use clap::CommandFactory;
+                    let mut cmd = CondorCli::command();
+                    let matches = cmd
+                        .try_get_matches_from_mut(&args)
+                        .expect("known options parse before admission");
+                    let error = CondorCli::admit_root_arguments(&matches, &mut cmd)
+                        .expect_err("misplaced root flag");
+                    assert_eq!(
+                        error.kind(),
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "{args:?}: {error}"
+                    );
+                    assert!(error.to_string().contains("Usage:"), "{error}");
+                }
+            }
+        }
+
+        #[test]
+        fn c09_defaults_local_options_and_globals_remain_valid() {
+            use clap::{CommandFactory, FromArgMatches};
+            for args in [
+                vec![],
+                vec!["encode"],
+                vec!["scenes"],
+                vec!["encode", "-w", "8"],
+                vec!["init", "source.vpy", "out.mkv", "--params", "--preset=8"],
+                vec!["init", "source.vpy", "out.mkv", "--overwrite"],
+                vec!["concatenate", "--overwrite"],
+            ] {
+                let mut cmd = CondorCli::command();
+                let matches = cmd
+                    .try_get_matches_from_mut([vec!["condor"], args].concat())
+                    .expect("valid local/default grammar");
+                CondorCli::admit_root_arguments(&matches, &mut cmd)
+                    .expect("local/default options admitted");
+            }
+            for command in [
+                "init",
+                "encode",
+                "detect-scenes",
+                "target-quality",
+                "concatenate",
+                "quality-check",
+                "benchmark",
+            ] {
+                for before in [false, true] {
+                    let globals = vec![
+                        "--config-file",
+                        "job.json",
+                        "--logs",
+                        "job.log",
+                        "--verbose",
+                        "--version",
+                        "--temp",
+                        "work",
+                    ];
+                    let args = if before {
+                        [vec!["condor"], globals, vec![command]].concat()
+                    } else {
+                        [vec!["condor", command], globals].concat()
+                    };
+                    let mut cmd = CondorCli::command();
+                    let matches = cmd
+                        .try_get_matches_from_mut(args)
+                        .expect("genuine globals parse on run routes");
+                    CondorCli::admit_root_arguments(&matches, &mut cmd)
+                        .expect("genuine globals admitted");
+                    let cli = CondorCli::from_arg_matches(&matches).expect("CLI globals");
+                    assert_eq!(cli.config_file, Some("job.json".into()));
+                    assert_eq!(cli.logs, Some("job.log".into()));
+                    assert_eq!(cli.temp, Some("work".into()));
+                    assert!(cli.verbose);
+                    assert!(cli.version);
+                }
+                for args in [["condor", "--version", command], ["condor", command, "--version"]] {
+                    assert!(CondorCli::try_parse_from(args).expect("global version").version);
+                }
+            }
+        }
 
         mod init {
             use super::*;

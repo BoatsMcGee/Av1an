@@ -70,12 +70,11 @@ fn run() -> anyhow::Result<()> {
     let mut cmd = CondorCli::command();
     cmd = process_command_tree(cmd);
     let matches = cmd.get_matches_mut();
+    CondorCli::admit_root_arguments(&matches, &mut cmd).map_err(|err| err.exit())?;
     let mut cli = CondorCli::from_arg_matches(&matches).map_err(|err| err.exit())?;
     cli.normalize_zone_flags();
     cli.reject_indexed_add(&mut cmd);
-    if cli.overwrite && cli.command.is_some() {
-        cmd.error(clap::error::ErrorKind::ArgumentConflict, "root --overwrite is only for a root run; use init INPUT OUTPUT --overwrite or concatenate --overwrite on those routes").exit();
-    }
+    cli.reject_unused_temp(&mut cmd);
     commands::set_verbose(cli.verbose);
 
     if cli.version {

@@ -38,6 +38,107 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn c09_tq_handler_and_cli_missing_target_preserve_saved_job() {
+        use california_condor::commands::{
+            QualityMetric as CliMetric,
+            handlers::target_quality::{TargetQualityConfigError, target_quality_handler},
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("source.vpy");
+        let bytes = format!(
+            "from pathlib import Path\nPath({}).write_text('opened')\nraise RuntimeError('C09 SOURCE WAS OPENED')\n",
+            serde_json::to_string(&temp.path().join("opened")).expect("literal")
+        );
+        std::fs::write(&source, &bytes).expect("script");
+        let video = TestVideo {
+            path: source.clone(),
+            width: 32,
+            height: 32,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        let mut config = default_config(
+            &video,
+            &temp.path().join("out.mkv"),
+            &temp.path().join("work"),
+        );
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        config.condor.scenes[0].sequence_data.parallel_encoder.bytes = Some(1234);
+        let file = temp.path().join("condor.json");
+        config.save(&file).expect("fixture save");
+        let before = std::fs::read(&file).expect("snapshot");
+        for args in [vec!["target-quality", "--metric", "vmaf"], vec!["--target-metric", "vmaf"]] {
+            let result = condor_cmd(&temp).env("PATH", "").args(&args).output().expect("CLI");
+            let message = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                !result.status.success()
+                    && message.contains("--target")
+                    && message.contains("saved target"),
+                "{args:?}: {message}"
+            );
+            assert_eq!(std::fs::read(&file).expect("no save"), before);
+            assert!(!temp.path().join("opened").exists());
+        }
+        let error = target_quality_handler(
+            Some(&file),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&CliMetric::VMAF),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("missing target");
+        assert!(
+            matches!(
+                error.downcast_ref::<TargetQualityConfigError>(),
+                Some(TargetQualityConfigError::MissingTarget)
+            ),
+            "{error:#}"
+        );
+        assert_eq!(std::fs::read(&file).expect("no save"), before);
+        config.condor.sequence_config.target_quality = Some(TargetQualityConfig::default());
+        config.save(&file).expect("configured job");
+        let (edited, _) = target_quality_handler(
+            Some(&file),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(&CliMetric::VMAF),
+            None,
+            Some(20),
+            Some(40),
+            None,
+        )
+        .expect("configured targetless edit saves offline");
+        assert!(matches!(
+            edited.condor.sequence_config.target_quality.as_ref().expect("TQ").metric,
+            QualityMetric::VMAF { .. }
+        ));
+        assert_eq!(
+            serde_json::to_value(edited.condor.scenes).expect("history"),
+            serde_json::to_value(config.condor.scenes).expect("snapshot")
+        );
+        assert_eq!(
+            serde_json::to_value(edited.condor.output).expect("output"),
+            serde_json::to_value(config.condor.output).expect("snapshot")
+        );
+        assert_eq!(std::fs::read(source).expect("source"), bytes.as_bytes());
+        assert!(!temp.path().join("opened").exists());
+        assert!(!temp.path().join("out.mkv").exists());
+    }
+
     #[serial]
     #[test]
     fn with_custom_options() {

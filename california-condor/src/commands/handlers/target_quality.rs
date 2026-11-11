@@ -72,7 +72,21 @@ pub fn target_quality_handler(
     Ok((configuration, config_path))
 }
 
+/// Rejects otherwise ignored run options; CRUD may materialize a section before calling.
+pub(crate) fn require_target_quality_target(
+    configured: bool,
+    target: Option<f64>,
+    options_supplied: bool,
+) -> Result<()> {
+    if !configured && target.is_none() && options_supplied {
+        return Err(TargetQualityConfigError::MissingTarget.into());
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
+/// Applies TQ options atomically after validation; absent/all-None remains a no-op.
+/// Options without a saved section or explicit target return `MissingTarget` before edits.
 pub fn configure_target_quality(
     configuration: &mut Configuration,
     input_path: Option<&Path>,
@@ -91,6 +105,19 @@ pub fn configure_target_quality(
     {
         return Err(TargetQualityConfigError::TargetNotFinite.into());
     }
+    require_target_quality_target(
+        configuration.condor.sequence_config.target_quality.is_some(),
+        target,
+        input_path.is_some()
+            || decoder.is_some()
+            || filters.is_some()
+            || vs_args.is_some()
+            || params.is_some()
+            || metric.is_some()
+            || minimum_quantizer.is_some()
+            || maximum_quantizer.is_some()
+            || profile.is_some(),
+    )?;
     let mut candidate = configuration.clone();
     let original = configuration;
     let configuration = &mut candidate;
@@ -105,7 +132,7 @@ pub fn configure_target_quality(
     }
 
     if configuration.condor.sequence_config.target_quality.is_none() {
-        // No target was ever specified, skip configuration
+        // No target or TQ options: retain the intentional no-op.
         return Ok(());
     }
 
@@ -409,6 +436,10 @@ pub type TargetQualityAction = ConfigAction<TargetQualityKey, TargetQualitySet>;
 /// Everything that can make a Target Quality setting unusable.
 #[derive(Debug, Error)]
 pub enum TargetQualityConfigError {
+    #[error(
+        "Target Quality options require --target or an existing saved target; provide --target SCORE or configure a saved target first"
+    )]
+    MissingTarget,
     #[error("target must be a finite score")]
     TargetNotFinite,
     #[error("maximum probes must be positive")]
@@ -750,6 +781,181 @@ mod tests {
         test_helpers::{check_basic_config, default_config, get_test_video},
         utils::hash_path::hash_path,
     };
+
+    fn c09_apply_flags(configuration: &mut Configuration, flags: &[&str]) -> Result<()> {
+        use crate::commands::{Commands, CondorCli};
+        use clap::Parser;
+        let cli = CondorCli::try_parse_from([&["condor", "target-quality"][..], flags].concat())?;
+        let Some(Commands::TargetQuality {
+            input,
+            decoder,
+            filters,
+            vs_args,
+            params,
+            metric,
+            target,
+            minimum_quantizer,
+            maximum_quantizer,
+            profile,
+            ..
+        }) = cli.command
+        else {
+            panic!("TQ flags")
+        };
+        configure_target_quality(
+            configuration,
+            input.as_deref(),
+            decoder.as_ref(),
+            filters.as_deref(),
+            vs_args.as_deref(),
+            params.as_deref(),
+            metric.as_ref(),
+            target,
+            minimum_quantizer,
+            maximum_quantizer,
+            profile.as_ref(),
+        )
+    }
+
+    fn c09_offline_configuration(directory: &Path) -> Configuration {
+        let video = crate::test_helpers::TestVideo {
+            path: directory.join("must-not-open.vpy"),
+            width: 32,
+            height: 32,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: andean_condor::ffmpeg::FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        let mut configuration =
+            default_config(&video, &directory.join("out.mkv"), &directory.join("work"));
+        configuration.condor.scenes = video.mock_scenes(&configuration.condor.encoder);
+        configuration.condor.scenes[0].sequence_data.parallel_encoder.bytes = Some(1234);
+        configuration
+    }
+
+    #[test]
+    fn c09_missing_target_refuses_every_option_family_atomically() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut configuration = c09_offline_configuration(temp.path());
+        let before = serde_json::to_value(&configuration).expect("complete snapshot");
+        let mut failures = vec![];
+        for flags in [
+            vec!["--input", "missing.vpy"],
+            vec!["--decoder", "vs-ffms2"],
+            vec!["--filters", "crop:top=2;"],
+            vec!["--vs-args", "key=value"],
+            vec!["--params", "--preset=8"],
+            vec!["--metric", "vmaf"],
+            vec!["--min-q", "20"],
+            vec!["--max-q", "40"],
+            vec!["--profile", "fast"],
+        ] {
+            match c09_apply_flags(&mut configuration, &flags) {
+                Ok(()) => failures.push(format!("silently ignored {flags:?}")),
+                Err(error) => {
+                    assert!(
+                        matches!(
+                            error.downcast_ref::<TargetQualityConfigError>(),
+                            Some(TargetQualityConfigError::MissingTarget)
+                        ),
+                        "typed cause: {error:#}"
+                    );
+                    assert!(
+                        error.to_string().contains("--target")
+                            && error.to_string().contains("saved target"),
+                        "actionable cause: {error:#}"
+                    );
+                },
+            }
+            assert_eq!(
+                serde_json::to_value(&configuration).expect("unchanged"),
+                before,
+                "{flags:?}"
+            );
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn c09_noop_creation_and_configured_targetless_edits_preserve_contracts() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut configuration = c09_offline_configuration(temp.path());
+        let before = serde_json::to_value(&configuration).expect("snapshot");
+        c09_apply_flags(&mut configuration, &[]).expect("intentional absent/allNone no-op");
+        assert_eq!(
+            serde_json::to_value(&configuration).expect("unchanged"),
+            before
+        );
+        c09_apply_flags(&mut configuration, &["--target", "75"]).expect("explicit creation");
+        let quality =
+            configuration.condor.sequence_config.target_quality.as_ref().expect("created");
+        assert_eq!(quality.metric.target_range(), (74.0, 76.0));
+        assert_eq!(
+            quality.quantizer_range,
+            TargetQuality::default_quantizer_range(&configuration.condor.encoder.base())
+        );
+        assert_eq!(
+            serde_json::to_value(&quality.probing).expect("default probing"),
+            serde_json::to_value(TargetQualityConfig::default().probing).expect("defaults")
+        );
+        let untouched = configuration.clone();
+        c09_apply_flags(
+            &mut configuration,
+            &[
+                "--metric",
+                "xpsnr",
+                "--profile",
+                "fast",
+                "--min-q",
+                "20",
+                "--max-q",
+                "40",
+                "--params",
+                "--preset=8",
+            ],
+        )
+        .expect("saved section is sufficient");
+        let quality = configuration.condor.sequence_config.target_quality.as_ref().expect("TQ");
+        assert!(matches!(quality.metric, QualityMetric::XPSNR { .. }));
+        assert_eq!(quality.metric.target_range(), DEFAULT_XPSNR_TARGET_RANGE);
+        assert_eq!(quality.quantizer_range, (20, 40));
+        assert_eq!(
+            quality.probing.strategy,
+            ProbeStrategy::Subset {
+                position: SubsetProbePosition::Middle,
+                length: SubsetProbeLength::Frames(11)
+            }
+        );
+        assert_eq!(quality.probing.statistic, ProbeStatistic::Mean);
+        assert_eq!(
+            quality.probing.encoder_options.as_ref().expect("params").get("preset"),
+            Some(&CLIParameter::new_number("--", "=", 8.0))
+        );
+        c09_apply_flags(
+            &mut configuration,
+            &["--input", "other.vpy", "--vs-args", "keep=yes"],
+        )
+        .expect("configured input edit stays offline");
+        let input = configuration
+            .condor
+            .sequence_config
+            .target_quality
+            .as_ref()
+            .expect("TQ")
+            .input
+            .as_ref()
+            .expect("override");
+        assert!(matches!(input, Input::VapourSynthScript { .. }));
+        let mut outside_tq = configuration.clone();
+        outside_tq.condor.sequence_config.target_quality =
+            untouched.condor.sequence_config.target_quality.clone();
+        assert_eq!(
+            serde_json::to_value(outside_tq).expect("unchanged outside TQ"),
+            serde_json::to_value(untouched).expect("snapshot")
+        );
+        assert!(!configuration.temp.exists());
+    }
 
     #[test]
     fn q08_cli_interpolators_roundtrip_all_names_and_positions() {

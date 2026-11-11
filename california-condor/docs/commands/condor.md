@@ -7,7 +7,18 @@ $ condor -i "input.mp4" -o "output.mkv"
 $ condor --config-file ./config.json --skip-scd
 ```
 
-Global encoder flags (`--encoder`, `--params`, `--passes`, noise/filter options and
+Execution options belong to the selected command: use `condor encode -w 8`, not
+`condor -w 8 encode`. Root flags such as `--skip-scd` require no subcommand.
+Genuine globals `--config-file`, `--logs`, `--verbose` and `--version` work before
+or after a command. `--temp` works only for root, init-create, encode,
+detect-scenes, target-quality, concatenate, quality-check and benchmark runs;
+other commands and `info`/`set`/`reset` reject it.
+
+Target Quality run options (`--tq-*`, `--target-metric`, quantizer bounds and
+`--target-profile`) require `--target` or a saved Target Quality section. With
+neither options nor a saved section, Target Quality configuration stays absent.
+
+Root encoder flags (`--encoder`, `--params`, `--passes`, noise/filter options and
 `--disable-color-data`) change defaults for future scenes, not encoders already
 saved in the job. Bare resume keeps those overrides without an encoder-edit warning.
 Use `condor scenes all info encoder` to inspect them. To replace them explicitly,

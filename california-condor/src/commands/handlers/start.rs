@@ -18,7 +18,7 @@ use crate::{
             configure_root_input, configure_temp,
             detect_scenes::configure_scene_detector,
             encode::{configure_encoder, configure_parallel_encoder, warn_existing_scene_encoders},
-            target_quality::configure_target_quality,
+            target_quality::{configure_target_quality, require_target_quality_target},
         },
     },
     configuration::{ConfigError, Configuration},
@@ -74,6 +74,19 @@ pub fn start_handler(
             .as_path()
             .to_path_buf();
     let config_already_existed = config_path.exists();
+    let tq_options_supplied = tq_input_path.is_some()
+        || tq_decoder.is_some()
+        || tq_filters.is_some()
+        || tq_vs_args.is_some()
+        || tq_params.is_some()
+        || target_metric.is_some()
+        || minimum_quantizer.is_some()
+        || maximum_quantizer.is_some()
+        || target_profile.is_some();
+    if !config_already_existed {
+        // New jobs must reject ignored options before Configuration::new opens the source.
+        require_target_quality_target(false, target, tq_options_supplied)?;
+    }
 
     let mut configuration = {
         if config_already_existed {
@@ -209,6 +222,11 @@ pub fn start_handler(
         &additional_sources,
         configuration.condor.output.overwrite,
         true,
+    )?;
+    require_target_quality_target(
+        configuration.condor.sequence_config.target_quality.is_some(),
+        target,
+        tq_options_supplied,
     )?;
     configure_scene_detector(
         &mut configuration,

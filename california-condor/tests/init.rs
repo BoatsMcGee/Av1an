@@ -33,6 +33,142 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn c09_new_init_and_root_tq_options_require_target_before_source_open_or_save() {
+        let mut failures = vec![];
+        for init in [false, true] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let source = temp.path().join("source.vpy");
+            let bytes = format!(
+                "from pathlib import Path\nPath({}).write_text('opened')\nraise RuntimeError('C09 SOURCE WAS OPENED')\n",
+                serde_json::to_string(&temp.path().join("opened")).expect("literal")
+            );
+            std::fs::write(&source, &bytes).expect("script");
+            let args = if init {
+                vec!["init", "source.vpy", "out.mkv", "--target-metric", "vmaf"]
+            } else {
+                vec!["-i", "source.vpy", "-o", "out.mkv", "--target-metric", "vmaf"]
+            };
+            let output = condor_cmd(&temp).env("PATH", "").args(&args).output().expect("CLI");
+            let message = String::from_utf8_lossy(&output.stderr);
+            if output.status.success()
+                || !message.contains("--target")
+                || !message.contains("saved target")
+            {
+                failures.push(format!("{args:?}: missing target refusal, got {message}"));
+            }
+            if temp.path().join("opened").exists() {
+                failures.push(format!("{args:?}: opened source before admission"));
+            }
+            assert!(!temp.path().join("condor.json").exists());
+            assert!(!temp.path().join("out.mkv").exists());
+            assert_eq!(std::fs::read(&source).expect("source"), bytes.as_bytes());
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn c09_direct_init_missing_target_is_typed_and_pre_native() {
+        use california_condor::commands::{
+            QualityMetric,
+            handlers::{init::init_handler, target_quality::TargetQualityConfigError},
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("source.vpy");
+        std::fs::write(&source, "raise RuntimeError('C09 SOURCE WAS OPENED')").expect("script");
+        let file = temp.path().join("condor.json");
+        let error = init_handler(
+            Some(&file),
+            None,
+            &source,
+            &temp.path().join("out.mkv"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+            Some(&QualityMetric::VMAF),
+            None,
+            None,
+            false,
+        )
+        .expect_err("metric needs target");
+        assert!(
+            matches!(
+                error.downcast_ref::<TargetQualityConfigError>(),
+                Some(TargetQualityConfigError::MissingTarget)
+            ),
+            "typed cause, not native failure: {error:#}"
+        );
+        assert!(error.to_string().contains("--target"), "{error:#}");
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn c09_direct_new_root_missing_target_is_typed_and_pre_native() {
+        use california_condor::commands::{
+            CondorCli,
+            handlers::{start::start_handler, target_quality::TargetQualityConfigError},
+        };
+        use clap::Parser;
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("source.vpy");
+        std::fs::write(&source, "raise RuntimeError('C09 SOURCE WAS OPENED')").expect("script");
+        let file = temp.path().join("condor.json");
+        let cli =
+            CondorCli::try_parse_from(["condor", "--target-metric", "vmaf"]).expect("root grammar");
+        let error = start_handler(
+            Some(&file),
+            cli.temp.as_deref(),
+            Some(&source),
+            cli.scd_input.as_deref(),
+            cli.tq_input.as_deref(),
+            Some(&temp.path().join("out.mkv")),
+            cli.decoder.as_ref(),
+            cli.scd_decoder.as_ref(),
+            cli.tq_decoder.as_ref(),
+            cli.filters.as_deref(),
+            cli.scd_filters.as_deref(),
+            cli.tq_filters.as_deref(),
+            cli.vs_args.as_deref(),
+            cli.scd_vs_args.as_deref(),
+            cli.tq_vs_args.as_deref(),
+            cli.concat.as_ref(),
+            cli.discard.as_deref(),
+            cli.workers,
+            cli.encoder.as_ref(),
+            cli.passes,
+            cli.params.as_deref(),
+            cli.tq_params.as_deref(),
+            cli.photon_noise,
+            cli.chroma_noise,
+            cli.ffmpeg_filter.as_deref(),
+            None,
+            cli.target_metric.as_ref(),
+            cli.target,
+            cli.minimum_quantizer,
+            cli.maximum_quantizer,
+            cli.target_profile.as_ref(),
+            cli.max_tries,
+            cli.overwrite,
+        )
+        .expect_err("metric needs target");
+        assert!(
+            matches!(
+                error.downcast_ref::<TargetQualityConfigError>(),
+                Some(TargetQualityConfigError::MissingTarget)
+            ),
+            "typed cause, not native failure: {error:#}"
+        );
+        assert!(error.to_string().contains("--target"), "{error:#}");
+        assert!(!file.exists());
+    }
+
     fn c06_shadowed_output_case(direct: bool) {
         use andean_condor::models::input::VapourSynthScriptSource;
         use california_condor::commands::{CondorCli, handlers::start::start_handler};

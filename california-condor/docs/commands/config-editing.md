@@ -6,6 +6,10 @@ saved section in `condor.json` **without running** the step. Run flags and edit
 subcommands do not mix — passing both is a usage error, so a setting can never
 change by accident.
 
+`--config-file`, `--logs` and `--verbose` are genuine globals and work before or
+after an edit command. `--temp` is a run-only option on supported routes, not an
+edit option: remove it for `info`, `set` and `reset`.
+
 ## Shape
 
 ```text

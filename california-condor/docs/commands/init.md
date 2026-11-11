@@ -10,6 +10,10 @@ $ condor init set output final.mkv
 
 Creating a configuration needs `INPUT` and `OUTPUT`; the `info`, `set` and `reset` subcommands edit an existing one instead. Root input and output settings belong here; step-specific inputs are separate overrides.
 
+Creation with `--target-metric` also needs `--target SCORE`; a metric alone is
+rejected before opening the source or saving. Offline `init set target-metric`
+and `init set target` can still create the saved Target Quality section.
+
 | Name                                                        | Flag              | Type      | Default                |
 | ----------------------------------------------------------- | ----------------- | --------- | ---------------------- |
 | [Input](#input)                                             | `INPUT`           | Path      |                        |

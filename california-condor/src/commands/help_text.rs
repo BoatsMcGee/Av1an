@@ -96,6 +96,8 @@ pub const HELP_OUTPUT_SHORT: &str = short_help(HELP_OUTPUT);
 
 pub const HELP_TEMP: &str = r#"Path to the temporary directory to use.
 
+Accepted before or after root, init-create, encode, detect-scenes, target-quality, concatenate, quality-check and benchmark runs. Other commands and info/set/reset actions reject --temp; remove it for those routes.
+
 If not specified, the temporary directory is created in the current working directory with a hash of the input file name as the directory name.
 
 For an empty saved job, changing --temp updates unset or derived TEMP/scenes encoding and concatenation directories, including the parent of Target Quality probes. Saved scenes or nonempty known work directories prevent a change: start a new job with a new --config-file instead. An equivalent path (including a symlink alias) is accepted without changing saved paths or results.
@@ -495,6 +497,8 @@ If not specified, Benchmarker is used to determine the optimal number of workers
 pub const HELP_WORKERS_SHORT: &str = short_help(HELP_WORKERS);
 
 pub const HELP_TARGET_METRIC: &str = r#"The quality metric used for Target Quality.
+
+Run options require --target or an existing saved Target Quality section. For init creation, provide --target; metric-only creation is rejected rather than ignored. Offline set commands may create the section without --target.
 
 Defaults to **ssimulacra2**.
 "#;

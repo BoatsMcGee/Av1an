@@ -2,6 +2,12 @@
 
 Calculate the optimum quantizer per scene for a given metric target (triggers TUI). See [guide](../guide.md) and [type reference](../types.md).
 
+Run options need `--target SCORE` or an existing saved Target Quality section;
+input, decoder, filters, script arguments, parameters, metric, quantizer bounds
+and profile are not silently ignored when that section is absent. With a saved
+section, omitted targets retain the metric's range (changing metric uses its
+default range). Offline `set` commands may create the section without `--target`.
+
 ```bash
 $ condor target-quality --metric ssimulacra2 --target 85
 $ condor target-quality -i input.mp4 --metric butteraugli --target 90 --profile standard --min-q 10 --max-q 50
