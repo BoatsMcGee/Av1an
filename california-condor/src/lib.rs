@@ -397,7 +397,10 @@ fn run() -> anyhow::Result<()> {
             run_quality_check(&configuration, &save_file)?;
         },
         Some(Commands::Clean { all: _ }) => {
-            todo!();
+            anyhow::bail!(
+                "cleanup is unavailable; no files removed. Start a new job with a different \
+                 --config-file, a distinct empty --temp directory, and a distinct output."
+            );
         },
         None => {
             let (mut configuration, save_file) = start_handler(

@@ -46,7 +46,7 @@ A merge whose encoder base differs from the scene's leaves that scene unchanged 
 
 `condor zone` needs scenes to zone: run [detect-scenes](./detect-scenes.md) first, or let [`condor`](./condor.md) run detection before its Zoner step.
 
-Zoner warns if actual changes could stale saved downstream results or existing index-named encode/probe files. Splitting can shift later scene indices and make their files stale too. Warnings only: results and files are not deleted or reset. Clean/recompute the reported artifacts before resuming to avoid reusing encodes for old ranges/settings. No-op zoning does not issue cleanup warnings.
+Zoner warns if actual changes could stale saved downstream results or existing index-named encode/probe files. Splitting can shift later scene indices and make their files stale too. Warnings only: results and files are not deleted or reset. To avoid reusing old encodes, [start a separate job](clean.md#start-a-separate-job) with a different `--config-file`, a distinct empty `--temp` directory, and a distinct output; `condor clean` is unavailable. No-op zoning does not issue cleanup warnings.
 
 ## Console reporting
 

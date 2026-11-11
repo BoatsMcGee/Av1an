@@ -1,10 +1,11 @@
 # Clean
 
-Clean temporary files. Currently unimplemented. See [guide](../guide.md).
+Cleanup is unavailable. Both forms return a nonzero error without removing files
+or loading the configuration. Ordinary logging may still create or update the log.
 
 ```bash
-$ condor clean
-$ condor clean --all
+condor clean
+condor clean --all
 ```
 
 | Name                      | Flag    | Type | Default |
@@ -13,14 +14,26 @@ $ condor clean --all
 
 ## All `--all`
 
-Clean all temporary files.
+Reserved; not implemented. This flag does not remove any files.
 
-> [!NOTE]
-> `clean` is a stub (`todo!()` in `src/lib.rs`). Manually remove the `--temp` directory for now.
+## Start a separate job
+
+Use a different `--config-file`, a distinct empty `--temp` directory, and a distinct
+output so the new job cannot reuse stale chunks or replace the old output. Choose
+unused paths for this example:
+
+```bash
+condor --config-file new-job.json --temp new-job-work init input.mp4 new-output.mkv
+```
+
+This creates a separate configuration; it does not clean or reset the old job.
+Resetting saved scene/measurement metadata does not remove physical encode or probe
+files. See [Editing saved settings](config-editing.md) and [Scenes](scenes.md).
 
 ## Screenshots
 
-The screenshots below are generated from the live interface. Click any image to open it full size.
+These screenshots may show older help; the text above describes current behavior.
+Click any image to open it full size.
 
 <table>
   <tr>

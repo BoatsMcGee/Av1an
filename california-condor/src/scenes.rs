@@ -443,7 +443,8 @@ pub fn stale_result_warnings(
         for path in files {
             warnings.push(anyhow::anyhow!(
                 "scene index {index} has an existing encode/probe file {} that may be stale after \
-                 {reason}; clean and recompute it before resuming; file was left untouched",
+                 {reason}; file was left untouched; start a new job with a different --config-file, \
+                 a distinct empty --temp directory, and a distinct output",
                 path.display()
             ));
         }

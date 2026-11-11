@@ -71,6 +71,215 @@ mod tests {
     }
 
     #[test]
+    fn c10_clean_is_an_offline_error_and_preserves_all_job_files() {
+        use std::{collections::BTreeMap, path::PathBuf};
+
+        use andean_condor::core::sequence::{
+            parallel_encoder::ParallelEncoder, target_quality::DETAILS,
+        };
+
+        fn snapshot(directory: &std::path::Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+            let mut entries = BTreeMap::new();
+            for entry in std::fs::read_dir(directory).expect("fixture directory") {
+                let path = entry.expect("entry").path();
+                if path.file_name().expect("filename") == "clean.log" {
+                    continue;
+                }
+                if path.is_dir() {
+                    entries.insert(path.clone(), None);
+                    entries.extend(snapshot(&path));
+                } else {
+                    entries.insert(path.clone(), Some(std::fs::read(path).expect("file bytes")));
+                }
+            }
+            entries
+        }
+
+        let mut failures = vec![];
+        for config in ["valid", "missing", "corrupt", "default-missing"] {
+            for all in [false, true] {
+                let temp = tempfile::tempdir().expect("fixture");
+                let configuration = root_edit_fixture(temp.path());
+                configuration.save(&temp.path().join("existing.json")).expect("saved job");
+                let file = temp.path().join("custom.json");
+                match config {
+                    "valid" => configuration.save(&file).expect("custom config"),
+                    "corrupt" => {
+                        std::fs::write(&file, b"not a configuration\0").expect("corrupt config");
+                    },
+                    _ => {},
+                }
+                let scenes =
+                    &configuration.condor.sequence_config.parallel_encoder.scenes_directory;
+                let chunk = format!("{}.ivf", ParallelEncoder::scene_id(0));
+                let probe = scenes.join(DETAILS.name).join("pass-1").join(&chunk);
+                std::fs::create_dir_all(probe.parent().expect("probe parent"))
+                    .expect("probe directory");
+                std::fs::create_dir_all(configuration.temp.join("empty"))
+                    .expect("empty work directory");
+                for (path, bytes) in [
+                    (scenes.join(&chunk), b"encoded chunk\0".as_slice()),
+                    (probe, b"probe bytes\0".as_slice()),
+                    (temp.path().join("out.mkv"), b"final output\0".as_slice()),
+                    (temp.path().join("a.ffindex"), b"source index\0".as_slice()),
+                ] {
+                    std::fs::write(path, bytes).expect("sentinel");
+                }
+                let before = snapshot(temp.path());
+                let mut command = condor_cmd(&temp);
+                command.env("PATH", "").env("RUST_BACKTRACE", "1").args(["--logs", "clean.log"]);
+                if config != "default-missing" {
+                    command.arg("--config-file").arg(&file);
+                }
+                command.arg("clean");
+                if all {
+                    command.arg("--all");
+                }
+                let output = command.output().expect("actual clean CLI");
+                assert_eq!(
+                    snapshot(temp.path()),
+                    before,
+                    "{config}, --all={all}: only the selected log may change"
+                );
+                assert!(
+                    temp.path().join("clean.log").is_file(),
+                    "normal logging remains supported"
+                );
+                let message = String::from_utf8_lossy(&output.stderr);
+                if output.status.code() != Some(1)
+                    || ![
+                        "cleanup is unavailable",
+                        "no files removed",
+                        "new job",
+                        "different --config-file",
+                        "distinct empty --temp directory",
+                        "distinct output",
+                    ]
+                    .iter()
+                    .all(|text| message.contains(text))
+                    || ["panicked", "stack backtrace", "not yet implemented", "todo!"]
+                        .iter()
+                        .any(|text| message.contains(text))
+                {
+                    failures.push(format!(
+                        "{config}, --all={all}: {:?}: {message}",
+                        output.status
+                    ));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn c10_clean_help_discloses_unavailable_command_and_all_flag() {
+        let temp = tempfile::tempdir().expect("fixture");
+        for args in [vec!["--help"], vec!["clean", "--help"], vec!["clean", "--help", "--verbose"]]
+        {
+            let output = condor_cmd(&temp).env("PATH", "").args(&args).assert().success();
+            let help = String::from_utf8_lossy(&output.get_output().stdout);
+            assert!(help.contains("Cleanup is unavailable"), "{args:?}: {help}");
+            if args[0] == "clean" {
+                let all = help
+                    .split("--all")
+                    .nth(1)
+                    .expect("--all help")
+                    .split("\n\n")
+                    .next()
+                    .expect("flag description");
+                assert!(all.contains("not implemented"), "{all}");
+                let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+                for text in [
+                    "no files removed",
+                    "different --config-file",
+                    "distinct empty --temp directory",
+                    "distinct output",
+                ] {
+                    assert!(help.contains(text), "missing {text}: {help}");
+                }
+                for advice in help.split("new job").skip(1) {
+                    let advice = advice.split('.').next().expect("new-job guidance");
+                    assert!(
+                        advice.contains("distinct empty --temp directory")
+                            && advice.contains("distinct output"),
+                        "every new-job path needs isolated work and output: {advice}"
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            std::fs::read_dir(temp.path()).expect("untouched fixture").count(),
+            0
+        );
+    }
+
+    #[test]
+    fn c10_stale_chunk_warning_gives_safe_new_job_advice_without_touching_files() {
+        use andean_condor::core::sequence::parallel_encoder::ParallelEncoder;
+
+        let temp = tempfile::tempdir().expect("fixture");
+        let configuration = root_edit_fixture(temp.path());
+        let file = temp.path().join("custom.json");
+        configuration.save(&file).expect("saved config");
+        let scenes = &configuration.condor.sequence_config.parallel_encoder.scenes_directory;
+        std::fs::create_dir_all(scenes).expect("scene directory");
+        let chunk = scenes.join(format!("{}.ivf", ParallelEncoder::scene_id(0)));
+        std::fs::write(&chunk, b"stale encode\0").expect("physical chunk");
+        let output = condor_cmd(&temp)
+            .env("PATH", "")
+            .args([
+                "--config-file",
+                "custom.json",
+                "--logs",
+                "edit.log",
+                "scenes",
+                "0",
+                "set",
+                "end",
+                "10",
+            ])
+            .assert()
+            .success();
+        let warnings = String::from_utf8_lossy(&output.get_output().stderr);
+        let warning = warnings
+            .lines()
+            .find(|line| line.contains("existing encode/probe file"))
+            .expect("physical-file warning");
+        for text in [
+            "scene index 0",
+            chunk.to_str().expect("path"),
+            "may be stale after scene edits",
+            "file was left untouched",
+            "new job",
+            "different --config-file",
+            "distinct empty --temp directory",
+            "distinct output",
+        ] {
+            assert!(warning.contains(text), "missing {text}: {warning}");
+        }
+        assert!(
+            !warning.contains("clean and recompute") && !warning.contains("condor clean"),
+            "{warning}"
+        );
+        assert!(
+            warnings.contains("Nothing was cleaned or recomputed"),
+            "{warnings}"
+        );
+        assert_eq!(
+            std::fs::read(chunk).expect("retained chunk"),
+            b"stale encode\0"
+        );
+        let updated = load(&file);
+        assert_eq!(updated.condor.scenes[0].end_frame, 10);
+        assert_eq!(
+            serde_json::to_value(&updated.condor.scenes[0].sequence_data).expect("saved results"),
+            serde_json::to_value(&configuration.condor.scenes[0].sequence_data)
+                .expect("unchanged results")
+        );
+        assert!(!temp.path().join("source-opened").exists());
+    }
+
+    #[test]
     fn c09_misplaced_root_options_fail_before_logging_config_or_native_work() {
         let temp = tempfile::tempdir().expect("fixture");
         let configuration = root_edit_fixture(temp.path());

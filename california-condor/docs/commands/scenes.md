@@ -228,7 +228,7 @@ Every write warns in two cases, and never changes anything on its own:
 - **Overlaps** name each scene the new range shares frames with.
 - **Staleness** covers everything the change may have invalidated: saved results (noise, target-quality, encode, quality-check) of the touched scenes, and existing index-named encode/probe files on disk. Scenes whose index shifted — because a scene was added or deleted — are reported too.
 
-Results and files are never deleted or recomputed: clean or recompute the reported artifacts before resuming, for example with [`condor clean`](./clean.md), then rerun the step that produced them. The generic `WARN` every configuration write prints (see [Editing saved settings](./config-editing.md)) is reported alongside these.
+Results and files are never deleted or recomputed automatically. `condor clean` is unavailable; [start a separate job](clean.md#start-a-separate-job) with a different `--config-file`, a distinct empty `--temp` directory, and a distinct output to avoid stale artifacts. Resetting saved results does not remove physical files. The generic `WARN` every configuration write prints (see [Editing saved settings](./config-editing.md)) is reported alongside these.
 
 ## Editing saved scenes
 

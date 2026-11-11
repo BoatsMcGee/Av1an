@@ -41,7 +41,7 @@ $ condor quality-check
 1. `init` creates the JSON configuration file (default `./condor.json`, override with `--config-file`). Defaults: encoder `svt-av1`, input filter `resize:scaler=bicubic;format=yuv420p10le`, scene detector standard 1s-10s.
 2. Each step loads JSON configuration file, updates its relevant section, and saves on completion.
 3. Resume by rerunning the same command; progress is preserved in the JSON configuration file and `temp` directory.
-4. `clean` removes temporary files (currently unimplemented, see [clean](./commands/clean.md)).
+4. `clean` is unavailable and returns an error without removing files; see [clean](./commands/clean.md) for the separate-job path.
 5. Between steps, a command's saved section can be read, changed and reset without running it: the commands that expose `info` / `set` / `reset` subcommands (e.g. `condor target-quality set target 85`, `condor detect-noise reset`) are listed in [Editing saved settings](./commands/config-editing.md).
 
 ## Temp and Logs

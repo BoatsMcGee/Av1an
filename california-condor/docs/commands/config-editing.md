@@ -34,7 +34,7 @@ $ condor detect-scenes set method --help     # that property's values and flags
 | `reset KEY` | Restores one key to its model default, or clears an optional field, and names it. |
 | `reset` | With no key, restores the whole section: an optional section goes back to `null`, a required one back to its defaults. `condor init reset` needs a property, because the input and output paths it captures have no default. |
 | Validation | Invariants (`min ≤ max` quantizers, positive probes, percentile `0..=100`, …) are checked **before** saving; a violation leaves the file untouched and exits non-zero. |
-| Staleness | After any write a `WARN` states that saved results/files may be stale. Nothing is cleaned or recomputed behind your back — use `condor clean` explicitly. |
+| Staleness | After any write a `WARN` states that saved results/files may be stale. Nothing is cleaned or recomputed. `condor clean` is unavailable; [start a separate job](clean.md#start-a-separate-job) with a different `--config-file`, a distinct empty `--temp` directory, and a distinct output. |
 | Config path | All operations honour `--config-file`, exactly like the run commands. |
 | `--verbose` | Every write prints a status line naming the property and what happened to it; the value it was left with is printed only under `--verbose`. |
 

@@ -557,8 +557,12 @@ pub enum Commands {
         #[arg(long, value_name = "Profile", help = HELP_QUALITY_CHECK_PROFILE_SHORT, long_help = HELP_QUALITY_CHECK_PROFILE)]
         profile: Option<QualityProfile>,
     },
-    /// Clean temporary files.
+    /// Cleanup is unavailable; no files removed.
+    ///
+    /// Start a new job with a different --config-file, a distinct empty --temp directory,
+    /// and a distinct output.
     Clean {
+        /// Reserved; not implemented. No files removed.
         #[arg(long, value_name = "All")]
         all: bool,
     },
