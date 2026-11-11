@@ -17,6 +17,56 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn c12_benchmarker_preserves_omitted_memory_and_persists_update_reset() {
+        use california_condor::{
+            commands::{
+                config::ConfigAction,
+                handlers::benchmarker::{self, BenchmarkKey, benchmarker_handler},
+            },
+            configuration::JobLock,
+        };
+
+        let temp = tempfile::tempdir().expect("fixture");
+        let guard = JobLock::acquire(&temp.path().join("job.json")).expect("transaction guard");
+        let mut configuration = root_edit_fixture(temp.path());
+        configuration.condor.sequence_config.benchmarker = BenchmarkerConfig {
+            threshold: 7,
+            max_memory: Some(4096),
+        };
+        configuration.condor.sequence_config.parallel_encoder.workers = Some(3);
+        configuration.save(guard.path()).expect("saved memory limit");
+
+        for (threshold, max_memory, expected_memory, expected_threshold) in
+            [(None, None, 4096, 7), (Some(11), None, 4096, 11), (None, Some(2048), 2048, 11)]
+        {
+            benchmarker_handler(Some(guard.path()), None, threshold, max_memory)
+                .expect("configuration handler only");
+            let saved = load(guard.path());
+            let sequence = &saved.condor.sequence_config;
+            assert_eq!(
+                (
+                    sequence.benchmarker.max_memory,
+                    sequence.benchmarker.threshold
+                ),
+                (Some(expected_memory), expected_threshold)
+            );
+            assert_eq!(sequence.parallel_encoder.workers, Some(3));
+        }
+
+        benchmarker::config(
+            Some(guard.path()),
+            &ConfigAction::Reset {
+                key: Some(BenchmarkKey::MaxMemory),
+            },
+        )
+        .expect("explicit memory reset");
+        let saved = load(guard.path());
+        assert_eq!(saved.condor.sequence_config.benchmarker.max_memory, None);
+        assert_eq!(saved.condor.sequence_config.benchmarker.threshold, 11);
+        assert!(!temp.path().join("source-opened").exists());
+    }
+
     struct JobChild(std::process::Child);
 
     impl Drop for JobChild {

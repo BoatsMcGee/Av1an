@@ -39,7 +39,9 @@ pub fn configure_benchmarker(
     if let Some(threshold) = threshold {
         configuration.condor.sequence_config.benchmarker.threshold = threshold;
     }
-    configuration.condor.sequence_config.benchmarker.max_memory = max_memory;
+    if let Some(max_memory) = max_memory {
+        configuration.condor.sequence_config.benchmarker.max_memory = Some(max_memory);
+    }
 
     Ok(())
 }
