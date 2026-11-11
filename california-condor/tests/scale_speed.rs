@@ -16,6 +16,173 @@ mod tests {
 
     use super::*;
 
+    fn q11_fixture(temp: &std::path::Path) -> california_condor::configuration::Configuration {
+        let video = TestVideo {
+            path: temp.join("must-not-open.mkv"),
+            width: 2,
+            height: 2,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: andean_condor::ffmpeg::FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        let mut configuration =
+            default_config(&video, &temp.join("output.mkv"), &temp.join("scratch"));
+        configuration.condor.encoder.set_executable(Some(temp.join("must-not-run")));
+        configuration.condor.scenes = video.mock_scenes(&configuration.condor.encoder);
+        configuration.condor.sequence_config.speed_scaler.speed_quantizers =
+            vec![(4, 20.25), (8, 40.75)];
+        configuration
+    }
+
+    #[test]
+    fn q11_flags_retain_loaded_fractional_quantizers_on_speed_only_edits() {
+        use california_condor::commands::handlers::scale_speed::{
+            configure_scale_speed, scale_speed_handler,
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        let mut config = q11_fixture(temp.path());
+        config.condor.sequence_config.speed_scaler.speed_quantizers.push((6, 200.5));
+        config.save(&path).expect("save");
+        let (config, _) = scale_speed_handler(Some(&path), None, Some(&[5, 7, 9]))
+            .expect("offline speed-only edit");
+        assert_eq!(
+            config.condor.sequence_config.speed_scaler.speed_quantizers,
+            vec![(5, 20.25), (7, 40.75), (9, 200.5)]
+        );
+        assert_eq!(
+            load(&path).condor.sequence_config.speed_scaler.speed_quantizers,
+            vec![(5, 20.25), (7, 40.75), (9, 200.5)]
+        );
+        let mut config = config;
+        configure_scale_speed(&mut config, Some(&[10, 20, 30]), None).expect("quantizer-only edit");
+        assert_eq!(
+            config.condor.sequence_config.speed_scaler.speed_quantizers,
+            vec![(5, 10.0), (7, 20.0), (9, 30.0)]
+        );
+        assert!(!temp.path().join("must-not-open.mkv").exists());
+        assert!(!temp.path().join("scratch").exists());
+    }
+
+    #[test]
+    fn q11_flags_reject_loaded_duplicate_and_nonfinite_knots_before_mutation() {
+        use california_condor::commands::handlers::scale_speed::configure_scale_speed;
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut failures = vec![];
+        for q in [20.25, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut config = q11_fixture(temp.path());
+            config.condor.sequence_config.speed_scaler.speed_quantizers[1].1 = q;
+            let before = serde_json::to_vec(&config).expect("snapshot");
+            let result = configure_scale_speed(&mut config, None, None);
+            if result.is_ok() || serde_json::to_vec(&config).expect("config") != before {
+                failures.push(format!("q={q}: {result:?}"));
+            }
+            configure_scale_speed(&mut config, Some(&[20, 40]), Some(&[4, 8]))
+                .expect("complete replacement repairs bad loaded knots");
+            assert_eq!(
+                config.condor.sequence_config.speed_scaler.speed_quantizers,
+                vec![(4, 20.0), (8, 40.0)]
+            );
+        }
+        assert!(
+            failures.is_empty(),
+            "loaded knots accepted or mutated: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn q11_flags_and_crud_numeric_errors_preserve_memory_and_saved_bytes_offline() {
+        use andean_condor::models::encoder::{Encoder, EncoderBase};
+        use california_condor::commands::{
+            config::ConfigCommand,
+            handlers::scale_speed::{
+                ScaleSpeedCrud, ScaleSpeedSet, configure_scale_speed, scale_speed_handler,
+            },
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        for (base, bad) in [(EncoderBase::RAV1E, 11), (EncoderBase::SVTAV1, 14)] {
+            let mut config = q11_fixture(temp.path());
+            config.condor.encoder = Encoder::default_from_base(&base, false);
+            config.condor.encoder.set_executable(Some(temp.path().join("must-not-run")));
+            config.condor.scenes[0].encoder = config.condor.encoder.clone();
+            config.save(&path).expect("save");
+            let before = serde_json::to_vec(&config).expect("snapshot");
+            let bytes = std::fs::read(&path).expect("saved bytes");
+            assert!(configure_scale_speed(&mut config, Some(&[20, 40]), Some(&[4, bad])).is_err());
+            assert_eq!(serde_json::to_vec(&config).expect("config"), before);
+            assert!(
+                ScaleSpeedCrud::apply(
+                    &mut config,
+                    &ScaleSpeedSet::SpeedQuantizers {
+                        points: vec![(20, 4), (40, bad)]
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(serde_json::to_vec(&config).expect("config"), before);
+            assert!(scale_speed_handler(Some(&path), Some(&[20, 40]), Some(&[4, bad])).is_err());
+            assert_eq!(std::fs::read(&path).expect("saved bytes"), bytes);
+            let bad = bad.to_string();
+            condor_cmd(&temp)
+                .env("PATH", temp.path())
+                .args(["scale-speed", "--quantizers", "20", "40", "--speeds", "4", &bad])
+                .assert()
+                .failure();
+            assert_eq!(std::fs::read(&path).expect("saved bytes"), bytes);
+            let point = format!("40={bad}");
+            condor_cmd(&temp)
+                .env("PATH", temp.path())
+                .args(["scale-speed", "set", "speed-quantizers", "20=4", &point])
+                .assert()
+                .failure();
+            assert_eq!(std::fs::read(&path).expect("saved bytes"), bytes);
+        }
+        assert!(!temp.path().join("scratch").exists());
+    }
+
+    #[test]
+    fn q11_actual_flags_duplicate_rejection_and_crud_repair_are_offline_and_atomic() {
+        use california_condor::commands::handlers::scale_speed::scale_speed_handler;
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        let mut config = q11_fixture(temp.path());
+        config.save(&path).expect("save");
+        let before = std::fs::read(&path).expect("bytes");
+        condor_cmd(&temp)
+            .env("PATH", temp.path())
+            .args(["scale-speed", "--quantizers", "20", "20", "--speeds", "4", "8"])
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read(&path).expect("bytes"), before);
+        condor_cmd(&temp)
+            .env("PATH", temp.path())
+            .args(["scale-speed", "set", "speed-quantizers", "20=4", "20=8"])
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read(&path).expect("bytes"), before);
+        config.condor.sequence_config.speed_scaler.speed_quantizers = vec![(4, 20.0), (8, 20.0)];
+        config.save(&path).expect("bad loaded config");
+        let (repaired, _) = scale_speed_handler(Some(&path), Some(&[20, 40]), Some(&[4, 8]))
+            .expect("offline complete flags repair");
+        assert_eq!(
+            repaired.condor.sequence_config.speed_scaler.speed_quantizers,
+            vec![(4, 20.0), (8, 40.0)]
+        );
+        config.save(&path).expect("bad loaded config again");
+        condor_cmd(&temp)
+            .env("PATH", temp.path())
+            .args(["scale-speed", "set", "speed-quantizers", "40=8", "20=4"])
+            .assert()
+            .success();
+        assert_eq!(
+            load(&path).condor.sequence_config.speed_scaler.speed_quantizers,
+            vec![(4, 20.0), (8, 40.0)]
+        );
+        assert!(!temp.path().join("scratch").exists());
+    }
+
     #[serial]
     #[test]
     fn default_and_no_scenes() {

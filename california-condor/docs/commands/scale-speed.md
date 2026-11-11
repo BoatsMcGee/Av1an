@@ -1,6 +1,10 @@
 # Scale Speed
 
-Apply speed based on quantizer per scene using Convex Hull interpolation. Speeds for scenes with quantizers between points are interpolated between the nearest points. See [guide](../guide.md).
+Apply encoder speed based on each scene's quantizer. Two points use linear interpolation; three or more retain the natural cubic spline. Quantizers must be finite and unique, regardless of point order. An empty saved list disables scaling; otherwise at least two points are required. See [guide](../guide.md).
+
+Outside the quantizer range, the corresponding endpoint's speed is used. Inside it, the estimate is clamped to the configured minimum and maximum speed before rounding to an integer. For example, `20=4 40=8` gives speed 6 at quantizer 30 and speed 8 at quantizer 39. Scenes without a quantizer are unchanged; nonfinite scene quantizers or estimates fail without applying any scene edits.
+
+Edits check the frontend's known encoder settings without probing binaries: RAV1E speeds are `0..=10`, SVT-AV1 presets `-1..=13`, and the existing X264/X265/VVenC named-preset mapping still clamps its endpoints. This does not validate every native restriction: AOM, AVM, VPX and arbitrary FFmpeg encoders have no universal numeric speed range here. The selected encoder must accept the resulting settings when encoding.
 
 ```bash
 $ condor scale-speed --encoder svt-av1 --quantizers 20 --speeds 5 --quantizers 30 --speeds 4 --quantizers 55 --speeds 2
@@ -13,7 +17,7 @@ $ condor scale-speed --encoder svt-av1 --quantizers 20 --speeds 5 --quantizers 3
 
 ## Quantizers `--quantizers`
 
-Quantizer values for speed-quantizer pairs. Must match number of speeds. Requires `--speeds`.
+Unique integer quantizer values for speed-quantizer pairs. Must match number of speeds. Requires `--speeds`. Saved JSON may contain fractional quantizer knots; edits that only replace speeds preserve those values.
 
 ### Examples
 

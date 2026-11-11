@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use andean_condor::models::sequence::speed_scaler::SpeedScalerConfig;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use serde_json::Value;
@@ -33,15 +34,17 @@ pub fn configure_scale_speed(
     quantizers: Option<&[i8]>,
     speeds: Option<&[i8]>,
 ) -> Result<()> {
-    let (existing_quantizers, existing_speeds): (Vec<i8>, Vec<i8>) = configuration
+    let (existing_quantizers, existing_speeds): (Vec<f64>, Vec<i8>) = configuration
         .condor
         .sequence_config
         .speed_scaler
         .speed_quantizers
         .iter()
-        .map(|(s, q)| (*q as i8, *s))
+        .map(|(s, q)| (*q, *s))
         .unzip();
-    let quantizers = quantizers.unwrap_or(existing_quantizers.as_slice());
+    let quantizers =
+        quantizers.map(|values| values.iter().map(|q| f64::from(*q)).collect::<Vec<_>>());
+    let quantizers = quantizers.as_deref().unwrap_or(existing_quantizers.as_slice());
     let speeds = speeds.unwrap_or(existing_speeds.as_slice());
     if quantizers.len() != speeds.len() {
         let err = SpeedScalerError::MismatchedPairs {
@@ -59,10 +62,14 @@ pub fn configure_scale_speed(
         bail!(err);
     }
 
-    let speed_quantizers: Vec<(i8, f64)> =
-        speeds.iter().zip(quantizers).map(|(s, q)| (*s, *q as f64)).collect();
-
-    configuration.condor.sequence_config.speed_scaler.speed_quantizers = speed_quantizers;
+    let candidate = SpeedScalerConfig {
+        speed_quantizers: speeds.iter().zip(quantizers).map(|(s, q)| (*s, *q)).collect(),
+    };
+    candidate.validate(&configuration.condor.encoder)?;
+    for scene in &configuration.condor.scenes {
+        candidate.validate(&scene.encoder)?;
+    }
+    configuration.condor.sequence_config.speed_scaler = candidate;
 
     Ok(())
 }
@@ -119,13 +126,6 @@ pub enum ScaleSpeedSet {
 /// The action triple attached to `condor scale-speed`.
 pub type ScaleSpeedAction = ConfigAction<ScaleSpeedKey, ScaleSpeedSet>;
 
-/// Everything that can make a Speed Scaler setting unusable.
-#[derive(Debug, Error)]
-pub enum ScaleSpeedConfigError {
-    #[error("each quantizer may appear only once")]
-    DuplicateQuantizer,
-}
-
 /// The `condor scale-speed` configuration section.
 pub struct ScaleSpeedCrud;
 
@@ -150,16 +150,8 @@ impl ConfigCommand for ScaleSpeedCrud {
             ScaleSpeedSet::SpeedQuantizers { points } => {
                 let mut points = points.clone();
                 points.sort_by_key(|(quantizer, _)| *quantizer);
-                if !points.windows(2).all(|pair| pair[0].0 < pair[1].0) {
-                    return Err(ScaleSpeedConfigError::DuplicateQuantizer.into());
-                }
-                // The configuration stores speed first, quantizer second.
-                let speed_quantizers: Vec<(i8, f64)> = points
-                    .iter()
-                    .map(|(quantizer, speed)| (*speed, f64::from(*quantizer)))
-                    .collect();
-                configuration.condor.sequence_config.speed_scaler.speed_quantizers =
-                    speed_quantizers;
+                let (quantizers, speeds): (Vec<_>, Vec<_>) = points.into_iter().unzip();
+                configure_scale_speed(configuration, Some(&quantizers), Some(&speeds))?;
                 PropertyChange::new(
                     "speed-quantizers",
                     &configuration.condor.sequence_config.speed_scaler.speed_quantizers,

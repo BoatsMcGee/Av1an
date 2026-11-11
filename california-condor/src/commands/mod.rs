@@ -397,8 +397,8 @@ pub enum Commands {
     /// Apply speed based on quantizer per scene using Convex Hull
     /// interpolation.
     ///
-    /// Speeds for scenes with quantizers between points will be interpolated
-    /// between the nearest points.
+    /// Two points use linear interpolation; three or more use a natural cubic
+    /// spline, bounded to the configured speed range. Quantizers must be unique.
     ///
     /// Also reads, changes or resets its saved settings without running:
     /// *condor scale-speed info*, *set* and *reset*.
