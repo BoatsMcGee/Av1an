@@ -65,11 +65,17 @@ override when present, otherwise the main input. A filter-only edit needs no
 See [Filters](../types/filters.md) for decoder support; native FFMS2 rejects
 unsupported explicit formats and cannot run VapourSynth-only filters.
 
-When another input flag creates or rebuilds an override, omitted filters inherit
-from the previous effective input. Explicit filters replace them on the rebuilt
+When `--input`, `--decoder` or `--vs-args` creates or rebuilds an override, omitted
+filters inherit from the previous effective input. Explicit filters replace them on the rebuilt
 override. Neither case changes the main input or separate Target Quality/Quality
 Check reference overrides. Without a parallel-encoder override, filtering the
 main input also intentionally changes the reference used by stages that read it.
+
+For saved edits with no existing override,
+`encode set input --filters X --stream-concurrently on` filters the main input
+first, then creates an override from it for the streaming toggle. This also
+changes the main/reference filters, even when the toggle is ignored for a
+non-script input; it is not a filter-only edit.
 
 Migration: older versions applied encode filters to the main input even with an
 override present. Review saved main-input filters from those edits; this repair

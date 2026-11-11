@@ -111,9 +111,14 @@ pub fn configure_parallel_encoder(
     let mut main_input = configuration.condor.input.clone();
 
     if input_path.is_some() || decoder.is_some() || vs_args.is_some() {
+        let mut source = candidate.input.as_ref().unwrap_or(&main_input).clone();
+        if filters.is_some() {
+            // Replaced filters must not fail conversion to the requested decoder.
+            source.set_filters(Vec::new())?;
+        }
         candidate.input = Some(configure_input(
             configuration,
-            candidate.input.as_ref().unwrap_or(&main_input),
+            &source,
             input_path,
             decoder,
             vs_args,

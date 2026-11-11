@@ -76,6 +76,201 @@ mod tests {
         configuration
     }
 
+    fn c08_rgb_input(path: std::path::PathBuf) -> Input {
+        Input::VapourSynth {
+            path,
+            import_method: andean_condor::models::input::VapourSynthImportMethod::BestSource {
+                index: Some(0),
+            },
+            cache_path: None,
+            filters: vec![VapourSynthFilter::Resize {
+                scaler: None,
+                width: None,
+                height: None,
+                format: Some(FFPixelFormat::GBRP),
+            }],
+        }
+    }
+
+    #[test]
+    fn c08_rebuild_explicit_filters_replace_obsolete_inherited_filters_atomically() {
+        use andean_condor::models::input::{ChromaSampling, Ffms2Filter, ImportMethod};
+        use california_condor::commands::{
+            DecoderMethod, handlers::encode::configure_parallel_encoder,
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        for with_override in [false, true] {
+            let mut configuration = c08_configuration(temp.path());
+            configuration.condor.input = c08_rgb_input(temp.path().join("root.mkv"));
+            let source = temp.path().join(if with_override {
+                "override.mkv"
+            } else {
+                "root.mkv"
+            });
+            if with_override {
+                configuration.condor.sequence_config.parallel_encoder.input =
+                    Some(c08_rgb_input(source.clone()));
+            }
+            let original = configuration.clone();
+            let mut expected = original.clone();
+            expected.condor.sequence_config.parallel_encoder.input = Some(Input::Video {
+                path: source,
+                import_method: ImportMethod::FFMS2 {
+                    index: Some(0),
+                    cache_path: None,
+                },
+                filters: vec![Ffms2Filter::OutputFormat {
+                    bit_depth: Some(8),
+                    chroma: Some(ChromaSampling::Yuv420),
+                    width: None,
+                    height: None,
+                }],
+            });
+            expected.condor.sequence_config.parallel_encoder.workers = Some(7);
+            expected.condor.sequence_config.parallel_encoder.max_tries = 9;
+            let replacement = VapourSynthFilter::Resize {
+                scaler: None,
+                width: None,
+                height: None,
+                format: Some(FFPixelFormat::YUV420P),
+            };
+            configure_parallel_encoder(
+                &mut configuration,
+                None,
+                Some(&DecoderMethod::FFMS2),
+                Some(&[replacement]),
+                None,
+                Some(7),
+                Some(9),
+            )
+            .expect("explicit replacement must not convert obsolete GBRP filters");
+            assert_eq!(
+                serde_json::to_value(configuration).expect("actual"),
+                serde_json::to_value(expected)
+                    .expect("only override and execution settings change")
+            );
+
+            let invalid = [VapourSynthFilter::Resize {
+                scaler: None,
+                width: None,
+                height: None,
+                format: Some(FFPixelFormat::NV12),
+            }];
+            for (filters, message) in [(None, "gbrp"), (Some(invalid.as_slice()), "nv12")] {
+                let mut configuration = original.clone();
+                let error = configure_parallel_encoder(
+                    &mut configuration,
+                    None,
+                    Some(&DecoderMethod::FFMS2),
+                    filters,
+                    None,
+                    Some(7),
+                    Some(9),
+                )
+                .expect_err("omitted filters validate inheritance; bad replacement still fails");
+                assert!(error.to_string().contains(message), "{error:#}");
+                assert_eq!(
+                    serde_json::to_value(configuration).expect("atomic error"),
+                    serde_json::to_value(&original)
+                        .expect("unchanged inputs and execution settings")
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read_dir(temp.path()).expect("no offline source/index work").count(),
+            0
+        );
+    }
+
+    #[test]
+    fn c08_rebuild_cli_explicit_filters_replace_gbrp_without_changing_references() {
+        use andean_condor::models::input::{ChromaSampling, Ffms2Filter, ImportMethod};
+        let temp = tempfile::tempdir().expect("fixture");
+        let file = temp.path().join("condor.json");
+        for with_override in [false, true] {
+            let mut configuration = c08_configuration(temp.path());
+            configuration.condor.input = c08_rgb_input(temp.path().join("root.mkv"));
+            let source = temp.path().join(if with_override {
+                "override.mkv"
+            } else {
+                "root.mkv"
+            });
+            if with_override {
+                configuration.condor.sequence_config.parallel_encoder.input =
+                    Some(c08_rgb_input(source.clone()));
+            }
+            let mut expected = configuration.clone();
+            expected.condor.sequence_config.parallel_encoder.input = Some(Input::Video {
+                path: source,
+                import_method: ImportMethod::FFMS2 {
+                    index: Some(0),
+                    cache_path: None,
+                },
+                filters: vec![Ffms2Filter::OutputFormat {
+                    bit_depth: Some(8),
+                    chroma: Some(ChromaSampling::Yuv420),
+                    width: None,
+                    height: None,
+                }],
+            });
+            configuration.save(&file).expect("save RGB input");
+            condor_cmd(&temp)
+                .env("PATH", "")
+                .args([
+                    "encode",
+                    "set",
+                    "input",
+                    "--decoder",
+                    "ffms2",
+                    "--filters",
+                    "resize:format=yuv420p",
+                ])
+                .assert()
+                .success();
+            assert_eq!(
+                serde_json::to_value(load(&file)).expect("saved CLI edit"),
+                serde_json::to_value(expected)
+                    .expect("root and separate reference configurations unchanged")
+            );
+            configuration.save(&file).expect("restore RGB input");
+            let disk = std::fs::read(&file).expect("snapshot");
+            for (args, message) in [
+                (vec!["encode", "set", "input", "--decoder", "ffms2"], "gbrp"),
+                (
+                    vec![
+                        "encode",
+                        "set",
+                        "input",
+                        "--decoder",
+                        "ffms2",
+                        "--filters",
+                        "resize:format=nv12",
+                    ],
+                    "nv12",
+                ),
+            ] {
+                let output = condor_cmd(&temp)
+                    .env("PATH", "")
+                    .args(args)
+                    .assert()
+                    .failure()
+                    .get_output()
+                    .clone();
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains(message),
+                    "{output:?}"
+                );
+                assert_eq!(std::fs::read(&file).expect("atomic saved bytes"), disk);
+            }
+        }
+        let mut entries = std::fs::read_dir(temp.path())
+            .expect("offline side effects")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        entries.sort();
+        assert_eq!(entries, ["condor.json", "logs"]);
+    }
+
     #[test]
     fn c08_filter_only_crud_preserves_override_identity_and_references_offline() {
         use andean_condor::models::input::{
@@ -511,7 +706,8 @@ mod tests {
     fn c08_native_effective_inputs_decode_literal_filtered_shapes() {
         use andean_condor::models::input::ImportMethod;
         use california_condor::{
-            commands::handlers::encode::configure_parallel_encoder, tui::open_input,
+            commands::DecoderMethod, commands::handlers::encode::configure_parallel_encoder,
+            tui::open_input,
         };
         use std::sync::{Arc, atomic::AtomicBool};
         let temp = tempfile::tempdir().expect("fixture");
@@ -561,18 +757,32 @@ mod tests {
             height: Some(8),
             format: Some(FFPixelFormat::YUV420P),
         }];
-        for case in ["existing-override", "new-override", "main-only"] {
+        for case in [
+            "existing-override",
+            "new-override",
+            "main-only",
+            "rgb-main-rebuild",
+            "rgb-override-rebuild",
+        ] {
             let mut configuration = original.clone();
             if case == "existing-override" {
                 configuration.condor.sequence_config.parallel_encoder.input =
                     Some(override_input.clone());
+            }
+            let rgb_rebuild = case.starts_with("rgb-");
+            if rgb_rebuild {
+                configuration.condor.input = c08_rgb_input(temp.path().join("root.mkv"));
+                if case == "rgb-override-rebuild" {
+                    configuration.condor.sequence_config.parallel_encoder.input =
+                        Some(c08_rgb_input(temp.path().join("override.mkv")));
+                }
             }
             let before = serde_json::to_value(&configuration.condor.input).expect("root reference");
             let path = temp.path().join("override.mkv");
             configure_parallel_encoder(
                 &mut configuration,
                 (case == "new-override").then_some(path.as_path()),
-                None,
+                rgb_rebuild.then_some(&DecoderMethod::FFMS2),
                 Some(&filters),
                 None,
                 None,
