@@ -510,6 +510,104 @@ mod tests {
     use super::{TargetQualityApp, TargetQualityState};
 
     #[test]
+    fn q15_backwards_recorded_pass_timestamps_do_not_supply_live_progress_time() {
+        use std::time::{Duration, Instant};
+
+        use andean_condor::{
+            core::sequence::{SequenceCompletion, SequenceStatus, Status},
+            models::sequence::target_quality::types::{ProbeStatistic, QualityMetric, QualityPass},
+        };
+        use ratatui::{Terminal, backend::TestBackend};
+
+        use crate::apps::TuiApp;
+
+        let started = Instant::now() - Duration::from_secs(10);
+        for completed_on in [30_000_u128, 10_000] {
+            let (clip, mut scenes) = crate::test_helpers::quality_scene_fixture();
+            for scene in &mut scenes {
+                for pass in &mut scene.sequence_data.target_quality.passes {
+                    pass.started_on = 20_000;
+                    pass.completed_on = completed_on;
+                    let json = serde_json::to_value(&pass).expect("saved probe pass");
+                    assert_eq!(
+                        json,
+                        serde_json::json!({
+                            "quantizer": pass.quantizer,
+                            "scores": pass.scores,
+                            "bitrate": 123.0,
+                            "started_on": 20_000,
+                            "completed_on": completed_on
+                        })
+                    );
+                    let restored: QualityPass =
+                        serde_json::from_value(json).expect("restore saved probe pass");
+                    assert_eq!(
+                        (restored.started_on, restored.completed_on),
+                        (20_000, completed_on)
+                    );
+                    *pass = restored;
+                }
+            }
+            let mut app = TargetQualityApp::new(
+                clip,
+                scenes,
+                Default::default(),
+                ProbeStatistic::Mean,
+                &QualityMetric::default(),
+            )
+            .expect("recorded scores remain valid after wall-clock rollback");
+            let mut snapshot = app.cached_state.clone();
+            assert!(TargetQualityApp::map_progress(
+                SequenceStatus::Whole(Status::Processing {
+                    id: "Encode".into(),
+                    completion: SequenceCompletion::Frames {
+                        completed: 5,
+                        total: 9,
+                    },
+                }),
+                &mut snapshot,
+            ));
+            app.on_snapshot(snapshot);
+            app.pass_started = started;
+
+            // Compare the live bar's inputs, leaving the separate completed-pass clock contract alone.
+            assert_eq!(
+                (
+                    app.pass_started,
+                    app.pass_completed,
+                    TargetQualityApp::completed(&app.cached_state),
+                    app.cached_state.total_frames,
+                ),
+                (started, None, 5, 9)
+            );
+            let recorded = &app.cached_state.quality_passes[&0][0];
+            assert_eq!(
+                (recorded.quantizer, recorded.score, recorded.bitrate),
+                (20.0, 5.0, 123.0)
+            );
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+            terminal.draw(|frame| app.render(frame)).expect("render");
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            let fps = text
+                .split_once("5/9 Frames (")
+                .expect("live probe progress label")
+                .1
+                .split_once("FPS)")
+                .expect("FPS label")
+                .0
+                .parse::<f64>()
+                .expect("numeric FPS");
+            assert!(fps.is_finite() && fps > 0.0, "{text}");
+        }
+    }
+
+    #[test]
     fn m27_saved_tq_constructor_and_live_mapper_use_actual_metric() {
         use crate::apps::TuiApp;
         use andean_condor::{

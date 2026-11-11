@@ -534,6 +534,76 @@ mod tests {
     }
 
     #[test]
+    fn q15_backwards_saved_timestamps_preserve_metadata_not_live_progress_time() {
+        use std::time::{Duration, Instant};
+
+        use andean_condor::models::sequence::parallel_encoder::ParallelEncoderData;
+
+        let started = Instant::now() - Duration::from_secs(10);
+        for completed_on in [30_000_u128, 10_000] {
+            let data = ParallelEncoderData {
+                started_on: Some(20_000),
+                completed_on: Some(completed_on),
+                bytes: Some(1000),
+            };
+            let json = serde_json::to_value(&data).expect("saved parallel metadata");
+            assert_eq!(
+                json,
+                serde_json::json!({
+                    "started_on": 20_000,
+                    "completed_on": completed_on,
+                    "bytes": 1000
+                })
+            );
+            let restored: ParallelEncoderData =
+                serde_json::from_value(json).expect("restore saved parallel metadata");
+            assert_eq!(
+                (restored.started_on, restored.completed_on),
+                (Some(20_000), Some(completed_on))
+            );
+            let mut scenes = scenes();
+            scenes.get_mut(&0).expect("scene").1.sequence_data.parallel_encoder = restored;
+            let mut app = ParallelEncoderApp::new(2, encoder(), scenes, clip_info());
+            app.started = started;
+            assert!(ParallelEncoderApp::map_progress(
+                progress(0, (1, 1), 50),
+                app.cached_state_mut()
+            ));
+            app.cached_state.active_encoders.get_mut(&0).expect("active scene").started = started;
+
+            // Compare the real consumers' clock/work inputs, not samples of a ticking FPS.
+            assert_eq!(
+                (
+                    app.started,
+                    app.cached_state.active_encoders[&0].started,
+                    app.cached_state.scenes[&0].0,
+                    app.total_frames,
+                    app.cached_state.initial_frames,
+                ),
+                (started, started, 50, 400, 0)
+            );
+            let saved = &app.cached_state.scenes[&0].1.sequence_data.parallel_encoder;
+            assert_eq!(
+                (saved.started_on, saved.completed_on),
+                (Some(20_000), Some(completed_on))
+            );
+            let text = screen(&app);
+            for label in ["50/100 Frames (", "50/400 Frames ("] {
+                let fps = text
+                    .split_once(label)
+                    .expect("worker and overall progress labels")
+                    .1
+                    .split_once("FPS)")
+                    .expect("FPS label")
+                    .0
+                    .parse::<f64>()
+                    .expect("numeric FPS");
+                assert!(fps.is_finite() && fps > 0.0, "{text}");
+            }
+        }
+    }
+
+    #[test]
     fn e16_first_event_pass_order_and_retry_reset() {
         let mut scenes = scenes();
         *scenes.get_mut(&1).expect("scene").1.encoder.passes_mut().expect("passes") =
