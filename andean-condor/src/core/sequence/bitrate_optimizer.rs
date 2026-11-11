@@ -326,12 +326,71 @@ mod tests {
         let expected = serde_json::to_value(expected).expect("expected scenes");
         let (_, warnings) = run(&mut condor).expect("selected measurements");
         assert!(warnings.is_empty());
-        run(&mut condor).expect("unchanged repeat does not save again");
+        run(&mut condor).expect("equal-bitrate remainder does not save again");
         assert_eq!(
             serde_json::to_value(&condor.scenes).expect("scenes"),
             expected
         );
         assert_eq!(&*saved.borrow(), &[expected]);
+    }
+
+    #[test]
+    fn q10_standalone_repeats_recompute_eligible_scenes_and_adjust_additional_outliers() {
+        let scenes = [(20.0, 100.0), (30.0, 100.0), (10.0, 1000.0), (5.0, 500.0)]
+            .into_iter()
+            .map(|(q, b)| scene(EncoderBase::AOM, q, vec![measured(q, b)]))
+            .collect();
+        let (mut condor, saved) = fixture(scenes);
+        let mut expected = condor.scenes.clone();
+        let mut expected_saves = vec![];
+        // Missing q16/q18 measurements shrink the next run's eligible population.
+        for (index, (quantizers, changed)) in [
+            ([20.0, 30.0, 16.0, 5.0], true),
+            ([20.0, 30.0, 16.0, 18.0], true),
+            ([20.0, 30.0, 16.0, 18.0], false),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (scene, q) in expected.iter_mut().zip(quantizers) {
+                scene.encoder.set_quantizer(q);
+            }
+            let (_, warnings) = run(&mut condor).expect("standalone repeat");
+            assert!(warnings.is_empty());
+            let observed: Vec<_> =
+                condor.scenes.iter().map(|scene| scene.encoder.quantizer()).collect();
+            eprintln!(
+                "Q10 standalone run {}: q={observed:?}, saves={}",
+                index + 1,
+                saved.borrow().len()
+            );
+            let snapshot = serde_json::to_value(&expected).expect("expected scenes");
+            assert_eq!(
+                serde_json::to_value(&condor.scenes).expect("scenes and unchanged histories"),
+                snapshot
+            );
+            if changed {
+                expected_saves.push(snapshot);
+            }
+            assert_eq!(&*saved.borrow(), &expected_saves);
+        }
+    }
+
+    #[test]
+    fn q10_bitrate_exactly_at_cutoff_is_unchanged_without_save() {
+        let scenes = [(20.0, 0.0), (30.0, 2.0)]
+            .into_iter()
+            .map(|(q, b)| scene(EncoderBase::AOM, q, vec![measured(q, b)]))
+            .collect();
+        let (mut condor, saved) = fixture(scenes);
+        let before = serde_json::to_value(&condor.scenes).expect("snapshot");
+        // Mean 1 + population SD 1 gives cutoff 2; only strictly higher qualifies.
+        run(&mut condor).expect("exact cutoff");
+        assert_eq!(
+            serde_json::to_value(&condor.scenes).expect("unchanged"),
+            before
+        );
+        assert!(saved.borrow().is_empty());
     }
 
     #[test]
