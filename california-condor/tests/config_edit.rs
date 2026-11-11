@@ -17,6 +17,301 @@ mod tests {
 
     use super::*;
 
+    struct JobChild(std::process::Child);
+
+    impl Drop for JobChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn wait_for_marker(child: &mut JobChild, marker: &std::path::Path) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !marker.exists() {
+            assert!(
+                child.0.try_wait().expect("child status").is_none(),
+                "child exited before {}",
+                marker.display()
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {}",
+                marker.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn c11_cli_job_contention_survives_save_and_crash_without_lost_edits() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let config = root_edit_fixture(temp.path());
+        let file = temp.path().join("job.json");
+        config.save(&file).expect("job");
+        config.save(&temp.path().join("job.other")).expect("independent extension");
+        let literal = |name: &str| serde_json::to_string(&temp.path().join(name)).expect("literal");
+        std::fs::write(temp.path().join("a.vpy"), format!(
+            "from pathlib import Path\nimport time\nPath({}).write_text('entered')\ndeadline=time.monotonic()+45\nwhile not Path({}).exists():\n    if time.monotonic()>deadline: raise RuntimeError('C11 watchdog')\n    time.sleep(0.01)\nraise RuntimeError('C11 released without encoding')\n", literal("entered"), literal("release")
+        )).expect("bounded native pause");
+        let original = std::fs::read(&file).expect("original");
+        let mut child = JobChild(
+            std::process::Command::new(env!("CARGO_BIN_EXE_condor"))
+                .current_dir(temp.path())
+                .args(["--config-file", "job.json", "encode", "-w", "2"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::fs::File::create(temp.path().join("holder.log")).expect("child log"))
+                .spawn()
+                .expect("real CLI holder"),
+        );
+        wait_for_marker(&mut child, &temp.path().join("entered"));
+        let saved = std::fs::read(&file).expect("real handler save before native open");
+        assert_ne!(saved, original);
+        assert_eq!(
+            load(&file).condor.sequence_config.parallel_encoder.workers,
+            Some(2)
+        );
+        let mut aliases = vec!["job.json", "./job.json", "child/../job.json"];
+        std::fs::create_dir_all(temp.path().join("child")).expect("lexical alias");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("job.json", temp.path().join("alias.json"))
+                .expect("file alias");
+            std::os::unix::fs::symlink(".", temp.path().join("parent-alias"))
+                .expect("parent alias");
+            aliases.extend(["alias.json", "parent-alias/job.json"]);
+        }
+        let mut failures = vec![];
+        for alias in aliases {
+            for action in [
+                vec!["init", "set", "workers", "7"],
+                vec!["scenes", "0", "set", "end", "10"],
+                vec!["init", "info"],
+            ] {
+                let output = condor_cmd(&temp)
+                    .timeout(std::time::Duration::from_secs(5))
+                    .args(["--config-file", alias])
+                    .args(&action)
+                    .output()
+                    .expect("contender CLI");
+                let message = String::from_utf8_lossy(&output.stderr);
+                if output.status.code() != Some(1)
+                    || !message.contains("another process")
+                    || !message.contains("job.json.lock")
+                {
+                    failures.push(format!(
+                        "{alias}/{action:?}: expected busy before load/save, got {:?}: {message}",
+                        output.status
+                    ));
+                }
+            }
+        }
+        condor_cmd(&temp)
+            .timeout(std::time::Duration::from_secs(5))
+            .args(["--config-file", "job.other", "init", "set", "workers", "3"])
+            .assert()
+            .success();
+        assert_eq!(
+            load(&temp.path().join("job.other"))
+                .condor
+                .sequence_config
+                .parallel_encoder
+                .workers,
+            Some(3)
+        );
+        if std::fs::read(&file).expect("contended bytes") != saved {
+            failures.push("contender changed the holder's saved job".into());
+        }
+        child.0.kill().expect("crash holder");
+        child.0.wait().expect("reap holder");
+        condor_cmd(&temp)
+            .args(["--config-file", "job.json", "scenes", "0", "set", "end", "11"])
+            .assert()
+            .success();
+        let recovered = load(&file);
+        assert_eq!(
+            recovered.condor.sequence_config.parallel_encoder.workers,
+            Some(2),
+            "holder edit retained after crash"
+        );
+        assert_eq!(recovered.condor.scenes[0].end_frame, 11);
+        assert!(
+            temp.path().join("job.json.lock").exists(),
+            "crash release does not delete stable sidecar"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn c11_save_preserves_caller_owned_fixed_temp_sentinel() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let config = root_edit_fixture(temp.path());
+        let file = temp.path().join("job.json");
+        let sentinel = temp.path().join("job.temp");
+        std::fs::write(&sentinel, b"caller-owned staging sentinel").expect("sentinel");
+        config.save(&file).expect("actual Configuration save");
+        assert_eq!(
+            std::fs::read(&sentinel).expect("must not consume caller temp"),
+            b"caller-owned staging sentinel"
+        );
+        assert_eq!(load(&file).input, config.input);
+        let mut names = std::fs::read_dir(temp.path())
+            .expect("fixture")
+            .map(|e| e.expect("entry").file_name())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(
+            names,
+            ["a.vpy", "b.vpy", "job.json", "job.temp"].map(std::ffi::OsString::from)
+        );
+    }
+
+    #[test]
+    fn c11_guard_admits_before_create_load_and_source_but_not_offline_controls() {
+        use california_condor::configuration::JobLock;
+        let temp = tempfile::tempdir().expect("fixture");
+        let config = root_edit_fixture(temp.path());
+        let file = temp.path().join("job.json");
+        let guard = JobLock::acquire(&file).expect("direct API guard before first load");
+        for route in [
+            vec!["init", "a.vpy", "out.mkv"],
+            vec!["-i", "a.vpy", "-o", "out.mkv"],
+            vec!["encode"],
+            vec!["init", "info"],
+            vec!["zone", "0,12,crf=20"],
+            vec!["scenes"],
+        ] {
+            let result = condor_cmd(&temp)
+                .timeout(std::time::Duration::from_secs(5))
+                .args(["--config-file", "job.json"])
+                .args(&route)
+                .output()
+                .expect("CLI");
+            assert_eq!(result.status.code(), Some(1), "{route:?}");
+            let message = String::from_utf8_lossy(&result.stderr);
+            assert!(
+                message.contains("another process") && message.contains("job.json.lock"),
+                "{route:?}: {message}"
+            );
+            assert!(!file.exists());
+            assert!(!temp.path().join("source-opened").exists());
+        }
+        // A corrupt file proves busy admission precedes parsing, not just writes.
+        std::fs::write(&file, b"not JSON").expect("corrupt config");
+        let result = condor_cmd(&temp)
+            .args(["--config-file", "job.json", "init", "info"])
+            .output()
+            .expect("info CLI");
+        assert!(String::from_utf8_lossy(&result.stderr).contains("another process"));
+        assert_eq!(std::fs::read(&file).expect("bytes"), b"not JSON");
+        drop(guard);
+        config.save(&file).expect("fresh valid snapshot after release");
+        let guard = JobLock::acquire(&file).expect("reacquire despite existing sidecar");
+        for args in [vec!["--help"], vec!["--version"], vec!["clean"]] {
+            let result = condor_cmd(&temp)
+                .args(["--config-file", "job.json"])
+                .args(&args)
+                .output()
+                .expect("offline control");
+            let message = String::from_utf8_lossy(&result.stderr);
+            assert!(!message.contains("another process"), "{args:?}: {message}");
+            assert_eq!(result.status.success(), args[0] != "clean");
+        }
+        let invalid = condor_cmd(&temp)
+            .args(["--config-file", "job.json", "-w", "8", "encode"])
+            .output()
+            .expect("invalid placement");
+        assert_eq!(invalid.status.code(), Some(2));
+        assert!(!String::from_utf8_lossy(&invalid.stderr).contains("another process"));
+        assert!(!temp.path().join("source-opened").exists());
+        drop(guard);
+    }
+
+    #[test]
+    fn c11_cli_guard_survives_real_zoner_callback_until_run_returns() {
+        use andean_condor::models::sequence::noise_detector::NoiseDetectorConfig;
+        use california_condor::{
+            configuration::Configuration,
+            zoner::{ZonerConfig, parse_zone},
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut config = root_edit_fixture(temp.path());
+        config.condor.sequence_config.zoner = Some(ZonerConfig {
+            zones: vec![parse_zone("0 12 svt-av1 \"--preset 3\"").expect("zone")],
+        });
+        let literal = |name: &str| serde_json::to_string(&temp.path().join(name)).expect("literal");
+        std::fs::write(temp.path().join("b.vpy"), format!(
+            "from pathlib import Path\nimport time\nPath({}).write_text('after Zoner callback')\ndeadline=time.monotonic()+45\nwhile not Path({}).exists():\n    if time.monotonic()>deadline: raise RuntimeError('C11 watchdog')\n    time.sleep(0.01)\nraise RuntimeError('C11 intentional stage abort before processing')\n", literal("entered"), literal("release")
+        )).expect("pause next native stage, never run noise detection/benchmark/encoding");
+        config.condor.sequence_config.noise_detector = Some(NoiseDetectorConfig {
+            input: Some(
+                Configuration::new_input_model(&temp.path().join("b.vpy"), None, None, None, None)
+                    .expect("stage model"),
+            ),
+            reference_filters: vec![],
+            denoised_filters: vec![],
+        });
+        let file = temp.path().join("job.json");
+        config.save(&file).expect("job");
+        let mut child = JobChild(
+            std::process::Command::new(env!("CARGO_BIN_EXE_condor"))
+                .current_dir(temp.path())
+                .args(["--config-file", "job.json", "--skip-scd", "-w", "2"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::fs::File::create(temp.path().join("holder.log")).expect("log"))
+                .spawn()
+                .expect("root CLI"),
+        );
+        wait_for_marker(&mut child, &temp.path().join("entered"));
+        let snapshot = std::fs::read(&file).expect("callback saved bytes");
+        assert!(
+            load(&file).condor.scenes[0].sequence_data.zoner.zoned,
+            "real instantiate_saved_condor callback finished"
+        );
+        let result = condor_cmd(&temp)
+            .timeout(std::time::Duration::from_secs(5))
+            .args(["--config-file", "job.json", "init", "set", "workers", "7"])
+            .output()
+            .expect("contender");
+        assert_eq!(result.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&result.stderr).contains("another process"));
+        assert_eq!(
+            std::fs::read(&file).expect("unchanged callback snapshot"),
+            snapshot
+        );
+        std::fs::write(temp.path().join("release"), b"return").expect("release native stage");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.0.try_wait().expect("child status") {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "root run did not return"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert_eq!(status.code(), Some(1));
+        assert!(
+            std::fs::read_to_string(temp.path().join("holder.log"))
+                .expect("log")
+                .contains("C11 intentional stage abort")
+        );
+        condor_cmd(&temp)
+            .args(["--config-file", "job.json", "init", "set", "workers", "3"])
+            .assert()
+            .success();
+        let saved = load(&file);
+        assert_eq!(
+            saved.condor.sequence_config.parallel_encoder.workers,
+            Some(3)
+        );
+        assert!(
+            saved.condor.scenes[0].sequence_data.zoner.zoned,
+            "callback update retained after later edit"
+        );
+    }
+
     fn root_edit_fixture(
         directory: &std::path::Path,
     ) -> california_condor::configuration::Configuration {
@@ -2157,8 +2452,8 @@ mod tests {
         entries.sort();
         assert_eq!(
             entries,
-            ["blank.vpy", "condor.json", "configuration-only.mkv", "logs"],
-            "CLI logs are expected, source indexes are not"
+            ["blank.vpy", "condor.json", "condor.json.lock", "configuration-only.mkv", "logs"],
+            "CLI logs and the stable job sidecar are expected, source indexes are not"
         );
     }
 

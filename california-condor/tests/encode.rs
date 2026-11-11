@@ -268,7 +268,7 @@ mod tests {
             .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         entries.sort();
-        assert_eq!(entries, ["condor.json", "logs"]);
+        assert_eq!(entries, ["condor.json", "condor.json.lock", "logs"]);
     }
 
     #[test]
@@ -699,7 +699,7 @@ mod tests {
             .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         entries.sort();
-        assert_eq!(entries, ["condor.json", "logs"]);
+        assert_eq!(entries, ["condor.json", "condor.json.lock", "logs"]);
     }
 
     #[test]

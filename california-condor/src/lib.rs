@@ -1,3 +1,8 @@
+//! Direct Rust job transactions must acquire [`configuration::JobLock`] before
+//! loading, use its resolved path, and retain it through handlers and all `run_*`
+//! helpers (including persistence callbacks and joins). These low-level helpers
+//! do not lock or make stale snapshots safe. The CLI owns that outer lifetime.
+
 use std::{panic, path::Path, process};
 
 use andean_condor::core::Condor;
@@ -26,7 +31,7 @@ use crate::{
         help_text::process_command_tree,
         version::print_version,
     },
-    configuration::Configuration,
+    configuration::{Configuration, JobLock},
     logging::init_logging,
     tui::{
         run_benchmarker_tui, run_bitrate_optimizer_tui, run_noise_detector_tui,
@@ -82,7 +87,16 @@ fn run() -> anyhow::Result<()> {
     }
 
     let cwd = std::env::current_dir()?;
-    let config_path = cli.config_file;
+    // Help/version exit above; clean is deliberately offline. All other routes,
+    // including info/scene reads, share one coherent whole-job guard policy.
+    let job_lock = if matches!(cli.command, Some(Commands::Clean { .. })) {
+        None
+    } else {
+        Some(JobLock::acquire(
+            cli.config_file.as_deref().unwrap_or_else(|| Path::new(DEFAULT_CONFIG_PATH)),
+        )?)
+    };
+    let config_path = job_lock.as_ref().map(|guard| guard.path().to_path_buf());
     let logs = cli.logs.unwrap_or_else(|| cwd.join(DEFAULT_LOG_PATH));
     let set_logs = |log_path: &Path| {
         init_logging(

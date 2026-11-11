@@ -40,6 +40,7 @@ serde_json = "1.0.147"
 shlex = "2.0.1"
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2.0.17"
+tempfile = { workspace = true }
 tracing = { workspace = true }
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -76,7 +77,6 @@ screenshots = ["dep:ab_glyph", "dep:av-format"]
 assert_cmd = "2.1.1"
 av-format = "0.7"
 serial_test = "4.0"
-tempfile = { workspace = true }
 
 [lints.clippy]
 # Performance

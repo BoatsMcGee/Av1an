@@ -1,6 +1,8 @@
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    fs::{self, File, TryLockError},
+    io::{self, Write},
+    path::{Component, Path, PathBuf},
 };
 
 use andean_condor::{
@@ -47,7 +49,7 @@ use andean_condor::{
     },
     vapoursynth::{plugins::resize::Scaler, vapoursynth_filters::VapourSynthFilter},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -68,6 +70,122 @@ pub const CONFIGURATION_SCHEMA_URL: &str =
 #[inline]
 fn default_schema_url() -> String {
     option_env!("CONDOR_SCHEMA_URL").unwrap_or(CONFIGURATION_SCHEMA_URL).to_owned()
+}
+
+/// Exclusive, nonblocking whole-job guard for CLI and direct Rust callers.
+///
+/// Acquire before loading; use [`Self::path`] for all handlers, loads and saves,
+/// and retain through execution, persistence callbacks and worker joins. Low-level
+/// APIs do not acquire this guard or protect stale caller-provided snapshots.
+/// Closing the file (including process death) releases the OS lock. Never delete
+/// the persistent sidecar: doing so can split lock ownership across two inodes.
+/// Symlinks resolve to one target; separately named hardlinks are distinct jobs.
+#[derive(Debug)]
+pub struct JobLock {
+    _file: File,
+    config_path: PathBuf,
+}
+
+impl JobLock {
+    /// Resolve the selected config and try to lock its full-basename `.lock` sidecar.
+    /// Busy jobs and filesystem/unsupported-lock errors fail without loading a source.
+    pub fn acquire(path: &Path) -> Result<Self> {
+        let config_path = normalize_config_path(path)
+            .with_context(|| format!("normalizing job config `{}`", path.display()))?;
+        let mut name =
+            config_path.file_name().context("job config needs a filename")?.to_os_string();
+        name.push(".lock");
+        let lock_path = config_path.with_file_name(name);
+        let open = || -> io::Result<File> {
+            fs::create_dir_all(config_path.parent().expect("absolute config parent"))?;
+            File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+        };
+        let file = open().with_context(|| {
+            format!(
+                "opening job lock `{}` for config `{}`",
+                lock_path.display(),
+                config_path.display()
+            )
+        })?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self {
+                _file: file,
+                config_path,
+            }),
+            Err(TryLockError::WouldBlock) => anyhow::bail!(
+                "job config `{}` is busy: another process owns the job (lock `{}`); retry after it exits; do not delete the lock file",
+                config_path.display(),
+                lock_path.display()
+            ),
+            Err(TryLockError::Error(error)) => Err(error).with_context(|| {
+                format!(
+                    "locking job config `{}` with `{}`",
+                    config_path.display(),
+                    lock_path.display()
+                )
+            }),
+        }
+    }
+
+    /// Stable absolute target to use throughout the guarded transaction.
+    pub fn path(&self) -> &Path {
+        &self.config_path
+    }
+}
+
+// Resolve existing components before `..`, including a symlink parent of a new
+// config. Only NotFound permits a missing component; dangling symlinks fail closed.
+fn normalize_config_path(path: &Path) -> io::Result<PathBuf> {
+    let mut resolved = PathBuf::new();
+    for component in std::env::current_dir()?.join(path).components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => resolved.push(component),
+            Component::CurDir => (),
+            Component::Normal(_) | Component::ParentDir => {
+                match fs::metadata(&resolved) {
+                    Ok(meta) if !meta.is_dir() => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotADirectory,
+                            resolved.display().to_string(),
+                        ));
+                    },
+                    Ok(_) => (),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(error),
+                }
+                if component == Component::ParentDir {
+                    resolved.pop();
+                } else {
+                    resolved.push(component);
+                    match fs::symlink_metadata(&resolved) {
+                        Ok(_) => resolved = fs::canonicalize(&resolved)?,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                        Err(error) => return Err(error),
+                    }
+                }
+            },
+        }
+    }
+    Ok(resolved)
+}
+
+fn stage_config(buffer: &[u8], path: &Path) -> io::Result<tempfile::NamedTempFile> {
+    let directory = path.parent().expect("normalized config parent");
+    fs::create_dir_all(directory)?;
+    let mut staged = tempfile::NamedTempFile::new_in(directory)?;
+    staged.write_all(buffer)?;
+    staged.flush()?;
+    Ok(staged)
+}
+
+fn publish_config(staged: tempfile::NamedTempFile, path: &Path) -> io::Result<()> {
+    // PersistError owns the scratch file; dropping it cleans only that owned file.
+    staged.persist(path).map(|_| ()).map_err(|error| error.error)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -191,6 +309,8 @@ impl Configuration {
         Ok(configuration)
     }
 
+    /// Atomically save via an owned unique sibling; no fsync durability guarantee.
+    /// Callers must retain a [`JobLock`] acquired before loading the snapshot.
     #[inline]
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         Self::save_data(self, path)?;
@@ -220,6 +340,7 @@ impl Configuration {
         Ok(())
     }
 
+    /// See [`Self::save`]; this does not acquire or reacquire a job lock.
     #[inline]
     pub fn save_data(data: &Configuration, path: &Path) -> Result<(), ConfigError> {
         data.validate_target_quality().map_err(|error| {
@@ -232,16 +353,14 @@ impl Configuration {
         let formatter = serde_json::ser::PrettyFormatter::with_indent(b"    ");
         let mut serializer = serde_json::Serializer::with_formatter(&mut buffer, formatter);
         data.serialize(&mut serializer).map_err(ConfigError::Serialize)?;
-        let directory = path.parent();
-        if let Some(directory) = directory {
-            std::fs::create_dir_all(directory).map_err(ConfigError::Save)?;
-        }
-        let temp_path = path.with_extension("temp");
-        std::fs::write(&temp_path, &buffer).map_err(ConfigError::Save)?;
-        std::fs::rename(&temp_path, path).map_err(ConfigError::Save)?;
+        let path = normalize_config_path(path).map_err(ConfigError::Save)?;
+        let staged = stage_config(&buffer, &path).map_err(ConfigError::Save)?;
+        publish_config(staged, &path).map_err(ConfigError::Save)?;
         Ok(())
     }
 
+    /// Read an atomic snapshot. For an edit/run/save transaction, acquire a
+    /// [`JobLock`] first and retain it until all work and callbacks have joined.
     #[inline]
     pub fn load(config_path: &Path) -> Result<Option<Configuration>, ConfigError> {
         if !config_path.exists() {
@@ -646,4 +765,275 @@ pub enum ConfigError {
     Serialize(#[from] serde_json::Error),
     #[error("Failed to save config file: {0}")]
     Save(#[from] std::io::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        process::{Child, Command, Stdio},
+        time::{Duration, Instant},
+    };
+
+    fn fixture(directory: &Path) -> Configuration {
+        use crate::test_helpers::{TestVideo, default_config};
+        let source = directory.join("source.vpy");
+        fs::write(&source, "import vapoursynth as vs\nvs.core.std.BlankClip(width=32,height=16,length=2,format=vs.YUV420P8).set_output()\n").expect("tiny native source");
+        let video = TestVideo {
+            path: source.clone(),
+            width: 32,
+            height: 16,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        let mut config =
+            default_config(&video, &directory.join("out.mkv"), &directory.join("work"));
+        config.condor.input = Configuration::new_input_model(&source, None, None, None, None)
+            .expect("script model without native open");
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        config
+    }
+
+    struct Reap(Child);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn wait_until(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !ready() {
+            assert!(
+                Instant::now() < deadline,
+                "C11 child coordination timed out"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn c11_callback_child() {
+        let Some(directory) = std::env::var_os("CONDOR_C11_CHILD") else {
+            return;
+        };
+        let directory = PathBuf::from(directory);
+        let guard =
+            JobLock::acquire(&directory.join("job.json")).expect("caller-held guard before load");
+        let mut config = Configuration::load(guard.path()).expect("load").expect("config");
+        config.schema = "C11 callback snapshot".into();
+        let path = guard.path().to_path_buf();
+        // Native state is created and dropped on its worker, never shared across threads.
+        let worker = std::thread::spawn(move || {
+            let condor = crate::instantiate_saved_condor(&config, &path)
+                .expect("actual production callback");
+            condor.save().expect("real callback publication");
+            fs::write(directory.join("entered"), b"saved").expect("ready");
+            wait_until(|| directory.join("release").exists());
+            condor.save().expect("callback before worker exits");
+        });
+        worker.join().expect("join while caller still holds guard");
+        drop(guard);
+    }
+
+    #[test]
+    fn c11_direct_guard_covers_real_callback_and_join() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let config = fixture(temp.path());
+        let file = temp.path().join("job.json");
+        config.save(&file).expect("initial");
+        #[cfg(unix)]
+        let before = {
+            use std::os::unix::fs::MetadataExt;
+            fs::metadata(&file).expect("inode").ino()
+        };
+        let mut child = Reap(
+            Command::new(std::env::current_exe().expect("test executable"))
+                .current_dir(temp.path())
+                .args(["--exact", "configuration::tests::c11_callback_child", "--nocapture"])
+                .env("CONDOR_C11_CHILD", temp.path())
+                .stdout(Stdio::null())
+                .stderr(File::create(temp.path().join("child.log")).expect("log"))
+                .spawn()
+                .expect("callback child"),
+        );
+        wait_until(|| {
+            assert!(
+                child.0.try_wait().expect("status").is_none(),
+                "callback child exited before ready"
+            );
+            temp.path().join("entered").exists()
+        });
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_ne!(fs::metadata(&file).expect("replaced inode").ino(), before);
+        }
+        assert_eq!(
+            Configuration::load(&file).expect("snapshot").expect("saved").schema,
+            "C11 callback snapshot"
+        );
+        let error = JobLock::acquire(&file).expect_err("busy after callback while joining");
+        assert!(error.to_string().contains("another process"), "{error:#}");
+        let independent =
+            JobLock::acquire(&temp.path().join("job.other")).expect("full basename independence");
+        drop(independent);
+        fs::write(temp.path().join("release"), b"join").expect("release");
+        wait_until(|| child.0.try_wait().expect("status").is_some());
+        assert!(child.0.wait().expect("reap").success());
+        let guard = JobLock::acquire(&file).expect("normal return releases persistent sidecar");
+        assert_eq!(
+            Configuration::load(guard.path()).expect("snapshot").expect("saved").schema,
+            "C11 callback snapshot"
+        );
+    }
+
+    #[test]
+    fn c11_unique_staging_and_failed_publication_preserve_original_bytes() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let config = fixture(temp.path());
+        let file = temp.path().join("job.json");
+        config.save(&file).expect("initial config");
+        let original = fs::read(&file).expect("snapshot");
+        std::thread::scope(|scope| {
+            // Both owned files remain alive regardless of which staging call runs first.
+            let first =
+                scope.spawn(|| stage_config(b"first", &file).expect("first production staging"));
+            let second = stage_config(b"second", &file).expect("second production staging");
+            let first = first.join().expect("stage thread");
+            assert_ne!(first.path(), second.path());
+            assert_eq!(fs::read(first.path()).expect("first staged"), b"first");
+            assert_eq!(fs::read(second.path()).expect("second staged"), b"second");
+            fs::remove_file(first.path())
+                .expect("force native publish failure without chmod assumptions");
+            assert_eq!(
+                publish_config(first, &file).expect_err("missing staged file").kind(),
+                io::ErrorKind::NotFound
+            );
+            assert_eq!(fs::read(&file).expect("original preserved"), original);
+            assert!(
+                second.path().exists(),
+                "failure only cleans its owned staging"
+            );
+        });
+        let mut invalid = config;
+        invalid.condor.sequence_config.parallel_encoder.max_tries = 0;
+        assert!(invalid.save(&file).is_err(), "validation before staging");
+        assert_eq!(fs::read(&file).expect("unchanged JSON"), original);
+        invalid.condor.sequence_config.parallel_encoder.max_tries = 1;
+        invalid.condor.scenes[0].sequence_data.noise_detection = Some(NoiseDetectorData {
+            noise: 1.0,
+            luminance: 1.0,
+            created_on: std::time::SystemTime::UNIX_EPOCH - Duration::from_secs(1),
+        });
+        assert!(
+            matches!(invalid.save(&file), Err(ConfigError::Serialize(_))),
+            "real serialization failure before staging"
+        );
+        assert_eq!(
+            fs::read(&file).expect("serialization preserves original bytes"),
+            original
+        );
+        assert_eq!(
+            fs::read_dir(temp.path()).expect("owned temps cleaned").count(),
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c11_symlink_admission_stays_coherent_after_saves_and_for_new_configs() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().expect("fixture");
+        let base = fs::canonicalize(temp.path()).expect("base");
+        let config = fixture(&base);
+        fs::create_dir_all(base.join("real/child")).expect("parent");
+        symlink("real/child", base.join("alias-parent")).expect("parent alias");
+        let file = base.join("real/job.json");
+        let guard = JobLock::acquire(&base.join("alias-parent/../job.json"))
+            .expect("new path through symlink and dotdot");
+        assert_eq!(guard.path(), file);
+        config.save(guard.path()).expect("save under guard");
+        symlink("real/job.json", base.join("alias.json")).expect("file alias");
+        for alias in ["alias.json", "real/./job.json", "alias-parent/../job.json"] {
+            assert!(
+                JobLock::acquire(&base.join(alias))
+                    .expect_err("same target")
+                    .to_string()
+                    .contains("another process")
+            );
+            config.save(&base.join(alias)).expect("low-level saves resolve same target");
+            assert!(
+                JobLock::acquire(&base.join(alias)).is_err(),
+                "save must not split identity"
+            );
+        }
+        assert!(
+            fs::symlink_metadata(base.join("alias.json"))
+                .expect("alias retained")
+                .is_symlink()
+        );
+        drop(guard);
+        let guard = JobLock::acquire(&base.join("alias.json")).expect("reopen same sidecar");
+        assert_eq!(guard.path(), file);
+    }
+
+    #[test]
+    fn c11_lock_open_errors_fail_closed_with_context() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let file = temp.path().join("job.json");
+        fs::create_dir_all(temp.path().join("job.json.lock"))
+            .expect("directory blocks sidecar open");
+        let error = JobLock::acquire(&file).expect_err("no unprotected fallback");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("opening job lock")
+                && message.contains("job.json.lock")
+                && message.contains("job.json"),
+            "{message}"
+        );
+        assert!(!file.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c11_lock_permission_errors_use_actual_open_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("fixture");
+        let file = temp.path().join("job.json");
+        let sidecar = temp.path().join("job.json.lock");
+        fs::write(&sidecar, b"").expect("persistent sidecar");
+        fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o000)).expect("deny access");
+        let probe = File::options().read(true).write(true).open(&sidecar);
+        let result = JobLock::acquire(&file);
+        fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o600))
+            .expect("restore before assertions");
+        match probe {
+            Err(error) => {
+                assert_eq!(
+                    error.kind(),
+                    io::ErrorKind::PermissionDenied,
+                    "actual open probe"
+                );
+                let error = result.expect_err("denied opens cannot fall back");
+                assert!(format!("{error:#}").contains("job.json.lock"));
+                assert!(error.chain().any(|cause| {
+                    cause
+                        .downcast_ref::<io::Error>()
+                        .is_some_and(|error| error.kind() == io::ErrorKind::PermissionDenied)
+                }));
+                eprintln!("C11 actual sidecar open denied; contextual refusal proved");
+            },
+            Ok(_) => {
+                drop(result.expect("actual open allowed; kernel locking still required"));
+                eprintln!(
+                    "C11 chmod did not deny actual sidecar open; permission-denial proof unavailable on this host"
+                );
+            },
+        }
+        assert!(!file.exists());
+    }
 }

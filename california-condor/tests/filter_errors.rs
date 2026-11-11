@@ -73,7 +73,13 @@ mod tests {
         entries.sort();
         assert_eq!(
             entries,
-            ["blank.vpy", "condor.json", "logs", "must-not-be-decoded.mkv"]
+            [
+                "blank.vpy",
+                "condor.json",
+                "condor.json.lock",
+                "logs",
+                "must-not-be-decoded.mkv"
+            ]
         );
     }
 

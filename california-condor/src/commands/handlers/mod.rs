@@ -35,6 +35,9 @@ pub mod start;
 pub mod target_quality;
 pub mod zone;
 
+/// Loads a snapshot without locking. Direct transaction callers must acquire
+/// [`crate::configuration::JobLock`] before this call, pass its resolved path,
+/// and retain it through handler edits, execution, save callbacks and joins.
 pub fn load_configuration(config_path: Option<&Path>) -> Result<(Configuration, PathBuf)> {
     if let Some(config_path) = config_path
         && !config_path.exists()

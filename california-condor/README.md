@@ -95,6 +95,45 @@ $ condor \
 
 See [condor](https://rust-av.github.io/Av1an/commands/condor.html) for all full-run flags, [configuration](https://rust-av.github.io/Av1an/configuration.html) for global flags and `condor.json` validation, [types](https://rust-av.github.io/Av1an/types.html) for Decoder, Encoder, Filters, and other complex types, and the [guide](https://rust-av.github.io/Av1an/guide.html) for step ordering.
 
+### Concurrent jobs and atomic configuration saves
+
+Every job command, including configuration/scene edits and `info` reads, takes a
+nonblocking OS advisory lock before loading the configuration and keeps it through
+execution, save callbacks and worker joins. A busy-job error names the selected
+configuration and its lock; retry after the other process exits. Help, version,
+and the unavailable `clean` command do not acquire a job lock.
+
+The stable sidecar uses the full filename: `job.json.lock` and `job.other.lock`
+are independent. The empty sidecar intentionally remains after exit or a crash;
+its existence does **not** mean busy. **Do not delete it to clear a lock**: the OS
+releases ownership when the process closes/exits, including a forced termination.
+Separate configurations can run concurrently, but still need distinct work and
+output paths. Symlink aliases (including existing symlink parents for new files)
+resolve to one configuration target. Separately named hardlinks are not unified;
+use one configuration pathname per job. Do not retarget aliases or replace/delete
+sidecars while jobs are active. Lock/open/unsupported-filesystem errors refuse the
+transaction rather than falling back to unprotected writes.
+
+Saves validate and serialize before staging, then write/flush an exclusively owned,
+unique sibling temporary file and atomically replace the configuration. Failed
+publication leaves the original bytes intact and cleans only the owned temporary
+file; a caller's old fixed `.temp` file is not reused. This is atomic publication,
+not an fsync/power-loss durability guarantee.
+
+Direct Rust callers must acquire `configuration::JobLock` **before** loading and
+use `guard.path()` for loads, handlers and saves. Retain the guard through edits,
+public `run_*` helpers, all callbacks and joins. These APIs do not acquire a lock
+themselves; individually atomic saves cannot protect an already stale snapshot.
+
+```rust,ignore
+let guard = california_condor::configuration::JobLock::acquire(path)?;
+let (mut config, save_file) =
+    california_condor::commands::handlers::load_configuration(Some(guard.path()))?;
+config.condor.sequence_config.parallel_encoder.workers = Some(2);
+config.save(&save_file)?;
+// Keep guard alive if calling run_encoder(&config, &save_file), too.
+```
+
 ## Gallery
 
 ![[condor](./media/condor.avif)](./media/condor-small.avif) | ![detect-scenes](./media/detect-scenes-small.avif) |
