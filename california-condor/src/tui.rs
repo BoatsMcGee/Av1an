@@ -35,6 +35,7 @@ use crate::{
         target_quality::TargetQualityApp,
     },
     configuration::{CliSequenceConfig, CliSequenceData},
+    interrupt::Interrupt,
 };
 
 #[derive(Debug, ThisError)]
@@ -97,7 +98,7 @@ pub(crate) fn finish_stage(
 /// Returns the input together with its probed clip info, so callers do not have
 /// to reopen it just to read the header.
 pub fn open_input(data: &InputModel, cancelled: &Arc<AtomicBool>) -> Result<(Input, ClipInfo)> {
-    // Compatibility entry point: OS/keyboard force escalation is owned by T06.
+    // Legacy flags are graceful-only; retain one explicit token for force support.
     open_input_cancel(
         data,
         &andean_condor::utils::cancellation::Cancellation::from(Arc::clone(cancelled)),
@@ -136,8 +137,10 @@ pub fn open_input_cancel(
 #[tracing::instrument(skip_all)]
 pub fn run_scene_detector_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     let initial_frames = condor.scenes.iter().fold(0, |acc, scene| {
         acc + (scene.end_frame - scene.start_frame) as u64
     });
@@ -153,7 +156,7 @@ pub fn run_scene_detector_tui(
     // its own, so re-opening the same model here would only index it twice.
     let (input, clip_info) = if let Some(configured) = &condor.sequence_config.scene_detector.input
     {
-        let (input, clip_info) = open_input(configured, &cancelled)?;
+        let (input, clip_info) = open_input_cancel(configured, &cancelled.token)?;
         (Some(input), clip_info)
     } else {
         (None, condor.input.clip_info()?)
@@ -210,7 +213,7 @@ pub fn run_scene_detector_tui(
 
         let mut combined = scd_input_data;
         combined.append_input_filters(&main_input_data)?;
-        let (scd_input, clip_info) = open_input(&combined, &cancelled)?;
+        let (scd_input, clip_info) = open_input_cancel(&combined, &cancelled.token)?;
 
         // Double check that the frames match
         if clip_info.num_frames != condor.input.clip_info()?.num_frames {
@@ -238,14 +241,15 @@ pub fn run_scene_detector_tui(
 
     debug!("Initializing Scene Detector"); // Input should already be indexed but just in case
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = scene_detector.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        scene_detector.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
 
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
     }
 
     debug!("Running Scene Detector");
-    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
         let mut scd_app = SceneDetectionApp::new(
@@ -257,22 +261,24 @@ pub fn run_scene_detector_tui(
         scd_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let executed = scene_detector.execute(condor, progress_tx, cancelled);
+    let executed = scene_detector.execute_cancel(condor, progress_tx, cancelled.token);
     finish_stage("Scene Detection", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
 pub fn run_noise_detector_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     debug!("Instantiating Noise Detector Input");
     let Some(noise_detector_config) = &condor.sequence_config.noise_detector else {
         return Ok(());
     };
 
     let (input, clip_info) = if let Some(input) = &noise_detector_config.input {
-        let (nd_input, clip_info) = open_input(input, &cancelled)?;
+        let (nd_input, clip_info) = open_input_cancel(input, &cancelled.token)?;
         (Some(nd_input), clip_info)
     } else {
         (None, condor.input.clip_info()?)
@@ -296,7 +302,8 @@ pub fn run_noise_detector_tui(
 
     debug!("Initializing Noise Detector"); // Input should already be indexed but just in case
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = noise_detector.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        noise_detector.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
 
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
@@ -304,22 +311,24 @@ pub fn run_noise_detector_tui(
 
     debug!("Running Noise Detector");
     let initial_scenes = condor.scenes.clone();
-    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
         let mut nd_app = NoiseDetectionApp::new(&initial_scenes, clip_info);
         nd_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let executed = noise_detector.execute(condor, progress_tx, cancelled);
+    let executed = noise_detector.execute_cancel(condor, progress_tx, cancelled.token);
     finish_stage("Noise Detection", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
 pub fn run_noise_scaler_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     let mut noise_scaler = NoiseScaler::default();
     debug!("Validating Noise Scaler");
     let (_, validation_warnings) = noise_scaler.validate(condor)?;
@@ -330,7 +339,8 @@ pub fn run_noise_scaler_tui(
 
     debug!("Initializing Noise Scaler");
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = noise_scaler.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        noise_scaler.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
 
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
@@ -338,7 +348,8 @@ pub fn run_noise_scaler_tui(
 
     debug!("Running Noise Scaler");
     let (progress_tx, _progress_rx) = std::sync::mpsc::channel();
-    let (_, processing_warnings) = noise_scaler.execute(condor, progress_tx, cancelled)?;
+    let (_, processing_warnings) =
+        noise_scaler.execute_cancel(condor, progress_tx, cancelled.token)?;
 
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
@@ -350,8 +361,10 @@ pub fn run_noise_scaler_tui(
 #[tracing::instrument(skip_all)]
 pub fn run_benchmarker_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     let mut benchmarker = Benchmarker::default();
 
     debug!("Validating Benchmarker"); // Input should alrady be validated but just in case
@@ -363,7 +376,8 @@ pub fn run_benchmarker_tui(
 
     debug!("Initializing Benchmarker"); // Input should already be indexed but just in case
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = benchmarker.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        benchmarker.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
 
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
@@ -373,14 +387,14 @@ pub fn run_benchmarker_tui(
     let encoder = condor.encoder.clone();
     let clip_info = condor.input.clip_info()?;
 
-    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
         let mut benchmarker_app = BenchmarkerApp::new(encoder, clip_info);
         benchmarker_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let executed = benchmarker.execute(condor, progress_tx, cancelled);
+    let executed = benchmarker.execute_cancel(condor, progress_tx, cancelled.token);
     finish_stage("Benchmarker", executed, || tui_handle.join())
 }
 
@@ -406,9 +420,10 @@ fn target_quality_app(
 #[tracing::instrument(skip_all)]
 pub fn run_target_quality_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
-    andean_condor::utils::cancellation::Cancellation::from(Arc::clone(&cancelled)).check()?;
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     if condor.scenes.is_empty() || condor.sequence_config.target_quality.is_none() {
         return Ok(());
     }
@@ -417,11 +432,11 @@ pub fn run_target_quality_tui(
     let (target_quality_input, clip_info) = if let Some(Some(input)) =
         &condor.sequence_config.target_quality.as_ref().map(|tq| tq.input.clone())
     {
-        let (tq_input, clip_info) = open_input(input, &cancelled)?;
+        let (tq_input, clip_info) = open_input_cancel(input, &cancelled.token)?;
         (Some(tq_input), clip_info)
     } else if let Some(pe_input) = &condor.sequence_config.parallel_encoder.input {
         debug!("Falling back to Parallel Encoder input");
-        let (tq_input, clip_info) = open_input(pe_input, &cancelled)?;
+        let (tq_input, clip_info) = open_input_cancel(pe_input, &cancelled.token)?;
         (Some(tq_input), clip_info)
     } else {
         (None, condor.input.clip_info()?)
@@ -432,7 +447,7 @@ pub fn run_target_quality_tui(
         .as_ref()
         .and_then(|tq| tq.metric_input.clone())
     {
-        Some(input) => Some(open_input(&input, &cancelled)?.0),
+        Some(input) => Some(open_input_cancel(&input, &cancelled.token)?.0),
         None => None,
     };
 
@@ -447,7 +462,8 @@ pub fn run_target_quality_tui(
 
     debug!("Initializing Target Quality"); // Input should already be indexed but just in case
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = target_quality.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        target_quality.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
 
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
@@ -465,21 +481,23 @@ pub fn run_target_quality_tui(
         &condor.encoder,
         target_quality_config,
     )?;
-    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
         tq_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let executed = target_quality.execute(condor, progress_tx, cancelled);
+    let executed = target_quality.execute_cancel(condor, progress_tx, cancelled.token);
     finish_stage("Target Quality", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
 pub fn run_quality_check_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     debug!("Instantiating Quality Check Input");
     let root = condor.input.as_data();
     let reference = andean_condor::models::sequence::provenance::quality_input(
@@ -489,7 +507,7 @@ pub fn run_quality_check_tui(
     );
     let (quality_check_input, clip_info) = if !std::ptr::eq(reference, &root) {
         let input = reference;
-        let (qc_input, clip_info) = open_input(input, &cancelled)?;
+        let (qc_input, clip_info) = open_input_cancel(input, &cancelled.token)?;
         (Some(qc_input), clip_info)
     } else {
         (None, condor.input.clip_info()?)
@@ -506,7 +524,8 @@ pub fn run_quality_check_tui(
 
     debug!("Initializing Quality Check");
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = quality_check.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        quality_check.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
 
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
@@ -521,22 +540,24 @@ pub fn run_quality_check_tui(
         .expect("quality_check is required");
     let metric = quality_check_config.metric.clone();
     let statistic = quality_check_config.statistic;
-    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
         let mut qc_app = QualityCheckApp::new(clip_info, &initial_scenes, metric, statistic)?;
         qc_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let executed = quality_check.execute(condor, progress_tx, cancelled);
+    let executed = quality_check.execute_cancel(condor, progress_tx, cancelled.token);
     finish_stage("Quality Check", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
 pub fn run_bitrate_optimizer_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     let mut bitrate_optimizer = BitrateOptimizer::default();
     debug!("Validating Bitrate Optimizer");
     let (_, validation_warnings) = bitrate_optimizer.validate(condor)?;
@@ -547,7 +568,8 @@ pub fn run_bitrate_optimizer_tui(
 
     debug!("Initializing Bitrate Optimizer");
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = bitrate_optimizer.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        bitrate_optimizer.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
 
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
@@ -555,7 +577,8 @@ pub fn run_bitrate_optimizer_tui(
 
     debug!("Running Bitrate Optimizer");
     let (progress_tx, _progress_rx) = std::sync::mpsc::channel();
-    let (_, processing_warnings) = bitrate_optimizer.execute(condor, progress_tx, cancelled)?;
+    let (_, processing_warnings) =
+        bitrate_optimizer.execute_cancel(condor, progress_tx, cancelled.token)?;
 
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
@@ -567,8 +590,10 @@ pub fn run_bitrate_optimizer_tui(
 #[tracing::instrument(skip_all)]
 pub fn run_speed_scaler_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     let mut convex_hull = SpeedScaler::default();
     debug!("Validating Convex Hull");
     let (_, validation_warnings) = convex_hull.validate(condor)?;
@@ -579,7 +604,8 @@ pub fn run_speed_scaler_tui(
 
     debug!("Initializing Convex Hull");
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = convex_hull.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        convex_hull.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
 
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
@@ -587,7 +613,8 @@ pub fn run_speed_scaler_tui(
 
     debug!("Running Convex Hull");
     let (progress_tx, _progress_rx) = std::sync::mpsc::channel();
-    let (_, processing_warnings) = convex_hull.execute(condor, progress_tx, cancelled)?;
+    let (_, processing_warnings) =
+        convex_hull.execute_cancel(condor, progress_tx, cancelled.token)?;
 
     for warning in processing_warnings.iter() {
         warn!("{}", warning);
@@ -599,12 +626,14 @@ pub fn run_speed_scaler_tui(
 #[tracing::instrument(skip_all)]
 pub fn run_parallel_encoder_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     debug!("Instantiating Parallel Encoder Input");
     let (parallel_encoder_input, clip_info) =
         if let Some(input) = &condor.sequence_config.parallel_encoder.input {
-            let (pe_input, clip_info) = open_input(input, &cancelled)?;
+            let (pe_input, clip_info) = open_input_cancel(input, &cancelled.token)?;
             (Some(pe_input), clip_info)
         } else {
             (None, condor.input.clip_info()?)
@@ -622,7 +651,8 @@ pub fn run_parallel_encoder_tui(
 
     debug!("Initializing Parallel Encoder"); // Input should already be indexed but just in case
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = parallel_encoder.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        parallel_encoder.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
 
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
@@ -661,22 +691,24 @@ pub fn run_parallel_encoder_tui(
         scenes_map.insert(index as u64, (scene_frames_encoded, scene.clone()));
     }
 
-    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
         let mut pe_app = ParallelEncoderApp::new(workers, encoder, scenes_map, clip_info);
         pe_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let executed = parallel_encoder.execute(condor, progress_tx, cancelled);
+    let executed = parallel_encoder.execute_cancel(condor, progress_tx, cancelled.token);
     finish_stage("Parallel Encoder", executed, || tui_handle.join())
 }
 
 #[tracing::instrument(skip_all)]
 pub fn run_scene_concatenator_tui(
     condor: &mut Condor<CliSequenceData, CliSequenceConfig>,
-    cancelled: Arc<AtomicBool>,
+    cancelled: impl Into<Interrupt>,
 ) -> Result<()> {
+    let cancelled = cancelled.into();
+    cancelled.token.check()?;
     let scenes_len = condor.scenes.len();
     let clip_info = condor.input.clip_info()?;
     let method = condor.sequence_config.scene_concatenator.method.clone();
@@ -688,20 +720,21 @@ pub fn run_scene_concatenator_tui(
 
     // Initialize - Input should be already indexed
     let (init_progress_tx, _init_progress_rx) = std::sync::mpsc::channel();
-    let (_, initialization_warnings) = scene_concatenator.initialize(condor, init_progress_tx)?;
+    let (_, initialization_warnings) =
+        scene_concatenator.initialize_cancel(condor, init_progress_tx, &cancelled.token)?;
     for warning in initialization_warnings.iter() {
         warn!("{}", warning);
     }
 
     debug!("Running Scene Concatenator");
-    let ctrlc_cancelled = Arc::clone(&cancelled);
+    let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
         let mut sc_app = SceneConcatenatorApp::new(clip_info, scenes_len, method);
         sc_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
-    let executed = scene_concatenator.execute(condor, progress_tx, cancelled);
+    let executed = scene_concatenator.execute_cancel(condor, progress_tx, cancelled.token);
     finish_stage("Scene Concatenator", executed, || tui_handle.join())
 }
 

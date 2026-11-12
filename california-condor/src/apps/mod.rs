@@ -447,7 +447,7 @@ pub trait TuiApp: Send + Sync + 'static {
     /// Mutable access to the `attempted_cancel` flag.
     fn attempted_cancel_mut(&mut self) -> &mut bool;
 
-    /// The message printed to a non-TTY stdout on the first Ctrl-C.
+    /// The notice sent to stderr/logging on the first Ctrl-C.
     fn cancel_message(&self) -> &'static str;
 
     /// Map a single [`SequenceStatus`] onto the shared state, returning `true`
@@ -520,20 +520,8 @@ pub trait TuiApp: Send + Sync + 'static {
         result.and(cleanup)
     }
 
-    /// End the process after a force quit.
-    ///
-    /// Exiting the process rather than just the UI loop is what makes the
-    /// second Ctrl-C prompt: the sequence driving this app is blocked on
-    /// encoders that cannot be interrupted. Called only after the terminal
-    /// is restored, since exiting first would strand raw mode and the
-    /// alternate screen.
-    fn force_quit() -> ! {
-        debug!("Exiting immediately");
-        std::process::exit(0);
-    }
-
-    /// Handle a single Ctrl-C key press, returning `true` when the app should
-    /// force-quit (second press).
+    /// Legacy graceful bool API. A `true` result indicates a repeated request,
+    /// never permission to exit before joining the runtime's process owners.
     fn handle_ctrl_c(
         &mut self,
         key: event::KeyEvent,
@@ -550,10 +538,31 @@ pub trait TuiApp: Send + Sync + 'static {
                 debug!("Force quit Condor");
                 return true;
             } else if !stdout_is_terminal {
-                println!("{}", self.cancel_message());
+                eprintln!("{}", self.cancel_message());
             }
         }
         false
+    }
+
+    /// Keyboard and OS events advance the same E12 root. Keep rendering until
+    /// the producer disconnects, including after force; never detach its owners.
+    fn handle_ctrl_c_cancel(
+        &mut self,
+        key: event::KeyEvent,
+        cancelled: &crate::interrupt::Interrupt,
+    ) -> Result<()> {
+        if key.code == KeyCode::Char('c')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.is_press()
+        {
+            *self.attempted_cancel_mut() = true;
+            let first = !cancelled.token.is_cancelled();
+            cancelled.request(130)?;
+            if first {
+                tracing::info!("{}", self.cancel_message());
+            }
+        }
+        Ok(())
     }
 
     /// The full runtime: spawns the progress thread, waits headlessly in
@@ -561,8 +570,10 @@ pub trait TuiApp: Send + Sync + 'static {
     fn run(
         &mut self,
         progress_rx: Receiver<SequenceStatus>,
-        cancelled: Arc<AtomicBool>,
+        cancellation: impl Into<crate::interrupt::Interrupt>,
     ) -> Result<()> {
+        let cancellation = cancellation.into();
+        let cancelled = cancellation.token.legacy_flag();
         install_panic_hook();
         let panic_stage = Arc::new(PanicStage {
             panicked: AtomicBool::new(false),
@@ -635,7 +646,6 @@ pub trait TuiApp: Send + Sync + 'static {
             return Ok(());
         };
 
-        let stdout_is_terminal = stdout().is_terminal();
         let result = (|| -> Result<()> {
             loop {
                 panic_stage.check()?;
@@ -645,15 +655,8 @@ pub trait TuiApp: Send + Sync + 'static {
                 // The drain also ends when
                 // input is exhausted or no terminal can be read (`Err`).
                 while matches!(event::poll(Duration::ZERO), Ok(true)) {
-                    if let Ok(TermEvent::Key(key)) = event::read()
-                        && self.handle_ctrl_c(key, &cancelled, stdout_is_terminal)
-                    {
-                        if let Some(snapshot) = self.shared_progress().read_if_dirty() {
-                            self.on_snapshot(snapshot);
-                        }
-                        terminal.terminal.draw(|f| self.render(f))?;
-                        self.restore(&mut terminal)?;
-                        Self::force_quit();
+                    if let Ok(TermEvent::Key(key)) = event::read() {
+                        self.handle_ctrl_c_cancel(key, &cancellation)?;
                     }
                 }
 
@@ -876,6 +879,117 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn t06_sequential_registration() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let output = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/t06_interrupts.py"
+            ))
+            .arg(std::env::current_exe()?)
+            .arg(root.path())
+            .arg("listener")
+            .output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    // Isolated child only: never changes libtest parent's signal dispositions.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn t06_registration_child() -> Result<()> {
+        let Some(root) = std::env::var_os("T06_LISTENER_ROOT") else {
+            return Ok(());
+        };
+        let root = std::path::PathBuf::from(root);
+        let mut prior: Option<crate::interrupt::Interrupt> = None;
+        for invocation in 0..2 {
+            let cancellation = crate::interrupt::Interrupt::default();
+            let mut listener = crate::interrupt::Listener::start(cancellation.clone())?;
+            assert!(crate::interrupt::Listener::start(cancellation.clone()).is_err());
+            for stage in 0..2 {
+                let (tx, rx) = mpsc::channel();
+                let display_cancel = cancellation.clone();
+                let display = thread::spawn(move || TestApp::new().run(rx, display_cancel));
+                if stage == 0 {
+                    tx.send(SequenceStatus::Whole(
+                        andean_condor::core::sequence::Status::Completed { id: "t06".into() },
+                    ))?;
+                } else {
+                    assert!(
+                        !cancellation.token.is_cancelled(),
+                        "stale job or stage cancellation"
+                    );
+                    std::fs::write(root.join(format!("ready-{invocation}")), b"ready")?;
+                    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                    while !cancellation.token.is_cancelled() {
+                        anyhow::ensure!(
+                            std::time::Instant::now() < deadline,
+                            "first request watchdog"
+                        );
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    assert!(
+                        !cancellation.token.is_forced(),
+                        "duplicate handler escalated first event"
+                    );
+                    if let Some(prior) = &prior {
+                        assert!(prior.token.is_forced());
+                    }
+                    std::fs::write(root.join(format!("graceful-{invocation}")), b"graceful")?;
+                    while !cancellation.token.is_forced() {
+                        anyhow::ensure!(
+                            std::time::Instant::now() < deadline,
+                            "force request watchdog"
+                        );
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                }
+                drop(tx);
+                display.join().expect("display")?;
+            }
+            listener.join()?;
+            let error = cancellation.finish(Ok(())).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<crate::interrupt::Interrupted>().unwrap().0,
+                if invocation == 0 { 143 } else { 130 }
+            );
+            // Before opening: the exact shared forced root refuses an owner,
+            // not a fresh flag that might start indexing a missing source.
+            let input = andean_condor::models::input::Input::Video {
+                path: root.join("must-not-open.mkv"),
+                import_method: andean_condor::models::input::ImportMethod::FFMS2 {
+                    index: None,
+                    cache_path: None,
+                },
+                filters: vec![],
+            };
+            let error = crate::tui::open_input_cancel(&input, &cancellation.token)
+                .err()
+                .expect("forced opening");
+            assert!(error.is::<andean_condor::utils::cancellation::Cancelled>());
+            cancellation.request(130)?;
+            cancellation.request(143)?;
+            prior = Some(cancellation);
+        }
+        // The OS callback has handed off this event, but an immediately joined
+        // listener may not have started yet. Shutdown must drain it, not lose it.
+        let cancellation = crate::interrupt::Interrupt::default();
+        let mut listener = crate::interrupt::Listener::start(cancellation.clone())?;
+        signal_hook::low_level::raise(signal_hook::consts::SIGTERM)?;
+        listener.join()?;
+        assert!(cancellation.token.is_cancelled());
+        assert!(!cancellation.token.is_forced());
+        Ok(())
     }
 
     fn t05_emit() {

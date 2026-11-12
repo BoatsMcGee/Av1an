@@ -58,6 +58,53 @@ pub fn init_handler(
     max_tries: Option<u32>,
     overwrite: bool,
 ) -> Result<()> {
+    init_handler_cancel(
+        config_path,
+        temp_path,
+        input_path,
+        output_path,
+        decoder,
+        filters,
+        vs_args,
+        concatenator,
+        discard,
+        workers,
+        encoder,
+        params,
+        photon_noise,
+        append_color_data,
+        target_metric,
+        target,
+        max_tries,
+        overwrite,
+        &Default::default(),
+    )
+}
+
+/// Initialization source/index opening with caller-owned cancellation.
+#[allow(clippy::too_many_arguments)]
+pub fn init_handler_cancel(
+    config_path: Option<&Path>,
+    temp_path: Option<&Path>,
+    input_path: &Path,
+    output_path: &Path,
+    decoder: Option<&DecoderMethod>,
+    filters: Option<&[VapourSynthFilter]>,
+    vs_args: Option<&[String]>,
+    concatenator: Option<&ConcatenationMethod>,
+    discard: Option<&[DiscardCategory]>,
+    workers: Option<u8>,
+    encoder: Option<&EncoderMethod>,
+    params: Option<&str>,
+    photon_noise: Option<u32>,
+    append_color_data: bool,
+    target_metric: Option<&QualityMetricBase>,
+    target: Option<f64>,
+    max_tries: Option<u32>,
+    overwrite: bool,
+    cancellation: &andean_condor::utils::cancellation::Cancellation,
+) -> Result<()> {
+    cancellation.check()?;
     anyhow::ensure!(
         max_tries != Some(0),
         "max_tries must be at least 1 total attempt"
@@ -91,7 +138,8 @@ pub fn init_handler(
         None,
         Some(append_color_data),
     )?;
-    let mut configuration = Configuration::new(&input, &output, temp_path, vs_args, decoder)?;
+    let mut configuration =
+        Configuration::new_cancel(&input, &output, temp_path, vs_args, decoder, cancellation)?;
     configuration.condor.output.overwrite = overwrite;
     configuration.condor.encoder = selected_encoder;
     // A video input never consumes script arguments; say so instead of
