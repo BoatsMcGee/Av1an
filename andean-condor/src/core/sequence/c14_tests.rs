@@ -297,8 +297,14 @@ fn c14_r1_concat_has_no_second_full_count_child() {
         let (tx, _rx) = std::sync::mpsc::channel();
         scene_concatenator::SceneConcatenator::default()
             .execute_cancel(&mut job, tx, Default::default())
-            .expect("M2: concat must not look up or launch a second ffprobe decode");
+            .expect(
+                "M2: concat may resolve source streams, but must not launch a second full count",
+            );
         assert!(!root.join("probe-called").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("source-probes")).expect("one source metadata probe"),
+            "source metadata\n"
+        );
         return;
     }
     let temp = tempfile::tempdir().expect("fixture");
@@ -313,10 +319,14 @@ fn c14_r1_concat_has_no_second_full_count_child() {
     symlink(which::which("ffmpeg").expect("ffmpeg"), bin.join("ffmpeg")).expect("native muxer");
     std::fs::write(
         bin.join("ffprobe"),
-        format!(
-            "#!/bin/sh\nprintf called > '{}'\nexit 42\n",
-            temp.path().join("probe-called").display()
-        ),
+          format!(
+              // X05 needs source stream identity, not a second decode of certified chunks.
+              "#!/bin/sh\nif [ \"$*\" != '-v error -show_streams -show_format -show_chapters -show_data_hash sha256 -of json {}' ]; then\nprintf called > '{}'\nexit 42\nfi\nprintf 'source metadata\\n' >> '{}'\nexec '{}' \"$@\"\n",
+              temp.path().join("source.mkv").display(),
+              temp.path().join("probe-called").display(),
+              temp.path().join("source-probes").display(),
+              which::which("ffprobe").expect("ffprobe").display()
+          ),
     )
     .expect("probe trap");
     std::fs::set_permissions(bin.join("ffprobe"), std::fs::Permissions::from_mode(0o755))

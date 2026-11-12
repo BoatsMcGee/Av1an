@@ -154,9 +154,9 @@ struct Format {
     tags: BTreeMap<String, String>,
 }
 #[derive(Deserialize)]
-struct Stream {
-    index: u32,
-    codec_type: String,
+pub(super) struct Stream {
+    pub index: u32,
+    pub codec_type: String,
     codec_name: Option<String>,
     #[serde(default)]
     tags: BTreeMap<String, String>,
@@ -191,6 +191,13 @@ fn probe(path: &Path, cancellation: &Cancellation) -> Result<Probe> {
     );
     serde_json::from_slice(&bytes)
         .with_context(|| format!("Malformed ffprobe source report for {}", path.display()))
+}
+
+/// Shares the bounded, owned probe with FFmpeg preflight without invoking mkvmerge.
+pub(super) fn ffmpeg_streams(path: &Path, cancellation: &Cancellation) -> Result<Vec<Stream>> {
+    Ok(probe(path, cancellation)
+        .with_context(|| format!("FFmpeg source preflight {}", path.display()))?
+        .streams)
 }
 
 fn tags_preserved(before: &BTreeMap<String, String>, after: &BTreeMap<String, String>) -> bool {

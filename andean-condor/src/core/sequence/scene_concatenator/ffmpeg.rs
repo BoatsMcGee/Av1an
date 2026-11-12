@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "x05_tests.rs"]
+mod x05_tests;
+
 impl SceneConcatenator {
     /// Scratch writer: the caller must exclusively own `output`; this can overwrite it.
     /// Use the final Sequence boundary for saved overwrite/source protection and publication.
@@ -45,9 +49,23 @@ impl SceneConcatenator {
         cancellation: &Cancellation,
     ) -> Result<()> {
         cancellation.check_admission()?;
-        let mut partial = InterruptedOutput::new(output, cancellation);
         let scratch_directory = scenes_directory.join("Scene Concatenator");
         let concat_file_path = scratch_directory.join("concat.txt");
+        let streams = ffmpeg_sources(input, config)
+            .iter()
+            .map(|(path, tracks)| {
+                // Video overrides address encoded input 0; new attachment keys
+                // are not source IDs. Neither needs a source stream lookup.
+                if tracks.is_some_and(|tracks| !tracks.values().any(is_source_track)) {
+                    Ok(Vec::new())
+                } else {
+                    source::ffmpeg_streams(path, cancellation)
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let args = ffmpeg_args(&concat_file_path, output, input, config, &streams)?;
+        cancellation.check_forced()?;
+        let mut partial = InterruptedOutput::new(output, cancellation);
         let concat_file = {
             let mut contents = String::with_capacity(24 * scene_paths.len());
 
@@ -73,7 +91,7 @@ impl SceneConcatenator {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        cmd.args(ffmpeg_args(&concat_file_path, output, input, config));
+        cmd.args(args);
 
         let mut child = OwnedProcess::spawn(&mut cmd, cancellation)
             .with_context(|| "Failed to concatenate with FFmpeg")?;
@@ -206,7 +224,31 @@ impl SceneConcatenator {
     }
 }
 
-/// Builds the FFmpeg argument list for concatenation.
+fn is_source_track(track: &FfmpegTrack) -> bool {
+    !matches!(track, FfmpegTrack::Video(_))
+        && !track.attachment().is_some_and(|attachment| attachment.path.is_some())
+}
+
+fn ffmpeg_sources<'a>(
+    input: Option<&'a Path>,
+    config: Option<&'a FfmpegConfig>,
+) -> Vec<(&'a Path, Option<&'a FfmpegTrackMap>)> {
+    let Some(config) = config else {
+        return Vec::new();
+    };
+    input
+        .into_iter()
+        .map(|path| (path, config.tracks.as_ref()))
+        .chain(
+            config
+                .extra_inputs
+                .iter()
+                .map(|extra| (extra.path.as_path(), extra.tracks.as_ref())),
+        )
+        .collect()
+}
+
+/// Pure argument builder over supplied source probes, in FFmpeg input order.
 ///
 /// Without output settings this is the original video-only command. With
 /// settings, the original input and any extra inputs are added as `-i`
@@ -217,7 +259,8 @@ fn ffmpeg_args(
     output: &Path,
     input: Option<&Path>,
     config: Option<&FfmpegConfig>,
-) -> Vec<OsString> {
+    streams: &[Vec<source::Stream>],
+) -> Result<Vec<OsString>> {
     let mut args: Vec<OsString> = vec![
         "-y".into(),
         "-hide_banner".into(),
@@ -237,17 +280,25 @@ fn ffmpeg_args(
         args.push("-c".into());
         args.push("copy".into());
         args.push(output.into());
-        return args;
+        return Ok(args);
     };
 
     // Input 0 is the concatenated video. Input 1 is the original input (when
     // available) and the extra inputs follow it.
-    let mut sources: Vec<(&Path, Option<&FfmpegTrackMap>)> = Vec::new();
-    if let Some(input) = input {
-        sources.push((input, config.tracks.as_ref()));
-    }
-    for extra in &config.extra_inputs {
-        sources.push((extra.path.as_path(), extra.tracks.as_ref()));
+    let sources = ffmpeg_sources(input, Some(config));
+    anyhow::ensure!(
+        streams.len() == sources.len(),
+        "FFmpeg source probe count does not match inputs"
+    );
+    if input.is_none()
+        && let Some(tracks) = &config.tracks
+    {
+        for (id, track) in tracks {
+            anyhow::ensure!(
+                !is_source_track(track),
+                "FFmpeg main input stream {id}: no source input"
+            );
+        }
     }
     for (path, _) in &sources {
         args.push("-i".into());
@@ -275,65 +326,89 @@ fn ffmpeg_args(
 
     let mut audio_output = 0usize;
     let mut subtitle_output = 0usize;
-    for (position, (_, tracks)) in sources.iter().enumerate() {
+    let mut attachment_output = 0usize;
+    for (position, ((path, tracks), streams)) in sources.iter().zip(streams).enumerate() {
         let input_index = position + 1;
+        let mut streams = streams.iter().collect::<Vec<_>>();
+        streams.sort_unstable_by_key(|stream| stream.index);
+        for (index, stream) in streams.iter().enumerate() {
+            anyhow::ensure!(
+                index == 0 || streams[index - 1].index != stream.index,
+                "FFmpeg source {} input {input_index} stream {}: duplicate probe index",
+                path.display(),
+                stream.index
+            );
+            anyhow::ensure!(
+                matches!(
+                    stream.codec_type.as_str(),
+                    "video" | "audio" | "subtitle" | "attachment" | "data" | "unknown"
+                ),
+                "FFmpeg source {} input {input_index} stream {}: malformed probe type {:?}",
+                path.display(),
+                stream.index,
+                stream.codec_type
+            );
+        }
+        let mut selected = Vec::new();
         match tracks {
             None => {
-                // Data streams are outside the supported track model.
-                args.push("-map".into());
-                args.push(format!("{input_index}:a?").into());
-                args.push("-map".into());
-                args.push(format!("{input_index}:s?").into());
-                args.push("-map".into());
-                args.push(format!("{input_index}:t?").into());
+                // Preserve the former a?/s?/t? order, now with concrete IDs.
+                for kind in ["audio", "subtitle", "attachment"] {
+                    selected.extend(
+                        streams
+                            .iter()
+                            .filter(|stream| stream.codec_type == kind)
+                            .map(|stream| (*stream, None)),
+                    );
+                }
             },
             Some(tracks) => {
                 let mut ids = tracks.keys().copied().collect::<Vec<_>>();
                 ids.sort_unstable();
                 for id in ids {
-                    let Some(track) = tracks.get(&id) else {
+                    let track = &tracks[&id];
+                    if !is_source_track(track) {
                         continue;
+                    }
+                    let stream = streams.iter().find(|stream| stream.index == id).with_context(||
+                        format!("FFmpeg source {} input {input_index} stream {id}: missing source stream", path.display()))?;
+                    let kind = match track {
+                        FfmpegTrack::Audio(_) => "audio",
+                        FfmpegTrack::Subtitle(_) => "subtitle",
+                        FfmpegTrack::Attachment(_) => "attachment",
+                        FfmpegTrack::Video(_) => unreachable!(),
                     };
-                    if !track.copy() || matches!(track, FfmpegTrack::Video(_)) {
-                        continue;
-                    }
-                    if let Some(attachment) = track.attachment() {
-                        // A bare entry copies the source's attachment stream.
-                        // A `path` entry is attached at the output level below,
-                        // so it is not mapped from this input.
-                        if attachment.path.is_none() {
-                            args.push("-map".into());
-                            args.push(format!("{input_index}:{id}").into());
-                        }
-                        continue;
-                    }
-                    // Remaining tracks are audio or subtitle.
-                    match track {
-                        FfmpegTrack::Audio(options) => {
-                            let index = audio_output;
-                            audio_output += 1;
-                            args.push("-map".into());
-                            args.push(format!("{input_index}:{id}").into());
-                            push_stream_options(&mut args, "a", index, options);
-                        },
-                        FfmpegTrack::Subtitle(options) => {
-                            let index = subtitle_output;
-                            subtitle_output += 1;
-                            args.push("-map".into());
-                            args.push(format!("{input_index}:{id}").into());
-                            push_stream_options(&mut args, "s", index, options);
-                        },
-                        FfmpegTrack::Video(_) | FfmpegTrack::Attachment(_) => unreachable!(),
+                    anyhow::ensure!(
+                        stream.codec_type == kind,
+                        "FFmpeg source {} input {input_index} stream {id}: configured {kind}, probed {}",
+                        path.display(),
+                        stream.codec_type
+                    );
+                    if track.copy() {
+                        selected.push((*stream, Some(track)));
                     }
                 }
             },
+        }
+        for (stream, track) in selected {
+            let (kind, counter) = match stream.codec_type.as_str() {
+                "audio" => ("a", &mut audio_output),
+                "subtitle" => ("s", &mut subtitle_output),
+                "attachment" => ("t", &mut attachment_output),
+                _ => unreachable!(),
+            };
+            args.push("-map".into());
+            args.push(format!("{input_index}:{}", stream.index).into());
+            if let Some(options) = track.and_then(FfmpegTrack::options) {
+                push_stream_options(&mut args, kind, *counter, options);
+            }
+            *counter += 1;
         }
     }
 
     // A `path` attachment is a new file attached at the output level via
     // FFmpeg's `-attach`; the `s:t:N` index numbers output attachment
     // streams. Bare (copy) attachments are mapped from their source above.
-    let mut attachment_output = 0usize;
     for tracks in std::iter::once(&config.tracks)
         .chain(config.extra_inputs.iter().map(|extra| &extra.tracks))
         .filter_map(Option::as_ref)
@@ -344,6 +419,9 @@ fn ffmpeg_args(
             let Some(attachment) = tracks.get(&id).and_then(FfmpegTrack::attachment) else {
                 continue;
             };
+            if !attachment.copy {
+                continue;
+            }
             let Some(path) = &attachment.path else {
                 continue;
             };
@@ -386,7 +464,7 @@ fn ffmpeg_args(
     }
 
     args.push(output.into());
-    args
+    Ok(args)
 }
 
 fn push_stream_options(
@@ -415,13 +493,26 @@ fn push_stream_options(
 mod tests {
     use super::*;
 
-    fn strings(args: Vec<OsString>) -> Vec<String> {
-        args.into_iter().map(|arg| arg.to_string_lossy().into_owned()).collect()
+    fn strings(args: Result<Vec<OsString>>) -> Vec<String> {
+        args.expect("valid supplied source streams")
+            .into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn streams() -> Vec<source::Stream> {
+        serde_json::from_str(r#"[{"index":0,"codec_type":"video"},{"index":1,"codec_type":"audio"},{"index":2,"codec_type":"audio"},{"index":3,"codec_type":"subtitle"},{"index":4,"codec_type":"attachment"},{"index":5,"codec_type":"data"},{"index":6,"codec_type":"unknown"}]"#).expect("supplied source streams")
     }
     /// Without output settings FFmpeg stays video-only.
     #[test]
     fn ffmpeg_args_without_settings_are_video_only() {
-        let args = ffmpeg_args(Path::new("concat.txt"), Path::new("out.mkv"), None, None);
+        let args = ffmpeg_args(
+            Path::new("concat.txt"),
+            Path::new("out.mkv"),
+            None,
+            None,
+            &[],
+        );
         assert_eq!(
             strings(args),
             vec![
@@ -456,6 +547,7 @@ mod tests {
             Path::new("out.mkv"),
             None,
             Some(&config),
+            &[],
         ));
         assert!(
             !args.iter().any(|arg| arg.starts_with("-c:v")),
@@ -478,6 +570,7 @@ mod tests {
             Path::new("out.mkv"),
             Some(Path::new("in.mkv")),
             Some(&config),
+            &[streams()],
         ));
         assert!(args.windows(2).any(|pair| pair == ["-i", "in.mkv"]));
         assert!(args.windows(2).any(|pair| pair == ["-map", "1:1"]));
@@ -498,6 +591,7 @@ mod tests {
             Path::new("out.mkv"),
             None,
             Some(&config),
+            &[],
         ));
         assert!(args.windows(2).any(|pair| pair == ["-attach", "font.ttf"]));
         assert!(args.windows(2).any(|pair| pair == ["-metadata:s:t:0", "mimetype=font/ttf"]));
@@ -517,6 +611,7 @@ mod tests {
             Path::new("out.mkv"),
             Some(Path::new("in.mkv")),
             Some(&config),
+            &[streams(), streams()],
         ));
         assert!(args.windows(2).any(|pair| pair == ["-map", "1:1"]));
         assert!(
@@ -542,6 +637,7 @@ mod tests {
             Path::new("out.mkv"),
             Some(Path::new("in.mkv")),
             Some(&config),
+            &[streams()],
         ));
         assert!(args.windows(2).any(|pair| pair == ["-map_chapters", "-1"]));
 
@@ -552,6 +648,7 @@ mod tests {
             Path::new("out.mkv"),
             Some(Path::new("in.mkv")),
             Some(&copying),
+            &[streams()],
         ));
         assert!(!args.iter().any(|arg| arg == "-map_chapters"));
     }
@@ -567,14 +664,20 @@ mod tests {
             Path::new("out.mkv"),
             Some(Path::new("in.mkv")),
             Some(&config),
+            &[streams(), streams()],
         ));
-        assert!(args.windows(2).any(|pair| pair == ["-map", "1:t?"]));
+        assert!(args.windows(2).any(|pair| pair == ["-map", "1:4"]));
         let maps = args
             .windows(2)
             .filter(|pair| pair[0] == "-map")
             .map(|pair| pair[1].as_str())
             .collect::<Vec<_>>();
-        assert_eq!(maps, ["0", "1:a?", "1:s?", "1:t?", "2:a?", "2:s?", "2:t?"]);
+        assert_eq!(
+            maps,
+            ["0", "1:1", "1:2", "1:3", "1:4", "2:1", "2:2", "2:3", "2:4"]
+        );
+        assert!(!maps.contains(&"1:5") && !maps.contains(&"2:5"));
+        assert!(!maps.contains(&"1:6") && !maps.contains(&"2:6"));
         assert!(!args.iter().any(|arg| arg.ends_with(":d?")));
     }
 
