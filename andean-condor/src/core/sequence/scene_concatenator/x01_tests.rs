@@ -309,7 +309,7 @@ fn x01_isolated_preflight_errors_cancellation_and_preservation() {
         b"X01 attachment identity",
     )
     .expect("attachment");
-    std::fs::write(fixtures.path().join("metadata.txt"), ";FFMETADATA1\ntitle=X01 title\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=100\ntitle=X01 chapter\n").expect("chapters");
+    std::fs::write(fixtures.path().join("metadata.txt"), ";FFMETADATA1\ntitle=X01 title\ncomment=X01 global tag\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=100\ntitle=X01 chapter\n").expect("chapters");
     run(Command::new(&ffmpeg)
         .args([
             "-v",
@@ -348,6 +348,8 @@ fn x01_isolated_preflight_errors_cancellation_and_preservation() {
             "srt",
             "-metadata:s:a:0",
             "language=eng",
+            "-metadata:s:a:0",
+            "title=X01 audio name",
             "-attach",
         ])
         .arg(fixtures.path().join("attachment.txt"))
@@ -355,6 +357,7 @@ fn x01_isolated_preflight_errors_cancellation_and_preservation() {
         .arg(&source));
     for case in [
         "adapt-content",
+        "strip-global-and-chapters",
         "leader-exit",
         "identify-warning",
         "identify-errors",
@@ -486,6 +489,68 @@ fn x01_preflight_child() {
     let output = root.join("out.mkv");
     std::fs::write(&output, b"old output sentinel").expect("old output");
     let token = Cancellation::default();
+    if case == "strip-global-and-chapters" {
+        // Exercise the actual source owner without X03's unrelated empty global-tag XML.
+        let config: MkvmergeConfig = serde_json::from_value(serde_json::json!({
+            "metadata": {"copy": false}, "chapters": {"copy": false}
+        }))
+        .expect("global/chapter opt-out");
+        let before = probe(&source);
+        assert_eq!(before["format"]["tags"]["title"], "X01 title");
+        assert_eq!(before["format"]["tags"]["COMMENT"], "X01 global tag");
+        let scratch = SceneConcatenator::scratch_directory(&root);
+        let prepared = source::prepare(Some(&source), Some(&config), &scratch, &token)
+            .expect("opting out of global tags must preserve ancillary track tags");
+        let staged = prepared.path.as_ref().expect("owned ancillary source");
+        let data = probe(staged);
+        let streams = data["streams"].as_array().expect("ancillary streams");
+        assert_eq!(streams.len(), 3);
+        let audio = streams.iter().find(|stream| stream["codec_type"] == "audio").expect("audio");
+        assert_eq!(audio["tags"]["language"], "eng");
+        assert_eq!(audio["tags"]["title"], "X01 audio name");
+        let attachment = streams
+            .iter()
+            .find(|stream| stream["codec_type"] == "attachment")
+            .expect("attachment");
+        assert_eq!(attachment["tags"]["filename"], "attachment.txt");
+        assert_eq!(attachment["tags"]["mimetype"], "text/plain");
+        assert!(
+            data["format"]["tags"]
+                .as_object()
+                .expect("generated format tags")
+                .keys()
+                .all(|key| key.eq_ignore_ascii_case("encoder")),
+            "source global tags must be stripped: {}",
+            data["format"]["tags"]
+        );
+        let chapters: serde_json::Value = serde_json::from_slice(&run(Command::new("ffprobe")
+            .args(["-v", "error", "-show_chapters", "-of", "json"])
+            .arg(staged)))
+        .expect("staged chapters");
+        assert!(chapters["chapters"].as_array().expect("chapters").is_empty());
+        let bytes = run(Command::new("ffmpeg")
+            .args(["-v", "error", "-dump_attachment:t:0", "pipe:1", "-i"])
+            .arg(staged)
+            .args(["-f", "null", "-"]));
+        assert_eq!(bytes, b"X01 attachment identity");
+        drop(prepared);
+        assert!(
+            !std::fs::read_dir(scratch).expect("scratch listing").any(|entry| entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".condor-source-"))
+        );
+        assert_eq!(
+            std::fs::read(&output).expect("output sentinel"),
+            b"old output sentinel"
+        );
+        assert_eq!(std::fs::read(source).expect("source intact"), original);
+        println!(
+            "strip-global-and-chapters: actual adapter preserved audio language/name and attachment tags/bytes, removed source globals/chapters, kept sentinels and cleaned owned scratch; final mux not exercised (X03)"
+        );
+        return;
+    }
     let controller = case.starts_with("force-").then(|| {
         let root = root.clone();
         let token = token.clone();

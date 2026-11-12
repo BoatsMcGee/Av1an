@@ -308,7 +308,7 @@ pub(super) fn prepare(
         .args([
             "-c",
             "copy",
-            "-map_metadata",
+            "-map_metadata:g",
             if copy_metadata { "0" } else { "-1" },
             "-map_chapters",
             if copy_chapters { "0" } else { "-1" },
