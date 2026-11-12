@@ -621,3 +621,44 @@ fn x07_native_vp8_alt_ref_records_are_not_visible_frame_count() {
     assert!(probe.contains("r_frame_rate=24000/1001\n"), "{probe}");
     assert_eq!(fs::read(&part).expect("VP8 input unchanged"), bytes);
 }
+
+#[test]
+fn x07_adapter_early_eof_refuses_unconsumed_records() {
+    let dir = tempfile::tempdir().expect("early-EOF fixture directory");
+    let part = dir.path().join("boundary.ivf");
+    let output = dir.path().join("joined.ivf");
+    let mut accepted = Vec::new();
+    for hint in [0u32, 3] {
+        fixture(&part, &[]);
+        let mut bytes = fs::read(&part).expect("standard IVF header");
+        bytes[24..28].copy_from_slice(&hint.to_le_bytes());
+        // Framing only: 32 + 12 + 4052 puts the first record's end at byte 4096.
+        // X10 must eventually process all three, not merely refuse this boundary.
+        for (timestamp, size) in [(70u64, 4052u32), (71, 1), (72, 1)] {
+            bytes.extend_from_slice(&size.to_le_bytes());
+            bytes.extend_from_slice(&timestamp.to_le_bytes());
+            bytes.extend(std::iter::repeat_n(0xAB, size as usize));
+        }
+        assert_eq!(records(&bytes).len(), 3);
+        assert_eq!(bytes.len(), 4122);
+        fs::write(&part, &bytes).expect("write complete three-record stream");
+        if let Err(error) = concatenate(&output, std::slice::from_ref(&part)) {
+            let message = format!("{error:#}");
+            assert!(
+                message.contains(part.to_str().expect("fixture path")),
+                "{message}"
+            );
+            assert!(message.contains("unconsumed input"), "{message}");
+            assert!(message.contains("record"), "{message}");
+        } else {
+            let truncated = fs::read(&output).expect("read falsely completed output");
+            let count = u32::from_le_bytes(truncated[24..28].try_into().expect("header count"));
+            accepted.push((hint, count, records(&truncated).len()));
+        }
+        assert_eq!(fs::read(&part).expect("input unchanged"), bytes);
+    }
+    assert!(
+        accepted.is_empty(),
+        "false completion (input hint, output count, records): {accepted:?}"
+    );
+}

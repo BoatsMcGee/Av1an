@@ -60,6 +60,7 @@ impl SceneConcatenator {
     /// Timestamps must be nondecreasing and fit usize, as must appended timestamps.
     /// Equal PTS and gaps are preserved; each origin is removed once. The next part starts
     /// one nominal tick (scale/rate seconds) after the previous part's final record.
+    /// Premature adapter EOF is rejected unless the independent raw reader also reaches EOF.
     /// Caller must exclusively own the scratch output (it may be truncated on error).
     #[inline]
     pub fn ivf_cancel(
@@ -198,6 +199,17 @@ impl SceneConcatenator {
                         break;
                     },
                 }
+            }
+            // The pinned adapter can report EOF at a buffer boundary before the file ends.
+            if !frame_headers
+                .fill_buf()
+                .with_context(|| format!("checking IVF EOF for {}", file.display()))?
+                .is_empty()
+            {
+                bail!(
+                    "{} has unconsumed input after IVF demuxer stopped at {record_count} output records",
+                    file.display()
+                );
             }
             if origin.is_none() {
                 bail!("{} has no IVF records", file.display());
