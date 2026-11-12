@@ -117,6 +117,19 @@ fn definitions(scenes: &[Scene<CliSequenceData>]) -> Vec<SceneDefinition> {
     scenes.iter().map(SceneDefinition::from).collect()
 }
 
+fn baseline_scenes(baseline: &[SceneDefinition]) -> Vec<Scene<CliSequenceData>> {
+    baseline
+        .iter()
+        .map(|definition| Scene {
+            start_frame: definition.start_frame,
+            end_frame: definition.end_frame,
+            sub_scenes: definition.sub_scenes.clone(),
+            encoder: definition.encoder.clone(),
+            sequence_data: CliSequenceData::default(),
+        })
+        .collect()
+}
+
 #[derive(Default)]
 pub struct Zoner {}
 
@@ -127,7 +140,9 @@ impl Zoner {
     ///
     /// Unchanged current-algorithm definitions do not apply or save again.
     /// Old-algorithm or changed/removed definitions rebuild from the original
-    /// baseline or refuse an unsafe rebase.
+    /// baseline or refuse an unsafe rebase. If old/new algorithms produce the
+    /// same recorded definitions, only the revision tag is published; live
+    /// downstream edits and results remain untouched.
     pub fn run(condor: &mut Condor<CliSequenceData, CliSequenceConfig>) -> Result<()> {
         let mut zoner = Self::default();
 
@@ -209,6 +224,24 @@ impl Sequence<CliSequenceData, CliSequenceConfig> for Zoner {
                 );
                 return Ok(((), Vec::new()));
             }
+            if state.algorithm_revision == 0 && state.zones == zones && !state.baseline.is_empty() {
+                let mut expected = baseline_scenes(&state.baseline);
+                apply_zones_inner(zones, &mut expected, num_frames, false);
+                if definitions(&expected) == state.applied {
+                    // No scene rewrite is needed, even if downstream producers
+                    // changed the live encoder. This tag certifies no results.
+                    let mut revised = state.clone();
+                    revised.algorithm_revision = ALGORITHM_REVISION;
+                    let mut candidate = condor.scenes.clone();
+                    candidate[0].sequence_data.zoner.lifecycle = Some(revised);
+                    let mut staged = condor.as_data();
+                    staged.scenes = candidate.clone();
+                    (condor.save_callback)(staged)?;
+                    condor.scenes = candidate;
+                    info!("Zoner: equivalent zoning algorithms; updated algorithm revision only");
+                    return Ok(((), Vec::new()));
+                }
+            }
             if state.applied != definitions(&condor.scenes) {
                 bail!(
                     "Zoner: scene definitions changed after zoning; cannot safely rebase over manual or derived encoder edits. Preserve edits and reset/redetect the whole scene list in an empty work directory, or use a new job"
@@ -222,16 +255,7 @@ impl Sequence<CliSequenceData, CliSequenceConfig> for Zoner {
         let mut candidate = if lifecycle.is_none() {
             condor.scenes.clone()
         } else {
-            baseline
-                .iter()
-                .map(|definition| Scene {
-                    start_frame: definition.start_frame,
-                    end_frame: definition.end_frame,
-                    sub_scenes: definition.sub_scenes.clone(),
-                    encoder: definition.encoder.clone(),
-                    sequence_data: CliSequenceData::default(),
-                })
-                .collect()
+            baseline_scenes(&baseline)
         };
         let mut warnings = apply_zones(zones, &mut candidate, num_frames);
         // Keep unaffected records exactly. For changed definitions, retain only
@@ -319,18 +343,31 @@ pub fn validate_zones(zones: &[Zone], num_frames: usize) -> Result<()> {
 /// Partition at all resolved zone boundaries before applying settings and caps.
 /// Original cuts, order and gaps survive; outside pieces keep their encoder.
 /// Callers validate zones first and own result invalidation/publication.
+#[inline]
 pub fn apply_zones(
     zones: &[Zone],
     scenes: &mut Vec<Scene<CliSequenceData>>,
     num_frames: usize,
 ) -> Vec<anyhow::Error> {
+    apply_zones_inner(zones, scenes, num_frames, true)
+}
+
+// Equivalence checks use this exact pipeline without reporting hypothetical edits.
+fn apply_zones_inner(
+    zones: &[Zone],
+    scenes: &mut Vec<Scene<CliSequenceData>>,
+    num_frames: usize,
+    report: bool,
+) -> Vec<anyhow::Error> {
     let mut warnings = Vec::new();
     let initial_scenes = scenes.len();
     let mut total_changes = 0usize;
-    info!(
-        "Zoner: applying {} zones to {initial_scenes} scenes",
-        zones.len()
-    );
+    if report {
+        info!(
+            "Zoner: applying {} zones to {initial_scenes} scenes",
+            zones.len()
+        );
+    }
     let mut ordered = zones
         .iter()
         .enumerate()
@@ -345,7 +382,7 @@ pub fn apply_zones(
     let boundaries =
         ordered.iter().flat_map(|(_, _, start, end)| [*start, *end]).collect::<Vec<_>>();
     *scenes = scenes.drain(..).flat_map(|scene| zone::partition(scene, &boundaries)).collect();
-    if scenes.len() != initial_scenes {
+    if report && scenes.len() != initial_scenes {
         info!(
             "Zoner: zone boundaries added {} scenes ({initial_scenes} -> {} partitions) before overrides and caps",
             scenes.len() - initial_scenes,
@@ -374,7 +411,7 @@ pub fn apply_zones(
                 if encoder_changed || was_split {
                     modified += 1;
                 }
-                if encoder_changed {
+                if report && encoder_changed {
                     info!(
                         "Zoner: {label} modified encoder settings for scene \
                          {scene_start}..{scene_end} ({} -> {})",
@@ -385,16 +422,18 @@ pub fn apply_zones(
                 if was_split {
                     split += 1;
                     added += applied.len() - 1;
-                    let ranges = applied
-                        .iter()
-                        .map(|scene| (scene.start_frame, scene.end_frame))
-                        .collect::<Vec<_>>();
-                    info!(
-                        "Zoner: {label} split scene {scene_start}..{scene_end} into {} scenes ({} \
-                         added), frame ranges: {ranges:?}",
-                        applied.len(),
-                        applied.len() - 1
-                    );
+                    if report {
+                        let ranges = applied
+                            .iter()
+                            .map(|scene| (scene.start_frame, scene.end_frame))
+                            .collect::<Vec<_>>();
+                        info!(
+                            "Zoner: {label} split scene {scene_start}..{scene_end} into {} scenes ({} \
+                             added), frame ranges: {ranges:?}",
+                            applied.len(),
+                            applied.len() - 1
+                        );
+                    }
                 }
                 zoned.extend(applied);
             }
@@ -402,11 +441,13 @@ pub fn apply_zones(
         *scenes = zoned;
         total_changes += modified;
 
-        info!(
-            "Zoner: {label} matched {matched} scenes, modified {modified}, split {split}, added \
-             {added} ({} unchanged)",
-            matched - modified
-        );
+        if report {
+            info!(
+                "Zoner: {label} matched {matched} scenes, modified {modified}, split {split}, added \
+                 {added} ({} unchanged)",
+                matched - modified
+            );
+        }
         if matched == 0 {
             warnings.push(anyhow::anyhow!(
                 "{} matched no scenes",
@@ -415,14 +456,16 @@ pub fn apply_zones(
         }
     }
 
-    info!(
-        "Zoner finished: {} zones, {total_changes} scene changes across zones, {} scenes added \
-         ({initial_scenes} -> {} total), {} warnings",
-        zones.len(),
-        scenes.len() - initial_scenes,
-        scenes.len(),
-        warnings.len()
-    );
+    if report {
+        info!(
+            "Zoner finished: {} zones, {total_changes} scene changes across zones, {} scenes added \
+             ({initial_scenes} -> {} total), {} warnings",
+            zones.len(),
+            scenes.len() - initial_scenes,
+            scenes.len(),
+            warnings.len()
+        );
+    }
 
     warnings
 }

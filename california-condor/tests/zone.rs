@@ -251,6 +251,241 @@ mod tests {
 
     #[serial]
     #[test]
+    fn z01_m1_equivalent_old_algorithm_preserves_owning_noise_scaler_results() {
+        use andean_condor::models::{
+            encoder::photon_noise::PhotonNoise, sequence::noise_detector::NoiseDetectorData,
+        };
+        use california_condor::zoner::Zoner;
+        use std::{cell::Cell, rc::Rc, time::SystemTime};
+
+        let video = get_test_video();
+        for definition in [
+            "0 121 svt-av1 \"--preset 3\"",
+            "-1 -1 svt-av1 \"--preset 3\"",
+            "-1 -1 --maximum-frames 96",
+        ] {
+            let temp = tempfile::tempdir().expect("fixture");
+            let path = temp.path().join("condor.json");
+            let mut config = california_condor::test_helpers::default_config(
+                &video,
+                &temp.path().join("out.mkv"),
+                temp.path(),
+            );
+            config.condor.encoder.set_photon_noise(Some(PhotonNoise {
+                iso: 801,
+                chroma_iso: Some(403),
+                width: None,
+                height: None,
+                c_y: None,
+                ccb: None,
+                ccr: None,
+            }));
+            config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+            config.save(&path).expect("original");
+            // These aligned/whole-input definitions have the same old/new output.
+            condor_cmd(&temp).args(["zone", definition]).assert().success();
+            let (mut measured, _) = load_configuration(Some(&path)).expect("zoned");
+            for scene in &mut measured.condor.scenes {
+                // Fixed detector inputs, not claimed native measurements/certificates.
+                scene.sequence_data.noise_detection = Some(NoiseDetectorData {
+                    noise: 0.4,
+                    luminance: 0.3,
+                    created_on: SystemTime::UNIX_EPOCH,
+                });
+            }
+            measured.save(&path).expect("detector input");
+            condor_cmd(&temp)
+                .args([
+                    "scale-noise",
+                    "--threshold",
+                    "0.2",
+                    "--minimum-scaler",
+                    "0.5",
+                    "--maximum-scaler",
+                    "0.5",
+                    "--scale-chroma",
+                ])
+                .assert()
+                .success();
+            let (mut legacy, _) = load_configuration(Some(&path)).expect("actual scaling");
+            assert!(legacy.condor.scenes.iter().all(|s| {
+                let photon = s.encoder.photon_noise().expect("scaled PhotonNoise");
+                let baseline = s
+                    .sequence_data
+                    .noise_scaling
+                    .as_ref()
+                    .expect("producer result")
+                    .baseline
+                    .as_ref()
+                    .expect("producer baseline");
+                photon.iso == 401
+                    && photon.chroma_iso == Some(202)
+                    && baseline.original.iso == 801
+                    && baseline.original.chroma_iso == Some(403)
+            }));
+            legacy.condor.scenes[0]
+                .sequence_data
+                .zoner
+                .lifecycle
+                .as_mut()
+                .expect("proven lifecycle")
+                .algorithm_revision = 0;
+            // An unrelated manual option must also survive a proven no-effect migration.
+            legacy.condor.scenes[0].encoder.set_quantizer(19.0);
+            legacy.save(&path).expect("revision-0 job with actual downstream results");
+            let source = std::fs::read(&video.path).expect("source");
+            let artifact = temp.path().join("00000.ivf");
+            std::fs::write(&artifact, b"preserve old artifact; never certify").expect("artifact");
+            let saves = Rc::new(Cell::new(0));
+            let observed = Rc::clone(&saves);
+            let publication = legacy.clone();
+            let publication_path = path.clone();
+            let mut direct = legacy
+                .instantiate_condor(Box::new(move |data| {
+                    observed.set(observed.get() + 1);
+                    let mut staged = publication.clone();
+                    staged.condor = data;
+                    staged.save(&publication_path)?;
+                    Ok(())
+                }))
+                .expect("owning direct Zoner");
+            let mut expected = serde_json::to_value(direct.as_data()).expect("all original state");
+            expected["scenes"][0]["sequence_data"]["zoner"]["lifecycle"]["algorithm_revision"] =
+                1.into();
+            Zoner::run(&mut direct).expect(
+                "M1: an equivalent algorithm must preserve downstream scaling, not refuse replay",
+            );
+            assert_eq!(
+                saves.get(),
+                1,
+                "revision-only publication once: {definition}"
+            );
+            assert_eq!(
+                serde_json::to_value(direct.as_data()).expect("revision-only state"),
+                expected
+            );
+            Zoner::run(&mut direct).expect("current skip");
+            assert_eq!(saves.get(), 1, "current definitions never save again");
+
+            // A publication failure must be the callback error, not the old unsafe-rebase refusal.
+            legacy.save(&path).expect("restore old revision");
+            let bytes = std::fs::read(&path).expect("old bytes");
+            let blocked = temp.path().join("not-a-file");
+            std::fs::create_dir_all(&blocked).expect("publication barrier");
+            std::fs::write(blocked.join("sentinel"), b"preserve").expect("sentinel");
+            let publication = legacy.clone();
+            let observed = Rc::clone(&saves);
+            let mut failed = legacy
+                .instantiate_condor(Box::new(move |data| {
+                    observed.set(observed.get() + 1);
+                    let mut staged = publication.clone();
+                    staged.condor = data;
+                    staged
+                        .save(&blocked)
+                        .map_err(|error| anyhow::anyhow!("M1 publication failed: {error:#}"))?;
+                    Ok(())
+                }))
+                .expect("rollback job");
+            let before = serde_json::to_value(failed.as_data()).expect("before failure");
+            let error = Zoner::run(&mut failed).expect_err("callback must reject migration");
+            assert!(format!("{error:#}").contains("M1 publication failed"));
+            assert_eq!(saves.get(), 2);
+            assert_eq!(
+                serde_json::to_value(failed.as_data()).expect("rollback"),
+                before
+            );
+            assert_eq!(std::fs::read(&path).expect("unchanged JSON"), bytes);
+            assert_eq!(
+                std::fs::read(temp.path().join("not-a-file/sentinel")).expect("sentinel"),
+                b"preserve"
+            );
+
+            let mut expected = serde_json::to_value(&legacy).expect("saved snapshot");
+            expected["condor"]["scenes"][0]["sequence_data"]["zoner"]["lifecycle"]["algorithm_revision"] =
+                1.into();
+            let preview = condor_cmd(&temp)
+                .env("RUST_LOG", "california_condor=info")
+                .args(["zone", "--dry-run"])
+                .assert()
+                .success();
+            assert_info_logs(
+                preview.get_output(),
+                &["equivalent zoning algorithms; updated algorithm revision only"],
+            );
+            assert!(
+                !String::from_utf8_lossy(&preview.get_output().stderr)
+                    .contains("modified encoder settings")
+            );
+            assert_eq!(std::fs::read(&path).expect("dry-run bytes"), bytes);
+            condor_cmd(&temp).arg("zone").assert().success();
+            let (migrated, _) = load_configuration(Some(&path)).expect("CLI migration");
+            assert_eq!(
+                serde_json::to_value(migrated).expect("only revision changed"),
+                expected
+            );
+            let bytes = std::fs::read(&path).expect("current bytes");
+            condor_cmd(&temp).arg("zone").assert().success();
+            assert_eq!(std::fs::read(&path).expect("CLI current no-save"), bytes);
+            condor_cmd(&temp).arg("scale-noise").assert().success();
+            let (repeated, _) = load_configuration(Some(&path)).expect("scaler repeat");
+            assert_eq!(
+                serde_json::to_value(repeated).expect("no double scaling or changed proof"),
+                expected
+            );
+            for (kind, message) in [
+                ("changed definitions", "reset/redetect"),
+                ("future", "algorithm revision"),
+                ("missing proof", "original baseline"),
+            ] {
+                let mut refused = legacy.clone();
+                match kind {
+                    "changed definitions" => {
+                        let zone = &mut refused
+                            .condor
+                            .sequence_config
+                            .zoner
+                            .as_mut()
+                            .expect("zones")
+                            .zones[0];
+                        zone.start_frame = if zone.start_frame.is_some() {
+                            None
+                        } else {
+                            Some(0)
+                        };
+                    },
+                    "future" => {
+                        refused.condor.scenes[0]
+                            .sequence_data
+                            .zoner
+                            .lifecycle
+                            .as_mut()
+                            .expect("proof")
+                            .algorithm_revision = 99;
+                    },
+                    _ => refused.condor.scenes[0].sequence_data.zoner.lifecycle = None,
+                }
+                refused.save(&path).expect("guard fixture");
+                let bytes = std::fs::read(&path).expect("refusal bytes");
+                let output = condor_cmd(&temp).arg("zone").assert().failure();
+                assert!(
+                    String::from_utf8_lossy(&output.get_output().stderr).contains(message),
+                    "{kind}"
+                );
+                assert_eq!(std::fs::read(&path).expect("guard leaves JSON"), bytes);
+            }
+            assert_eq!(
+                std::fs::read(&artifact).expect("old artifact preserved"),
+                b"preserve old artifact; never certify"
+            );
+            assert_eq!(
+                std::fs::read(&video.path).expect("source preserved"),
+                source
+            );
+        }
+    }
+
+    #[serial]
+    #[test]
     fn z02_changed_zones_restore_original_scene_baseline() {
         let video = get_test_video();
         let temp = tempfile::tempdir().expect("temp");

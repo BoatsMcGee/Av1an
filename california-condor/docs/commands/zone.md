@@ -46,6 +46,8 @@ A failed command or dry-run leaves configuration bytes unchanged. For example, s
 
 **Existing jobs:** a saved lifecycle without `algorithm_revision` records the old whole-scene algorithm. When its original baseline and last-applied definitions still match, the next zoning pass rebuilds exact boundaries and invalidates affected results, even if zone definitions are unchanged. Old chunks and probes remain on disk but are not adopted for the new ranges/indices. Unsafe manual/downstream edits and unsupported future revisions refuse without saving. Preview with `condor zone --dry-run` before migrating; use a separate job if affected results cannot be safely recomputed. Current revision `1` with unchanged definitions still skips without saving.
 
+For unchanged old zone definitions, Zoner first applies the exact algorithm to the proven original baseline. If the result equals the recorded applied definitions (for example, already-aligned or whole-input zones), no scene rewrite is needed: only the algorithm revision is saved once. Actual downstream NoiseScaler encoders, manual edits and all results remain untouched. This does not certify old artifacts; result admission still applies. A failed revision-only save preserves the original job, and the next unchanged current run saves nothing.
+
 Scene-list edits carry the existing lifecycle onto the new first scene when the
 old first scene is deleted or displaced. They preserve the old applied definitions,
 so unchanged zones still skip without saving, but changed-zone rebasing cannot
