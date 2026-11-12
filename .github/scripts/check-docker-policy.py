@@ -8,6 +8,7 @@ never invokes Docker, an action, a network request, or real credentials.
 import fnmatch
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 from types import SimpleNamespace
@@ -44,13 +45,13 @@ def expand(value: str, context: dict) -> str:
 
 def run_step(step: dict, context: dict) -> tuple[str, str]:
     """Run only a selected shell step, with no inherited credentials or PATH."""
-    with tempfile.TemporaryDirectory(prefix="r01-", dir="/tmp/opencode") as temp:
+    with tempfile.TemporaryDirectory() as temp:
         output = Path(temp) / "output"
         output.touch()
         env = {"PATH": "/usr/bin:/bin", "GITHUB_OUTPUT": str(output)}
         env.update({key: expand(value, context) for key, value in step["env"].items()})
         result = subprocess.run(
-            ["/usr/bin/bash", "--noprofile", "--norc", "-e", "-c", step["run"]],
+            [shutil.which("bash") or "bash", "--noprofile", "--norc", "-e", "-c", step["run"]],
             env=env, capture_output=True, text=True, check=True,
         )
         logs = result.stdout + result.stderr
