@@ -727,10 +727,10 @@ pub fn run_scene_concatenator_tui(
 
 #[derive(Debug, ThisError)]
 pub enum TUIError {
-    #[error("Input and Scene Detector Input have a different number of frames: {0} != {0}")]
+    #[error("Input and Scene Detector Input have a different number of frames: {0} != {1}")]
     FramesMismatch(u64, u64),
     #[error(
-        "Input and Scene Detector Input have a different number of frames: {0} != {0}. Check the \
+        "Input and Scene Detector Input have a different number of frames: {0} != {1}. Check the \
          input filters."
     )]
     FramesMismatchWithInputFilters(u64, u64),
@@ -747,6 +747,21 @@ mod tests {
     use tracing_subscriber::{Layer, layer::SubscriberExt};
 
     use super::*;
+
+    #[test]
+    fn t09_frame_mismatch_displays_both_counts_and_filter_hint() {
+        for (error, suffix) in [
+            (TUIError::FramesMismatch(100, 120), "100 != 120"),
+            (
+                TUIError::FramesMismatchWithInputFilters(100, 120),
+                "Check the input filters.",
+            ),
+        ] {
+            let message = error.to_string();
+            assert!(message.contains("100 != 120"), "{message}");
+            assert!(message.ends_with(suffix), "{message}");
+        }
+    }
 
     #[test]
     fn c05_stage_tq_summary_uses_resolved_scene_probe_encoders() {
