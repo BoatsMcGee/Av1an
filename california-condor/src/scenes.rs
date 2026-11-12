@@ -431,27 +431,20 @@ fn prepare_noise(
     use andean_condor::models::sequence::noise_scaler::scaling_context;
     let source = serde_json::to_value(input)?;
     let detector = serde_json::to_value(&config.noise_detector)?;
+    // Input/detector settings govern the whole maximum-noise population, even
+    // unscaled peers. Original proofs survive explicit staged scaling resets.
+    let source_changed = original
+        .iter()
+        .chain(current.iter())
+        .filter_map(|scene| scene.sequence_data.noise_scaling.as_ref()?.baseline.as_ref())
+        .any(|baseline| {
+            baseline.context.get("input") != Some(&source)
+                || baseline.context.get("detector") != Some(&detector)
+        });
     let retained_noise = current
         .iter()
-        .enumerate()
-        .map(|(index, scene)| {
-            let source_matches = scene
-                .sequence_data
-                .noise_scaling
-                .as_ref()
-                .or_else(|| {
-                    original
-                        .get(index)
-                        .filter(|before| same_mapping(before, scene))
-                        .or_else(|| original.iter().find(|before| same_mapping(before, scene)))
-                        .and_then(|before| before.sequence_data.noise_scaling.as_ref())
-                })
-                .and_then(|data| data.baseline.as_ref())
-                .is_none_or(|baseline| {
-                    baseline.context.get("input") == Some(&source)
-                        && baseline.context.get("detector") == Some(&detector)
-                });
-            (source_matches
+        .map(|scene| {
+            (!source_changed
                 && original.iter().any(|before| {
                     same_mapping(before, scene)
                         && before.sequence_data.noise_detection

@@ -352,6 +352,194 @@ mod tests {
                 );
             }
         }
+
+        // An unsupported encoder still contributes to the global maximum.
+        // Its measurement must be withdrawn even though it has no scaling proof.
+        let mut population = measured.clone();
+        population.condor.sequence_config.noise_scaler = Some(NoiseScalerConfig {
+            threshold: 0.2,
+            minimum_scaler: 0.5,
+            maximum_scaler: 1.5,
+            scale_chroma: true,
+        });
+        population.condor.scenes[0]
+            .sequence_data
+            .noise_detection
+            .as_mut()
+            .expect("noise")
+            .noise = 0.4;
+        population.condor.scenes[2]
+            .sequence_data
+            .noise_detection
+            .as_mut()
+            .expect("below threshold")
+            .noise = 0.1;
+        let unscaled = population.condor.scenes.len() - 1;
+        population.condor.scenes[unscaled].encoder =
+            andean_condor::models::encoder::Encoder::default_from_base(
+                &andean_condor::models::encoder::EncoderBase::X264,
+                false,
+            );
+        population.condor.scenes[unscaled]
+            .sequence_data
+            .noise_detection
+            .as_mut()
+            .expect("old maximum")
+            .noise = 1.0;
+        population.save(&path).expect("mixed scaling population");
+        condor_cmd(&temp)
+            .env("CONDOR_TEST_MODE", "1")
+            .arg("scale-noise")
+            .assert()
+            .success();
+        let old_population = load(&path);
+        assert!(old_population.condor.scenes[unscaled].sequence_data.noise_scaling.is_none());
+        assert!(old_population.condor.scenes[2].sequence_data.noise_scaling.is_none());
+        assert_eq!(
+            old_population.condor.scenes[0]
+                .encoder
+                .photon_noise()
+                .expect("old population scale")
+                .iso,
+            601
+        );
+        let mut expected_peer =
+            serde_json::to_value(&old_population.condor.scenes[unscaled]).expect("unscaled peer");
+        expected_peer["sequence_data"]["noise_detection"] = serde_json::Value::Null;
+        let source_bytes = std::fs::read(&video.path).expect("source");
+        let sentinel = temp.path().join("work/unowned.dat");
+        std::fs::create_dir_all(sentinel.parent().expect("workdir")).expect("workdir");
+        std::fs::write(&sentinel, b"preserve foreign file").expect("sentinel");
+        for edit in [
+            vec!["scenes", "0", "set", "params", "crf=19"],
+            vec!["scenes", "all", "reset", "noise-scaling"],
+        ] {
+            let mut changed = old_population.clone();
+            changed.condor.sequence_config.noise_detector = Some(NoiseDetectorConfig {
+                input: Some(changed.condor.input.clone()),
+                reference_filters: vec![],
+                ..Default::default()
+            });
+            changed.save(&path).expect("changed detector for whole population");
+            condor_cmd(&temp).args(edit).assert().success();
+            let withdrawn = load(&path);
+            assert!(
+                withdrawn.condor.scenes[unscaled].sequence_data.noise_detection.is_none(),
+                "N1: the unscaled peer must not retain the old detector's maximum 1.0"
+            );
+            assert!(
+                withdrawn
+                    .condor
+                    .scenes
+                    .iter()
+                    .all(|scene| scene.sequence_data.noise_detection.is_none())
+            );
+            assert!(
+                withdrawn
+                    .condor
+                    .scenes
+                    .iter()
+                    .all(|scene| scene.sequence_data.noise_scaling.is_none())
+            );
+            assert_eq!(
+                withdrawn.condor.scenes[0].encoder.photon_noise().expect("exact original").iso,
+                801
+            );
+            assert_eq!(
+                withdrawn.condor.scenes[0]
+                    .encoder
+                    .photon_noise()
+                    .expect("original chroma")
+                    .chroma_iso,
+                Some(403)
+            );
+            assert_eq!(
+                withdrawn.condor.scenes[0].encoder.parameters()["preset"].to_string_value(),
+                "3"
+            );
+            assert_eq!(
+                serde_json::to_value(&withdrawn.condor.scenes[unscaled])
+                    .expect("unscaled peer retained metadata"),
+                expected_peer
+            );
+            for (before, after) in old_population.condor.scenes.iter().zip(&withdrawn.condor.scenes)
+            {
+                assert_eq!(
+                    serde_json::to_value((
+                        &after.sequence_data.scene_detection,
+                        &after.sequence_data.target_quality,
+                        &after.sequence_data.quality_check,
+                        &after.sequence_data.zoner
+                    ))
+                    .expect("other metadata"),
+                    serde_json::to_value((
+                        &before.sequence_data.scene_detection,
+                        &before.sequence_data.target_quality,
+                        &before.sequence_data.quality_check,
+                        &before.sequence_data.zoner
+                    ))
+                    .expect("unchanged other metadata")
+                );
+            }
+            // Noise Detector's None-only scheduling can now remeasure every scene.
+            // Supply fixed new measurement inputs; run the actual owning scaler.
+            condor_cmd(&temp)
+                .args(["scenes", "all", "reset", "parallel-encoder"])
+                .assert()
+                .success();
+            let mut recovered = load(&path);
+            for scene in &mut recovered.condor.scenes {
+                scene.sequence_data.noise_detection = Some(NoiseDetectorData {
+                    noise: 0.4,
+                    luminance: 0.3,
+                    created_on: SystemTime::UNIX_EPOCH,
+                });
+            }
+            recovered
+                .save(&path)
+                .expect("new population measurements, not native detector claims");
+            condor_cmd(&temp)
+                .env("CONDOR_TEST_MODE", "1")
+                .arg("scale-noise")
+                .assert()
+                .success();
+            let recomputed = load(&path);
+            assert_eq!(
+                recomputed.condor.scenes[0].encoder.photon_noise().expect("new maximum 0.4").iso,
+                1202,
+                "new measurements must give factor 1.5, not the old mixed-population factor 0.75"
+            );
+            assert_eq!(
+                recomputed.condor.scenes[0]
+                    .encoder
+                    .photon_noise()
+                    .expect("new chroma")
+                    .chroma_iso,
+                Some(605)
+            );
+            assert_eq!(
+                recomputed.condor.scenes[0].encoder.parameters()["preset"].to_string_value(),
+                "3"
+            );
+            let snapshot = serde_json::to_value(&recomputed).expect("new producer snapshot");
+            condor_cmd(&temp)
+                .env("CONDOR_TEST_MODE", "1")
+                .arg("scale-noise")
+                .assert()
+                .success();
+            assert_eq!(
+                serde_json::to_value(load(&path)).expect("no second multiplication"),
+                snapshot
+            );
+            assert_eq!(
+                std::fs::read(&video.path).expect("preserved source"),
+                source_bytes
+            );
+            assert_eq!(
+                std::fs::read(&sentinel).expect("preserved foreign file"),
+                b"preserve foreign file"
+            );
+        }
     }
 
     #[test]
