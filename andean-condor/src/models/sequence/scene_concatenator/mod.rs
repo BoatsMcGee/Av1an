@@ -19,8 +19,8 @@ pub use ffmpeg::{
     FfmpegTrackMap, FfmpegTrackOptions,
 };
 pub use mkvmerge::{
-    AttachmentTrack, AudioTrack, Compression, MkvmergeConfig, MkvmergeExtraInput, MkvmergeTrack,
-    MkvmergeTrackKind, SubtitleTrack, TrackMap, TrackOptions, VideoTrack,
+    AttachmentMap, AttachmentTrack, AudioTrack, Compression, MkvmergeConfig, MkvmergeExtraInput,
+    MkvmergeTrack, MkvmergeTrackKind, SubtitleTrack, TrackMap, TrackOptions, VideoTrack,
 };
 
 pub trait SceneConcatenatorConfigHandler
@@ -81,15 +81,10 @@ impl SceneConcatenatorConfig {
                 paths.extend(config.extra_inputs.iter().map(|input| input.path.clone()));
             },
             ConcatMethod::MKVMerge(config) => {
-                for tracks in config
-                    .tracks
-                    .iter()
-                    .chain(config.extra_inputs.iter().filter_map(|input| input.tracks.as_ref()))
-                {
-                    paths.extend(tracks.values().filter_map(|track| match track {
-                        MkvmergeTrack::Attachment(track) => track.path.clone(),
-                        _ => None,
-                    }));
+                for attachments in config.attachments.iter().chain(
+                    config.extra_inputs.iter().filter_map(|input| input.attachments.as_ref()),
+                ) {
+                    paths.extend(attachments.values().filter_map(|track| track.path.clone()));
                 }
                 paths.extend(config.extra_inputs.iter().map(|input| input.path.clone()));
             },

@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use andean_condor::models::{
     input::Input,
     sequence::scene_concatenator::{
-        Chapters, ConcatMethod, FfmpegConfig, FfmpegTrack, FfmpegTrackKind, FfmpegTrackMap,
-        Metadata, MkvmergeConfig, MkvmergeTrack, MkvmergeTrackKind, SceneConcatenatorConfig,
-        TrackMap,
+        AttachmentMap, AttachmentTrack, Chapters, ConcatMethod, FfmpegConfig, FfmpegTrack,
+        FfmpegTrackKind, FfmpegTrackMap, Metadata, MkvmergeConfig, MkvmergeTrack,
+        MkvmergeTrackKind, SceneConcatenatorConfig, TrackMap,
     },
 };
 use anyhow::Result;
@@ -132,7 +132,7 @@ pub fn apply_discard(configuration: &mut Configuration, discard: &[DiscardCatego
 
     match method {
         ConcatMethod::MKVMerge(mut mkvmerge) => {
-            discard_mkvmerge(&mut mkvmerge, &source, discard);
+            discard_mkvmerge(&mut mkvmerge, &source, discard)?;
             configuration.condor.sequence_config.scene_concatenator.method =
                 ConcatMethod::MKVMerge(mkvmerge);
         },
@@ -166,17 +166,33 @@ fn discard_mkvmerge(
     config: &mut MkvmergeConfig,
     source: &ProbedSource,
     discard: &[DiscardCategory],
-) {
+) -> Result<()> {
+    config.validate()?;
     for category in discard {
         match category {
-            DiscardCategory::Audio => drop_mkvmerge_tracks(config, source, TrackKind::Audio),
-            DiscardCategory::Subtitle => drop_mkvmerge_tracks(config, source, TrackKind::Subtitle),
+            DiscardCategory::Audio => drop_mkvmerge_tracks(config, source, TrackKind::Audio)?,
+            DiscardCategory::Subtitle => drop_mkvmerge_tracks(config, source, TrackKind::Subtitle)?,
             DiscardCategory::Attachment => {
-                drop_mkvmerge_tracks(config, source, TrackKind::Attachment);
+                for id in source.mkvmerge_ids(TrackKind::Attachment) {
+                    let id = u32::try_from(id)?;
+                    let attachment = config
+                        .attachments
+                        .get_or_insert_with(AttachmentMap::new)
+                        .entry(id)
+                        .or_insert_with(|| AttachmentTrack {
+                            copy: true,
+                            ..Default::default()
+                        });
+                    anyhow::ensure!(
+                        attachment.path.is_none(),
+                        "attachment ID {id} is configured as a new file, not a source selection; move the new file to an unused attachments key before discarding source attachments"
+                    );
+                    attachment.copy = false;
+                }
             },
             // The video entry describes the *output* track, so it is always
             // ID 0 rather than a probed source track.
-            DiscardCategory::Video => drop_output_video_mkvmerge(config),
+            DiscardCategory::Video => drop_output_video_mkvmerge(config)?,
             DiscardCategory::Chapters => {
                 config.chapters.get_or_insert_with(Chapters::default).copy = false;
             },
@@ -185,39 +201,54 @@ fn discard_mkvmerge(
             },
         }
     }
+    Ok(())
 }
 
 /// Marks every probed track of `kind` as not copied.
-fn drop_mkvmerge_tracks(config: &mut MkvmergeConfig, source: &ProbedSource, kind: TrackKind) {
+fn drop_mkvmerge_tracks(
+    config: &mut MkvmergeConfig,
+    source: &ProbedSource,
+    kind: TrackKind,
+) -> Result<()> {
     let track_kind = match kind {
         TrackKind::Video => MkvmergeTrackKind::Video,
         TrackKind::Audio => MkvmergeTrackKind::Audio,
         TrackKind::Subtitle => MkvmergeTrackKind::Subtitle,
-        TrackKind::Attachment => MkvmergeTrackKind::Attachment,
+        TrackKind::Attachment => unreachable!("attachments have their own map"),
     };
     for id in source.mkvmerge_ids(kind) {
-        let id = u32::try_from(id).unwrap_or(u32::MAX);
-        config
+        let id = u32::try_from(id)?;
+        let track = config
             .tracks
             .get_or_insert_with(TrackMap::new)
             .entry(id)
-            .and_modify(|track| track.set_copy(false))
             .or_insert_with(|| MkvmergeTrack::plain(track_kind, false));
+        anyhow::ensure!(
+            matches!(
+                (kind, &*track),
+                (TrackKind::Video, MkvmergeTrack::Video(_))
+                    | (TrackKind::Audio, MkvmergeTrack::Audio(_))
+                    | (TrackKind::Subtitle, MkvmergeTrack::Subtitle(_))
+            ),
+            "track ID {id} has a different configured kind from the probed {kind:?}; correct tracks before discarding"
+        );
+        track.set_copy(false);
     }
+    Ok(())
 }
 
 /// Drops the encoded video from the mkvmerge output.
-fn drop_output_video_mkvmerge(config: &mut MkvmergeConfig) {
+fn drop_output_video_mkvmerge(config: &mut MkvmergeConfig) -> Result<()> {
     let tracks = config.tracks.get_or_insert_with(TrackMap::new);
-    // Validation only allows one video entry, at ID 0, so an existing one is
-    // the entry to drop rather than a second one alongside it.
-    if let Some(existing) =
-        tracks.values_mut().find(|track| matches!(track, MkvmergeTrack::Video(_)))
-    {
-        existing.set_copy(false);
-    } else {
-        tracks.insert(0, MkvmergeTrack::plain(MkvmergeTrackKind::Video, false));
-    }
+    let track = tracks
+        .entry(0)
+        .or_insert_with(|| MkvmergeTrack::plain(MkvmergeTrackKind::Video, false));
+    anyhow::ensure!(
+        matches!(track, MkvmergeTrack::Video(_)),
+        "output video ID 0 conflicts with a non-video tracks entry; correct tracks before discarding video"
+    );
+    track.set_copy(false);
+    Ok(())
 }
 
 /// Adds the discard entries to the FFmpeg settings.
@@ -647,7 +678,7 @@ mod tests {
     fn discard_nothing_leaves_every_track_alone() {
         let source = probed_source();
         let mut mkvmerge = MkvmergeConfig::default();
-        discard_mkvmerge(&mut mkvmerge, &source, &[]);
+        discard_mkvmerge(&mut mkvmerge, &source, &[]).expect("discard");
         assert!(mkvmerge.tracks.is_none(), "no map is created");
         assert!(
             mkvmerge.chapters.is_none(),
@@ -670,7 +701,7 @@ mod tests {
     fn discard_audio_only_writes_the_audio_tracks_for_mkvmerge() {
         let source = probed_source();
         let mut config = MkvmergeConfig::default();
-        discard_mkvmerge(&mut config, &source, &[DiscardCategory::Audio]);
+        discard_mkvmerge(&mut config, &source, &[DiscardCategory::Audio]).expect("discard");
 
         let tracks = config.tracks.as_ref().expect("a track map is created");
         assert_eq!(tracks.len(), 2, "only the two audio tracks are written");
@@ -701,7 +732,7 @@ mod tests {
             )])),
             ..Default::default()
         };
-        discard_mkvmerge(&mut config, &source, &[DiscardCategory::Audio]);
+        discard_mkvmerge(&mut config, &source, &[DiscardCategory::Audio]).expect("discard");
 
         let tracks = config.tracks.as_ref().expect("the track map is kept");
         let existing = tracks.get(&1).expect("the existing audio track is kept");
@@ -715,10 +746,50 @@ mod tests {
     }
 
     #[test]
+    fn x08_discard_preserves_attachment_options_and_refuses_wrong_kinds() {
+        let source = probed_source();
+        let mut settings: MkvmergeConfig = serde_json::from_str(r#"{"tracks":{"1":{"type":"audio","language":"jpn"}},"attachments":{"1":{"attachment_name":"kept name","attachment_description":"kept description","attachment_mime_type":"text/plain"}}}"#).expect("settings");
+        let before = settings.clone();
+        discard_mkvmerge(&mut settings, &source, &[DiscardCategory::Attachment]).expect("discard");
+        assert_eq!(settings.tracks, before.tracks);
+        let attachment = &settings.attachments.as_ref().expect("attachments")[&1];
+        assert!(!attachment.copy);
+        assert_eq!(attachment.attachment_name.as_deref(), Some("kept name"));
+        assert_eq!(
+            attachment.attachment_description.as_deref(),
+            Some("kept description")
+        );
+        assert_eq!(
+            attachment.attachment_mime_type.as_deref(),
+            Some("text/plain")
+        );
+        let mut wrong: MkvmergeConfig =
+            serde_json::from_str(r#"{"tracks":{"1":{"type":"subtitle","language":"eng"}}}"#)
+                .expect("wrong kind");
+        let before = wrong.clone();
+        let error = discard_mkvmerge(&mut wrong, &source, &[DiscardCategory::Audio])
+            .expect_err("wrong kind is not modified");
+        assert!(error.to_string().contains("track ID 1"));
+        assert_eq!(wrong, before);
+        let mut wrong: MkvmergeConfig =
+            serde_json::from_str(r#"{"tracks":{"0":{"type":"audio"}}}"#)
+                .expect("conflicting output key");
+        let before = wrong.clone();
+        assert!(discard_mkvmerge(&mut wrong, &source, &[DiscardCategory::Video]).is_err());
+        assert_eq!(wrong, before);
+        let mut new_file: MkvmergeConfig =
+            serde_json::from_str(r#"{"attachments":{"1":{"path":"independent.txt"}}}"#)
+                .expect("new path");
+        let before = new_file.clone();
+        assert!(discard_mkvmerge(&mut new_file, &source, &[DiscardCategory::Attachment]).is_err());
+        assert_eq!(new_file, before);
+    }
+
+    #[test]
     fn discard_video_targets_track_zero_for_mkvmerge() {
         let source = probed_source();
         let mut config = MkvmergeConfig::default();
-        discard_mkvmerge(&mut config, &source, &[DiscardCategory::Video]);
+        discard_mkvmerge(&mut config, &source, &[DiscardCategory::Video]).expect("discard");
 
         let tracks = config.tracks.as_ref().expect("a track map is created");
         assert_eq!(tracks.len(), 1, "only the video track is written");
@@ -735,7 +806,8 @@ mod tests {
             &mut mkvmerge,
             &source,
             &[DiscardCategory::Chapters, DiscardCategory::Metadata],
-        );
+        )
+        .expect("discard");
         assert!(!mkvmerge.chapters.expect("chapters are created").copy);
         assert!(!mkvmerge.metadata.expect("metadata is created").copy);
 

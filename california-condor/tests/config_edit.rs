@@ -1506,13 +1506,19 @@ mod tests {
                 _ => {
                     let extra = slot.ends_with("extra");
                     let extra_attachment = slot.ends_with("extra-attachment");
-                    let tracks = serde_json::json!({"7":{"type":"attachment","path":protected,"copy":false}});
+                    let ffmpeg = slot.starts_with("ff");
+                    let key = if ffmpeg { "tracks" } else { "attachments" };
+                    let tracks = if ffmpeg {
+                        serde_json::json!({"7":{"type":"attachment","path":protected,"copy":false}})
+                    } else {
+                        serde_json::json!({"7":{"path":protected,"copy":false}})
+                    };
                     let settings = if extra {
                         serde_json::json!({"extra_inputs":[{"path":protected,"tracks":{}}]})
                     } else if extra_attachment {
-                        serde_json::json!({"extra_inputs":[{"path":temp.path().join("other"),"tracks":tracks}]})
+                        serde_json::json!({"extra_inputs":[{"path":temp.path().join("other"),(key):tracks}]})
                     } else {
-                        serde_json::json!({"tracks":tracks})
+                        serde_json::json!({(key):tracks})
                     };
                     seq.scene_concatenator.method = if slot.starts_with("ff") {
                         ConcatMethod::FFmpeg(

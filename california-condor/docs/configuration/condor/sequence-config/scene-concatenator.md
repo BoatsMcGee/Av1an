@@ -25,6 +25,9 @@ Example:
                 "1": { "type": "audio", "language": "eng", "default_track": true },
                 "2": { "type": "audio", "copy": false }
             },
+            "attachments": {
+                "1": { "copy": false }
+            },
             "chapters": { "copy": true, "language": "eng" },
             "metadata": { "copy": true, "title": "My Movie", "tags": { "GENRE": "Animation" } },
             "extra_inputs": []
@@ -37,9 +40,15 @@ Example:
 
 ## `mkvmerge`
 
-Track maps are keyed by the track ID reported by `mkvmerge --identify` for that source file. `None` copies every track.
+`tracks` maps video/audio/subtitle IDs reported by `mkvmerge --identify`.
+`attachments` is a separate map of attachment IDs from the same report, with
+untagged attachment values. Audio track `1` and attachment `1` can coexist;
+discarding one does not change the other. Omitted, `null`, and empty maps apply
+no overrides, leaving source tracks and attachments copied by default.
 
-Each value is one of `video`, `audio`, `subtitle`, or `attachment`, tagged with `"type"`. Every entry has a `copy` flag that defaults to `true`; setting it to `false` drops the track.
+Each `tracks` value is tagged with `"type"`: `video`, `audio`, or `subtitle`.
+Both maps' entries have a `copy` flag that defaults to `true`; `false` drops the
+selected track/attachment or disables a new-file attachment.
 
 | Field | Applies to | mkvmerge option |
 | ----- | ---------- | --------------- |
@@ -53,9 +62,43 @@ Each value is one of `video`, `audio`, `subtitle`, or `attachment`, tagged with 
 | `compression` (`none`/`zlib`), `charset` | subtitle | `--compression`, `--sub-charset` |
 | `path`, `attachment_name`, `attachment_description`, `attachment_mime_type` | attachment | `--attach-file` with `--attachment-name` / `--attachment-description` / `--attachment-mime-type` |
 
-The `video` entry addresses the encoded video track (the concatenated scenes, track `0`); any other ID is rejected. An attachment entry only renames/sets a MIME type when it has a `path`; mkvmerge cannot modify an attachment copied from a source.
+The main `video` entry addresses the encoded scenes, always at `tracks["0"]`;
+any other main video ID is rejected. It never addresses a source attachment.
+Extra inputs instead use their actual source video IDs, including video `1`
+alongside attachment `1`:
 
-`chapters` and `metadata` are `null` by default, which copies the source's chapters and global tags. Set `"copy": false` to drop them, or `title`/`tags` to write new global metadata. `extra_inputs` is a list of `{ "path", "tracks", "chapters", "metadata" }` objects merged alongside the encoded scenes.
+```json
+{
+    "extra_inputs": [{
+        "path": "extra.mkv",
+        "tracks": { "1": { "type": "video", "name": "Extra video" } },
+        "attachments": { "1": { "copy": false } }
+    }]
+}
+```
+
+An `attachments` value without `path` selects a source attachment by ID.
+Copied attachments retain their original name, description, and MIME type;
+mkvmerge cannot change these fields while copying. A value with `path` adds a
+new file, using the exact `attachment_name`, `attachment_description`, and
+`attachment_mime_type` supplied. Its map key does not select or exclude a source
+attachment, even with `copy: false`. Use a free key for a new file when you also
+need an explicit source-attachment override; `--discard attachment` refuses a
+new-file entry occupying a source attachment's key rather than modifying the
+wrong entry. On unsupported primary sources, source-ID overrides still require
+a provable native mkvmerge mapping; independent new-file paths do not.
+
+### Legacy attachment entries
+
+The reader migrates `tracks: { "1": { "type": "attachment", ... } }` into
+`attachments: { "1": { ... } }` on main and extra inputs, preserving its path
+and options. Saving and `concatenate info` use only the canonical separate maps.
+A duplicate legacy ID or a legacy attachment plus an `attachments` entry at the
+same ID is rejected with its ID/context before config save. The same ID in
+canonical `tracks` and `attachments` is valid. Migration cannot recover an entry
+already overwritten by a historical map or JSON writer.
+
+`chapters` and `metadata` are `null` by default, which copies the source's chapters and global tags. Set `"copy": false` to drop them, or `title`/`tags` to write new global metadata. `extra_inputs` is a list of `{ "path", "tracks", "attachments", "chapters", "metadata" }` objects merged alongside the encoded scenes.
 
 ## `ffmpeg`
 

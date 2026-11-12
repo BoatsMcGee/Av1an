@@ -257,7 +257,10 @@ pub(super) fn prepare(
                 crate::models::sequence::scene_concatenator::mkvmerge::MkvmergeTrack::Video(_)
             )
         })
-    }) {
+    }) || config
+        .and_then(|config| config.attachments.as_ref())
+        .is_some_and(|attachments| attachments.values().any(|attachment| attachment.path.is_none()))
+    {
         return Err(alternative(
             "Unsupported source has no provable mkvmerge track/attachment ID mapping",
         ));

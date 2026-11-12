@@ -6,19 +6,26 @@ use thiserror::Error;
 
 use super::common::{Chapters, Metadata, default_true};
 
-/// Track overrides for one source file, keyed by the track ID reported by
-/// `mkvmerge --identify`.
+/// Video/audio/subtitle overrides, keyed by mkvmerge track ID (not attachment ID).
+/// On the main input, video ID 0 describes the encoded scenes instead.
 ///
 /// `None` copies every track (the default). A [`MkvmergeTrack`] modifies the
 /// track it is keyed to, or drops it when its `copy` flag is `false`.
 pub type TrackMap = HashMap<u32, MkvmergeTrack>;
 
+/// Attachment overrides in mkvmerge's independent attachment ID namespace.
+/// A value with `path` adds a file instead of selecting a source ID.
+pub type AttachmentMap = HashMap<u32, AttachmentTrack>;
+
 /// `mkvmerge` output settings for the Scene Concatenator.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, JsonSchema)]
 pub struct MkvmergeConfig {
-    /// Per-track overrides for the main input. `None` copies all tracks.
+    /// Video/audio/subtitle overrides. Main video ID 0 describes encoded scenes.
     #[serde(default)]
     pub tracks: Option<TrackMap>,
+    /// Attachment overrides, keyed separately from video/audio/subtitle IDs.
+    #[serde(default)]
+    pub attachments: Option<AttachmentMap>,
     /// Chapter handling. `None` copies the source's chapters.
     #[serde(default)]
     pub chapters: Option<Chapters>,
@@ -31,12 +38,15 @@ pub struct MkvmergeConfig {
 }
 
 /// An additional source file merged into the output.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct MkvmergeExtraInput {
     pub path: PathBuf,
-    /// Per-track overrides for this file. `None` copies all its tracks.
+    /// Video/audio/subtitle overrides using this file's actual source IDs.
     #[serde(default)]
     pub tracks: Option<TrackMap>,
+    /// Attachment overrides in this file's attachment ID namespace.
+    #[serde(default)]
+    pub attachments: Option<AttachmentMap>,
     /// Chapter handling for this file. `None` copies its chapters.
     #[serde(default)]
     pub chapters: Option<Chapters>,
@@ -54,7 +64,6 @@ pub enum MkvmergeTrack {
     Video(Box<VideoTrack>),
     Audio(AudioTrack),
     Subtitle(SubtitleTrack),
-    Attachment(AttachmentTrack),
 }
 
 /// The kind of track an [`MkvmergeTrack`] describes.
@@ -63,7 +72,6 @@ pub enum MkvmergeTrackKind {
     Video,
     Audio,
     Subtitle,
-    Attachment,
 }
 
 impl MkvmergeTrack {
@@ -75,7 +83,6 @@ impl MkvmergeTrack {
             Self::Video(track) => track.track.copy,
             Self::Audio(track) => track.track.copy,
             Self::Subtitle(track) => track.track.copy,
-            Self::Attachment(track) => track.copy,
         }
     }
 
@@ -86,7 +93,6 @@ impl MkvmergeTrack {
             Self::Video(track) => track.track.copy = copy,
             Self::Audio(track) => track.track.copy = copy,
             Self::Subtitle(track) => track.track.copy = copy,
-            Self::Attachment(track) => track.copy = copy,
         }
     }
 
@@ -119,11 +125,136 @@ impl MkvmergeTrack {
                 },
                 ..SubtitleTrack::default()
             }),
-            MkvmergeTrackKind::Attachment => Self::Attachment(AttachmentTrack {
-                copy,
-                ..AttachmentTrack::default()
-            }),
         }
+    }
+}
+
+// Reader-only legacy shape. Never pass through serde_json::Value: that would
+// discard duplicate IDs before migration can reject an ambiguous definition.
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ReadTrack {
+    Video(Box<VideoTrack>),
+    Audio(AudioTrack),
+    Subtitle(SubtitleTrack),
+    Attachment(AttachmentTrack),
+}
+
+struct IdMap<T>(HashMap<u32, T>);
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for IdMap<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Visitor<T> {
+            type Value = IdMap<T>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a map of unique mkvmerge track or attachment IDs")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut entries = HashMap::new();
+                while let Some((key, value)) = map.next_entry::<String, T>()? {
+                    let id = key.parse::<u32>().map_err(|error| {
+                        serde::de::Error::custom(format!(
+                            "invalid mkvmerge track/attachment ID {key:?}: {error}"
+                        ))
+                    })?;
+                    if entries.insert(id, value).is_some() {
+                        return Err(serde::de::Error::custom(format!(
+                            "duplicate mkvmerge track/attachment ID {id}"
+                        )));
+                    }
+                }
+                Ok(IdMap(entries))
+            }
+        }
+        deserializer.deserialize_map(Visitor(std::marker::PhantomData))
+    }
+}
+
+#[derive(Default, Deserialize)]
+struct ReadSettings {
+    #[serde(default)]
+    tracks: Option<IdMap<ReadTrack>>,
+    #[serde(default)]
+    attachments: Option<IdMap<AttachmentTrack>>,
+    #[serde(default)]
+    chapters: Option<Chapters>,
+    #[serde(default)]
+    metadata: Option<Metadata>,
+}
+
+impl ReadSettings {
+    fn migrate<E: serde::de::Error>(
+        &mut self,
+        context: &str,
+    ) -> Result<(Option<TrackMap>, Option<AttachmentMap>), E> {
+        let mut attachments = self.attachments.take().map(|map| map.0);
+        let tracks = self.tracks.take().map(|map| {
+            let mut tracks = TrackMap::new();
+            for (id, track) in map.0 {
+                let track = match track {
+                    ReadTrack::Video(track) => MkvmergeTrack::Video(track),
+                    ReadTrack::Audio(track) => MkvmergeTrack::Audio(track),
+                    ReadTrack::Subtitle(track) => MkvmergeTrack::Subtitle(track),
+                    ReadTrack::Attachment(track) => {
+                        if attachments.get_or_insert_with(AttachmentMap::new).insert(id, track).is_some() {
+                            return Err(E::custom(format!("{context}: attachment ID {id} collision between legacy tracks and attachments; keep one definition in attachments")));
+                        }
+                        continue;
+                    },
+                };
+                tracks.insert(id, track);
+            }
+            Ok(tracks)
+        }).transpose()?;
+        Ok((tracks, attachments))
+    }
+}
+
+impl<'de> Deserialize<'de> for MkvmergeConfig {
+    #[inline]
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Reader {
+            #[serde(flatten)]
+            settings: ReadSettings,
+            #[serde(default)]
+            extra_inputs: Vec<MkvmergeExtraInput>,
+        }
+        let mut reader = Reader::deserialize(deserializer)?;
+        let (tracks, attachments) = reader.settings.migrate("main input")?;
+        Ok(Self {
+            tracks,
+            attachments,
+            chapters: reader.settings.chapters,
+            metadata: reader.settings.metadata,
+            extra_inputs: reader.extra_inputs,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for MkvmergeExtraInput {
+    #[inline]
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Reader {
+            path: PathBuf,
+            #[serde(flatten)]
+            settings: ReadSettings,
+        }
+        let mut reader = Reader::deserialize(deserializer)?;
+        let (tracks, attachments) =
+            reader.settings.migrate(&format!("extra input {}", reader.path.display()))?;
+        Ok(Self {
+            path: reader.path,
+            tracks,
+            attachments,
+            chapters: reader.settings.chapters,
+            metadata: reader.settings.metadata,
+        })
     }
 }
 
@@ -517,25 +648,25 @@ impl MkvmergeConfig {
     #[must_use]
     #[inline]
     pub fn input_args(&self) -> Vec<String> {
-        let Some(tracks) = &self.tracks else {
-            return Vec::new();
-        };
         let mut args = Vec::new();
+        push_attachment_exclusions(&mut args, self.attachments.as_ref());
+        let Some(tracks) = &self.tracks else {
+            return args;
+        };
         // The input's video is never copied — the encoded scenes replace it and
         // `--no-video` is applied to this source — so a `Video` entry (which
         // describes the *output* video track) must not emit a selection option
-        // here. Only audio, subtitle, and attachment selection applies.
-        let (_, audio, subtitle, attachments) = Self::exclusions(tracks);
+        // here. Only audio/subtitle selection applies to this track namespace.
+        let (_, audio, subtitle) = Self::exclusions(tracks);
         push_exclusion(&mut args, "--audio-tracks", &audio);
         push_exclusion(&mut args, "--subtitle-tracks", &subtitle);
-        push_exclusion(&mut args, "--attachments", &attachments);
 
         for (id, track) in sorted_tracks(tracks) {
             if !track.copy() {
                 continue;
             }
             match track {
-                MkvmergeTrack::Video(_) | MkvmergeTrack::Attachment(_) => (),
+                MkvmergeTrack::Video(_) => (),
                 MkvmergeTrack::Audio(audio) => args.extend(audio.args(id)),
                 MkvmergeTrack::Subtitle(subtitle) => args.extend(subtitle.args(id)),
             }
@@ -570,24 +701,21 @@ impl MkvmergeConfig {
     #[must_use]
     #[inline]
     pub fn attachment_additions(&self) -> Vec<String> {
-        let Some(tracks) = &self.tracks else {
+        let Some(attachments) = &self.attachments else {
             return Vec::new();
         };
         let mut args = Vec::new();
-        for (_, track) in sorted_tracks(tracks) {
-            if let MkvmergeTrack::Attachment(attachment) = track {
-                args.extend(attachment.args());
-            }
+        for (_, attachment) in sorted_attachments(attachments) {
+            args.extend(attachment.args());
         }
         args
     }
 
     /// Track IDs excluded because their entry sets `copy` to `false`.
-    fn exclusions(tracks: &TrackMap) -> (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>) {
+    fn exclusions(tracks: &TrackMap) -> (Vec<u32>, Vec<u32>, Vec<u32>) {
         let mut video = Vec::new();
         let mut audio = Vec::new();
         let mut subtitle = Vec::new();
-        let mut attachments = Vec::new();
         for (id, track) in tracks {
             if track.copy() {
                 continue;
@@ -596,10 +724,12 @@ impl MkvmergeConfig {
                 MkvmergeTrack::Video(_) => video.push(*id),
                 MkvmergeTrack::Audio(_) => audio.push(*id),
                 MkvmergeTrack::Subtitle(_) => subtitle.push(*id),
-                MkvmergeTrack::Attachment(_) => attachments.push(*id),
             }
         }
-        (video, audio, subtitle, attachments)
+        video.sort_unstable();
+        audio.sort_unstable();
+        subtitle.sort_unstable();
+        (video, audio, subtitle)
     }
 
     /// Validates the configuration, returning non-fatal warnings.
@@ -623,16 +753,22 @@ impl MkvmergeConfig {
                     MkvmergeTrack::Video(_) if *id != 0 => {
                         return Err(MkvmergeConfigError::VideoTrackNotZero { id: *id }.into());
                     },
-                    MkvmergeTrack::Attachment(attachment)
-                        if attachment.path.is_none()
-                            && (attachment.attachment_name.is_some()
-                                || attachment.attachment_description.is_some()
-                                || attachment.attachment_mime_type.is_some()) =>
-                    {
-                        warnings
-                            .push(MkvmergeConfigError::AttachmentFieldsIgnored { id: *id }.into());
-                    },
                     _ => (),
+                }
+            }
+        }
+        for attachments in self
+            .attachments
+            .iter()
+            .chain(self.extra_inputs.iter().filter_map(|extra| extra.attachments.as_ref()))
+        {
+            for (id, attachment) in attachments {
+                if attachment.path.is_none()
+                    && (attachment.attachment_name.is_some()
+                        || attachment.attachment_description.is_some()
+                        || attachment.attachment_mime_type.is_some())
+                {
+                    warnings.push(MkvmergeConfigError::AttachmentFieldsIgnored { id: *id }.into());
                 }
             }
         }
@@ -686,21 +822,25 @@ impl MkvmergeExtraInput {
     #[must_use]
     #[inline]
     pub fn input_args(&self) -> Vec<String> {
-        let Some(tracks) = &self.tracks else {
-            return Vec::new();
-        };
         let mut args = Vec::new();
-        let (video, audio, subtitle, attachments) = MkvmergeConfig::exclusions(tracks);
+        if let Some(attachments) = &self.attachments {
+            for (_, attachment) in sorted_attachments(attachments) {
+                args.extend(attachment.args());
+            }
+        }
+        push_attachment_exclusions(&mut args, self.attachments.as_ref());
+        let Some(tracks) = &self.tracks else {
+            return args;
+        };
+        let (video, audio, subtitle) = MkvmergeConfig::exclusions(tracks);
         push_exclusion(&mut args, "--video-tracks", &video);
         push_exclusion(&mut args, "--audio-tracks", &audio);
         push_exclusion(&mut args, "--subtitle-tracks", &subtitle);
-        push_exclusion(&mut args, "--attachments", &attachments);
         for (id, track) in sorted_tracks(tracks) {
             if !track.copy() {
                 continue;
             }
             match track {
-                MkvmergeTrack::Attachment(attachment) => args.extend(attachment.args()),
                 MkvmergeTrack::Video(video) => args.extend(video.args(id)),
                 MkvmergeTrack::Audio(audio) => args.extend(audio.args(id)),
                 MkvmergeTrack::Subtitle(subtitle) => args.extend(subtitle.args(id)),
@@ -714,6 +854,9 @@ impl AttachmentTrack {
     /// Attachment arguments, emitted before the sources.
     #[must_use]
     fn args(&self) -> Vec<String> {
+        if !self.copy {
+            return Vec::new();
+        }
         let Some(path) = &self.path else {
             return Vec::new();
         };
@@ -734,6 +877,24 @@ impl AttachmentTrack {
         args.push(path.display().to_string());
         args
     }
+}
+
+fn sorted_attachments(attachments: &AttachmentMap) -> Vec<(u32, &AttachmentTrack)> {
+    let mut entries: Vec<_> = attachments.iter().map(|(id, track)| (*id, track)).collect();
+    entries.sort_unstable_by_key(|(id, _)| *id);
+    entries
+}
+
+fn push_attachment_exclusions(args: &mut Vec<String>, attachments: Option<&AttachmentMap>) {
+    let Some(attachments) = attachments else {
+        return;
+    };
+    // New files do not identify a source attachment, even when copying is disabled.
+    let ids: Vec<_> = sorted_attachments(attachments)
+        .into_iter()
+        .filter_map(|(id, track)| (!track.copy && track.path.is_none()).then_some(id))
+        .collect();
+    push_exclusion(args, "--attachments", &ids);
 }
 
 /// Sorts a track map into a deterministic ID order.

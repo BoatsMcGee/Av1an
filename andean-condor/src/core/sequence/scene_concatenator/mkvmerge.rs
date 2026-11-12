@@ -62,6 +62,9 @@ impl SceneConcatenator {
     ) -> Result<()> {
         cancellation.check_admission()?;
         Self::validate_scene_paths(scene_paths)?;
+        if let Some(config) = config {
+            config.validate()?;
+        }
         // Option-file paths must round-trip, not silently target a lossy replacement.
         for path in
             std::iter::once(output)
@@ -449,13 +452,17 @@ fn mkvmerge_args(
         args.push(path.clone());
     }
 
+    let video_args = config.map(MkvmergeConfig::video_args).unwrap_or_default();
+    if video_args.iter().any(|arg| arg == "--no-video") {
+        // With no encoded video, there is no append target. Applying --no-video
+        // only to the first scene leaves subsequent scenes with invalid mappings.
+        return args;
+    }
     if let Some(duration) = duration {
         args.push("--default-duration".to_owned());
         args.push(format!("0:{}/{}fps", duration.numer(), duration.denom()));
     }
-    if let Some(config) = config {
-        args.extend(config.video_args());
-    }
+    args.extend(video_args);
 
     args.push("[".to_owned());
     args.extend(chunks.iter().cloned());
