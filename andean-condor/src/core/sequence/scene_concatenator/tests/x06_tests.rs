@@ -165,17 +165,37 @@ fn x06_direct_child() {
             .expect("unreadable middle"),
         _ => unreachable!("fixture case"),
     }
+    let run_backend = if case == "unreadable" {
+        match File::open(&paths[1]) {
+            Ok(_) => {
+                eprintln!(
+                    "X06 permission denial unavailable: mode-000 fixture is readable; backend not invoked"
+                );
+                false
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => true,
+            Err(error) => {
+                std::fs::set_permissions(&paths[1], std::fs::Permissions::from_mode(0o600))
+                    .expect("restore owned fixture permissions");
+                panic!("Unexpected permission fixture probe error: {error}");
+            },
+        }
+    } else {
+        true
+    };
     // The catch exposes the old IVF panic; a panic is never an acceptable refusal.
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        direct(
-            &backend,
-            &root,
-            &output,
-            &paths,
-            &Cancellation::default(),
-            compatibility,
-        )
-    }));
+    let result = run_backend.then(|| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            direct(
+                &backend,
+                &root,
+                &output,
+                &paths,
+                &Cancellation::default(),
+                compatibility,
+            )
+        }))
+    });
     if case == "unreadable" {
         std::fs::set_permissions(&paths[1], std::fs::Permissions::from_mode(0o600))
             .expect("restore owned fixture permissions");
@@ -199,6 +219,20 @@ fn x06_direct_child() {
         std::fs::read_dir(&scratch).expect("scratch listing").count(),
         3
     );
+    for (i, path) in paths.iter().enumerate().filter(|(i, _)| *i != 1) {
+        assert_eq!(
+            std::fs::read(path).expect("input preserved"),
+            ivf,
+            "scene {i}"
+        );
+    }
+    let Some(result) = result else {
+        assert_eq!(
+            std::fs::read(&paths[1]).expect("readable input preserved"),
+            ivf
+        );
+        return;
+    };
     let error = result
         .expect("invalid list must not panic")
         .expect_err("invalid list must fail");
@@ -221,13 +255,6 @@ fn x06_direct_child() {
             ),
             _ => assert!(text.contains("nonempty regular file"), "{text}"),
         }
-    }
-    for (i, path) in paths.iter().enumerate().filter(|(i, _)| *i != 1) {
-        assert_eq!(
-            std::fs::read(path).expect("input preserved"),
-            ivf,
-            "scene {i}"
-        );
     }
 }
 
