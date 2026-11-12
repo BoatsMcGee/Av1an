@@ -263,7 +263,8 @@ impl OwnedProcess {
         }
     }
 
-    #[cfg(test)]
+    /// Observe/reap an exited leader while pipe readers run; remaining owned
+    /// descendants must be killed before they can indefinitely hold those pipes.
     pub(crate) fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
         let exited = {
             let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

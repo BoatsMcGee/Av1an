@@ -50,6 +50,9 @@ use crate::{
 mod ffmpeg;
 mod ivf;
 mod mkvmerge;
+mod source;
+#[cfg(test)]
+mod x01_tests;
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
     name: "Scene Concatenator",

@@ -1,5 +1,24 @@
 use super::*;
 
+// Share the existing Windows path workaround with source identification.
+#[cfg(windows)]
+pub(super) fn fix_path<P: AsRef<Path>>(p: P) -> String {
+    const UNC_PREFIX: &str = r#"\\?\"#;
+    let p = p.as_ref().display().to_string();
+    p.strip_prefix(UNC_PREFIX).map_or_else(
+        || p.clone(),
+        |path| {
+            path.strip_prefix("UNC")
+                .map_or_else(|| path.to_string(), |p2| format!("\\{p2}"))
+        },
+    )
+}
+
+#[cfg(not(windows))]
+pub(super) fn fix_path<P: AsRef<Path>>(p: P) -> String {
+    p.as_ref().display().to_string()
+}
+
 impl SceneConcatenator {
     /// Scratch writer: the caller must exclusively own `output`; this can overwrite it.
     /// Use the final Sequence boundary for saved overwrite/source protection and publication.
@@ -42,31 +61,34 @@ impl SceneConcatenator {
         cancellation: &Cancellation,
     ) -> Result<()> {
         cancellation.check_admission()?;
+        // Option-file paths must round-trip, not silently target a lossy replacement.
+        for path in
+            std::iter::once(output)
+                .chain(std::iter::once(scenes_directory))
+                .chain(scene_paths.iter().map(PathBuf::as_path))
+                .chain(input)
+                .chain(config.into_iter().flat_map(|config| {
+                    config.extra_inputs.iter().map(|extra| extra.path.as_path())
+                }))
+        {
+            anyhow::ensure!(
+                path.to_str().is_some(),
+                "mkvmerge option-file path is not UTF-8: {}",
+                path.display()
+            );
+        }
+        let prepared = source::prepare(
+            input,
+            config,
+            &Self::scratch_directory(scenes_directory),
+            cancellation,
+        )?;
+        let input = prepared.path.as_deref();
         let mut partial = InterruptedOutput::new(output, cancellation);
         #[cfg(windows)]
         const MAXIMUM_CHUNKS_PER_MERGE: usize = usize::MAX;
         #[cfg(not(windows))]
         const MAXIMUM_CHUNKS_PER_MERGE: usize = 512;
-
-        // mkvmerge does not accept UNC paths on Windows
-        #[cfg(windows)]
-        fn fix_path<P: AsRef<Path>>(p: P) -> String {
-            const UNC_PREFIX: &str = r#"\\?\"#;
-
-            let p = p.as_ref().display().to_string();
-            p.strip_prefix(UNC_PREFIX).map_or_else(
-                || p.clone(),
-                |path| {
-                    path.strip_prefix("UNC")
-                        .map_or_else(|| path.to_string(), |p2| format!("\\{p2}"))
-                },
-            )
-        }
-
-        #[cfg(not(windows))]
-        fn fix_path<P: AsRef<Path>>(p: P) -> String {
-            p.as_ref().display().to_string()
-        }
 
         let scratch_directory = Self::scratch_directory(scenes_directory);
         if !scratch_directory.exists() {
