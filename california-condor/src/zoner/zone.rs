@@ -17,16 +17,17 @@ use crate::{
 ///
 /// Frames are half-open (`start_frame` inclusive, `end_frame` exclusive) and
 /// resolve against the input: `None` starts at the first frame or ends at the
-/// last one. Every scene sharing at least one frame with the range is modified.
+/// exclusive input end. Scenes are cut at zone boundaries before overrides and
+/// length caps, so settings never extend outside the zone.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Zone {
     /// First frame of the zone (inclusive). `None` is the input's first frame.
     #[serde(default)]
     pub start_frame: Option<usize>,
-    /// End of the zone (exclusive). `None` is the input's last frame.
+    /// End of the zone (exclusive). `None` is the input's frame count.
     #[serde(default)]
     pub end_frame: Option<usize>,
-    /// Splits scenes longer than this, so no scene a zone matches exceeds it.
+    /// Caps only pieces inside the zone, after zone-boundary cuts.
     #[serde(default)]
     pub maximum_frames: Option<usize>,
     /// The encoder override applied to the zone's scenes. `None` only splits.
@@ -79,10 +80,31 @@ impl Zone {
         Ok(())
     }
 
-    /// Applies the zone to `scene`, splitting it when the zone caps its length.
-    /// Returns the scene as it came in, with a warning, when the zone cannot
-    /// change it.
+    /// Cuts `scene` at this zone's boundaries, then overrides/caps only inside
+    /// pieces. `None` bounds are unbounded here; the owning caller must validate
+    /// against the actual input and invalidate results before publishing.
+    /// Incompatible overrides warn without changing that piece's encoder.
     pub fn apply(
+        &self,
+        index: usize,
+        scene: Scene<CliSequenceData>,
+        warnings: &mut Vec<anyhow::Error>,
+    ) -> Vec<Scene<CliSequenceData>> {
+        let start = self.start_frame.unwrap_or(0);
+        let end = self.end_frame.unwrap_or(scene.end_frame);
+        partition(scene, &[start, end])
+            .into_iter()
+            .flat_map(|piece| {
+                if piece.start_frame >= start && piece.end_frame <= end {
+                    self.apply_piece(index, piece, warnings)
+                } else {
+                    vec![piece]
+                }
+            })
+            .collect()
+    }
+
+    fn apply_piece(
         &self,
         index: usize,
         mut scene: Scene<CliSequenceData>,
@@ -103,6 +125,33 @@ impl Zone {
         }
         split(&scene, maximum_frames)
     }
+}
+
+/// Keep existing cuts and clone only when an interior boundary adds a piece.
+pub(crate) fn partition(
+    scene: Scene<CliSequenceData>,
+    boundaries: &[usize],
+) -> Vec<Scene<CliSequenceData>> {
+    let mut cuts = boundaries
+        .iter()
+        .copied()
+        .filter(|&cut| scene.start_frame < cut && cut < scene.end_frame)
+        .collect::<Vec<_>>();
+    if cuts.is_empty() {
+        return vec![scene];
+    }
+    cuts.extend([scene.start_frame, scene.end_frame]);
+    cuts.sort_unstable();
+    cuts.dedup();
+    cuts.windows(2)
+        .map(|range| Scene {
+            start_frame: range[0],
+            end_frame: range[1],
+            sub_scenes: sub_scenes_within(scene.sub_scenes.as_deref(), range[0], range[1]),
+            encoder: scene.encoder.clone(),
+            sequence_data: scene.sequence_data.clone(),
+        })
+        .collect()
 }
 
 /// Names a zone in warnings and errors.
@@ -767,6 +816,7 @@ mod tests {
         ]);
         let zone = Zone {
             maximum_frames: Some(100),
+            end_frame: None,
             ..zone_with(None)
         };
 

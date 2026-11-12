@@ -82,10 +82,16 @@ pub struct ZonerData {
 /// Original and last-applied scene definitions, without any recursive results.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ZoneLifecycle {
+    /// Zoning algorithm, not a result certificate: 0 (including missing) is
+    /// whole-scene zoning; 1 partitions at exact half-open boundaries.
+    #[serde(default)]
+    pub algorithm_revision: u32,
     pub baseline: Vec<SceneDefinition>,
     pub zones: Vec<Zone>,
     pub applied: Vec<SceneDefinition>,
 }
+
+const ALGORITHM_REVISION: u32 = 1;
 
 /// Only the fields a zoning pass may change; never copies probe histories.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -119,8 +125,9 @@ impl Zoner {
 
     /// Validates and applies the configured zones.
     ///
-    /// Unchanged known definitions do not apply or save again. Changed/removed
-    /// definitions rebuild from the original baseline or refuse an unsafe rebase.
+    /// Unchanged current-algorithm definitions do not apply or save again.
+    /// Old-algorithm or changed/removed definitions rebuild from the original
+    /// baseline or refuse an unsafe rebase.
     pub fn run(condor: &mut Condor<CliSequenceData, CliSequenceConfig>) -> Result<()> {
         let mut zoner = Self::default();
 
@@ -190,7 +197,13 @@ impl Sequence<CliSequenceData, CliSequenceConfig> for Zoner {
         let num_frames = condor.input.clip_info()?.num_frames;
         validate_zones(zones, num_frames)?;
         if let Some(state) = lifecycle {
-            if state.zones == zones {
+            if state.algorithm_revision > ALGORITHM_REVISION {
+                bail!(
+                    "Zoner: unsupported algorithm revision {}; use a compatible Condor version or a separate new job; existing configuration and files are preserved",
+                    state.algorithm_revision
+                );
+            }
+            if state.algorithm_revision == ALGORITHM_REVISION && state.zones == zones {
                 info!(
                     "Zoner: the scenes already record a zoning pass; nothing to apply (definitions unchanged)"
                 );
@@ -255,6 +268,7 @@ impl Sequence<CliSequenceData, CliSequenceConfig> for Zoner {
             };
         }
         candidate[0].sequence_data.zoner.lifecycle = Some(ZoneLifecycle {
+            algorithm_revision: ALGORITHM_REVISION,
             baseline,
             zones: zones.to_vec(),
             applied,
@@ -302,9 +316,9 @@ pub fn validate_zones(zones: &[Zone], num_frames: usize) -> Result<()> {
 
 /// Applies the zones to `scenes` in start-frame order.
 ///
-/// Scenes are zoned whole: a scene that shares a frame with a zone takes its
-/// settings, and a scene long enough to reach into two zones takes both, the
-/// later one last.
+/// Partition at all resolved zone boundaries before applying settings and caps.
+/// Original cuts, order and gaps survive; outside pieces keep their encoder.
+/// Callers validate zones first and own result invalidation/publication.
 pub fn apply_zones(
     zones: &[Zone],
     scenes: &mut Vec<Scene<CliSequenceData>>,
@@ -327,6 +341,17 @@ pub fn apply_zones(
         })
         .collect::<Vec<_>>();
     ordered.sort_by_key(|(_, _, start, _)| *start);
+
+    let boundaries =
+        ordered.iter().flat_map(|(_, _, start, end)| [*start, *end]).collect::<Vec<_>>();
+    *scenes = scenes.drain(..).flat_map(|scene| zone::partition(scene, &boundaries)).collect();
+    if scenes.len() != initial_scenes {
+        info!(
+            "Zoner: zone boundaries added {} scenes ({initial_scenes} -> {} partitions) before overrides and caps",
+            scenes.len() - initial_scenes,
+            scenes.len()
+        );
+    }
 
     for (index, zone, start, end) in ordered {
         let mut zoned = Vec::with_capacity(scenes.len());
@@ -450,25 +475,137 @@ mod tests {
     }
 
     #[test]
-    fn every_scene_sharing_a_frame_with_a_zone_is_zoned() {
+    fn z01_exact_boundary_partition_table() {
+        use EncoderBase::{SVTAV1 as S, X265 as X};
+        // Literal oracles catch whole-scene overrides, lost cuts/gaps and inclusive ends.
+        let cases = [
+            (
+                vec![(0, 100)],
+                vec![(Some(25), Some(75))],
+                vec![(0, 25, S), (25, 75, X), (75, 100, S)],
+            ),
+            (
+                vec![(0, 100)],
+                vec![(Some(75), Some(100)), (Some(0), Some(25)), (Some(25), Some(75))],
+                vec![(0, 25, X), (25, 75, X), (75, 100, X)],
+            ),
+            (
+                vec![(0, 100)],
+                vec![(None, Some(25)), (Some(75), None)],
+                vec![(0, 25, X), (25, 75, S), (75, 100, X)],
+            ),
+            (
+                vec![(0, 25), (25, 75), (75, 100)],
+                vec![(Some(25), Some(75))],
+                vec![(0, 25, S), (25, 75, X), (75, 100, S)],
+            ),
+            (
+                vec![(10, 40), (60, 90)],
+                vec![(Some(25), Some(75))],
+                vec![(10, 25, S), (25, 40, X), (60, 75, X), (75, 90, S)],
+            ),
+            (vec![(0, 25)], vec![(Some(25), Some(75))], vec![(0, 25, S)]),
+            (
+                vec![(75, 100), (0, 25)],
+                vec![(None, None)],
+                vec![(75, 100, X), (0, 25, X)],
+            ),
+        ];
+        for (ranges, bounds, expected) in cases {
+            let mut actual = ranges.iter().map(|&(a, b)| scene(a, b)).collect();
+            let zones = bounds.into_iter().map(|(a, b)| replace(a, b)).collect::<Vec<_>>();
+            validate_zones(&zones, 100).expect("valid disjoint zones");
+            let warnings = apply_zones(&zones, &mut actual, 100);
+            assert_eq!(warnings.len(), usize::from(expected == vec![(0, 25, S)]));
+            assert_eq!(
+                actual
+                    .iter()
+                    .map(|s| (s.start_frame, s.end_frame, s.encoder.base()))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            for frame in 0..100 {
+                assert_eq!(
+                    actual.iter().filter(|s| s.start_frame <= frame && frame < s.end_frame).count(),
+                    ranges.iter().filter(|&&(a, b)| a <= frame && frame < b).count(),
+                    "frame {frame}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn z01_caps_follow_boundaries_and_clip_crossing_subscenes() {
+        let mut original = scene(0, 100);
+        original.sub_scenes = Some(vec![SubScene {
+            start_frame: 20,
+            end_frame: 80,
+        }]);
+        let mut zone = replace(Some(25), Some(75));
+        zone.maximum_frames = Some(20);
+        let mut actual = vec![original.clone()];
+        assert!(apply_zones(&[zone.clone()], &mut actual, 100).is_empty());
+        let expected = vec![(0, 25), (25, 41), (41, 58), (58, 75), (75, 100)];
+        assert_eq!(
+            actual.iter().map(|s| (s.start_frame, s.end_frame)).collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            actual
+                .iter()
+                .map(|s| s
+                    .sub_scenes
+                    .as_ref()
+                    .expect("clipped subscene")
+                    .iter()
+                    .map(|s| (s.start_frame, s.end_frame))
+                    .collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            vec![vec![(20, 25)], vec![(25, 41)], vec![(41, 58)], vec![(58, 75)], vec![(75, 80)]]
+        );
+        assert_eq!(actual[0].encoder, original.encoder);
+        assert_eq!(actual[4].encoder, original.encoder);
+        assert!(actual[1..4].iter().all(|s| s.encoder.base() == EncoderBase::X265));
+        for frame in 0..100 {
+            assert_eq!(
+                actual.iter().filter(|s| s.start_frame <= frame && frame < s.end_frame).count(),
+                1
+            );
+        }
+        // The public direct boundary must share the partition contract, not leak overrides.
+        let direct = zone.apply(0, original, &mut Vec::new());
+        assert_eq!(definitions(&direct), definitions(&actual));
+    }
+
+    #[test]
+    fn only_frames_inside_a_zone_are_zoned() {
         let mut scenes = scenes();
 
         let warnings = apply_zones(&[replace(Some(50), Some(200))], &mut scenes, 400);
 
         assert!(warnings.is_empty(), "every zone matches");
-        assert_eq!(scenes.len(), 3, "no scene is split");
+        assert_eq!(
+            scenes.len(),
+            4,
+            "the interior boundary splits the first scene"
+        );
         assert_eq!(
             scenes[0].encoder.base(),
-            EncoderBase::X265,
-            "frame 50 is inside"
+            EncoderBase::SVTAV1,
+            "frames before 50 stay outside"
         );
         assert_eq!(
             scenes[1].encoder.base(),
             EncoderBase::X265,
-            "frame 199 is inside"
+            "frame 50 is inside"
         );
         assert_eq!(
             scenes[2].encoder.base(),
+            EncoderBase::X265,
+            "frame 199 is inside"
+        );
+        assert_eq!(
+            scenes[3].encoder.base(),
             EncoderBase::SVTAV1,
             "frame 200 is outside the exclusive end"
         );
@@ -522,15 +659,24 @@ mod tests {
     fn zones_apply_in_start_frame_order() {
         let mut scenes = vec![scene(0, 300)];
 
-        // Given out of order, the zone that starts later still wins the scene
-        // both zones touch.
+        // Disjoint zones cannot overwrite each other's frames, even out of order.
         let warnings = apply_zones(&[crf(200, 400, 30.0), crf(0, 100, 23.0)], &mut scenes, 400);
 
         assert!(warnings.is_empty(), "both zones match");
         assert_eq!(
-            scenes[0].encoder.parameters().get("crf"),
-            Some(&CLIParameter::new_number("--", " ", 30.0)),
-            "the later zone is applied last"
+            scenes
+                .iter()
+                .map(|s| (
+                    s.start_frame,
+                    s.end_frame,
+                    s.encoder.parameters().get("crf").cloned()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 100, Some(CLIParameter::new_number("--", " ", 23.0))),
+                (100, 200, Some(CLIParameter::new_number("--", " ", 25.0))),
+                (200, 300, Some(CLIParameter::new_number("--", " ", 30.0)))
+            ]
         );
     }
 

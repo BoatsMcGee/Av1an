@@ -1,6 +1,6 @@
 # Zone
 
-Apply zone overrides to the scenes inside their frame ranges. Zones are the successor to Av1an's zones: each one marks the scenes it shares a frame with, merges its encoder settings into the scenes' own (or replaces their encoder outright), and caps how long those scenes may be. See [guide](../guide.md), [Zone](../types/zone.md), and [zoner](../configuration/condor/sequence-config/zoner.md).
+Apply zone overrides to exact half-open frame ranges. Zones are the successor to Av1an's zones: scenes are cut at every zone boundary, then each zone merges or replaces encoder settings and caps length only inside its range. Existing scene cuts and settings outside zones survive. See [guide](../guide.md), [Zone](../types/zone.md), and [zoner](../configuration/condor/sequence-config/zoner.md).
 
 ```bash
 $ condor zone '-1 200 svt-av1 "--preset 3 --crf 23"'
@@ -42,7 +42,9 @@ No zone definitions or scene changes are saved, and no encode/probe outputs are 
 
 After validation and application succeed, zones, scenes, and invalidation metadata are saved together. The first pass stores the original per-scene ranges, sub-scenes and encoders, plus the structured applied definitions. Known unchanged definitions skip without another save, including after reloading the job. Changed or removed overrides rebuild from that original baseline, not from global defaults or previous overrides. To remove all definitions, set `condor.sequence_config.zoner` to `null` (or its `zones` to `[]`) and run `condor zone`.
 
-A failed command or dry-run leaves configuration bytes unchanged. Scenes still take whole overlapping zones: no zone-boundary splitting is introduced. Scenes longer than a zone's `maximum_frames` are split up.
+A failed command or dry-run leaves configuration bytes unchanged. For example, scene `[0,100)` with zone `[25,75)` becomes `[0,25)`, `[25,75)`, `[75,100)`; only the middle piece takes the zone's settings. `maximum_frames` then splits each inside piece evenly, without capping outside pieces. Sub-scenes crossing either kind of cut are clipped to each new parent.
+
+**Existing jobs:** a saved lifecycle without `algorithm_revision` records the old whole-scene algorithm. When its original baseline and last-applied definitions still match, the next zoning pass rebuilds exact boundaries and invalidates affected results, even if zone definitions are unchanged. Old chunks and probes remain on disk but are not adopted for the new ranges/indices. Unsafe manual/downstream edits and unsupported future revisions refuse without saving. Preview with `condor zone --dry-run` before migrating; use a separate job if affected results cannot be safely recomputed. Current revision `1` with unchanged definitions still skips without saving.
 
 Scene-list edits carry the existing lifecycle onto the new first scene when the
 old first scene is deleted or displaced. They preserve the old applied definitions,
@@ -63,8 +65,8 @@ Zoner reports its work at `INFO` level, both for `condor zone` and in the full p
 
 - Each encoder change identifies the zone and scene's half-open frame range.
 - Each split identifies the original scene, the resulting frame ranges, and how many scenes were added.
-- Each zone reports matched, modified, split, added, and matched-but-unchanged scene counts. A scene changed and split by the same zone counts as one modified scene. No-op overrides and skipped encoder mismatches do not count as changes.
-- The final summary reports the number of zones, scene changes across zones, total scenes added, before/after scene counts, and application warnings. Additional stale-result warnings are reported separately. A scene modified by multiple zones contributes a change for each zone; this is not a count of unique original scenes.
+- Boundary partitioning reports added pieces separately, before overrides and caps. Each zone then reports matched, modified, cap-split, added, and matched-but-unchanged partition counts. A partition changed and cap-split by the same zone counts as one modified scene. No-op overrides and skipped encoder mismatches do not count as encoder changes.
+- The final summary reports the number of zones, scene changes across zones after partitioning, total scenes added (including boundary cuts), before/after scene counts, and application warnings. Additional stale-result warnings are reported separately. These are not counts of unique original scenes.
 - A run with proven unchanged definitions reports that at `INFO` and applies nothing.
 
 The command modifies scene configuration; no encoding or artifact deletion happens.

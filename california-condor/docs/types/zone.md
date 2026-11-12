@@ -2,16 +2,16 @@
 
 A Zone is a frame range whose scenes take its encoder settings. Zones are the successor to Av1an's zones, and reach Condor through [`condor.sequence_config.zoner`](../configuration/condor/sequence-config/zoner.md) via the [`--zones`](../commands/condor.md#zones---zones) flag or the [`zone`](../commands/zone.md) command.
 
-Every scene sharing at least one frame with the zone is modified whole: a scene is never cut at a zone boundary, so a scene that reaches into two zones takes both, the later zone last. Zones must not overlap. Individual overrides are idempotent, but splitting can change which zones a scene intersects on a later run; use freshly detected scenes when reapplying interacting zones.
+Scenes are partitioned at all zone starts and ends before overrides or length caps. Only inside pieces take the zone's settings; existing scene cuts, order, gaps and outside encoders remain. Zones must not overlap and apply in stable start-frame order. The saved lifecycle makes unchanged passes idempotent and restores the original baseline for changed/removed zones; see [persisted-job migration](../commands/zone.md#zoned-scenes) for older whole-scene jobs.
 
 | Field | Type | Required | Description |
 | ----- | ---- | -------- | ----------- |
 | `start_frame` | Integer or null | No | First frame of the zone (inclusive). `null` is the input's first frame |
-| `end_frame` | Integer or null | No | End of the zone (exclusive). `null` is the input's last frame |
-| `maximum_frames` | Integer or null | No | Splits scenes longer than this, so no scene a zone matches exceeds it |
+| `end_frame` | Integer or null | No | End of the zone (exclusive). `null` is the input's frame count |
+| `maximum_frames` | Integer or null | No | Splits inside pieces longer than this, after boundary cuts; outside pieces are not capped |
 | `encoder` | Object or null | No | The encoder override the zone's scenes take, `null` to only cap scene length |
 
-Frames are half-open, matching [`condor.scene`](../configuration/condor/scene.md): `"start_frame": 0, "end_frame": 200` covers frames 0 through 199, and the next zone can start at 200. An explicit end may equal the input frame count but cannot exceed it; empty/reversed ranges and zero length caps are rejected. Sub-scenes crossing a length-cap split are clipped to each new parent range.
+Frames are half-open, matching [`condor.scene`](../configuration/condor/scene.md): `"start_frame": 0, "end_frame": 200` covers frames 0 through 199, and the next zone can start at 200. An explicit end may equal the input frame count but cannot exceed it; empty/reversed ranges and zero length caps are rejected. Sub-scenes crossing a boundary or length-cap split are clipped to each new parent range.
 
 ## Zone Strings
 

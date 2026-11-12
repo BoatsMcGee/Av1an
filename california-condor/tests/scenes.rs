@@ -101,7 +101,7 @@ mod tests {
     #[cfg(unix)]
     #[serial]
     #[test]
-    fn z02_current_producers_edits_exact_indices_direct_barrier_and_recovery() {
+    fn z01_z02_current_producers_edits_exact_indices_direct_barrier_and_recovery() {
         use andean_condor::{
             core::sequence::{
                 Sequence, parallel_encoder::ParallelEncoder, quality_check::QualityCheck,
@@ -219,6 +219,14 @@ mod tests {
             assert!(scene.sequence_data.quality_check.quality.provenance.is_some());
             scene.sequence_data.scene_detection.transnetv2_scores =
                 Some([(scene.start_frame, 0.5)].into());
+            // Controlled detector input, not a native measurement/certificate claim.
+            scene.sequence_data.noise_detection = Some(
+                andean_condor::models::sequence::noise_detector::NoiseDetectorData {
+                    noise: 0.4,
+                    luminance: 0.3,
+                    created_on: std::time::SystemTime::UNIX_EPOCH,
+                },
+            );
         }
         let path = temp.path().join("condor.json");
         config.save(&path).expect("current saved config");
@@ -227,6 +235,23 @@ mod tests {
         condor_cmd(&temp).env("CONDOR_TEST_MODE", "1").arg("encode").assert().success();
         assert_eq!(
             std::fs::read(temp.path().join("calls")).expect("no reencode"),
+            calls
+        );
+        // Already aligned/no-op zoning preserves actual current certificates and resume.
+        condor_cmd(&temp).args(["zone", "0 3"]).assert().success();
+        let aligned = load(&path);
+        for (actual, expected) in aligned.condor.scenes.iter().zip(&config.condor.scenes) {
+            assert_eq!(
+                serde_json::to_value(&actual.sequence_data.parallel_encoder).expect("PE"),
+                serde_json::to_value(&expected.sequence_data.parallel_encoder)
+                    .expect("original PE")
+            );
+            assert!(!actual.sequence_data.parallel_encoder.invalidated);
+        }
+        aligned.admit_results().expect("aligned current results still admitted");
+        condor_cmd(&temp).env("CONDOR_TEST_MODE", "1").arg("encode").assert().success();
+        assert_eq!(
+            std::fs::read(temp.path().join("calls")).expect("aligned resume without work"),
             calls
         );
         let mut files = vec![source, temp.path().join("out.mkv")];
@@ -240,6 +265,7 @@ mod tests {
             .map(|p| std::fs::read(p).expect("owned/foreign file"))
             .collect::<Vec<_>>();
         for (args, affected) in [
+            (vec!["zone", "1 2 x264 \"--crf 19\""], vec![0, 1, 2, 3, 4]),
             (vec!["scenes", "1", "set", "params", "crf=19"], vec![1]),
             (vec!["scenes", "1", "set", "end", "5"], vec![1]),
             (vec!["scenes", "1", "set", "sub-scenes", "3-5"], vec![1]),
@@ -259,6 +285,37 @@ mod tests {
                 result.success();
             }
             let edited = load(&path);
+            if args[0] == "zone" && args[1].starts_with("1 2 ") {
+                assert_eq!(
+                    ranges(&edited),
+                    vec![(0, 1), (1, 2), (2, 3), (3, 6), (6, 9)]
+                );
+                assert_eq!(
+                    edited.condor.scenes[0].encoder,
+                    config.condor.scenes[0].encoder
+                );
+                assert_eq!(
+                    edited.condor.scenes[2].encoder,
+                    config.condor.scenes[0].encoder
+                );
+                assert_eq!(
+                    edited.condor.scenes[1].encoder.parameters().get("crf"),
+                    Some(&CLIParameter::new_number("--", " ", 19.0))
+                );
+                assert!(
+                    edited.condor.scenes[..3]
+                        .iter()
+                        .all(|s| s.sequence_data.noise_detection.is_none())
+                );
+                assert_eq!(
+                    edited.condor.scenes[3].sequence_data.noise_detection,
+                    config.condor.scenes[1].sequence_data.noise_detection
+                );
+                assert_eq!(
+                    edited.condor.scenes[4].sequence_data.noise_detection,
+                    config.condor.scenes[2].sequence_data.noise_detection
+                );
+            }
             for (index, scene) in edited.condor.scenes.iter().enumerate() {
                 if affected.contains(&index) {
                     let data = &scene.sequence_data;
@@ -290,7 +347,8 @@ mod tests {
             let json = std::fs::read(&path).expect("saved barrier");
             let denied =
                 condor_cmd(&temp).env("CONDOR_TEST_MODE", "1").arg("encode").assert().failure();
-            assert!(stderr(denied.get_output()).contains("scene 1"));
+            let first_affected = affected[0];
+            assert!(stderr(denied.get_output()).contains(&format!("scene {first_affected}")));
             let saves = Rc::new(Cell::new(0));
             let observed = Rc::clone(&saves);
             let mut direct = edited
@@ -304,7 +362,7 @@ mod tests {
             let error = ParallelEncoder::default()
                 .execute_cancel(&mut direct, tx, Default::default())
                 .expect_err("direct core barrier");
-            assert!(format!("{error:#}").contains("scene 1"));
+            assert!(format!("{error:#}").contains(&format!("scene {first_affected}")));
             assert_eq!(saves.get(), 0);
             assert!(rx.try_iter().next().is_none());
             assert_eq!(
