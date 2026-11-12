@@ -10,7 +10,7 @@ use std::{
 
 use crate::utils::cancellation::Cancellation;
 use crate::utils::semaphore::Semaphore;
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 
 pub(super) struct Stop {
     pub(super) cancellation: Cancellation,
@@ -86,7 +86,11 @@ impl Stop {
                     .copied()
                     .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
                     .unwrap_or("non-string panic");
-                Err(anyhow!("{context} panicked: {message}"))
+                Err(crate::utils::CaughtPanic {
+                    operation: context.into(),
+                    message: message.into(),
+                }
+                .into())
             },
         }
     }

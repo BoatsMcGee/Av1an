@@ -76,6 +76,96 @@ pub fn entry_point() -> anyhow::Result<()> {
     run()
 }
 
+/// Process frontend: preserve library errors, but do not print a caught panic's
+/// payload again after the installed hook has reported it during this run.
+pub fn cli_entry_point() -> std::process::ExitCode {
+    let before = apps::panic_reports();
+    match entry_point() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            let _ = write_cli_error(
+                &mut std::io::stderr().lock(),
+                &error,
+                apps::panic_reports() != before,
+            );
+            std::process::ExitCode::FAILURE
+        },
+    }
+}
+
+fn contains_caught_panic(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<andean_condor::utils::CaughtPanic>().is_some()
+        || error
+            .downcast_ref::<tui::SecondaryDisplayFailure>()
+            .is_some_and(|failure| contains_caught_panic(&failure.display))
+        || error
+            .downcast_ref::<andean_condor::core::encoder::EncoderProcessError>()
+            .is_some_and(|failure| failure.failures.iter().any(contains_caught_panic))
+}
+
+fn write_cli_error(
+    writer: &mut impl std::io::Write,
+    error: &anyhow::Error,
+    reported: bool,
+) -> std::io::Result<()> {
+    if !reported || !contains_caught_panic(error) {
+        // Match Result's normal process diagnostic; ordinary errors are unchanged.
+        return writeln!(writer, "Error: {error:?}");
+    }
+    if let Some(failure) = error.downcast_ref::<tui::SecondaryDisplayFailure>() {
+        // The first source is the retained primary, not the secondary's Display
+        // text (which deliberately includes the full library panic payload).
+        if let Some(primary) = error.chain().nth(1) {
+            write_cli_cause(writer, primary)?;
+        }
+        return write_cli_error(writer, &failure.display, true);
+    }
+    write_cli_cause(writer, error.as_ref())
+}
+
+fn write_cli_cause(
+    writer: &mut impl std::io::Write,
+    error: &(dyn std::error::Error + 'static),
+) -> std::io::Result<()> {
+    let mut cause = Some(error);
+    while let Some(current) = cause {
+        if let Some(panic) = current.downcast_ref::<andean_condor::utils::CaughtPanic>() {
+            return writeln!(
+                writer,
+                "Error: {} panicked (diagnostic above)",
+                panic.operation
+            );
+        }
+        if let Some(failure) =
+            current.downcast_ref::<andean_condor::core::encoder::EncoderProcessError>()
+        {
+            // Captured codec diagnostics and nonpanic failures must not disappear
+            // just because a different pipe worker panicked.
+            if let Some(result) = &failure.result {
+                writeln!(writer, "{result}")?;
+            } else {
+                writeln!(
+                    writer,
+                    "Encoder status unavailable\nSTDOUT:\n{}\nSTDERR:\n{}",
+                    failure.stdout, failure.stderr
+                )?;
+            }
+            for failure in &failure.failures {
+                write_cli_error(writer, failure, true)?;
+            }
+            return Ok(());
+        }
+        cause = current.source();
+    }
+    writeln!(writer, "Error: {error}")?;
+    let mut cause = error.source();
+    while let Some(current) = cause {
+        writeln!(writer, "Caused by: {current}")?;
+        cause = current.source();
+    }
+    Ok(())
+}
+
 fn run() -> anyhow::Result<()> {
     #[cfg(test)]
     if let Some(run) = TEST_ENTRY_RUN.with_borrow_mut(Option::take) {

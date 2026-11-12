@@ -6,6 +6,7 @@ import fcntl
 import os
 import pty
 import select
+import signal
 import struct
 import subprocess
 import sys
@@ -15,7 +16,11 @@ import time
 from pathlib import Path
 
 
-def check_stream(binary: str, stream: str, mode: str = "normal", root: str = "") -> None:
+def check_stream(
+    binary: str, stream: str, mode: str = "normal", root: str = "",
+    cleanup_errors: list[str] | None = None,
+) -> None:
+    errors = cleanup_errors if cleanup_errors is not None else []
     master, slave = pty.openpty()
     try:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 6, 80, 0, 0))
@@ -42,7 +47,9 @@ def check_stream(binary: str, stream: str, mode: str = "normal", root: str = "")
                 [
                     binary,
                     "--exact",
-                    "apps::tests::t04_panic_child"
+                    ("apps::tests::t04_startup_child" if panic_case == "startup"
+                     else "apps::tests::t04_cli_child" if panic_case.startswith("cli-")
+                     else "apps::tests::t04_panic_child")
                     if panic_case
                     else {
                         "normal": "apps::tests::t01_pty_child",
@@ -95,9 +102,15 @@ def check_stream(binary: str, stream: str, mode: str = "normal", root: str = "")
                         break
                     terminal_output.extend(chunk)
             finally:
-                if child.poll() is None:
-                    child.kill()
-                child.wait(timeout=5)
+                try:
+                    if child.poll() is None:
+                        child.kill()  # Popen still owns this unreaped child, pinning its PID.
+                except OSError as error:
+                    errors.append(f"child kill: {error}")
+                try:
+                    child.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    errors.append(f"child reap: {error}")
 
             redirected.seek(0)
             redirected_output = redirected.read()
@@ -111,15 +124,39 @@ def check_stream(binary: str, stream: str, mode: str = "normal", root: str = "")
                 )
                 data = terminal_output if stream == "stdout" else redirected_output
                 assert child.returncode != 0, evidence
-                payload_case = "main" if panic_case == "subsequent" else panic_case
+                cli = panic_case.startswith("cli-")
+                payload_case = (
+                    "main" if panic_case == "subsequent"
+                    else "ui" if panic_case in ("cli-ui", "cli-mixed")
+                    else "worker" if panic_case == "cli-aggregate"
+                    else panic_case.removeprefix("cli-")
+                )
                 payload = f"T04-{payload_case}-payload".encode()
-                assert diagnostic.count(payload) == 1, (payload, diagnostic, evidence)
+                if panic_case == "cli-error":
+                    assert b"T04 primary context" in diagnostic, evidence
+                    assert b"T04-nonpanic-error" in diagnostic, evidence
+                    assert b"panicked" not in diagnostic, evidence
+                else:
+                    assert diagnostic.count(payload) == 1, (payload, diagnostic, evidence)
+                if panic_case == "cli-unreported":
+                    assert b"diagnostic above" not in diagnostic, evidence
                 assert payload not in data, evidence
                 sentinel = b"T04_BEGIN\nsource-output-sentinel\nT04_END\n"
                 assert sentinel in data.replace(b"\r\n", b"\n"), evidence
-                assert Path(root, "unwound").read_bytes() == b"owned child reaped", evidence
                 assert restored_mode == original_mode, evidence
-                if stream == "headless":
+                assert Path(root, "unwound").read_bytes() == b"owned child reaped", evidence
+                if cli:
+                    assert Path(root, "library-error").read_bytes() == b"original library error retained"
+                    if panic_case == "cli-mixed":
+                        assert b"T04 primary context" in diagnostic, evidence
+                        assert b"T04-nonpanic-error" in diagnostic, evidence
+                    if panic_case == "cli-aggregate":
+                        for preserved in (b"T04-nonpanic-error", b"codec-stdout-sentinel", b"codec-stderr-sentinel"):
+                            assert preserved in diagnostic, evidence
+                if panic_case == "startup":
+                    assert b"T04_STARTUP_RETIRED_RAW_OFF" in data, evidence
+                    assert b"\x1b" not in terminal_output, evidence
+                elif stream == "headless":
                     assert b"\x1b" not in diagnostic + data + terminal_output, evidence
                 else:
                     shows = terminal_output.count(b"\x1b[?25h")
@@ -127,7 +164,7 @@ def check_stream(binary: str, stream: str, mode: str = "normal", root: str = "")
                     assert terminal_output.count(b"\x1b[?1049l") == shows, evidence
                     for segment in terminal_output.split(b"\x1b[?25h")[1:]:
                         assert b"\x1b" not in segment.split(b"\x1b[?1049h")[0], evidence
-                    if stream == "stderr":
+                    if stream == "stderr" and panic_case not in ("cli-error", "cli-unreported"):
                         leave = terminal_output.index(b"\x1b[?1049l")
                         show = terminal_output.index(b"\x1b[?25h")
                         assert leave < show < diagnostic.index(payload), evidence
@@ -185,63 +222,138 @@ def check_stream(binary: str, stream: str, mode: str = "normal", root: str = "")
                 "terminal mode restored"
             )
     finally:
-        os.close(master)
-        if slave >= 0:
-            os.close(slave)
+        for fd in (master, slave):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError as error:
+                    errors.append(f"PTY close: {error}")
+        if cleanup_errors is None and errors:
+            raise AssertionError("; ".join(errors))
 
 
-def process_running(path: Path) -> bool:
+def fixture_identity(pid: int) -> tuple[int, int]:
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(") ", 1)[1].split()
+    return int(fields[19]), int(fields[2])  # start ticks and process group
+
+
+def fixture_pidfd(pid: int, identity: tuple[int, int]) -> int:
+    """Bind a kernel handle before checking the recorded lifetime; never kill by PID."""
+    fd = os.pidfd_open(pid)
     try:
-        return path.read_text().split(")", 1)[1].split()[0] != "Z"
-    except FileNotFoundError:
-        return False
+        if fixture_identity(pid) != identity:
+            raise ValueError(f"fixture PID {pid} identity changed; refusing cleanup")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def cleanup_fixtures(records: list[str], errors: list[str]) -> None:
+    for record in records:
+        fd = None
+        try:
+            pid, start, group = map(int, record.split())
+            try:
+                fd = fixture_pidfd(pid, (start, group))
+            except ProcessLookupError:
+                continue  # An already-reaped lifetime needs no further cleanup.
+            except FileNotFoundError:
+                continue  # It exited between opening the handle and checking identity.
+            if not select.select([fd], [], [], 5)[0]:
+                errors.append(f"owned PID {pid} alive after child outcome")
+                signal.pidfd_send_signal(fd, signal.SIGKILL)
+            if not select.select([fd], [], [], 5)[0]:
+                errors.append(f"fixture PID {pid} did not exit after kill")
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    reaped = os.waitid(os.P_PIDFD, fd, os.WEXITED | os.WNOHANG)
+                except ChildProcessError:
+                    break  # OwnedProcess already reaped the leader.
+                if reaped:
+                    break
+                if time.monotonic() >= deadline:
+                    errors.append(f"fixture PID {pid} not reaped")
+                    break
+                time.sleep(0.01)
+        except (OSError, ValueError) as error:
+            errors.append(str(error))
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError as error:
+                    errors.append(f"fixture handle close: {error}")
+
+
+def check_fixture_safety() -> None:
+    # A stale first record must neither signal its PID nor skip the next cleanup.
+    children = []
+    try:
+        for _ in range(2):
+            children.append(subprocess.Popen(["sleep", "300"]))
+        first, second = children
+        start, group = fixture_identity(first.pid)
+        next_start, next_group = fixture_identity(second.pid)
+        errors = []
+        cleanup_fixtures(
+            [f"{first.pid} {start + 1} {group}", f"{second.pid} {next_start} {next_group}"],
+            errors,
+        )
+        assert first.poll() is None, "stale identity signaled a live process"
+        assert second.poll() is not None, "first error skipped later fixture cleanup"
+        assert any("identity changed" in error for error in errors), errors
+        assert any("alive after child outcome" in error for error in errors), errors
+        print("fixture safety: stale identity refused; later owned cleanup attempted and reaped")
+    finally:
+        errors = []
+        for child in children:
+            try:
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                errors.append(str(error))
+        if errors:
+            raise AssertionError("; ".join(errors))
 
 
 def check_panics(binary: str) -> None:
     # Local to this test driver: adopt/reap fixture descendants even on RED.
     libc = ctypes.CDLL(None, use_errno=True)
     assert libc.prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
+    check_fixture_safety()
     failures = []
     for stream in ("stderr", "stdout", "headless"):
         cases = (
-            ("ui", "worker", "progress", "main", "subsequent")
-            if stream != "headless" else ("main", "progress")
+            ("ui", "worker", "progress", "main", "subsequent", "startup", "cli-ui", "cli-worker", "cli-mixed", "cli-error", "cli-aggregate", "cli-unreported")
+            if stream != "headless" else ("main", "progress", "cli-worker", "cli-error", "cli-aggregate", "cli-unreported")
         )
         for case in cases:
             with tempfile.TemporaryDirectory(prefix="t04-") as root:
                 Path(root, "source").write_bytes(b"source-sentinel")
                 Path(root, "output").write_bytes(b"output-sentinel")
+                cleanup_errors = []
                 try:
-                    check_stream(binary, stream, f"t04-{case}", root)
-                except (AssertionError, OSError) as error:
+                    check_stream(binary, stream, f"t04-{case}", root, cleanup_errors)
+                except (AssertionError, OSError, subprocess.TimeoutExpired) as error:
                     failures.append(f"{stream}/{case}: {error}")
                 finally:
                     # Also clean real descendants after a RED timeout/failed assertion.
                     pids_path = Path(root, "pids")
-                    if pids_path.exists():
-                        for pid in pids_path.read_text().split():
-                            path = Path(f"/proc/{pid}/stat")
-                            deadline = time.monotonic() + 5
-                            while process_running(path):
-                                if time.monotonic() >= deadline:
-                                    failures.append(
-                                        f"{stream}/{case}: owned PID {pid} alive after child outcome"
-                                    )
-                                    os.kill(int(pid), 9)
-                                    break
-                                time.sleep(0.01)
-                            deadline = time.monotonic() + 5
-                            while True:
-                                try:
-                                    reaped, _ = os.waitpid(int(pid), os.WNOHANG)
-                                except ChildProcessError:
-                                    break  # Leaders were reaped by OwnedProcess.
-                                if reaped:
-                                    break
-                                assert time.monotonic() < deadline, f"fixture PID {pid} not reaped"
-                                time.sleep(0.01)
-                    assert Path(root, "source").read_bytes() == b"source-sentinel"
-                    assert Path(root, "output").read_bytes() == b"output-sentinel"
+                    try:
+                        if pids_path.exists():
+                            cleanup_fixtures(pids_path.read_text().splitlines(), cleanup_errors)
+                    except OSError as error:
+                        cleanup_errors.append(str(error))
+                    for name in ("source", "output"):
+                        try:
+                            if Path(root, name).read_bytes() != f"{name}-sentinel".encode():
+                                cleanup_errors.append(f"{name} sentinel changed")
+                        except OSError as error:
+                            cleanup_errors.append(str(error))
+                    failures.extend(f"{stream}/{case}: {error}" for error in cleanup_errors)
     assert not failures, "\n".join(failures)
 
 

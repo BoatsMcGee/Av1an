@@ -19,10 +19,16 @@ fn panic_error(payload: &(dyn std::any::Any + Send)) -> anyhow::Error {
         .copied()
         .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
         .unwrap_or("non-string panic");
-    anyhow::anyhow!("worker panicked: {message}")
+    crate::utils::CaughtPanic {
+        operation: "worker".into(),
+        message: message.into(),
+    }
+    .into()
 }
 
-pub(crate) fn join_worker<T>(handle: JoinHandle<Result<T>>, operation: &str) -> Result<T> {
+/// Join an owned worker, retaining its error or panic payload and operation context.
+#[inline]
+pub fn join_worker<T>(handle: JoinHandle<Result<T>>, operation: &str) -> Result<T> {
     handle
         .join()
         .map_err(|payload| panic_error(payload.as_ref()))

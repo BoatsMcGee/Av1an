@@ -45,7 +45,7 @@ pub(crate) mod e12_tests;
 pub mod string_or_bytes;
 pub use capability::{Container, EncoderCapability};
 pub use parse::*;
-pub use pipes::EncoderProcessError;
+pub use pipes::{EncoderProcessError, join_worker};
 use pipes::{PassWorkers, progress_reader, spawn_reader};
 pub use string_or_bytes::StringOrBytes;
 

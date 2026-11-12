@@ -377,7 +377,11 @@ fn serial_catch<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
             .copied()
             .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
             .unwrap_or("non-string panic");
-        Err(anyhow::anyhow!("Serial scene worker panicked: {message}"))
+        Err(crate::utils::CaughtPanic {
+            operation: "Serial scene worker".into(),
+            message: message.into(),
+        }
+        .into())
     })
 }
 

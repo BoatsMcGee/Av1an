@@ -2,7 +2,7 @@ use std::{
     io::{self, BufWriter, IsTerminal, Write, stderr, stdout},
     sync::{
         Arc, Mutex, Once, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
     },
     thread,
@@ -38,6 +38,11 @@ type TerminalBuffer = BufWriter<Box<dyn Write + Send>>;
 static PANIC_HOOK: Once = Once::new();
 static PANIC_TERMINAL: Mutex<Weak<Mutex<TerminalOwner>>> = Mutex::new(Weak::new());
 static PANIC_STAGE: Mutex<Weak<PanicStage>> = Mutex::new(Weak::new());
+static PANIC_REPORTS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn panic_reports() -> u64 {
+    PANIC_REPORTS.load(Ordering::SeqCst)
+}
 
 /// Install once, retaining the host's diagnostic hook. Never exit here: process
 /// owners must unwind, kill their trees and reap before the caller fails.
@@ -57,6 +62,7 @@ pub(crate) fn install_panic_hook() {
                 let _ = owner.cleanup();
             }
             // No owner/registry lock spans an arbitrary host hook callback.
+            PANIC_REPORTS.fetch_add(1, Ordering::SeqCst);
             prior(info);
         }));
     });
@@ -184,13 +190,14 @@ impl TerminalOwner {
     fn cleanup(&mut self) -> io::Result<()> {
         // BufWriter::drop retries buffered writes. Discard pending data so an
         // unsuccessful Enter/Hide cannot be replayed after Leave/Show.
-        let Some(buffered) = self.writer.inner.lock().unwrap_or_else(|e| e.into_inner()).take()
-        else {
-            return Ok(());
+        let buffered = self.writer.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let active = self.raw || self.screen || self.cursor;
+        // Raw ownership is independent of whether a panic already retired the writer.
+        let mut result = self.disable_raw();
+        let Some(buffered) = buffered else {
+            return result;
         };
         let (mut writer, _) = buffered.into_parts();
-        let active = self.raw || self.screen || self.cursor;
-        let mut result = self.disable_raw();
         if std::mem::take(&mut self.screen) {
             let leave = queue!(writer, LeaveAlternateScreen);
             result = result.and(leave);
@@ -265,10 +272,18 @@ fn init_terminal(
     let cancelled = Arc::clone(&owner.cancelled);
     let owner = Arc::new(Mutex::new(owner));
     *PANIC_TERMINAL.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&owner);
+    #[cfg(test)]
+    if let Some(before_raw) = tests::BEFORE_RAW.with_borrow_mut(Option::take) {
+        before_raw();
+    }
     let result = (|| {
         let writer = owner.lock().unwrap_or_else(|e| e.into_inner()).writer.clone();
         if terminal_ops {
             let mut resources = owner.lock().unwrap_or_else(|e| e.into_inner());
+            // A hook can retire this registration before raw acquisition starts.
+            if resources.writer.inner.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+                return Err(io::Error::other("terminal retired").into());
+            }
             (resources.raw_mode)(true)?;
             resources.raw = true;
             // Even a failed write/flush may already have entered the screen.
@@ -696,6 +711,7 @@ mod tests {
 
     thread_local! {
         pub(super) static TEST_WRITER: std::cell::RefCell<Option<Box<dyn Write + Send>>> = const { std::cell::RefCell::new(None) };
+        pub(super) static BEFORE_RAW: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     }
 
     struct RenderFailureWriter {
@@ -851,16 +867,245 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    fn owned_fixture(root: &std::path::Path) -> Result<andean_condor::core::process::OwnedProcess> {
+        use andean_condor::{core::process::OwnedProcess, utils::cancellation::Cancellation};
+        use std::{
+            fmt::Write as _,
+            io::BufRead,
+            process::{Command, Stdio},
+        };
+        let mut command = Command::new("sh");
+        command
+            .args(["-c", "sleep 300 & echo $$ $!; wait"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut owned = OwnedProcess::spawn(&mut command, &Cancellation::default())?;
+        let mut pids = String::new();
+        io::BufReader::new(owned.stdout.take().unwrap()).read_line(&mut pids)?;
+        let mut identities = String::new();
+        for pid in pids.split_whitespace() {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+            let fields = stat.rsplit_once(") ").unwrap().1.split_whitespace().collect::<Vec<_>>();
+            writeln!(identities, "{pid} {} {}", fields[19], fields[2])?;
+        }
+        std::fs::write(root.join("pids"), identities)?;
+        Ok(owned)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn record_reaped(root: &std::path::Path) -> Result<()> {
+        let pids = std::fs::read_to_string(root.join("pids"))?;
+        let leader = pids.split_whitespace().next().unwrap();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{leader}")).exists(),
+            "direct child must be reaped before outcome"
+        );
+        std::fs::write(root.join("unwound"), b"owned child reaped")?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn t04_startup_child() -> Result<()> {
+        use std::sync::atomic::AtomicUsize;
+        let Some(root) = std::env::var_os("T04_ROOT") else {
+            return Ok(());
+        };
+        static RAW_ON: AtomicUsize = AtomicUsize::new(0);
+        static RAW_OFF: AtomicUsize = AtomicUsize::new(0);
+        fn raw_mode(enabled: bool) -> io::Result<()> {
+            if enabled {
+                RAW_ON.fetch_add(1, Ordering::SeqCst);
+            } else {
+                RAW_OFF.fetch_add(1, Ordering::SeqCst);
+            }
+            set_raw_mode(enabled)
+        }
+        let root = std::path::PathBuf::from(root);
+        println!("T04_BEGIN\nsource-output-sentinel\nT04_END");
+        let owned = owned_fixture(&root)?;
+        BEFORE_RAW.with_borrow_mut(|slot| {
+            *slot = Some(Box::new(|| {
+                assert!(thread::spawn(|| panic!("T04-startup-payload")).join().is_err());
+            }));
+        });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut owner = TerminalOwner::new(
+            selected_writer(stdout().is_terminal()),
+            Arc::clone(&cancelled),
+        );
+        owner.raw_mode = raw_mode;
+        let error = init_terminal(owner, true, Terminal::new)
+            .err()
+            .expect("retired initialization must fail");
+        assert_eq!(error.to_string(), "terminal retired");
+        assert_eq!(
+            (
+                RAW_ON.load(Ordering::SeqCst),
+                RAW_OFF.load(Ordering::SeqCst)
+            ),
+            (0, 0)
+        );
+        assert!(!crossterm::terminal::is_raw_mode_enabled()?);
+        assert!(cancelled.load(Ordering::SeqCst));
+        // A separately acquired raw resource must also be cleaned without a writer.
+        let mut owner = TerminalOwner::new(Box::new(io::sink()), cancelled);
+        owner.raw_mode = raw_mode;
+        raw_mode(true)?;
+        owner.raw = true;
+        owner.writer.inner.lock().unwrap().take();
+        owner.cleanup()?;
+        owner.cleanup()?;
+        assert_eq!(
+            (
+                RAW_ON.load(Ordering::SeqCst),
+                RAW_OFF.load(Ordering::SeqCst)
+            ),
+            (1, 1)
+        );
+        assert!(!crossterm::terminal::is_raw_mode_enabled()?);
+        drop(owned);
+        record_reaped(&root)?;
+        println!("T04_STARTUP_RETIRED_RAW_OFF");
+        Err(error)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn t04_cli_child() -> std::process::ExitCode {
+        let Ok(case) = std::env::var("T04_CASE") else {
+            return std::process::ExitCode::SUCCESS;
+        };
+        crate::TEST_ENTRY_RUN.with_borrow_mut(|slot| {
+            *slot = Some(Box::new(move || {
+                let root = std::path::PathBuf::from(std::env::var_os("T04_ROOT").unwrap());
+                println!("T04_BEGIN\nsource-output-sentinel\nT04_END");
+                let mut owned = Some(owned_fixture(&root)?);
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let mut app = TestApp::new();
+                if matches!(case.as_str(), "cli-ui" | "cli-mixed") {
+                    app.panic_case = Some("ui".into());
+                }
+                let (tx, rx) = mpsc::channel();
+                let display_cancelled = Arc::clone(&cancelled);
+                let display = thread::spawn(move || app.run(rx, display_cancelled));
+                let executed = if matches!(case.as_str(), "cli-worker" | "cli-aggregate") {
+                    let owned = owned.take();
+                    andean_condor::core::encoder::join_worker(
+                        thread::spawn(move || -> Result<()> {
+                            let _owned = owned;
+                            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                            while PANIC_STAGE.lock().unwrap().upgrade().is_none() {
+                                assert!(
+                                    std::time::Instant::now() < deadline,
+                                    "stage never registered"
+                                );
+                                thread::yield_now();
+                            }
+                            if stdout().is_terminal() || stderr().is_terminal() {
+                                while !crossterm::terminal::is_raw_mode_enabled().unwrap() {
+                                    assert!(
+                                        std::time::Instant::now() < deadline,
+                                        "terminal never acquired"
+                                    );
+                                    thread::yield_now();
+                                }
+                            }
+                            panic!("T04-worker-payload");
+                        }),
+                        "T04 library worker join",
+                    )
+                    .map(|()| ((), Vec::new()))
+                } else if case == "cli-unreported" {
+                    Err(andean_condor::utils::CaughtPanic {
+                        operation: "unreported fixture".into(),
+                        message: "T04-unreported-payload".into(),
+                    }
+                    .into())
+                } else if matches!(case.as_str(), "cli-mixed" | "cli-error") {
+                    Err(anyhow::Error::from(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "T04-nonpanic-error",
+                    ))
+                    .context("T04 primary context"))
+                } else {
+                    Ok(((), Vec::new()))
+                };
+                let executed = if case == "cli-aggregate" {
+                    let panic = executed.expect_err("library worker panicked");
+                    assert!(panic.downcast_ref::<andean_condor::utils::CaughtPanic>().is_some());
+                    Err(andean_condor::core::encoder::EncoderProcessError {
+                        result: None,
+                        stdout: String::from("codec-stdout-sentinel").into(),
+                        stderr: String::from("codec-stderr-sentinel").into(),
+                        failures: vec![
+                            panic,
+                            io::Error::new(io::ErrorKind::PermissionDenied, "T04-nonpanic-error")
+                                .into(),
+                        ],
+                    }
+                    .into())
+                } else {
+                    executed
+                };
+                if matches!(case.as_str(), "cli-error" | "cli-unreported") {
+                    drop(tx);
+                }
+                let result = crate::tui::finish_stage("T04", executed, || display.join());
+                let error = result.expect_err("fixture stage must fail");
+                if matches!(case.as_str(), "cli-ui" | "cli-worker") {
+                    let payload = if case == "cli-ui" {
+                        "T04-ui-payload"
+                    } else {
+                        "T04-worker-payload"
+                    };
+                    assert!(
+                        format!("{error:#}").contains(payload),
+                        "library panic cause lost"
+                    );
+                    assert!(error.downcast_ref::<andean_condor::utils::CaughtPanic>().is_some());
+                }
+                if matches!(case.as_str(), "cli-mixed" | "cli-error") {
+                    assert_eq!(
+                        error.downcast_ref::<io::Error>().unwrap().kind(),
+                        io::ErrorKind::PermissionDenied
+                    );
+                    assert!(format!("{error:#}").contains("T04-nonpanic-error"));
+                }
+                if case == "cli-aggregate" {
+                    let aggregate = error
+                        .downcast_ref::<andean_condor::core::encoder::EncoderProcessError>()
+                        .unwrap();
+                    assert!(
+                        aggregate.failures[0]
+                            .downcast_ref::<andean_condor::utils::CaughtPanic>()
+                            .is_some()
+                    );
+                    assert_eq!(
+                        aggregate.failures[1].downcast_ref::<io::Error>().unwrap().kind(),
+                        io::ErrorKind::PermissionDenied
+                    );
+                    assert!(format!("{error:#}").contains("T04-worker-payload"));
+                }
+                std::fs::write(
+                    root.join("library-error"),
+                    b"original library error retained",
+                )?;
+                drop(owned);
+                record_reaped(&root)?;
+                Err(error)
+            }));
+        });
+        crate::cli_entry_point()
+    }
+
     // Exact-name subprocess protocol: no hook mutation in the parent libtest.
     #[cfg(target_os = "linux")]
     #[test]
     fn t04_panic_child() -> Result<()> {
-        use andean_condor::{core::process::OwnedProcess, utils::cancellation::Cancellation};
-        use std::{
-            io::BufRead,
-            process::{Command, Stdio},
-            sync::atomic::AtomicUsize,
-        };
+        use std::sync::atomic::AtomicUsize;
         let Ok(case) = std::env::var("T04_CASE") else {
             return Ok(());
         };
@@ -878,17 +1123,7 @@ mod tests {
         println!("T04_BEGIN\nsource-output-sentinel\nT04_END");
         stdout().flush()?;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
-            let mut command = Command::new("sh");
-            command
-                .args(["-c", "sleep 300 & echo $$ $!; wait"])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null());
-            let mut owned = OwnedProcess::spawn(&mut command, &Cancellation::default())?;
-            let mut pids = String::new();
-            io::BufReader::new(owned.stdout.take().unwrap()).read_line(&mut pids)?;
-            std::fs::write(root.join("pids"), pids)?;
-            let mut owned = Some(owned);
+            let mut owned = Some(owned_fixture(&root)?);
             let cancelled = Arc::new(AtomicBool::new(false));
             let mut app = TestApp::new();
             app.panic_case = Some(case.clone());
@@ -950,13 +1185,7 @@ mod tests {
         } else {
             outcome.expect("test boundary must not panic")?;
         }
-        let pids = std::fs::read_to_string(root.join("pids"))?;
-        let leader = pids.split_whitespace().next().unwrap();
-        assert!(
-            !std::path::Path::new(&format!("/proc/{leader}")).exists(),
-            "direct child must be reaped before outcome"
-        );
-        std::fs::write(root.join("unwound"), b"owned child reaped")?;
+        record_reaped(&root)?;
         if custom {
             assert_eq!(calls.load(Ordering::SeqCst), 1);
             let mut app = TestApp::new();

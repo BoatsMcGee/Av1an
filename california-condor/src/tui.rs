@@ -39,15 +39,15 @@ use crate::{
 
 #[derive(Debug, ThisError)]
 #[error("{primary}; additionally, {display:#}")]
-struct SecondaryDisplayFailure {
+pub(crate) struct SecondaryDisplayFailure {
     primary: String,
-    display: anyhow::Error,
+    pub(crate) display: anyhow::Error,
 }
 
 // Execute must consume/drop its progress sender before finalization so the
 // display can exit on disconnect. Join before warnings or either error escapes:
 // a running display still owns the terminal's panic-restoration registration.
-fn finish_stage(
+pub(crate) fn finish_stage(
     stage: &str,
     executed: Result<((), Vec<anyhow::Error>)>,
     join_display: impl FnOnce() -> thread::Result<Result<()>>,
@@ -59,7 +59,11 @@ fn finish_stage(
                 .map(String::as_str)
                 .or_else(|| payload.downcast_ref::<&str>().copied())
                 .unwrap_or("non-string panic payload");
-            anyhow::anyhow!("{stage} TUI thread panicked: {message}")
+            andean_condor::utils::CaughtPanic {
+                operation: format!("{stage} TUI thread"),
+                message: message.into(),
+            }
+            .into()
         })
         .and_then(|result| result.with_context(|| format!("{stage} TUI thread failed")));
     match executed {

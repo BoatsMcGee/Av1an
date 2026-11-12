@@ -1,3 +1,3 @@
-fn main() -> anyhow::Result<()> {
-    california_condor::entry_point()
+fn main() -> std::process::ExitCode {
+    california_condor::cli_entry_point()
 }
