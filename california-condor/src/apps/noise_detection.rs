@@ -10,7 +10,6 @@ use andean_condor::{
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
-    style::Color,
     text::Line,
     widgets::{Axis, Block, Chart, Dataset},
 };
@@ -35,6 +34,7 @@ pub struct NoiseDetectionApp {
     attempted_cancel: bool,
     shared_progress: SharedProgress<NoiseDetectionState>,
     cached_state: NoiseDetectionState,
+    initial_completed: u64,
 }
 
 impl TuiApp for NoiseDetectionApp {
@@ -116,7 +116,6 @@ impl TuiApp for NoiseDetectionApp {
 
     fn render(&self, frame: &mut Frame) {
         let theme = crate::theme::Theme::current();
-        let main: Color = theme.main;
         let layout = Layout::default()
             .constraints([
                 Constraint::Percentage(20),
@@ -179,8 +178,17 @@ impl TuiApp for NoiseDetectionApp {
             );
         frame.render_widget(chart, layout[1]);
 
-        let progress_bar = ProgressBar {
-            color: main,
+        let progress_bar = self.progress_bar();
+        let progress_bar = progress_bar.generate(Some(self.started));
+        frame.render_widget(progress_bar, layout[2]);
+    }
+}
+
+impl NoiseDetectionApp {
+    fn progress_bar(&self) -> ProgressBar {
+        let state = &self.cached_state;
+        ProgressBar {
+            color: crate::theme::Theme::current().main,
             processing_title: if self.attempted_cancel {
                 "Shutting down...".to_owned()
             } else {
@@ -195,17 +203,13 @@ impl TuiApp for NoiseDetectionApp {
             bottom_center_title: String::new(),
             unit_per_second: "SPS".to_owned(),
             unit: "Scene".to_owned(),
-            initial_completed: 0,
+            initial_completed: self.initial_completed,
             completed: self.cached_state.frames_processed,
             total: self.total_frames,
             show_label: true,
-        };
-        let progress_bar = progress_bar.generate(Some(self.started));
-        frame.render_widget(progress_bar, layout[2]);
+        }
     }
-}
 
-impl NoiseDetectionApp {
     pub fn new(scenes: &[Scene<CliSequenceData>], clip_info: ClipInfo) -> NoiseDetectionApp {
         let total_frames = scenes.len() as u64;
         let scene_noise: BTreeMap<u64, f64> = scenes
@@ -232,6 +236,7 @@ impl NoiseDetectionApp {
             attempted_cancel: false,
             shared_progress: SharedProgress::new(state.clone()),
             cached_state: state,
+            initial_completed: frames_processed,
         }
     }
 }
@@ -245,6 +250,101 @@ enum NoiseDetectionConsoleEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn t08_noise_restored_scenes_are_not_new_work() {
+        let (clip, scenes) = crate::test_helpers::quality_scene_fixture();
+        let scenes: Vec<_> = (0..100)
+            .map(|index| {
+                let mut scene = scenes[0].clone();
+                scene.sequence_data.noise_detection = (index < 90).then_some(
+                    andean_condor::models::sequence::noise_detector::NoiseDetectorData {
+                        noise: 0.125,
+                        luminance: 0.5,
+                        created_on: std::time::UNIX_EPOCH,
+                    },
+                );
+                scene
+            })
+            .collect();
+        let mut app = NoiseDetectionApp::new(&scenes, clip);
+        app.started = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("90/100 Scenes (0.00SPS)"), "{text}");
+        let mut mapper = app.progress_mapper();
+        app.shared_progress.apply(|state| {
+            mapper(
+                SequenceStatus::Subprocess {
+                    parent: Status::Processing {
+                        id: "Noise Detector".into(),
+                        completion: SequenceCompletion::Custom {
+                            name: "Noise Detector".into(),
+                            completed: 91.0,
+                            total: 100.0,
+                        },
+                    },
+                    child: Status::Processing {
+                        id: "Noise".into(),
+                        completion: SequenceCompletion::SceneQuality {
+                            index: 90,
+                            score: 0.25,
+                            quantizer: 0.0,
+                            bitrate: 0.0,
+                        },
+                    },
+                },
+                state,
+            )
+        });
+        app.on_snapshot(app.shared_progress.read());
+        assert_eq!(
+            (
+                app.cached_state.frames_processed,
+                app.cached_state.scene_noise.len()
+            ),
+            (91, 91)
+        );
+        let text = crate::components::progress_bar::tests::render_bar(
+            &app.progress_bar(),
+            std::time::Duration::from_secs(2),
+        );
+        assert!(
+            text.contains("91/100 Scenes (0.50SPS)") && text.contains("00:18"),
+            "{text}"
+        );
+
+        let mut fresh = NoiseDetectionApp::new(&scenes[90..], clip);
+        fresh.shared_progress.apply(|state| {
+            NoiseDetectionApp::map_progress(
+                SequenceStatus::Whole(Status::Processing {
+                    id: "Noise Detector".into(),
+                    completion: SequenceCompletion::Frames {
+                        completed: 1,
+                        total: 10,
+                    },
+                }),
+                state,
+            )
+        });
+        fresh.on_snapshot(fresh.shared_progress.read());
+        let text = crate::components::progress_bar::tests::render_bar(
+            &fresh.progress_bar(),
+            std::time::Duration::from_millis(500),
+        );
+        assert!(
+            text.contains("1/10 Scenes (2.00SPS)") && text.contains("00:04"),
+            "{text}"
+        );
+    }
 
     #[test]
     fn t07_noise_frame_snapshots_share_exact_chart_points() {

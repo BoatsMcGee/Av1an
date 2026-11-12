@@ -831,6 +831,7 @@ fn tui_screens() -> Vec<Screen> {
                         added,
                         failed_reason,
                         current_frame: sample,
+                        initial_frame: 0,
                         total_frames: sample,
                     },
                 )

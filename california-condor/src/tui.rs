@@ -545,7 +545,13 @@ pub fn run_quality_check_tui(
         .expect("quality_check is required");
     let metric = quality_check_config.metric.clone();
     let statistic = quality_check_config.statistic;
-    let mut qc_app = QualityCheckApp::new(clip_info, &condor.scenes, metric, statistic)?;
+    let mut qc_app = QualityCheckApp::new(
+        clip_info,
+        &condor.scenes,
+        metric,
+        statistic,
+        &quality_check_config.strategy,
+    )?;
     let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {

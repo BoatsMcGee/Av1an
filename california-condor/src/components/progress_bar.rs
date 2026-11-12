@@ -41,15 +41,24 @@ impl Default for ProgressBar {
 }
 
 impl ProgressBar {
-    /// Rates measure this run's usable work, excluding validated resume frames.
+    /// Rates measure this run's work, excluding the owner's restored baseline.
     fn rates(&self, elapsed: f64) -> (f64, f64) {
         let done = self.completed.saturating_sub(self.initial_completed);
-        if done == 0 || elapsed <= 0.0 {
+        if done == 0 || !elapsed.is_finite() || elapsed <= 0.0 {
             return (0.0, 0.0);
         }
+        let rate = done as f64 / elapsed;
+        if !rate.is_finite() {
+            return (0.0, 0.0);
+        }
+        let remaining = self.total.saturating_sub(self.completed) as f64 / rate;
         (
-            done as f64 / elapsed,
-            self.total.saturating_sub(self.completed) as f64 * elapsed / done as f64,
+            rate,
+            if remaining.is_finite() {
+                remaining
+            } else {
+                0.0
+            },
         )
     }
 
@@ -67,25 +76,26 @@ impl ProgressBar {
 
     #[inline]
     pub fn generate(&self, started: Option<std::time::Instant>) -> Gauge<'_> {
+        self.generate_with_elapsed(started.map(|started| started.elapsed()))
+    }
+
+    /// Render from a monotonic elapsed interval; no usable interval means zero rate.
+    pub(crate) fn generate_with_elapsed(&self, elapsed: Option<std::time::Duration>) -> Gauge<'_> {
         let mut title = self.processing_title.clone();
         let ratio = Self::clamped_ratio(self.completed, self.total);
         let progress_percent = ratio * 100.0;
-        let (label, elapsed_hms, remaining_hms, _eta_hms) = started.map_or_else(
+        let (label, elapsed_hms, remaining_hms) = elapsed.map_or_else(
             || {
                 (
                     format!("{}/{} {}s", self.completed, self.total, self.unit),
                     None,
                     None,
-                    None,
                 )
             },
-            |started| {
-                let elapsed = started.elapsed();
+            |elapsed| {
                 let (ups, remaining_time) = self.rates(elapsed.as_secs_f64());
-                let eta = elapsed.as_secs_f64() + remaining_time;
                 let elapsed_hms = seconds_to_hms(elapsed.as_secs(), false);
                 let remaining_hms = seconds_to_hms(remaining_time as u64, false);
-                let eta_hms = seconds_to_hms(eta as u64, false);
                 (
                     format!(
                         "{}/{} {}s ({:.2}{})",
@@ -93,7 +103,6 @@ impl ProgressBar {
                     ),
                     Some(elapsed_hms),
                     Some(remaining_hms),
-                    Some(eta_hms),
                 )
             },
         );
@@ -123,8 +132,94 @@ impl ProgressBar {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::ProgressBar;
+    use std::time::{Duration, Instant};
+
+    pub(crate) fn render_bar(bar: &ProgressBar, elapsed: Duration) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(bar.generate_with_elapsed(Some(elapsed)), frame.area());
+            })
+            .unwrap();
+        terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect()
+    }
+
+    #[test]
+    fn t08_progress_rates_reject_nonfinite_intervals_and_overflow() {
+        let bar = ProgressBar {
+            completed: 1,
+            total: u64::MAX,
+            ..Default::default()
+        };
+        for elapsed in [
+            0.0,
+            -1.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::from_bits(1),
+            f64::MAX,
+        ] {
+            let (rate, remaining) = bar.rates(elapsed);
+            assert!(
+                rate.is_finite() && remaining.is_finite(),
+                "{elapsed}: {rate}, {remaining}"
+            );
+        }
+    }
+
+    #[test]
+    fn t08_progress_empty_overcomplete_reversed_and_narrow_unicode_are_finite() {
+        for (initial, completed, total, ratio) in
+            [(0, 0, 0, 0.0), (0, 101, 100, 1.0), (100, 90, 100, 0.9), (0, u64::MAX, 1, 1.0)]
+        {
+            let bar = ProgressBar {
+                processing_title: "比較中 🐦".into(),
+                completed_title: "完了 ✓".into(),
+                top_right_title: "é界".into(),
+                unit: "Frame".into(),
+                unit_per_second: "FPS".into(),
+                initial_completed: initial,
+                completed,
+                total,
+                ..Default::default()
+            };
+            assert_eq!(ProgressBar::clamped_ratio(completed, total), ratio);
+            for elapsed in [Duration::ZERO, Duration::from_nanos(1), Duration::MAX] {
+                let text = render_bar(&bar, elapsed);
+                assert!(!text.contains("NaN") && !text.contains("inf"), "{text}");
+                for width in [1, 4, 12] {
+                    let mut terminal =
+                        ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 3))
+                            .unwrap();
+                    terminal
+                        .draw(|frame| {
+                            frame.render_widget(
+                                bar.generate_with_elapsed(Some(elapsed)),
+                                frame.area(),
+                            );
+                        })
+                        .unwrap();
+                }
+            }
+            let future = Instant::now() + Duration::from_secs(60);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 3)).unwrap();
+            terminal
+                .draw(|frame| frame.render_widget(bar.generate(Some(future)), frame.area()))
+                .unwrap();
+            let text: String =
+                terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+            assert!(
+                text.contains("0.00FPS")
+                    && text.contains(if completed == total { '✓' } else { '🐦' }),
+                "{text}"
+            );
+        }
+    }
 
     #[test]
     fn e16_resume_rate_formula_excludes_validated_baseline() {

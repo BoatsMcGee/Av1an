@@ -12,13 +12,14 @@ use andean_condor::{
     },
     models::{
         scene::Scene,
-        sequence::target_quality::types::{MeasurementError, ProbeStatistic, QualityMetric},
+        sequence::target_quality::types::{
+            MeasurementError, ProbeStatistic, ProbeStrategy, QualityMetric,
+        },
     },
 };
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
-    style::Color,
     text::Line,
     widgets::{Axis, Block, Chart, Dataset},
 };
@@ -44,6 +45,8 @@ pub struct QualityCheckState {
     pub scene_details: BTreeMap<u64, SceneReportDetails>,
     pub frames_compared: u64,
     pub total_frames: u64,
+    /// Producer counts cover pending selected frames; display counts include this prefix.
+    pub initial_completed: u64,
 }
 
 pub struct QualityCheckApp {
@@ -95,12 +98,13 @@ impl TuiApp for QualityCheckApp {
                     ..
                 } => {
                     // VMAF submits progress before its final scores are available.
-                    state.frames_compared = completed as u64;
-                    state.total_frames = total as u64;
+                    state.frames_compared =
+                        state.initial_completed.saturating_add(completed as u64);
+                    state.total_frames = state.initial_completed.saturating_add(total as u64);
                     if !std::io::stdout().is_terminal() {
                         let event = QualityCheckConsoleEvent::CompareProgress {
-                            current_frame: state.frames_compared,
-                            total_frames: state.total_frames,
+                            current_frame: completed as u64,
+                            total_frames: total as u64,
                         };
                         println!(
                             "[Quality Check][Compare] {}",
@@ -141,8 +145,9 @@ impl TuiApp for QualityCheckApp {
                         completion: SequenceCompletion::FrameScore { frame, score },
                     },
                 ) if id == "Quality" => {
-                    state.frames_compared = completed as u64;
-                    state.total_frames = total as u64;
+                    state.frames_compared =
+                        state.initial_completed.saturating_add(completed as u64);
+                    state.total_frames = state.initial_completed.saturating_add(total as u64);
                     if !std::io::stdout().is_terminal() {
                         let event = QualityCheckConsoleEvent::FrameScore { frame, score };
                         println!(
@@ -167,8 +172,9 @@ impl TuiApp for QualityCheckApp {
                         completion: SequenceCompletion::SceneQuality { index, score, .. },
                     },
                 ) if id == "Quality" => {
-                    state.frames_compared = completed as u64;
-                    state.total_frames = total as u64;
+                    state.frames_compared =
+                        state.initial_completed.saturating_add(completed as u64);
+                    state.total_frames = state.initial_completed.saturating_add(total as u64);
                     state.scene_scores.insert(index, score);
                     if !std::io::stdout().is_terminal() {
                         let event = QualityCheckConsoleEvent::SceneScore {
@@ -223,7 +229,6 @@ impl TuiApp for QualityCheckApp {
 
     fn render(&self, frame: &mut Frame) {
         let theme = crate::theme::Theme::current();
-        let main: Color = theme.main;
         let layout = Layout::default()
             .constraints([
                 Constraint::Percentage(20),
@@ -281,8 +286,17 @@ impl TuiApp for QualityCheckApp {
             );
         frame.render_widget(chart, layout[1]);
 
-        let progress_bar = ProgressBar {
-            color: main,
+        let progress_bar = self.progress_bar();
+        let progress_bar = progress_bar.generate(Some(self.pass_started));
+        frame.render_widget(progress_bar, layout[2]);
+    }
+}
+
+impl QualityCheckApp {
+    fn progress_bar(&self) -> ProgressBar {
+        let state = &self.cached_state;
+        ProgressBar {
+            color: crate::theme::Theme::current().main,
             processing_title: if self.attempted_cancel {
                 "Shutting down...".to_owned()
             } else {
@@ -297,24 +311,22 @@ impl TuiApp for QualityCheckApp {
             bottom_center_title: String::new(),
             unit_per_second: "FPS".to_owned(),
             unit: "Frame".to_owned(),
-            initial_completed: 0,
+            initial_completed: state.initial_completed,
             completed: state.frames_compared,
             total: state.total_frames,
             show_label: true,
-        };
-        let progress_bar = progress_bar.generate(Some(self.pass_started));
-        frame.render_widget(progress_bar, layout[2]);
+        }
     }
-}
 
-impl QualityCheckApp {
     /// Build the initial screen, leaving default unmeasured records empty.
     /// Returns an error for corrupt claimed measurements or undefined reductions.
+    /// Selection-matching history is display data, not a substitute for core provenance admission.
     pub fn new(
         clip_info: ClipInfo,
         scenes: &[Scene<CliSequenceData>],
         metric: QualityMetric,
         statistic: ProbeStatistic,
+        strategy: &ProbeStrategy,
     ) -> anyhow::Result<QualityCheckApp> {
         let scene_scores: BTreeMap<u64, f64> = scenes
             .iter()
@@ -349,7 +361,18 @@ impl QualityCheckApp {
             .iter()
             .flat_map(|scene| scene.sequence_data.quality_check.quality.scores.iter().copied())
             .collect();
-        let total_frames = frame_scores.len() as u64;
+        // Match the producer's skip condition, including temporal prefix counts.
+        // Admission still belongs to the core runner; scores alone are not provenance.
+        let mut total_frames = 0_u64;
+        let mut frames_compared = 0_u64;
+        for scene in scenes {
+            let selected = strategy.frame_indices(scene.start_frame, scene.end_frame)?.len();
+            total_frames = total_frames.saturating_add(selected as u64);
+            let quality = &scene.sequence_data.quality_check.quality;
+            if !quality.is_unmeasured() && quality.scores.len() == selected {
+                frames_compared = frames_compared.saturating_add(selected as u64);
+            }
+        }
         Self::compute_stats(
             &scene_scores.values().copied().collect::<Vec<_>>(),
             metric.is_inverse_metric(),
@@ -359,12 +382,12 @@ impl QualityCheckApp {
             Self::compute_stats(&frame_scores, metric.is_inverse_metric())
                 .context("recorded Quality Check frame report")?;
         }
-        let frames_compared = frame_scores.len() as u64;
         let state = QualityCheckState {
             scene_scores,
             scene_details,
             frames_compared,
             total_frames,
+            initial_completed: frames_compared,
         };
         Ok(QualityCheckApp {
             clip_info,
@@ -554,15 +577,197 @@ pub enum QualityCheckConsoleEvent {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn t08_qc_resume_counts_selected_work_not_current_run_throughput() {
+        let (clip, mut scenes) = crate::test_helpers::quality_scene_fixture();
+        scenes.truncate(2);
+        scenes[0].start_frame = 0;
+        scenes[0].end_frame = 90;
+        scenes[0].sequence_data.quality_check.quality.scores = vec![80.0; 90];
+        scenes[1].start_frame = 90;
+        scenes[1].end_frame = 100;
+        scenes[1].sequence_data.quality_check.quality = Default::default();
+        for (resumed, completed, pending_total, label, remaining) in [
+            (true, 91, 10, "91/100 Frames (0.50FPS)", "00:18"),
+            (false, 1, 100, "1/100 Frames (0.50FPS)", "03:18"),
+        ] {
+            if !resumed {
+                scenes[0].sequence_data.quality_check.quality = Default::default();
+            }
+            let mut app = QualityCheckApp::new(
+                clip,
+                &scenes,
+                QualityMetric::default(),
+                ProbeStatistic::Mean,
+                &ProbeStrategy::Whole,
+            )
+            .unwrap();
+            assert_eq!(app.cached_state.total_frames, 100);
+            assert_eq!(
+                app.cached_state.frames_compared,
+                if resumed { 90 } else { 0 }
+            );
+            let mut mapper = app.progress_mapper();
+            // QC reports only the pending selection, not the restored prefix.
+            app.shared_progress.apply(|state| {
+                mapper(
+                    SequenceStatus::Whole(Status::Processing {
+                        id: "Quality Check".into(),
+                        completion: SequenceCompletion::Custom {
+                            name: "Quality Check".into(),
+                            completed: 1.0,
+                            total: pending_total as f64,
+                        },
+                    }),
+                    state,
+                )
+            });
+            app.shared_progress.apply(|state| {
+                mapper(
+                    SequenceStatus::Subprocess {
+                        parent: Status::Processing {
+                            id: "Quality Check".into(),
+                            completion: SequenceCompletion::Custom {
+                                name: "Quality Check".into(),
+                                completed: 1.0,
+                                total: pending_total as f64,
+                            },
+                        },
+                        child: Status::Processing {
+                            id: "Quality".into(),
+                            completion: SequenceCompletion::FrameScore {
+                                frame: completed - 1,
+                                score: 81.0,
+                            },
+                        },
+                    },
+                    state,
+                )
+            });
+            app.on_snapshot(app.shared_progress.read());
+            assert_eq!(
+                (
+                    app.cached_state.frames_compared,
+                    app.cached_state.total_frames
+                ),
+                (completed, 100)
+            );
+            let text = crate::components::progress_bar::tests::render_bar(
+                &app.progress_bar(),
+                Duration::from_secs(2),
+            );
+            assert!(text.contains(label) && text.contains(remaining), "{text}");
+            let zero = crate::components::progress_bar::tests::render_bar(
+                &app.progress_bar(),
+                Duration::ZERO,
+            );
+            assert!(
+                zero.contains("0.00FPS") && !zero.contains("NaN") && !zero.contains("inf"),
+                "{zero}"
+            );
+        }
+    }
+
+    #[test]
+    fn t08_qc_cumulative_resume_matches_selected_prefix_count_not_scene_length() {
+        let (clip, mut scenes) = crate::test_helpers::quality_scene_fixture();
+        scenes.truncate(2);
+        scenes[0].start_frame = 10;
+        scenes[0].end_frame = 190;
+        scenes[1].start_frame = 190;
+        scenes[1].end_frame = 210;
+        scenes[1].sequence_data.quality_check.quality = Default::default();
+        let metric = QualityMetric::CVVDP {
+            target_range: (3.9, 4.1),
+            resolution: None,
+            display_model: None,
+            resize_to_display: None,
+            disable_temporal: None,
+            gpu_id: None,
+        };
+        for (scores, prior) in [(vec![4.0; 90], 90), (vec![4.0], 0)] {
+            scenes[0].sequence_data.quality_check.quality.scores = scores;
+            let mut app = QualityCheckApp::new(
+                clip,
+                &scenes,
+                metric.clone(),
+                ProbeStatistic::Mean,
+                &ProbeStrategy::Skip { skip: 2 },
+            )
+            .unwrap();
+            assert_eq!(
+                (
+                    app.cached_state.frames_compared,
+                    app.cached_state.total_frames
+                ),
+                (prior, 100)
+            );
+            assert_eq!(app.cached_state.scene_scores[&0], 4.0);
+            let mut mapper = app.progress_mapper();
+            app.shared_progress.apply(|state| {
+                mapper(
+                    SequenceStatus::Subprocess {
+                        parent: Status::Processing {
+                            id: "Quality Check".into(),
+                            completion: SequenceCompletion::Custom {
+                                name: "Quality Check".into(),
+                                completed: 1.0,
+                                total: if prior == 90 { 10.0 } else { 100.0 },
+                            },
+                        },
+                        child: Status::Processing {
+                            id: "Quality".into(),
+                            completion: SequenceCompletion::FrameScore {
+                                frame: 190,
+                                score: 4.1,
+                            },
+                        },
+                    },
+                    state,
+                )
+            });
+            app.on_snapshot(app.shared_progress.read());
+            let text = crate::components::progress_bar::tests::render_bar(
+                &app.progress_bar(),
+                Duration::from_secs(2),
+            );
+            assert!(
+                text.contains(if prior == 90 {
+                    "91/100 Frames (0.50FPS)"
+                } else {
+                    "1/100 Frames (0.50FPS)"
+                }),
+                "{text}"
+            );
+        }
+        scenes[0].end_frame = scenes[0].start_frame;
+        assert!(
+            QualityCheckApp::new(
+                clip,
+                &scenes,
+                metric,
+                ProbeStatistic::Mean,
+                &ProbeStrategy::Whole
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn t07_qc_snapshot_excludes_final_raw_scores() {
         let (clip, mut scenes) = crate::test_helpers::quality_scene_fixture();
         scenes[0].sequence_data.quality_check.quality.scores = vec![73.125; 8192];
         scenes[0].sequence_data.quality_check.quality.scores[0] = 1.0;
+        scenes[0].end_frame = 8192;
+        scenes[1].start_frame = 8192;
+        scenes[1].end_frame = 8195;
+        scenes[2].start_frame = 8195;
+        scenes[2].end_frame = 8203;
         let app = QualityCheckApp::new(
             clip,
             &scenes,
             QualityMetric::default(),
             ProbeStatistic::Mean,
+            &ProbeStrategy::Whole,
         )
         .unwrap();
         let snapshot = app.shared_progress.read();
@@ -583,8 +788,8 @@ mod tests {
                             id: "Quality Check".into(),
                             completion: SequenceCompletion::Custom {
                                 name: "Quality Check".into(),
-                                completed: frame as f64 + 1.0,
-                                total: 8203.0,
+                                completed: (frame - 8195) as f64 + 1.0,
+                                total: 8.0,
                             },
                         },
                         child: Status::Processing {
@@ -656,12 +861,17 @@ mod tests {
         }
         let (clip, mut scenes) = crate::test_helpers::quality_scene_fixture();
         scenes[0].sequence_data.quality_check.quality.scores = (0..100).map(f64::from).collect();
+        scenes[0].end_frame = 100;
+        scenes[1].start_frame = 100;
+        scenes[1].end_frame = 200;
+        scenes.truncate(2);
         scenes[1].sequence_data.quality_check.quality = Default::default();
         let mut app = QualityCheckApp::new(
             clip,
             &scenes,
             QualityMetric::default(),
             ProbeStatistic::Mean,
+            &ProbeStrategy::Whole,
         )
         .unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -671,8 +881,8 @@ mod tests {
                     id: "Quality Check".into(),
                     completion: SequenceCompletion::Custom {
                         name: "Quality Check".into(),
-                        completed: frame as f64 + 1.0,
-                        total: 200.0,
+                        completed: (frame - 100) as f64 + 1.0,
+                        total: 100.0,
                     },
                 },
                 child: Status::Processing {
@@ -690,8 +900,8 @@ mod tests {
                 id: "Quality Check".into(),
                 completion: SequenceCompletion::Custom {
                     name: "Quality Check".into(),
-                    completed: 200.0,
-                    total: 200.0,
+                    completed: 100.0,
+                    total: 100.0,
                 },
             },
             child: Status::Processing {
@@ -774,7 +984,8 @@ mod tests {
                     clip,
                     &corrupt,
                     QualityMetric::default(),
-                    ProbeStatistic::Harmonic
+                    ProbeStatistic::Harmonic,
+                    &ProbeStrategy::Whole,
                 )
                 .is_err()
             );
@@ -787,7 +998,8 @@ mod tests {
                 clip,
                 &corrupt,
                 QualityMetric::default(),
-                ProbeStatistic::Mean
+                ProbeStatistic::Mean,
+                &ProbeStrategy::Whole,
             )
             .is_err()
         );
@@ -799,6 +1011,7 @@ mod tests {
             &corrupt,
             QualityMetric::default(),
             ProbeStatistic::Mean,
+            &ProbeStrategy::Whole,
         )
         .expect("initial screen");
         assert!(
@@ -829,8 +1042,14 @@ mod tests {
                 (ProbeStatistic::Minimum, [2.0, 1.0]),
                 (ProbeStatistic::Maximum, [9.0, 8.0]),
             ] {
-                let app =
-                    QualityCheckApp::new(clip, &scenes, metric.clone(), statistic).expect("app");
+                let app = QualityCheckApp::new(
+                    clip,
+                    &scenes,
+                    metric.clone(),
+                    statistic,
+                    &ProbeStrategy::Whole,
+                )
+                .expect("app");
                 let expected = if disabled == Some(true) {
                     independent
                 } else {
@@ -849,11 +1068,17 @@ mod tests {
                         app.cached_state.frames_compared,
                         app.cached_state.total_frames
                     ),
-                    (6, 6)
+                    (6, 9)
                 );
-                let mut live = QualityCheckApp::new(clip, &[], metric.clone(), statistic)
-                    .expect("app")
-                    .cached_state;
+                let mut live = QualityCheckApp::new(
+                    clip,
+                    &[],
+                    metric.clone(),
+                    statistic,
+                    &ProbeStrategy::Whole,
+                )
+                .expect("app")
+                .cached_state;
                 for (index, score) in expected.into_iter().enumerate() {
                     assert!(QualityCheckApp::map_progress(
                         SequenceStatus::Subprocess {
@@ -879,9 +1104,14 @@ mod tests {
                     ));
                 }
                 assert_eq!(live.scene_scores, app.cached_state.scene_scores);
-                let control =
-                    QualityCheckApp::new(clip, &scenes, QualityMetric::default(), statistic)
-                        .expect("app");
+                let control = QualityCheckApp::new(
+                    clip,
+                    &scenes,
+                    QualityMetric::default(),
+                    statistic,
+                    &ProbeStrategy::Whole,
+                )
+                .expect("app");
                 assert_eq!(
                     control.cached_state.scene_scores.values().copied().collect::<Vec<_>>(),
                     independent
@@ -906,10 +1136,16 @@ mod tests {
                 disable_temporal: Some(mode == "independent"),
                 gpu_id: None,
             };
-            QualityCheckApp::new(clip, &scenes, metric, ProbeStatistic::Mean)
-                .expect("app")
-                .print_report()
-                .expect("report");
+            QualityCheckApp::new(
+                clip,
+                &scenes,
+                metric,
+                ProbeStatistic::Mean,
+                &ProbeStrategy::Whole,
+            )
+            .expect("app")
+            .print_report()
+            .expect("report");
             return;
         }
         for mode in ["temporal", "independent"] {
@@ -934,9 +1170,14 @@ mod tests {
     fn m18_submission_progress_reaches_ui_and_console() {
         if std::env::var_os("M18_QC_UI_CHILD").is_some() {
             let (clip, _) = crate::test_helpers::quality_scene_fixture();
-            let app =
-                QualityCheckApp::new(clip, &[], QualityMetric::default(), ProbeStatistic::Mean)
-                    .unwrap();
+            let app = QualityCheckApp::new(
+                clip,
+                &[],
+                QualityMetric::default(),
+                ProbeStatistic::Mean,
+                &ProbeStrategy::Whole,
+            )
+            .unwrap();
             let mut mapper = app.progress_mapper();
             let mut state = app.cached_state.clone();
             // Replay initialization, then the exact Whole/Custom submission shape.

@@ -121,6 +121,7 @@ impl TuiApp for BenchmarkerApp {
                             finished: None,
                             failed_reason: None,
                             current_frame: completed,
+                            initial_frame: completed,
                             total_frames: total,
                         });
                     if !std::io::stdout().is_terminal() {
@@ -234,19 +235,29 @@ pub struct WorkerStatus {
     pub added: bool,
     pub failed_reason: Option<String>,
     pub current_frame: u64,
+    /// First observed progress, not work timed by this UI clock.
+    pub initial_frame: u64,
     pub total_frames: u64,
 }
 
 impl WorkerStatus {
-    fn fps_or_error(&self) -> String {
-        if self.current_frame > 0 {
-            let finished = self.finished.unwrap_or_else(std::time::Instant::now);
-            let fps =
-                self.current_frame as f64 / finished.duration_since(self.started).as_secs_f64();
-            format!("{:.2} FPS", fps)
-        } else {
-            "-".to_owned()
+    fn fps_at(&self, now: std::time::Instant) -> Option<f64> {
+        let frames = self.current_frame.saturating_sub(self.initial_frame);
+        let elapsed = self
+            .finished
+            .unwrap_or(now)
+            .saturating_duration_since(self.started)
+            .as_secs_f64();
+        if frames == 0 || elapsed <= 0.0 {
+            return None;
         }
+        let fps = frames as f64 / elapsed;
+        fps.is_finite().then_some(fps)
+    }
+
+    fn fps_or_error(&self) -> String {
+        self.fps_at(std::time::Instant::now())
+            .map_or_else(|| "-".to_owned(), |fps| format!("{fps:.2} FPS"))
     }
 
     fn status(&self) -> String {
@@ -277,4 +288,150 @@ pub enum BenchmarkerConsoleEvent {
         worker: u8,
         error: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn t08_benchmark_throttled_first_event_is_observed_baseline() {
+        let (clip, scenes) = crate::test_helpers::quality_scene_fixture();
+        let mut app = BenchmarkerApp::new(scenes[0].encoder.clone(), clip);
+        let mut mapper = app.progress_mapper();
+        app.shared_progress.apply(|state| {
+            mapper(
+                SequenceStatus::Subprocess {
+                    parent: Status::Processing {
+                        id: "Benchmarker".into(),
+                        completion: SequenceCompletion::Passes {
+                            completed: 2,
+                            total: 2,
+                        },
+                    },
+                    child: Status::Processing {
+                        id: "2".into(),
+                        completion: SequenceCompletion::Frames {
+                            completed: 90,
+                            total: 100,
+                        },
+                    },
+                },
+                state,
+            )
+        });
+        app.on_snapshot(app.shared_progress.read());
+        let status = &app.cached_state.results[&2];
+        assert_eq!((status.current_frame, status.total_frames), (90, 100));
+        assert_eq!(status.fps_or_error(), "-");
+        let observed = status.started;
+        assert_eq!(status.fps_at(observed), None);
+        app.shared_progress.apply(|state| {
+            mapper(
+                SequenceStatus::Subprocess {
+                    parent: Status::Processing {
+                        id: "Benchmarker".into(),
+                        completion: SequenceCompletion::Passes {
+                            completed: 2,
+                            total: 2,
+                        },
+                    },
+                    child: Status::Processing {
+                        id: "2".into(),
+                        completion: SequenceCompletion::Frames {
+                            completed: 91,
+                            total: 100,
+                        },
+                    },
+                },
+                state,
+            )
+        });
+        app.on_snapshot(app.shared_progress.read());
+        assert_eq!(
+            app.cached_state.results[&2].fps_at(observed + std::time::Duration::from_millis(500)),
+            Some(2.0)
+        );
+        app.shared_progress.apply(|state| {
+            mapper(
+                SequenceStatus::Subprocess {
+                    parent: Status::Processing {
+                        id: "Benchmarker".into(),
+                        completion: SequenceCompletion::Passes {
+                            completed: 2,
+                            total: 2,
+                        },
+                    },
+                    child: Status::Completed { id: "2".into() },
+                },
+                state,
+            )
+        });
+        for status in [
+            Status::Completed { id: "2".into() },
+            Status::Failed {
+                id: "2".into(),
+                error: "Threshold not met".into(),
+            },
+        ] {
+            app.shared_progress.apply(|state| mapper(SequenceStatus::Whole(status), state));
+        }
+        app.on_snapshot(app.shared_progress.read());
+        let status = app.cached_state.results.get_mut(&2).unwrap();
+        let finished = status.finished.expect("completion mapped");
+        status.started = finished - std::time::Duration::from_millis(500);
+        assert_eq!(
+            status.fps_at(finished + std::time::Duration::from_secs(30)),
+            Some(2.0)
+        );
+        assert_eq!(status.fps_or_error(), "2.00 FPS");
+        assert!(status.added);
+        assert_eq!(status.failed_reason.as_deref(), Some("Threshold not met"));
+        assert_eq!(status.status(), "✕");
+        assert_eq!((status.current_frame, status.total_frames), (91, 100));
+        for width in [4, 12, 120] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 20)).unwrap();
+            terminal.draw(|frame| app.render(frame)).unwrap();
+            let text: String =
+                terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect();
+            assert!(!text.contains("NaN") && !text.contains("inf"), "{text}");
+            if width == 120 {
+                assert!(
+                    text.contains("2.00 FPS") && text.contains("91/100") && text.contains('✕'),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn t08_benchmark_zero_future_reversed_and_short_intervals_are_finite() {
+        let now = std::time::Instant::now();
+        let mut status = WorkerStatus {
+            started: now,
+            finished: Some(now),
+            added: false,
+            failed_reason: None,
+            current_frame: 1,
+            initial_frame: 0,
+            total_frames: 0,
+        };
+        assert_eq!(status.fps_or_error(), "-");
+        status.started = now + std::time::Duration::from_secs(1);
+        assert_eq!(status.fps_or_error(), "-");
+        status.started = now;
+        status.finished = None;
+        assert_eq!(
+            status.fps_at(now + std::time::Duration::from_millis(500)),
+            Some(2.0)
+        );
+        status.initial_frame = 2;
+        assert_eq!(status.fps_at(now + std::time::Duration::from_secs(1)), None);
+        status.initial_frame = 0;
+        status.current_frame = u64::MAX;
+        status.finished = Some(now + std::time::Duration::from_nanos(1));
+        assert!(status.fps_at(now).unwrap().is_finite());
+        assert!(!status.fps_or_error().contains("inf"));
+    }
 }
