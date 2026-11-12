@@ -34,13 +34,14 @@ For a complete walkthrough, see the [guide](https://rust-av.github.io/Av1an/guid
 
 ### Installation
 
-Install `condor` from the [Arch AUR][aur], [crates.io][crates], or [Docker](#docker). A Windows binary is available from [Releases](https://github.com/rust-av/Av1an/releases).
+Install `condor` from the [Arch AUR][aur] or [crates.io][crates]. A Windows binary is available from [Releases](https://github.com/rust-av/Av1an/releases).
 
 ```bash
 $ pacman -S condor # Arch Linux & Manjaro
 $ cargo install condor # crates.io
-$ docker pull boatsmcgee/condor:latest # Docker Hub
 ```
+
+For upstream `masterofzen/av1an` containers and local Condor builds, see [Docker](docs/docker.md). Do not assume the published upstream image contains this branch's Condor CLI.
 
 On Windows, download **`condor-windows-x64.zip`** from
 [Releases](https://github.com/rust-av/Av1an/releases) and extract it into one

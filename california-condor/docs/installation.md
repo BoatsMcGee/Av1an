@@ -1,15 +1,16 @@
 # Installation
 
 Install the Av1an CLI, California Condor, from [crates.io][crates], [Arch AUR][aur],
-Docker, or a [release binary](https://github.com/rust-av/Av1an/releases). To build from source see
+or a [release binary](https://github.com/rust-av/Av1an/releases). To build from source see
 [Compiling](./compiling.md). This page covers the release archives and the
 external tools a working encoding environment needs.
 
 ```bash
 $ pacman -S condor       # Arch Linux & Manjaro
 $ cargo install condor   # crates.io
-$ docker pull boatsmcgee/condor:latest   # Docker Hub
 ```
+
+For upstream `masterofzen/av1an` containers and local Condor builds, see [Docker](docker.md). Do not assume the published upstream image contains this branch's Condor CLI.
 
 #### Windows releases
 

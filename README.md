@@ -14,7 +14,7 @@ Av1an is a video encoding Rust library and command-line tool designed to be as f
 ## Features
 
 * Support for Windows, Linux, and MacOS
-* Docker images available
+* Docker build support and [upstream Av1an images](https://hub.docker.com/r/masterofzen/av1an)
 * Hyper-scalable video encoding
 * Cancel and resume at any time without losing progress
 * Real-time progress feedback
@@ -58,14 +58,15 @@ Av1an can analyze video properties and qualities to improve encoded video qualit
 
 ### Installation
 
-Install the Av1an CLI, California Condor, from [crates.io][crates], [Arch AUR][aur], Docker, or download it from [Releases](https://github.com/rust-av/Av1an/releases).
+Install the Av1an CLI, California Condor, from [crates.io][crates], [Arch AUR][aur], or download it from [Releases](https://github.com/rust-av/Av1an/releases).
 For platform details and required dependencies see [Installation](https://rust-av.github.io/Av1an/installation.html); to build from source see [Compiling](https://rust-av.github.io/Av1an/compiling.html).
 
 ```bash
 $ pacman -S condor       # Arch Linux & Manjaro
 $ cargo install condor   # crates.io
-$ docker pull boatsmcgee/condor:latest   # Docker Hub
 ```
+
+For upstream `masterofzen/av1an` containers and local Condor builds, see [Docker](https://rust-av.github.io/Av1an/docker.html). Do not assume the published upstream image contains this branch's Condor CLI.
 
 ### Usage
 

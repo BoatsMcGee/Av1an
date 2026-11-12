@@ -19,16 +19,16 @@ The command-line tool is **California Condor** (`condor`) which is built on top 
 
 ## Install
 
-Install from a package manager, crates.io, or Docker, or grab a release binary:
+Install from a package manager or crates.io, or grab a release binary:
 
 ```bash
 pacman -S condor        # Arch Linux & Manjaro
 cargo install condor    # crates.io
-docker pull boatsmcgee/condor:latest
 ```
 
-See [Compiling](compiling.md) to build from source and [Docker](docker.md) for the
-container image.
+See [Compiling](compiling.md) to build from source and [Docker](docker.md) for upstream
+`masterofzen/av1an` containers and local Condor builds. Do not assume the published
+upstream image contains this branch's Condor CLI.
 
 ## Library
 
