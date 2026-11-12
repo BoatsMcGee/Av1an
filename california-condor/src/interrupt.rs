@@ -188,6 +188,10 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    pub(super) mod windows;
+
     #[test]
     fn t06_internal_stop_is_not_user_interrupt() {
         let cancellation = Interrupt::default();
@@ -246,6 +250,11 @@ mod platform {
             .map_err(|e| anyhow::anyhow!("registering console handler: {e}"))?;
         let (tx, rx) = std::sync::mpsc::channel();
         *EVENTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
-        Ok(move || rx.try_iter().collect())
+        Ok(move || {
+            let events = rx.try_iter().collect::<Vec<_>>();
+            #[cfg(test)]
+            super::tests::windows::observe_received(events.len());
+            events
+        })
     }
 }
