@@ -265,6 +265,11 @@ pub(super) fn reset_key(
             )
         },
         ScenesKey::Zoner => {
+            if scene.sequence_data.zoner.zoned || scene.sequence_data.zoner.lifecycle.is_some() {
+                bail!(
+                    "cannot erase zoning proof on overridden scenes; preserve edits and reset/redetect the whole scene list in an empty work directory, or use a new job. Resetting metadata does not delete physical chunks"
+                );
+            }
             scene.sequence_data.zoner = ZonerData::default();
             ("zoner", serde_json::to_value(&scene.sequence_data.zoner)?)
         },

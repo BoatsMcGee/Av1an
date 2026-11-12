@@ -361,21 +361,112 @@ pub fn stale_result_warnings(
     config: &CliSequenceConfig,
     reason: &str,
 ) -> Result<Vec<anyhow::Error>> {
+    Ok(inspect_changes(original, current, config, reason)?.2)
+}
+
+/// Changed old/new filenames, including every shifted index. Result-only
+/// resets deliberately do not count as scene edits.
+pub fn affected_indices(
+    original: &[Scene<CliSequenceData>],
+    current: &[Scene<CliSequenceData>],
+) -> Vec<usize> {
+    (0..original.len().max(current.len()))
+        .filter(|&index| match (original.get(index), current.get(index)) {
+            (Some(before), Some(after)) => {
+                !same_mapping(before, after) || before.encoder != after.encoder
+            },
+            _ => true,
+        })
+        .collect()
+}
+
+fn same_mapping(before: &Scene<CliSequenceData>, after: &Scene<CliSequenceData>) -> bool {
+    before.start_frame == after.start_frame
+        && before.end_frame == after.end_frame
+        && before.sub_scenes == after.sub_scenes
+}
+
+/// Stage withdrawn results and the persisted PE barrier before publishing the
+/// candidate. No physical files are removed or certified by this operation.
+pub fn invalidate_changed_results(
+    original: &[Scene<CliSequenceData>],
+    current: &mut [Scene<CliSequenceData>],
+    config: &CliSequenceConfig,
+    reason: &str,
+) -> Result<Vec<anyhow::Error>> {
+    let (blocked, old_claims, warnings) = inspect_changes(original, current, config, reason)?;
+    for index in affected_indices(original, current) {
+        let Some(scene) = current.get_mut(index) else {
+            continue;
+        };
+        // ponytail: O(n²) range matching; use an interval lookup if scene lists
+        // become huge. File-only old claims must follow split/moved ranges too.
+        let inherited_artifact = old_claims.iter().any(|&old_index| {
+            original.get(old_index).is_some_and(|before| {
+                before.start_frame < scene.end_frame && scene.start_frame < before.end_frame
+            })
+        });
+        if !original.iter().any(|before| same_mapping(before, scene)) {
+            scene.sequence_data.scene_detection = Default::default();
+        }
+        let data = &mut scene.sequence_data;
+        let already_invalid = data.parallel_encoder.invalidated;
+        data.target_quality = Default::default();
+        data.parallel_encoder = Default::default();
+        data.parallel_encoder.invalidated =
+            already_invalid || blocked.contains(&index) || inherited_artifact;
+        data.quality_check = Default::default();
+        data.noise_detection = None;
+        data.noise_scaling = None;
+    }
+    Ok(warnings)
+}
+
+fn saved_result_kinds(data: &CliSequenceData) -> Vec<&'static str> {
+    let mut kinds = Vec::new();
+    if data.noise_detection.is_some() || data.noise_scaling.is_some() {
+        kinds.push("noise results");
+    }
+    if !data.target_quality.passes.is_empty()
+        || data.target_quality.selection.is_some()
+        || data.target_quality.speed_transition.is_some()
+    {
+        kinds.push("target-quality results");
+    }
+    if data.parallel_encoder.invalidated
+        || data.parallel_encoder.provenance.is_some()
+        || data.parallel_encoder.started_on.is_some()
+        || data.parallel_encoder.completed_on.is_some()
+        || data.parallel_encoder.bytes.is_some()
+    {
+        kinds.push("encode results");
+    }
+    if !data.quality_check.quality.scores.is_empty()
+        || data.quality_check.quality.started_on != 0
+        || data.quality_check.quality.completed_on != 0
+        || data.quality_check.quality.provenance.is_some()
+        || data.quality_check.quality.backend.is_some()
+    {
+        kinds.push("quality-check results");
+    }
+    kinds
+}
+
+fn inspect_changes(
+    original: &[Scene<CliSequenceData>],
+    current: &[Scene<CliSequenceData>],
+    config: &CliSequenceConfig,
+    reason: &str,
+) -> Result<(Vec<usize>, Vec<usize>, Vec<anyhow::Error>)> {
     let mut warnings = Vec::new();
+    let mut blocked = Vec::new();
+    let mut old_claims = Vec::new();
     let probe_directory = config.parallel_encoder.scenes_directory.join(DETAILS.name);
     let mut probe_passes = Vec::new();
     // Only inspect files if the change touched the scene layout or settings.
-    let changed = |index: usize| match (original.get(index), current.get(index)) {
-        (Some(before), Some(after)) => {
-            before.start_frame != after.start_frame
-                || before.end_frame != after.end_frame
-                || before.sub_scenes != after.sub_scenes
-                || before.encoder != after.encoder
-        },
-        _ => true,
-    };
-    if !(0..original.len().max(current.len())).any(changed) {
-        return Ok(warnings);
+    let affected = affected_indices(original, current);
+    if affected.is_empty() {
+        return Ok((blocked, old_claims, warnings));
     }
     if probe_directory.is_dir() {
         for entry in fs::read_dir(&probe_directory)
@@ -388,33 +479,27 @@ pub fn stale_result_warnings(
         }
     }
 
-    for index in (0..original.len().max(current.len())).filter(|index| changed(*index)) {
+    for index in affected {
         let before = original.get(index);
         let after = current.get(index);
         let scene = before.or(after).expect("an existing scene at this index");
-        let data = &scene.sequence_data;
-        let mut saved_results = Vec::new();
-        if data.noise_detection.is_some() || data.noise_scaling.is_some() {
-            saved_results.push("noise results");
+        let mut saved_results =
+            before.map_or_else(Vec::new, |s| saved_result_kinds(&s.sequence_data));
+        if !saved_results.is_empty() {
+            old_claims.push(index);
         }
-        if !data.target_quality.passes.is_empty() {
-            saved_results.push("target-quality results");
-        }
-        if data.parallel_encoder.started_on.is_some()
-            || data.parallel_encoder.completed_on.is_some()
-            || data.parallel_encoder.bytes.is_some()
-        {
-            saved_results.push("encode results");
-        }
-        if !data.quality_check.quality.scores.is_empty()
-            || data.quality_check.quality.completed_on != 0
-        {
-            saved_results.push("quality-check results");
+        if let Some(scene) = after {
+            for kind in saved_result_kinds(&scene.sequence_data) {
+                if !saved_results.contains(&kind) {
+                    saved_results.push(kind);
+                }
+            }
         }
         if !saved_results.is_empty() {
+            blocked.push(index);
             warnings.push(anyhow::anyhow!(
                 "scene index {index} ({}..{}) has saved {} that may be stale after {reason}; \
-                 recompute them before resuming; results were left untouched",
+                  saved records are cleared and encoding is blocked until explicit reset in an empty work directory or a new job",
                 scene.start_frame,
                 scene.end_frame,
                 saved_results.join(", ")
@@ -435,12 +520,31 @@ pub fn stale_result_warnings(
                     ParallelEncoder::scene_id(index),
                     scene.encoder.output_extension()
                 ));
-                if path.is_file() && !files.contains(&path) {
+                let present = match path.symlink_metadata() {
+                    Ok(_) => true,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("failed to inspect {}", path.display()));
+                    },
+                };
+                if present && !files.contains(&path) {
                     files.push(path);
+                }
+                if present
+                    && before.is_some_and(|old| {
+                        old.encoder.output_extension() == scene.encoder.output_extension()
+                    })
+                    && !old_claims.contains(&index)
+                {
+                    old_claims.push(index);
                 }
             }
         }
         for path in files {
+            if !blocked.contains(&index) {
+                blocked.push(index);
+            }
             warnings.push(anyhow::anyhow!(
                 "scene index {index} has an existing encode/probe file {} that may be stale after \
                  {reason}; file was left untouched; start a new job with a different --config-file, \
@@ -450,7 +554,7 @@ pub fn stale_result_warnings(
         }
     }
 
-    Ok(warnings)
+    Ok((blocked, old_claims, warnings))
 }
 
 #[cfg(test)]
@@ -481,6 +585,114 @@ mod tests {
             start_frame,
             end_frame,
         }
+    }
+
+    #[test]
+    fn z02_mapping_noise_and_empty_result_reset_controls() {
+        use andean_condor::models::sequence::{
+            noise_detector::NoiseDetectorData, noise_scaler::NoiseScalerData,
+        };
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut config = CliSequenceConfig::default();
+        config.parallel_encoder.scenes_directory = temp.path().join("scenes");
+        config.scene_concatenator.scenes_directory = temp.path().join("scenes");
+        let mut original = scenes();
+        for scene in &mut original {
+            scene.sequence_data.scene_detection.transnetv2_scores =
+                Some([(scene.start_frame, 0.5)].into());
+            scene.sequence_data.noise_detection = Some(NoiseDetectorData {
+                noise: 2.0,
+                luminance: 30.0,
+                created_on: std::time::UNIX_EPOCH,
+            });
+            scene.sequence_data.noise_scaling = Some(NoiseScalerData { scaler: 0.5 });
+        }
+        let mut edited = original.clone();
+        edited[1].encoder.set_quantizer(19.0);
+        assert_eq!(affected_indices(&original, &edited), vec![1]);
+        invalidate_changed_results(&original, &mut edited, &config, "test").expect("invalidate");
+        assert!(
+            edited[1].sequence_data.noise_detection.is_none()
+                && edited[1].sequence_data.noise_scaling.is_none()
+        );
+        assert!(edited[1].sequence_data.parallel_encoder.invalidated);
+        assert_eq!(
+            serde_json::to_value(&edited[1].sequence_data.scene_detection).expect("retained"),
+            serde_json::to_value(&original[1].sequence_data.scene_detection).expect("original")
+        );
+        let before_reset = edited.clone();
+        edited[1].sequence_data.parallel_encoder = Default::default();
+        assert!(
+            invalidate_changed_results(&before_reset, &mut edited, &config, "reset")
+                .expect("reset")
+                .is_empty()
+        );
+        assert!(
+            !edited[1].sequence_data.parallel_encoder.invalidated,
+            "explicit reset is not a scene edit"
+        );
+        let mut shifted = original.clone();
+        shifted.remove(1);
+        assert_eq!(affected_indices(&original, &shifted), vec![1, 2]);
+        invalidate_changed_results(&original, &mut shifted, &config, "delete").expect("shift");
+        assert_eq!(
+            serde_json::to_value(&shifted[1].sequence_data.scene_detection).expect("mapped"),
+            serde_json::to_value(&original[2].sequence_data.scene_detection).expect("range data")
+        );
+        let mut narrowed = original.clone();
+        narrowed[1].end_frame = 239;
+        invalidate_changed_results(&original, &mut narrowed, &config, "range").expect("range");
+        assert!(narrowed[1].sequence_data.scene_detection.transnetv2_scores.is_none());
+        let clean = scenes();
+        let mut changed = clean.clone();
+        changed[1].encoder.set_quantizer(19.0);
+        invalidate_changed_results(&clean, &mut changed, &config, "empty job").expect("empty edit");
+        assert!(changed.iter().all(|s| !s.sequence_data.parallel_encoder.invalidated));
+    }
+
+    #[test]
+    fn z02_file_only_shift_blocks_both_occupied_filename_and_moved_source() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut config = CliSequenceConfig::default();
+        config.parallel_encoder.scenes_directory = temp.path().to_path_buf();
+        config.scene_concatenator.scenes_directory = temp.path().to_path_buf();
+        let original = scenes();
+        std::fs::write(
+            temp.path().join("00002.ivf"),
+            b"unclaimed file must not be blessed",
+        )
+        .expect("old file");
+        let mut shifted = original.clone();
+        shifted.insert(1, scene(121, 180));
+        invalidate_changed_results(&original, &mut shifted, &config, "insert").expect("invalidate");
+        assert!(
+            shifted[2].sequence_data.parallel_encoder.invalidated,
+            "old filename is occupied"
+        );
+        assert!(
+            shifted[3].sequence_data.parallel_encoder.invalidated,
+            "moved range inherited an invalidated old artifact even without saved records"
+        );
+        assert!(!shifted[0].sequence_data.parallel_encoder.invalidated);
+    }
+
+    #[test]
+    fn z02_new_index_claim_is_not_misattributed_to_clean_old_range() {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut config = CliSequenceConfig::default();
+        config.parallel_encoder.scenes_directory = temp.path().join("scenes");
+        config.scene_concatenator.scenes_directory = temp.path().join("scenes");
+        let mut original = scenes();
+        original[1].sequence_data.parallel_encoder.bytes = Some(123);
+        let mut shifted = original.clone();
+        shifted.insert(1, scene(121, 180));
+        invalidate_changed_results(&original, &mut shifted, &config, "insert").expect("invalidate");
+        assert!(shifted[1].sequence_data.parallel_encoder.invalidated);
+        assert!(shifted[2].sequence_data.parallel_encoder.invalidated);
+        assert!(
+            !shifted[3].sequence_data.parallel_encoder.invalidated,
+            "new index 2's inherited claim is not an old claim for clean range 240..480"
+        );
     }
 
     #[test]

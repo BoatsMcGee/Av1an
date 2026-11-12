@@ -70,6 +70,297 @@ mod tests {
         String::from_utf8_lossy(&output.stderr).into_owned()
     }
 
+    #[test]
+    fn z02_cli_edit_persists_cleared_results_and_blocks_inherited_quality() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let path = scenes_config(&temp);
+        let mut config = load(&path);
+        config.condor.scenes[1].sequence_data.parallel_encoder.bytes = Some(123);
+        config.condor.scenes[1].sequence_data.quality_check.quality.scores = vec![42.0];
+        let peer = serde_json::to_value(&config.condor.scenes[2]).expect("peer");
+        config.save(&path).expect("save");
+        condor_cmd(&temp)
+            .args(["scenes", "1", "set", "params", "crf=19"])
+            .assert()
+            .success();
+        let updated = load(&path);
+        assert!(
+            updated.condor.scenes[1].sequence_data.parallel_encoder.bytes.is_none(),
+            "Z02: editing must clear stale saved completion, not merely warn"
+        );
+        assert!(updated.condor.scenes[1].sequence_data.quality_check.quality.scores.is_empty());
+        assert_eq!(
+            serde_json::to_value(&updated.condor.scenes[2]).expect("peer"),
+            peer
+        );
+        let error =
+            updated.admit_results().expect_err("cleared history must not bless inherited q");
+        assert!(format!("{error:#}").contains("scene 1"));
+    }
+
+    #[cfg(unix)]
+    #[serial]
+    #[test]
+    fn z02_current_producers_edits_exact_indices_direct_barrier_and_recovery() {
+        use andean_condor::{
+            core::sequence::{
+                Sequence, parallel_encoder::ParallelEncoder, quality_check::QualityCheck,
+                scene_concatenator::SceneConcatenator, target_quality::TargetQuality,
+            },
+            models::{
+                encoder::{Encoder, EncoderBase, cli_parameter::CLIParameter},
+                input::{ImportMethod, Input},
+                sequence::{
+                    quality_check::QualityCheckConfig,
+                    scene_concatenator::ConcatMethod,
+                    target_quality::{TargetQualityConfig, types::QualityMetric},
+                },
+            },
+        };
+        use std::{cell::Cell, os::unix::fs::PermissionsExt, rc::Rc};
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("source.mkv");
+        let generated = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=128x128:rate=24",
+                "-frames:v",
+                "9",
+                "-c:v",
+                "ffv1",
+                "-y",
+            ])
+            .arg(&source)
+            .output()
+            .expect("installed ffmpeg");
+        assert!(generated.status.success(), "{generated:?}");
+        let video = TestVideo {
+            path: source.clone(),
+            width: 128,
+            height: 128,
+            frames: 9,
+            fps_rational: (24, 1),
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 3), (3, 6), (6, 9)],
+        };
+        let mut config = default_config(
+            &video,
+            &temp.path().join("out.mkv"),
+            &temp.path().join("custom-work"),
+        );
+        config.condor.input = Input::Video {
+            path: source.clone(),
+            import_method: ImportMethod::FFMS2 {
+                index: None,
+                cache_path: None,
+            },
+            filters: vec![],
+        };
+        let wrapper = temp.path().join("codec");
+        std::fs::write(&wrapper, format!("#!/bin/sh\nfor argument do if [ \"$argument\" = -o ]; then printf 'encode\\n' >> '{}'; break; fi; done\nexec x264 \"$@\"\n", temp.path().join("calls").display())).expect("counter");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+            .expect("executable");
+        config.condor.encoder = Encoder::default_from_base(&EncoderBase::X264, false);
+        config.condor.encoder.set_executable(Some(wrapper));
+        config.condor.encoder.set_quantizer(20.0);
+        config.condor.encoder.parameters_mut().insert(
+            "preset".into(),
+            CLIParameter::new_string("--", "=", "ultrafast"),
+        );
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        let metric = QualityMetric::VMAF {
+            target_range: (-1000.0, 1000.0),
+            resolution: None,
+            scaler: "bicubic".into(),
+            threads: 0,
+            model: None,
+            features: vec![],
+        };
+        config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
+            maximum_probes: 1,
+            quantizer_range: (20, 20),
+            metric: metric.clone(),
+            ..Default::default()
+        });
+        config.condor.sequence_config.quality_check = Some(QualityCheckConfig {
+            metric,
+            ..Default::default()
+        });
+        config.condor.sequence_config.scene_concatenator.method =
+            ConcatMethod::FFmpeg(Default::default());
+        let dir = config.condor.sequence_config.parallel_encoder.scenes_directory.clone();
+        std::fs::create_dir_all(dir.join("Target Quality/1/Scene Concatenator")).expect("scratch");
+        std::fs::create_dir_all(dir.join("Scene Concatenator")).expect("final concat scratch");
+        let mut job = config.instantiate_condor(Box::new(|_| Ok(()))).expect("native job");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        TargetQuality::default()
+            .execute_cancel(&mut job, tx, Default::default())
+            .expect("real probes");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        ParallelEncoder::default()
+            .execute_cancel(&mut job, tx, Default::default())
+            .expect("real chunks");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        SceneConcatenator::default()
+            .execute_cancel(&mut job, tx, Default::default())
+            .expect("real final output");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        QualityCheck::default()
+            .execute_cancel(&mut job, tx, Default::default())
+            .expect("real QC");
+        config.condor = job.as_data();
+        for scene in &mut config.condor.scenes {
+            assert!(scene.sequence_data.target_quality.passes[0].provenance.is_some());
+            assert!(scene.sequence_data.parallel_encoder.provenance.is_some());
+            assert!(scene.sequence_data.quality_check.quality.provenance.is_some());
+            scene.sequence_data.scene_detection.transnetv2_scores =
+                Some([(scene.start_frame, 0.5)].into());
+        }
+        let path = temp.path().join("condor.json");
+        config.save(&path).expect("current saved config");
+        config.admit_results().expect("current reuse control");
+        let calls = std::fs::read(temp.path().join("calls")).expect("calls");
+        condor_cmd(&temp).env("CONDOR_TEST_MODE", "1").arg("encode").assert().success();
+        assert_eq!(
+            std::fs::read(temp.path().join("calls")).expect("no reencode"),
+            calls
+        );
+        let mut files = vec![source, temp.path().join("out.mkv")];
+        files.extend((0..3).map(|i| dir.join(format!("{i:05}.264"))));
+        files.extend((0..3).map(|i| dir.join(format!("Target Quality/1/{i:05}.264"))));
+        let sentinel = temp.path().join("custom-work/user-sentinel");
+        std::fs::write(&sentinel, b"not owned by condor").expect("sentinel");
+        files.push(sentinel);
+        let bytes = files
+            .iter()
+            .map(|p| std::fs::read(p).expect("owned/foreign file"))
+            .collect::<Vec<_>>();
+        for (args, affected) in [
+            (vec!["scenes", "1", "set", "params", "crf=19"], vec![1]),
+            (vec!["scenes", "1", "set", "end", "5"], vec![1]),
+            (vec!["scenes", "1", "set", "sub-scenes", "3-5"], vec![1]),
+            (vec!["scenes", "1", "delete"], vec![1]),
+            (vec!["scenes", "add", "3", "5"], vec![1, 2, 3]),
+            (vec!["zone", "3 6 --maximum-frames 2"], vec![1, 2, 3]),
+            (
+                vec!["--skip-scd", "--overwrite", "--zones", "3 6 --maximum-frames 2"],
+                vec![1, 2, 3],
+            ),
+        ] {
+            config.save(&path).expect("restore current metadata, not forge certificates");
+            let result = condor_cmd(&temp).env("CONDOR_TEST_MODE", "1").args(&args).assert();
+            if args[0] == "--skip-scd" {
+                result.failure();
+            } else {
+                result.success();
+            }
+            let edited = load(&path);
+            for (index, scene) in edited.condor.scenes.iter().enumerate() {
+                if affected.contains(&index) {
+                    let data = &scene.sequence_data;
+                    assert!(data.parallel_encoder.invalidated, "{args:?}: scene {index}");
+                    assert!(
+                        data.parallel_encoder.provenance.is_none()
+                            && data.parallel_encoder.bytes.is_none()
+                            && data.parallel_encoder.started_on.is_none()
+                            && data.parallel_encoder.completed_on.is_none()
+                    );
+                    assert!(
+                        data.target_quality.passes.is_empty()
+                            && data.target_quality.selection.is_none()
+                            && data.target_quality.speed_transition.is_none()
+                    );
+                    assert!(
+                        data.quality_check.quality.scores.is_empty()
+                            && data.quality_check.quality.provenance.is_none()
+                    );
+                } else {
+                    let mut actual = serde_json::to_value(scene).expect("peer");
+                    let mut expected =
+                        serde_json::to_value(&config.condor.scenes[index]).expect("original peer");
+                    actual["sequence_data"].as_object_mut().expect("data").remove("zoner");
+                    expected["sequence_data"].as_object_mut().expect("data").remove("zoner");
+                    assert_eq!(actual, expected, "{args:?}: unaffected scene {index}");
+                }
+            }
+            let json = std::fs::read(&path).expect("saved barrier");
+            let denied =
+                condor_cmd(&temp).env("CONDOR_TEST_MODE", "1").arg("encode").assert().failure();
+            assert!(stderr(denied.get_output()).contains("scene 1"));
+            let saves = Rc::new(Cell::new(0));
+            let observed = Rc::clone(&saves);
+            let mut direct = edited
+                .instantiate_condor(Box::new(move |_| {
+                    observed.set(observed.get() + 1);
+                    Ok(())
+                }))
+                .expect("direct job");
+            let before = serde_json::to_value(direct.as_data()).expect("before");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let error = ParallelEncoder::default()
+                .execute_cancel(&mut direct, tx, Default::default())
+                .expect_err("direct core barrier");
+            assert!(format!("{error:#}").contains("scene 1"));
+            assert_eq!(saves.get(), 0);
+            assert!(rx.try_iter().next().is_none());
+            assert_eq!(
+                serde_json::to_value(direct.as_data()).expect("after"),
+                before
+            );
+            assert_eq!(std::fs::read(&path).expect("no resave"), json);
+            assert_eq!(
+                std::fs::read(temp.path().join("calls")).expect("no native work"),
+                calls
+            );
+            for (file, expected) in files.iter().zip(&bytes) {
+                assert_eq!(std::fs::read(file).expect("preserved"), *expected);
+            }
+        }
+        // Even with *all* old physical files absent in a distinct empty workdir,
+        // cleared TQ history cannot authorize an inherited quantizer.
+        let mut edited = load(&path);
+        edited.condor.sequence_config.parallel_encoder.scenes_directory =
+            temp.path().join("empty-work");
+        std::fs::create_dir_all(&edited.condor.sequence_config.parallel_encoder.scenes_directory)
+            .expect("empty workdir");
+        assert!(edited.admit_results().is_err());
+        let mut absent = edited
+            .instantiate_condor(Box::new(|_| anyhow::bail!("must not save")))
+            .expect("absent artifacts");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let error = ParallelEncoder::default()
+            .execute_cancel(&mut absent, tx, Default::default())
+            .expect_err("marker before source/artifact checks");
+        assert!(format!("{error:#}").contains("scene 1"));
+        assert!(rx.try_iter().next().is_none());
+        for scene in &mut edited.condor.scenes {
+            scene.encoder = edited.condor.encoder.clone();
+            scene.sequence_data.target_quality = Default::default();
+            scene.sequence_data.quality_check = Default::default();
+            scene.sequence_data.parallel_encoder = Default::default();
+        }
+        edited.condor.sequence_config.target_quality = None;
+        let mut recovered =
+            edited.instantiate_condor(Box::new(|_| Ok(()))).expect("explicit reset");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        ParallelEncoder::default()
+            .execute_cancel(&mut recovered, tx, Default::default())
+            .expect("normal producer after explicit reset in empty workdir");
+        assert!(
+            recovered
+                .scenes
+                .iter()
+                .all(|s| s.sequence_data.parallel_encoder.provenance.is_some())
+        );
+        for (file, expected) in files.iter().zip(&bytes) {
+            assert_eq!(std::fs::read(file).expect("original preserved"), *expected);
+        }
+    }
+
     #[serial]
     #[test]
     fn scenes_print_and_info_address_the_selection() {

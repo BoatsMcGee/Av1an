@@ -13,12 +13,10 @@
 //! implementation. Application and validation are plain functions over scenes
 //! so they can be tested without an open input.
 //!
-//! The pipeline applies zones after Scene Detector, then records the pass on
-//! every scene ([`ZonerData::zoned`]); later runs skip the Zoner until
-//! `condor scenes reset zoner` clears that record. Individual overrides are
-//! idempotent, but a length cap can change which zones a scene intersects on
-//! a later pass, so use freshly detected scenes when reapplying interacting
-//! zones.
+//! The pipeline applies zones after Scene Detector. A compact original baseline
+//! and structured applied definitions make unchanged passes idempotent and
+//! changed/removed overrides reversible. Unknown legacy baselines and unsafe
+//! rebases refuse without overwriting scene edits or deleting files.
 
 use std::sync::{self, Arc, atomic::AtomicBool};
 
@@ -27,7 +25,10 @@ use andean_condor::{
         Condor,
         sequence::{Sequence, SequenceDetails, SequenceStatus},
     },
-    models::scene::Scene,
+    models::{
+        encoder::Encoder,
+        scene::{Scene, SubScene},
+    },
 };
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
@@ -36,7 +37,7 @@ use tracing::{info, warn};
 
 use crate::{
     configuration::{CliSequenceConfig, CliSequenceData},
-    scenes::stale_result_warnings,
+    scenes::invalidate_changed_results,
     zoner::zone::zone_label,
 };
 
@@ -65,14 +66,49 @@ pub struct ZonerConfig {
 
 /// `condor.scenes[].sequence_data.zoner` in `condor.json`.
 ///
-/// The record the Zoner writes when it has applied the configured zones to
-/// the scene list, which is what later runs read to skip.
+/// The legacy pass flag and, on the first scene, the proof needed for safe rebase.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ZonerData {
-    /// Whether the Zoner has processed this scene list. `condor scenes reset
-    /// zoner` clears it so the zones apply again.
+    /// Whether the Zoner has processed this scene list. Alone this flag cannot
+    /// prove which definitions ran or what original settings they replaced.
     #[serde(default)]
     pub zoned: bool,
+    /// One compact list-level record, stored on the first scene only. Absence
+    /// on legacy zoned lists is not evidence of an original encoder baseline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<ZoneLifecycle>,
+}
+
+/// Original and last-applied scene definitions, without any recursive results.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ZoneLifecycle {
+    pub baseline: Vec<SceneDefinition>,
+    pub zones: Vec<Zone>,
+    pub applied: Vec<SceneDefinition>,
+}
+
+/// Only the fields a zoning pass may change; never copies probe histories.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SceneDefinition {
+    pub start_frame: usize,
+    pub end_frame: usize,
+    pub sub_scenes: Option<Vec<SubScene>>,
+    pub encoder: Encoder,
+}
+
+impl From<&Scene<CliSequenceData>> for SceneDefinition {
+    fn from(scene: &Scene<CliSequenceData>) -> Self {
+        Self {
+            start_frame: scene.start_frame,
+            end_frame: scene.end_frame,
+            sub_scenes: scene.sub_scenes.clone(),
+            encoder: scene.encoder.clone(),
+        }
+    }
+}
+
+fn definitions(scenes: &[Scene<CliSequenceData>]) -> Vec<SceneDefinition> {
+    scenes.iter().map(SceneDefinition::from).collect()
 }
 
 #[derive(Default)]
@@ -83,17 +119,9 @@ impl Zoner {
 
     /// Validates and applies the configured zones.
     ///
-    /// The pass records itself on the scenes it processed, so a later run
-    /// applies nothing until `condor scenes reset zoner` clears the record.
+    /// Unchanged known definitions do not apply or save again. Changed/removed
+    /// definitions rebuild from the original baseline or refuse an unsafe rebase.
     pub fn run(condor: &mut Condor<CliSequenceData, CliSequenceConfig>) -> Result<()> {
-        if condor.scenes.iter().any(|scene| scene.sequence_data.zoner.zoned) {
-            info!(
-                "Zoner: the scenes already record a zoning pass; nothing to apply (reset the \
-                 record with `condor scenes reset zoner`)"
-            );
-            return Ok(());
-        }
-
         let mut zoner = Self::default();
 
         let (_, warnings) = zoner.validate(condor)?;
@@ -141,39 +169,101 @@ impl Sequence<CliSequenceData, CliSequenceConfig> for Zoner {
         _cancelled: Arc<AtomicBool>,
     ) -> Result<((), Vec<anyhow::Error>)> {
         let zones = configured_zones(&condor.sequence_config);
-        if zones.is_empty() {
+        let lifecycle =
+            condor.scenes.first().and_then(|s| s.sequence_data.zoner.lifecycle.as_ref());
+        if lifecycle.is_none()
+            && condor
+                .scenes
+                .iter()
+                .any(|s| s.sequence_data.zoner.zoned || s.sequence_data.zoner.lifecycle.is_some())
+        {
+            bail!(
+                "Zoner: legacy or edited zoned scenes have no proven original baseline/applied definitions; preserve edits and reset/redetect the whole scene list in an empty work directory, or use a new job. Resetting metadata does not delete physical chunks"
+            );
+        }
+        if zones.is_empty() && lifecycle.is_none() {
             return Ok(((), Vec::new()));
         }
         if condor.scenes.is_empty() {
             bail!("no scenes to zone; run Scene Detector first");
         }
-
-        let original_scenes = condor.scenes.clone();
-        let mut warnings = apply_zones(
-            zones,
-            &mut condor.scenes,
-            condor.input.clip_info()?.num_frames,
+        let num_frames = condor.input.clip_info()?.num_frames;
+        validate_zones(zones, num_frames)?;
+        if let Some(state) = lifecycle {
+            if state.zones == zones {
+                info!(
+                    "Zoner: the scenes already record a zoning pass; nothing to apply (definitions unchanged)"
+                );
+                return Ok(((), Vec::new()));
+            }
+            if state.applied != definitions(&condor.scenes) {
+                bail!(
+                    "Zoner: scene definitions changed after zoning; cannot safely rebase over manual or derived encoder edits. Preserve edits and reset/redetect the whole scene list in an empty work directory, or use a new job"
+                );
+            }
+        }
+        let baseline = lifecycle.map_or_else(
+            || definitions(&condor.scenes),
+            |state| state.baseline.clone(),
         );
-        let stale_warnings = stale_result_warnings(
-            &original_scenes,
+        let mut candidate = if lifecycle.is_none() {
+            condor.scenes.clone()
+        } else {
+            baseline
+                .iter()
+                .map(|definition| Scene {
+                    start_frame: definition.start_frame,
+                    end_frame: definition.end_frame,
+                    sub_scenes: definition.sub_scenes.clone(),
+                    encoder: definition.encoder.clone(),
+                    sequence_data: CliSequenceData::default(),
+                })
+                .collect()
+        };
+        let mut warnings = apply_zones(zones, &mut candidate, num_frames);
+        // Keep unaffected records exactly. For changed definitions, retain only
+        // the matching range's data until shared invalidation withdraws it.
+        if lifecycle.is_some() {
+            for (index, scene) in candidate.iter_mut().enumerate() {
+                let same_range = |before: &&Scene<CliSequenceData>| {
+                    before.start_frame == scene.start_frame
+                        && before.end_frame == scene.end_frame
+                        && before.sub_scenes == scene.sub_scenes
+                };
+                if let Some(before) = condor
+                    .scenes
+                    .get(index)
+                    .filter(same_range)
+                    .or_else(|| condor.scenes.iter().find(same_range))
+                {
+                    scene.sequence_data = before.sequence_data.clone();
+                }
+            }
+        }
+        warnings.extend(invalidate_changed_results(
             &condor.scenes,
+            &mut candidate,
             &condor.sequence_config,
             "zoning",
-        )?;
-        if !stale_warnings.is_empty() {
-            info!(
-                "Zoner: {} additional stale-result warnings; existing results and files were left \
-                 untouched",
-                stale_warnings.len()
-            );
-            warnings.extend(stale_warnings);
+        )?);
+        let applied = definitions(&candidate);
+        for scene in &mut candidate {
+            scene.sequence_data.zoner = ZonerData {
+                zoned: true,
+                lifecycle: None,
+            };
         }
-        // The record the skip check reads: this list has been through every
-        // configured zone, whether a scene changed or not.
-        for scene in &mut condor.scenes {
-            scene.sequence_data.zoner.zoned = true;
-        }
-        condor.save()?;
+        candidate[0].sequence_data.zoner.lifecycle = Some(ZoneLifecycle {
+            baseline,
+            zones: zones.to_vec(),
+            applied,
+        });
+        // Publish the complete candidate without mutating caller state. The CLI
+        // callback validates the whole Configuration under its outer JobLock.
+        let mut staged = condor.as_data();
+        staged.scenes = candidate.clone();
+        (condor.save_callback)(staged)?;
+        condor.scenes = candidate;
 
         Ok(((), warnings))
     }

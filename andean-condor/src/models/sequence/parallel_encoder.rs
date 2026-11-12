@@ -80,6 +80,10 @@ where
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ParallelEncoderData {
+    /// Scene/zone edits withdrew derived results. Explicit metadata reset clears
+    /// this barrier; it does not remove chunks or make a nonempty workdir safe.
+    #[serde(default)]
+    pub invalidated: bool,
     #[serde(default)]
     pub provenance: Option<super::provenance::ResultProvenance>,
     /// Must be milliseconds since UNIX Epoch
@@ -87,6 +91,19 @@ pub struct ParallelEncoderData {
     /// Must be milliseconds since UNIX Epoch
     pub completed_on: Option<u128>,
     pub bytes: Option<u64>,
+}
+
+impl ParallelEncoderData {
+    /// Check even when no file or completion record remains: the encoder may
+    /// still carry a quantizer inherited from withdrawn probe history.
+    #[inline]
+    pub fn admit_scene(&self, index: usize) -> Result<()> {
+        anyhow::ensure!(
+            !self.invalidated,
+            "scene {index} results/artifacts were invalidated by scene or zone edits; use a new job with a distinct config, empty work directory and output, or explicitly reset encoder and target-quality / quality-check / parallel-encoder records and recompute in an empty work directory. Resetting metadata does not delete physical chunks"
+        );
+        Ok(())
+    }
 }
 
 pub trait ParallelEncoderDataHandler

@@ -705,6 +705,7 @@ mod tests {
         let started = Instant::now() - Duration::from_secs(10);
         for completed_on in [30_000_u128, 10_000] {
             let data = ParallelEncoderData {
+                invalidated: false,
                 provenance: None,
                 started_on: Some(20_000),
                 completed_on: Some(completed_on),
@@ -714,6 +715,7 @@ mod tests {
             assert_eq!(
                 json,
                 serde_json::json!({
+                    "invalidated": false,
                     "provenance": null,
                     "started_on": 20_000,
                     "completed_on": completed_on,

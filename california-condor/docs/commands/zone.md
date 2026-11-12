@@ -40,13 +40,17 @@ No zone definitions or scene changes are saved, and no encode/probe outputs are 
 
 ## Zoned Scenes
 
-After validation and application succeed, the zones and scenes are saved together to the configuration, replacing the zones already in `condor.sequence_config.zoner`. The pass also records itself on every scene as `sequence_data.zoner.zoned: true`, so the next run has evidence the zones were applied: while that record stands, `condor zone` and the pipeline's Zoner step apply nothing and report the skip. To apply changed zones again, clear the record first with [`condor scenes reset zoner`](./scenes.md). A failed command or dry-run leaves configuration bytes unchanged. Only scenes that share a frame with a zone change, and each scene takes the whole zone's settings: a scene is never split at a zone boundary. Scenes longer than a zone's `maximum_frames` are split up.
+After validation and application succeed, zones, scenes, and invalidation metadata are saved together. The first pass stores the original per-scene ranges, sub-scenes and encoders, plus the structured applied definitions. Known unchanged definitions skip without another save, including after reloading the job. Changed or removed overrides rebuild from that original baseline, not from global defaults or previous overrides. To remove all definitions, set `condor.sequence_config.zoner` to `null` (or its `zones` to `[]`) and run `condor zone`.
+
+A failed command or dry-run leaves configuration bytes unchanged. Scenes still take whole overlapping zones: no zone-boundary splitting is introduced. Scenes longer than a zone's `maximum_frames` are split up.
 
 A merge whose encoder base differs from the scene's leaves that scene unchanged with a warning, rather than put one encoder's parameters on another's command line.
 
 `condor zone` needs scenes to zone: run [detect-scenes](./detect-scenes.md) first, or let [`condor`](./condor.md) run detection before its Zoner step.
 
-Zoner warns if actual changes could stale saved downstream results or existing index-named encode/probe files. Splitting can shift later scene indices and make their files stale too. Warnings only: results and files are not deleted or reset. To avoid reusing old encodes, [start a separate job](clean.md#start-a-separate-job) with a different `--config-file`, a distinct empty `--temp` directory, and a distinct output; `condor clean` is unavailable. No-op zoning does not issue cleanup warnings.
+Actual changes clear affected probe/selection, encode, quality-check and noise records before saving. Shifted indices count as changes even when a moved range is identical. Where old results or artifacts existed, a persisted barrier blocks encoding even if old files are later absent. Files, source and final output are preserved; there is no automatic cleanup. See [scene invalidation and recovery](scenes.md#invalidation-and-recovery).
+
+Legacy `zoned: true` without original/applied proof cannot safely skip or restore settings. Manual scene edits (or downstream encoder changes) can also make a later rebase unsafe. These cases preserve edits and refuse: reset/redetect the **whole scene list** in a new/empty work directory, or [start a separate job](clean.md#start-a-separate-job) with a distinct config, empty temp directory and output. Clearing only the old zoning flag is not a safe migration.
 
 ## Console reporting
 
@@ -56,9 +60,9 @@ Zoner reports its work at `INFO` level, both for `condor zone` and in the full p
 - Each split identifies the original scene, the resulting frame ranges, and how many scenes were added.
 - Each zone reports matched, modified, split, added, and matched-but-unchanged scene counts. A scene changed and split by the same zone counts as one modified scene. No-op overrides and skipped encoder mismatches do not count as changes.
 - The final summary reports the number of zones, scene changes across zones, total scenes added, before/after scene counts, and application warnings. Additional stale-result warnings are reported separately. A scene modified by multiple zones contributes a change for each zone; this is not a count of unique original scenes.
-- A run whose scenes already record a zoning pass reports that at `INFO` and applies nothing.
+- A run with proven unchanged definitions reports that at `INFO` and applies nothing.
 
-The command modifies scene configuration; no encoding happens. Individual overrides are idempotent, but splitting can change which zones a scene intersects on a later run, so use freshly detected scenes when reapplying interacting zones.
+The command modifies scene configuration; no encoding or artifact deletion happens.
 
 ## Screenshots
 

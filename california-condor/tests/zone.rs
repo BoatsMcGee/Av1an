@@ -46,6 +46,239 @@ mod tests {
 
     #[serial]
     #[test]
+    fn z02_changed_zones_restore_original_scene_baseline() {
+        let video = get_test_video();
+        let temp = tempfile::tempdir().expect("temp");
+        let path = temp.path().join("condor.json");
+        condor_cmd(&temp)
+            .args(["init", path_str(&video.path), "out.mkv"])
+            .assert()
+            .success();
+        let (mut config, _) = load_configuration(Some(&path)).expect("config");
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        config.condor.scenes[0].encoder = x265(17.0);
+        let original = config.condor.scenes[0].encoder.clone();
+        config.save(&path).expect("save");
+        condor_cmd(&temp)
+            .args(["zone", "0 121 replace x264 \"--crf 22\""])
+            .assert()
+            .success();
+        // Roundtrip and changed definitions must not be skipped by the old boolean.
+        condor_cmd(&temp)
+            .args(["zone", "121 240 replace x264 \"--crf 24\""])
+            .assert()
+            .success();
+        let (updated, _) = load_configuration(Some(&path)).expect("updated");
+        assert_eq!(
+            updated.condor.scenes[0].encoder, original,
+            "Z02: a removed override must restore the heterogeneous original encoder"
+        );
+        assert_eq!(updated.condor.scenes[1].encoder.base(), EncoderBase::X264);
+        let saved = std::fs::read(&path).expect("saved");
+        condor_cmd(&temp).arg("zone").assert().success();
+        assert_eq!(std::fs::read(&path).expect("unchanged roundtrip"), saved);
+        let mut removed = updated;
+        removed.condor.sequence_config.zoner = None;
+        removed.save(&path).expect("remove all definitions");
+        condor_cmd(&temp).arg("zone").assert().success();
+        let (restored, _) = load_configuration(Some(&path)).expect("restored");
+        assert_eq!(restored.condor.scenes[0].encoder, original);
+        assert_eq!(restored.condor.scenes[1].encoder, restored.condor.encoder);
+    }
+
+    #[serial]
+    #[test]
+    fn z02_direct_zoner_stages_failure_and_refuses_legacy_or_unsafe_rebase() {
+        use andean_condor::core::sequence::Sequence;
+        use california_condor::{
+            test_helpers::default_config,
+            zoner::{Zoner, ZonerConfig, parse_zone},
+        };
+        use std::{
+            cell::Cell,
+            rc::Rc,
+            sync::{Arc, atomic::AtomicBool},
+        };
+        let video = get_test_video();
+        let temp = tempfile::tempdir().expect("temp");
+        let mut config = default_config(&video, &temp.path().join("out.mkv"), temp.path());
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        config.condor.scenes[0].sequence_data.parallel_encoder.bytes = Some(123);
+        config.condor.scenes[0].encoder = x265(17.0);
+        config.condor.scenes[0].sub_scenes = Some(vec![andean_condor::models::scene::SubScene {
+            start_frame: 0,
+            end_frame: 121,
+        }]);
+        config.condor.sequence_config.zoner = Some(ZonerConfig {
+            zones: vec![parse_zone("0 121 --maximum-frames 96").expect("zone")],
+        });
+        let before = serde_json::to_value(&config.condor).expect("before");
+        let path = temp.path().join("condor.json");
+        config.save(&path).expect("original JSON");
+        let json = std::fs::read(&path).expect("original bytes");
+        let blocked = temp.path().join("not-a-file");
+        std::fs::create_dir_all(&blocked).expect("publication barrier");
+        std::fs::write(blocked.join("sentinel"), b"preserve").expect("sentinel");
+        let staged_config = config.clone();
+        let mut direct = config
+            .instantiate_condor(Box::new(move |data| {
+                let mut candidate = staged_config.clone();
+                candidate.condor = data;
+                candidate.save(&blocked)?;
+                Ok(())
+            }))
+            .expect("direct");
+        let runtime_before = serde_json::to_value(direct.as_data()).expect("runtime before");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        assert!(
+            Zoner::default()
+                .execute(&mut direct, tx, Arc::new(AtomicBool::new(false)))
+                .is_err()
+        );
+        // instantiate_condor adds a source_path, so compare against the exact runtime snapshot.
+        assert_eq!(
+            serde_json::to_value(&direct.scenes).expect("rollback"),
+            before["scenes"]
+        );
+        assert_eq!(
+            serde_json::to_value(direct.as_data()).expect("full rollback"),
+            runtime_before
+        );
+        assert_eq!(std::fs::read(&path).expect("old JSON"), json);
+        assert_eq!(
+            std::fs::read(temp.path().join("not-a-file/sentinel")).expect("sentinel"),
+            b"preserve"
+        );
+        assert!(direct.scenes[0].sequence_data.zoner.lifecycle.is_none());
+        let saves = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&saves);
+        direct.save_callback = Box::new(move |_| {
+            observed.set(observed.get() + 1);
+            Ok(())
+        });
+        Zoner::run(&mut direct).expect("successful stage");
+        assert_eq!(saves.get(), 1);
+        assert!(direct.scenes[0].sequence_data.parallel_encoder.invalidated);
+        let roundtrip =
+            serde_json::from_slice(&serde_json::to_vec(&direct.as_data()).expect("serialize"))
+                .expect("roundtrip");
+        config.condor = roundtrip;
+        let observed = Rc::clone(&saves);
+        let mut direct = config
+            .instantiate_condor(Box::new(move |_| {
+                observed.set(observed.get() + 1);
+                Ok(())
+            }))
+            .expect("reload");
+        Zoner::run(&mut direct).expect("known unchanged");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        Zoner::default()
+            .execute(&mut direct, tx, Arc::new(AtomicBool::new(false)))
+            .expect("direct unchanged");
+        assert_eq!(
+            saves.get(),
+            1,
+            "neither entrypoint resaves known unchanged definitions"
+        );
+        let mut removed = config.clone();
+        removed.condor.sequence_config.zoner = None;
+        let mut restored =
+            removed.instantiate_condor(Box::new(|_| Ok(()))).expect("remove length cap");
+        Zoner::run(&mut restored).expect("restore original partition");
+        assert_eq!(
+            restored.scenes.iter().map(|s| (s.start_frame, s.end_frame)).collect::<Vec<_>>(),
+            video.scenes
+        );
+        assert_eq!(restored.scenes[0].encoder, x265(17.0));
+        assert_eq!(
+            restored.scenes[0].sub_scenes.as_ref().expect("original sub-scenes")[0].end_frame,
+            121
+        );
+        direct.sequence_config.zoner = None;
+        let before_failed_rebase =
+            serde_json::to_value(direct.as_data()).expect("before failed removal");
+        let callback = std::mem::replace(
+            &mut direct.save_callback,
+            Box::new(|_| anyhow::bail!("reject rebased candidate")),
+        );
+        assert!(Zoner::run(&mut direct).is_err());
+        assert_eq!(
+            serde_json::to_value(direct.as_data()).expect("rebase rollback"),
+            before_failed_rebase
+        );
+        direct.save_callback = callback;
+        direct.scenes[0].encoder.set_quantizer(18.0);
+        direct.sequence_config.zoner = None;
+        let manual = serde_json::to_value(direct.as_data()).expect("manual edits");
+        let error = Zoner::run(&mut direct).expect_err("unsafe rebase");
+        assert!(format!("{error:#}").contains("reset/redetect"));
+        assert_eq!(
+            serde_json::to_value(direct.as_data()).expect("preserved"),
+            manual
+        );
+        for scene in &mut direct.scenes {
+            scene.sequence_data.zoner.lifecycle = None;
+        }
+        let legacy = serde_json::to_value(direct.as_data()).expect("legacy");
+        for execute in [false, true] {
+            let result = if execute {
+                let (tx, _rx) = std::sync::mpsc::channel();
+                Zoner::default()
+                    .execute(&mut direct, tx, Arc::new(AtomicBool::new(false)))
+                    .map(|_| ())
+            } else {
+                Zoner::run(&mut direct)
+            };
+            assert!(
+                format!("{:#}", result.expect_err("legacy unknown refusal"))
+                    .contains("original baseline")
+            );
+            assert_eq!(
+                serde_json::to_value(direct.as_data()).expect("legacy preserved"),
+                legacy
+            );
+        }
+        assert_eq!(saves.get(), 1);
+    }
+
+    #[serial]
+    #[test]
+    fn z02_legacy_cli_refuses_flag_erasure_and_full_list_reset_recovers() {
+        let video = get_test_video();
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        let mut config = california_condor::test_helpers::default_config(
+            &video,
+            &temp.path().join("out.mkv"),
+            temp.path(),
+        );
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        for scene in &mut config.condor.scenes {
+            scene.sequence_data.zoner.zoned = true;
+        }
+        config.save(&path).expect("legacy JSON");
+        let json = std::fs::read(&path).expect("original");
+        for args in [
+            vec!["zone"],
+            vec!["zone", "0 121 replace x264"],
+            vec!["scenes", "all", "reset", "zoner"],
+        ] {
+            let refused = condor_cmd(&temp).args(args).assert().failure();
+            assert!(
+                String::from_utf8_lossy(&refused.get_output().stderr).contains("reset/redetect")
+            );
+            assert_eq!(std::fs::read(&path).expect("unchanged"), json);
+        }
+        condor_cmd(&temp).args(["scenes", "reset"]).assert().success();
+        condor_cmd(&temp).args(["scenes", "add", "0", "121"]).assert().success();
+        condor_cmd(&temp).args(["zone", "0 121 replace x264"]).assert().success();
+        let (recovered, _) = load_configuration(Some(&path)).expect("recovered");
+        assert!(!recovered.condor.scenes[0].sequence_data.parallel_encoder.invalidated);
+        assert!(recovered.condor.scenes[0].sequence_data.zoner.lifecycle.is_some());
+    }
+
+    #[serial]
+    #[test]
     fn zones_replace_and_merge_scene_encoders() {
         if !ffmpeg_is_available() {
             return;
@@ -231,7 +464,7 @@ mod tests {
 
     #[serial]
     #[test]
-    fn dry_run_and_normal_zoning_preserve_stale_results_and_warn_about_shifted_files() {
+    fn dry_run_preserves_records_normal_zoning_withdraws_results_and_preserves_shifted_files() {
         use andean_condor::core::sequence::parallel_encoder::ParallelEncoder;
         use california_condor::zoner::{ZonerConfig, parse_zone};
 
@@ -324,12 +557,14 @@ mod tests {
         assert_eq!(updated.condor.scenes.len(), 6);
         assert_eq!(
             updated.condor.scenes[0].sequence_data.parallel_encoder.bytes,
-            Some(123)
+            None
         );
         assert_eq!(
             updated.condor.scenes[2].sequence_data.quality_check.quality.scores,
-            vec![42.0]
+            Vec::<f64>::new()
         );
+        assert!(updated.condor.scenes[0].sequence_data.parallel_encoder.invalidated);
+        assert!(updated.condor.scenes[2].sequence_data.parallel_encoder.invalidated);
         assert_eq!(
             std::fs::read_to_string(&encode).expect("encode file"),
             "existing encode"

@@ -1181,10 +1181,16 @@ mod tests {
         );
         let updated = load(&file);
         assert_eq!(updated.condor.scenes[0].end_frame, 10);
-        assert_eq!(
-            serde_json::to_value(&updated.condor.scenes[0].sequence_data).expect("saved results"),
-            serde_json::to_value(&configuration.condor.scenes[0].sequence_data)
-                .expect("unchanged results")
+        let data = &updated.condor.scenes[0].sequence_data;
+        assert!(data.parallel_encoder.invalidated);
+        assert!(
+            data.parallel_encoder.bytes.is_none() && data.parallel_encoder.provenance.is_none()
+        );
+        assert!(data.target_quality.passes.is_empty() && data.target_quality.selection.is_none());
+        assert!(data.quality_check.quality.scores.is_empty());
+        assert!(
+            updated.admit_results().is_err(),
+            "preserved files are not eligible chunks"
         );
         assert!(!temp.path().join("source-opened").exists());
     }

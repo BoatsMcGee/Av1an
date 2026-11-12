@@ -478,7 +478,7 @@ fn run() -> anyhow::Result<()> {
 
             if let Some(zones) = &cli.zones {
                 configure_zoner(&mut configuration, zones)?;
-                configuration.save(&save_file)?;
+                // Zoner publishes definitions and their scene/barrier state together.
             }
 
             run_condor(&configuration, &save_file, cli.skip_scd)?;
@@ -500,8 +500,8 @@ fn instantiate_saved_condor(
     instantiate_editable_condor(configuration, save_file)
 }
 
-// Explicit scene edits retain stale records for inspection/reset; constructing a
-// runtime input is not permission for any result consumer to reuse those records.
+// Explicit scene edits may publish withdrawn results; constructing a runtime
+// input is not permission for any consumer to bypass the persisted barrier.
 fn instantiate_editable_condor(
     configuration: &Configuration,
     save_file: &Path,
@@ -518,6 +518,7 @@ fn instantiate_editable_condor(
     configuration.instantiate_condor(Box::new(move |data| {
         let mut config = config_copy.clone();
         config.condor = data;
+        config.validate_output(false)?;
         Configuration::save(&config, &save_file_copy)?;
         Ok(())
     }))
@@ -544,17 +545,15 @@ pub fn run_condor(configuration: &Configuration, save_file: &Path, skip_scd: boo
         }
     }
 
-    if configuration
-        .condor
-        .sequence_config
-        .zoner
-        .as_ref()
-        .is_some_and(|zoner| !zoner.zones.is_empty())
-    {
-        Zoner::run(&mut condor)?;
-        if cancelled() {
-            return Ok(());
-        }
+    // Removing all definitions is still a zoning transition, not a skip.
+    Zoner::run(&mut condor)?;
+    if cancelled() {
+        return Ok(());
+    }
+    // A zoning publication may have withdrawn previously admitted results.
+    // Refuse before noise/probe producers, not only at the final PE stage.
+    for (index, scene) in condor.scenes.iter().enumerate() {
+        scene.sequence_data.parallel_encoder.admit_scene(index)?;
     }
 
     if configuration.condor.sequence_config.noise_detector.is_some() {

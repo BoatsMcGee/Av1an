@@ -23,6 +23,11 @@ pub fn zone_handler(
             .zoner
             .as_ref()
             .is_none_or(|zoner| zoner.zones.is_empty())
+            && !configuration
+                .condor
+                .scenes
+                .iter()
+                .any(|s| s.sequence_data.zoner.zoned || s.sequence_data.zoner.lifecycle.is_some())
         {
             bail!(
                 "no zones provided; pass a zone definition or a zone file, or add \

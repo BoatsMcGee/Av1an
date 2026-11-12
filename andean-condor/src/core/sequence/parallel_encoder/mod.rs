@@ -125,6 +125,10 @@ where
     ) -> Result<((), Vec<anyhow::Error>)> {
         let warnings = vec![];
 
+        for (index, scene) in condor.scenes.iter().enumerate() {
+            scene.sequence_data.get_parallel_encoder()?.admit_scene(index)?;
+        }
+
         condor.sequence_config.parallel_encoder()?.validate()?;
 
         if condor.sequence_config.parallel_encoder()?.workers.is_some_and(|w| w == 0) {
@@ -158,6 +162,9 @@ where
         condor: &mut Condor<DataHandler, ConfigHandler>,
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        for (index, scene) in condor.scenes.iter().enumerate() {
+            scene.sequence_data.get_parallel_encoder()?.admit_scene(index)?;
+        }
         condor.sequence_config.parallel_encoder()?.validate()?;
         let mut warnings = vec![];
 
@@ -234,6 +241,9 @@ where
         progress_tx: std::sync::mpsc::Sender<SequenceStatus>,
         cancelled: crate::utils::cancellation::Cancellation,
     ) -> Result<((), Vec<anyhow::Error>)> {
+        for (index, scene) in condor.scenes.iter().enumerate() {
+            scene.sequence_data.get_parallel_encoder()?.admit_scene(index)?;
+        }
         condor.sequence_config.parallel_encoder()?.validate()?;
         cancelled.check_forced()?;
         if cancelled.is_cancelled() {

@@ -213,6 +213,7 @@ impl Configuration {
         let output = model.sequence_config.scene_concatenator.effective_output(&model.output.path);
         let mut admission = provenance::Admission::default();
         for (index, scene) in model.scenes.iter().enumerate() {
+            scene.sequence_data.parallel_encoder.admit_scene(index)?;
             admission.admit_target(probe, metric, scene, tq, index)?;
             admission.admit_quality(
                 reference,
@@ -711,8 +712,8 @@ where
     pub parallel_encoder: ParallelEncoderData,
     pub target_quality: TargetQualityData,
     pub quality_check: QualityCheckData,
-    /// The Zoner's record of having processed the list; absent in
-    /// configurations written before zoning became idempotent.
+    /// Zoning pass flag and compact baseline/applied-definition proof. Legacy
+    /// flags without lifecycle state cannot authorize a rebase or unchanged skip.
     #[serde(default)]
     pub zoner: ZonerData,
 }

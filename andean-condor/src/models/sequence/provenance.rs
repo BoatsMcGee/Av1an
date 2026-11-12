@@ -602,6 +602,7 @@ impl Admission {
         output: &Path,
         index: usize,
     ) -> Result<()> {
+        scene.sequence_data.get_parallel_encoder()?.admit_scene(index)?;
         let saved = scene.sequence_data.get_parallel_encoder()?.provenance.as_ref();
         require_revision(saved, index, "encoding")?;
         let expected = self

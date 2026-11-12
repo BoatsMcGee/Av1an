@@ -14,13 +14,13 @@ Zoner belongs entirely to `california-condor`; it does not add a sequence or zon
 
 - `src/zoner/zone.rs` owns the zone model, encoder overrides, and scene splitting.
 - `src/zoner/parse.rs` reads inline definitions and JSON, JSON lines, or text files, reusing the encoder parameter parser.
-- `src/zoner/mod.rs` owns `ZonerConfig`, `ZonerData`, range validation, ordered application, and the `Sequence` adapter. The configured zone vector is the source of truth; the only state the sequence keeps is the record it writes back onto each scene's `sequence_data.zoner.zoned`.
-- The command handler loads definitions into `CliSequenceConfig.zoner` in memory; the sequence saves only after successful validation/application, and records the pass on every scene. While that record stands, later runs skip until [`condor scenes reset zoner`](../../../commands/scenes.md) clears it. `zone --dry-run` uses the same sequence with a no-op save callback and disposable state. The pipeline applies them immediately after Scene Detector and before noise processing. All CLI sequence runners share one configuration-save callback.
+- `src/zoner/mod.rs` owns `ZonerConfig`, `ZonerData`, range validation, ordered application, and the `Sequence` adapter. `sequence_data.zoner.lifecycle` on the first scene stores `baseline`, structured `zones`, and `applied` definitions. Definitions contain only ranges, sub-scenes and encoders, never nested scene results.
+- The handler stages definitions in memory. The sequence publishes scenes, lifecycle and invalidation together only after validation/application. Known unchanged definitions do not reapply or save. Changed/removed definitions rebuild from the original baseline. `zone --dry-run` uses the same sequence with a no-op save callback and disposable state. The pipeline applies zones immediately after Scene Detector and before noise processing. All CLI sequence runners share one configuration-save callback; direct callers must retain their job lock through the callback.
 - `andean-condor` only supplies generic encoder accessors and equality derives, not zoning policy.
 
-Zoner only warns about stale saved results and encode/probe files, including later indices shifted by splits; it never removes or invalidates them automatically.
+Affected derived results are cleared before publication; old claims/files set the core-readable `sequence_data.parallel_encoder.invalidated` barrier. Files are never automatically removed. Explicit result reset clears the marker, not files or inherited encoder settings: recompute only in an empty/new work directory.
 
-Individual overrides are idempotent, but scene splitting can change later zone intersections. Re-detect scenes, or clear the zoning record with `condor scenes reset zoner`, before reapplying interacting zones if the original scene layout is required.
+Legacy zoning flags without lifecycle proof refuse. Rebasing also refuses if manual or downstream encoder edits no longer match the last applied scene definitions. Preserve edits and reset/redetect the whole scene list in an empty work directory, or start a distinct job; clearing only the flag cannot recover original settings.
 
 Example:
 

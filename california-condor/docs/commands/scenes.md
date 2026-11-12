@@ -67,10 +67,10 @@ Prints the addressed scenes as pretty JSON, in the same shape they have in `cond
 | `scene-detection` | The detection scores and when they were computed |
 | `noise-detection` | The noise detection results |
 | `noise-scaling` | The noise scaling results |
-| `parallel-encoder` | The encode progress: `started_on`, `completed_on` and `bytes` |
+| `parallel-encoder` | Encode progress, provenance and the `invalidated` eligibility barrier |
 | `target-quality` | The target-quality passes |
 | `quality-check` | The quality-check results |
-| `zoner` | Whether the Zoner has processed the scene list |
+| `zoner` | The pass flag and first scene's compact original/applied lifecycle record |
 
 ```bash
 $ condor scenes info                     # the whole list
@@ -128,8 +128,8 @@ Each saved scene owns its encoder. Later global encoder edits affect future
 detection/new scenes only; they do not overwrite scene or zone overrides.
 `info encoder` reports the actual saved encoder, not the current global default.
 Use `condor scenes all reset encoder` to copy that default into every saved scene
-deliberately. This preserves frame ranges, sub-scenes, history and files; it does
-not reapply zones or recompute stale results.
+deliberately. This preserves frame ranges, sub-scenes and files; actual encoder
+changes withdraw affected results as described below. It does not reapply zones.
 
 `set encoder` switches the scene to another encoder, starting from that encoder's defaults, and applies any flags given on the same line after the switch:
 
@@ -164,7 +164,7 @@ Restores what a detection run would have written, without re-detecting:
 | `reset` (with an index) | The scenes themselves: the configuration's encoder and no sub-scenes |
 | `reset` (no index) | The whole list, which is emptied with a hint to re-detect |
 
-Every sequence-data key can be reset, which is how saved results are cleared before recomputing them:
+Saved result keys can be reset before recomputing them:
 
 ```bash
 $ condor scenes -1 reset target-quality
@@ -173,11 +173,10 @@ $ condor scenes all reset parallel-encoder
 $ condor scenes 7 reset noise-detection
 ```
 
-The one key that is not a saved result is `zoner`, the record [`condor zone`](./zone.md) writes when it has applied the configured zones to the list. Clearing it does not restore anything; it lets the next Zoner run apply the zones again:
-
-```bash
-$ condor scenes all reset zoner
-```
+`zoner` is not a result: erasing its proof on an already-zoned list is refused.
+Known changed definitions rebase automatically from the original scene baseline.
+For unknown legacy state or unsafe manual edits, preserve the job and reset/redetect
+the whole scene list in an empty work directory, or start a separate job.
 
 `frames` is the one key with no default: a frame range is the output of detection, so it can only be changed with `set start`/`set end` or rebuilt with [`condor detect-scenes`](./detect-scenes.md). Resetting scene data never touches the frame range or the encoder.
 
@@ -195,7 +194,7 @@ Deleted scenes 1,4-6: 121-240, 480-528, 528-720
 
 Under `--verbose` the removed scenes are printed as JSON as well.
 
-Later scenes keep their order but shift down, so their indices — and the encode/probe files named after them — no longer match. That staleness is reported as a warning, and the files are left alone.
+Later scenes keep their order but shift down. Their old index-named files no longer match; affected results are withdrawn and eligibility is blocked, while files are left alone.
 
 ## Add `add START END`
 
@@ -221,14 +220,34 @@ Under `--verbose` the new scene is printed as JSON as well.
 
 The new scene is not checked against its neighbours either: a range that reaches into another scene is added with the same overlap warning `set start`/`set end` gives.
 
-## Warnings
+## Invalidation and recovery
 
-Every write warns in two cases, and never changes anything on its own:
+Writes report overlaps and stale results:
 
 - **Overlaps** name each scene the new range shares frames with.
 - **Staleness** covers everything the change may have invalidated: saved results (noise, target-quality, encode, quality-check) of the touched scenes, and existing index-named encode/probe files on disk. Scenes whose index shifted — because a scene was added or deleted — are reported too.
 
-Results and files are never deleted or recomputed automatically. `condor clean` is unavailable; [start a separate job](clean.md#start-a-separate-job) with a different `--config-file`, a distinct empty `--temp` directory, and a distinct output to avoid stale artifacts. Resetting saved results does not remove physical files. The generic `WARN` every configuration write prints (see [Editing saved settings](./config-editing.md)) is reported alongside these.
+Range, sub-scene, encoder and index changes clear affected target-quality passes,
+selection/speed transitions, encode timestamps/bytes/provenance, claimed QC and
+noise records before saving. Detection records survive only for a still-valid
+range/sub-scene mapping. Unaffected results are preserved. Result-only resets do
+not count as scene edits; clean jobs with no affected results/files remain runnable.
+
+`sequence_data.parallel_encoder.invalidated: true` blocks CLI and direct core
+encoding even when old files are absent, because the encoder may retain a derived
+quantizer. Resetting `parallel-encoder` explicitly clears that barrier, **not** the
+physical files or inherited encoder settings. To recover, reset the applicable
+encoder, target-quality, quality-check and parallel-encoder records, select a
+properly empty/new work directory, then rerun current producers. Existing chunks
+without matching current provenance remain refused. There is no automatic deletion
+or cleanup; do not reuse an old work directory merely with a new config filename.
+
+The safer alternative is to [start a separate job](clean.md#start-a-separate-job)
+with a distinct `--config-file`, empty `--temp` directory and output. Full
+`condor scenes reset` drops the scene list and its zoning lifecycle before
+redetection; it does not remove files. `condor clean` is unavailable. Failed
+validation/save leaves original JSON and files unchanged. The generic `WARN`
+described in [Editing saved settings](./config-editing.md) is also reported.
 
 ## Editing saved scenes
 

@@ -53,6 +53,43 @@ fn x265() -> EncoderMethod {
 }
 
 #[test]
+fn z02_failed_edit_save_keeps_original_json_files_and_caller_state() {
+    let temp = tempfile::tempdir().expect("fixture");
+    let path = temp.path().join("condor.json");
+    let mut config = configuration(temp.path());
+    config.condor.scenes[0].sequence_data.parallel_encoder.bytes = Some(123);
+    config.save(&path).expect("original");
+    let json = std::fs::read(&path).expect("original bytes");
+    let before = config.condor.scenes.clone();
+    config.condor.scenes[0].encoder.set_quantizer(19.0);
+    let candidate = serde_json::to_value(&config).expect("candidate");
+    let blocked = temp.path().join("not-a-file");
+    std::fs::create_dir_all(&blocked).expect("publication barrier");
+    std::fs::write(blocked.join("user-sentinel"), b"preserve").expect("sentinel");
+    // Real Configuration::save stages a sibling then fails publishing over a directory.
+    assert!(save_edit(&config, &blocked, &before).is_err());
+    assert_eq!(
+        serde_json::to_value(&config).expect("no mutation"),
+        candidate
+    );
+    assert_eq!(std::fs::read(&path).expect("original JSON"), json);
+    assert_eq!(
+        std::fs::read(blocked.join("user-sentinel")).expect("sentinel"),
+        b"preserve"
+    );
+    config.condor.sequence_config.parallel_encoder.max_tries = 0;
+    assert!(save_edit(&config, &path, &before).is_err());
+    assert_eq!(std::fs::read(&path).expect("failed validation"), json);
+    assert!(
+        temp.path().read_dir().expect("files").all(|e| !e
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".tmp"))
+    );
+}
+
+#[test]
 fn e06_offline_encoder_edits_save_and_report_requested_identity() {
     use crate::commands::{
         config::ConfigCommand,
@@ -553,13 +590,16 @@ fn sequence_data_resets_clear_the_saved_results() {
         (ScenesKey::TargetQuality, "target-quality"),
         (ScenesKey::QualityCheck, "quality-check"),
         (ScenesKey::SceneDetection, "scene-detection"),
-        (ScenesKey::Zoner, "zoner"),
     ] {
         let (changed, _) = reset_key(&mut configuration, 0, key, &global)
             .unwrap_or_else(|error| panic!("{name} resets: {error}"));
         assert_eq!(changed, name, "the reset is reported under its own name");
     }
 
+    assert!(
+        reset_key(&mut configuration, 0, ScenesKey::Zoner, &global).is_err(),
+        "erasing unknown zoning proof must not authorize layering new overrides"
+    );
     let data = &configuration.condor.scenes[0].sequence_data;
     assert!(data.noise_detection.is_none());
     assert!(data.noise_scaling.is_none());
@@ -568,8 +608,8 @@ fn sequence_data_resets_clear_the_saved_results() {
     assert!(data.quality_check.quality.scores.is_empty());
     assert!(data.scene_detection.scenecut_scores.is_none());
     assert!(
-        !data.zoner.zoned,
-        "the zoning record resets like every other sequence-data key"
+        data.zoner.zoned,
+        "zoning proof remains until the whole scene list is reset/redetected"
     );
     assert_eq!(
         configuration.condor.scenes[0].encoder, global,

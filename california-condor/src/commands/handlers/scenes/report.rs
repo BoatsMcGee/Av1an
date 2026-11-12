@@ -12,7 +12,7 @@ use super::{SUBJECT, action::ScenesKey};
 use crate::{
     commands::{config::PropertyChange, handlers::config::warn_stale},
     configuration::{CliSequenceData, Configuration},
-    scenes::{SceneSelection, format_indices, require_scene, stale_result_warnings},
+    scenes::{SceneSelection, format_indices, invalidate_changed_results, require_scene},
 };
 
 /// Prints how many scenes were addressed and the frames they cover, so the
@@ -36,32 +36,26 @@ pub(super) fn report_totals(scenes: &[Scene<CliSequenceData>], indices: &[usize]
     info!("Scenes: {} Frames: {first}-{last}", indices.len());
 }
 
-/// Saves the run's edits: first the per-scene warnings the change can cause,
-/// then the file, then the generic warning that saved results may be stale.
+/// Publish a complete staged edit and invalidation barrier without changing the
+/// caller's candidate on validation or publication failure.
 pub(super) fn save_edit(
     configuration: &Configuration,
     path: &Path,
     before: &[Scene<CliSequenceData>],
 ) -> Result<()> {
-    report_stale(configuration, before)?;
-    configuration.save(path)?;
-    warn_stale(SUBJECT);
-
-    Ok(())
-}
-
-/// Reports the saved results and files the scene change can stale, beside the
-/// generic staleness warning the edit prints.
-fn report_stale(configuration: &Configuration, before: &[Scene<CliSequenceData>]) -> Result<()> {
-    let warnings = stale_result_warnings(
+    let mut staged = configuration.clone();
+    let warnings = invalidate_changed_results(
         before,
-        &configuration.condor.scenes,
+        &mut staged.condor.scenes,
         &configuration.condor.sequence_config,
         "scene edits",
     )?;
+    staged.validate_output(false)?;
+    staged.save(path)?;
     for warning in warnings {
         warn!("{warning}");
     }
+    warn_stale(SUBJECT);
 
     Ok(())
 }
