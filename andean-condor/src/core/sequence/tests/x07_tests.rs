@@ -303,7 +303,7 @@ fn x07_checked_gaps_boundaries_and_invalid_inputs() {
             .collect::<Vec<_>>(),
         [0, u64::MAX]
     );
-    for timestamps in [vec![0, u64::MAX], vec![3, 2], vec![4, 4]] {
+    for timestamps in [vec![0, u64::MAX], vec![3, 2]] {
         fixture(&a, &timestamps);
         let error = concatenate(&output, &[a.clone(), b.clone()]).expect_err("invalid timestamps");
         assert!(format!("{error:#}").contains("timestamp"), "{error:#}");
@@ -332,11 +332,21 @@ fn x07_checked_gaps_boundaries_and_invalid_inputs() {
         );
     }
     fixture(&b, &[0]);
-    let mut bytes = fs::read(&b).expect("read count overflow fixture");
+    let mut bytes = fs::read(&b).expect("read untrusted count fixture");
     bytes[24..28].copy_from_slice(&u32::MAX.to_le_bytes());
-    fs::write(&b, bytes).expect("write count overflow fixture");
-    let error = concatenate(&output, &[a.clone(), b]).expect_err("header count overflow");
-    assert!(format!("{error:#}").contains("frame count"), "{error:#}");
+    fs::write(&b, bytes).expect("write untrusted count fixture");
+    concatenate(&output, &[a.clone(), b]).expect("actual records override declared counts");
+    assert_eq!(
+        &fs::read(&output).expect("read actual count")[24..28],
+        &[2, 0, 0, 0]
+    );
+    let empty = dir.path().join("empty.ivf");
+    fixture(&empty, &[]);
+    let error = concatenate(&output, &[a.clone(), empty]).expect_err("no actual records");
+    assert!(
+        format!("{error:#}").contains("has no IVF records"),
+        "{error:#}"
+    );
     let split_tasks = tasks(dir.path(), &[2]);
     for timestamps in [vec![9, 8], vec![9, 9]] {
         fixture(&a, &timestamps);
@@ -372,4 +382,242 @@ fn x07_checked_gaps_boundaries_and_invalid_inputs() {
             .collect::<Vec<_>>(),
         [0]
     );
+}
+
+#[test]
+fn x07_native_unknown_header_count_uses_actual_records() {
+    let dir = tempfile::tempdir().expect("unknown-count fixture directory");
+    let part = dir.path().join("unknown.ivf");
+    native(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x64:rate=24000/1001",
+            "-frames:v",
+            "3",
+            "-c:v",
+            "libaom-av1",
+            "-cpu-used",
+            "8",
+            "-g",
+            "1",
+        ],
+        Some(&part),
+    );
+    let mut bytes = fs::read(&part).expect("native AV1 bytes");
+    bytes[24..28].fill(0); // A standard unknown-count header, not an empty stream.
+    fs::write(&part, &bytes).expect("zero native header count");
+    let pixels = decoded(&part);
+    assert_eq!(pixels.len(), 3 * 6144);
+    let output = dir.path().join("joined.ivf");
+    concatenate(&output, &[part.clone(), part.clone()]).expect("concat unknown-count AV1");
+    assert_output(&output, 6, &bytes[16..24], &[0, 1, 2, 3, 4, 5]);
+    assert_eq!(decoded(&output), [pixels.as_slice(), &pixels].concat());
+    let source_payloads = records(&bytes).into_iter().map(|r| r.1).collect::<Vec<_>>();
+    assert_eq!(
+        records(&fs::read(&output).expect("read joined AV1"))
+            .into_iter()
+            .map(|r| r.1)
+            .collect::<Vec<_>>(),
+        [source_payloads.as_slice(), &source_payloads].concat()
+    );
+    assert_eq!(fs::read(&part).expect("input unchanged"), bytes);
+}
+
+#[test]
+fn x07_native_rav1e_unknown_count_concat() {
+    let dir = tempfile::tempdir().expect("rav1e fixture directory");
+    let source = dir.path().join("source.y4m");
+    native(
+        "ffmpeg",
+        &[
+            // Isolate unknown counts from the pinned demuxer's separate refill-boundary panic (X10).
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:size=64x64:rate=24000/1001",
+            "-frames:v",
+            "3",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+        Some(&source),
+    );
+    let part = dir.path().join("rav1e.ivf");
+    native(
+        "rav1e",
+        &[
+            "--speed",
+            "10",
+            "--limit",
+            "3",
+            "--low-latency",
+            "--min-keyint",
+            "1",
+            "--keyint",
+            "1",
+            "--output",
+            part.to_str().expect("rav1e output path"),
+        ],
+        Some(&source),
+    );
+    let bytes = fs::read(&part).expect("read rav1e IVF");
+    assert_eq!(
+        &bytes[24..28],
+        &[0, 0, 0, 0],
+        "unmodified rav1e unknown count"
+    );
+    assert_eq!(records(&bytes).len(), 3);
+    eprintln!(
+        "rav1e bytes={}, payload sizes={:?}",
+        bytes.len(),
+        records(&bytes).iter().map(|r| r.1.len()).collect::<Vec<_>>()
+    );
+    let pixels = decoded(&part);
+    assert_eq!(pixels.len(), 3 * 6144);
+    let output = dir.path().join("joined.ivf");
+    concatenate(&output, &[part.clone(), part.clone()]).expect("concat native rav1e records");
+    assert_output(&output, 6, &bytes[16..24], &[0, 1, 2, 3, 4, 5]);
+    assert_eq!(decoded(&output), [pixels.as_slice(), &pixels].concat());
+    assert_eq!(fs::read(&part).expect("rav1e input unchanged"), bytes);
+}
+
+#[test]
+fn x07_duplicate_pts_preserve_records_order_and_single_offset() {
+    let dir = tempfile::tempdir().expect("duplicate-PTS fixture directory");
+    let part = dir.path().join("duplicates.ivf");
+    fixture(&part, &[50, 51, 51, 52]);
+    let mut bytes = fs::read(&part).expect("duplicate-PTS records");
+    // Distinct payloads make a dropped/reordered equal-PTS record observable.
+    for (offset, value) in [(44, 11), (57, 22), (70, 33), (83, 44)] {
+        bytes[offset] = value;
+    }
+    bytes[8..12].copy_from_slice(b"VP80");
+    fs::write(&part, &bytes).expect("write synthetic VP8 framing");
+    let output = dir.path().join("joined.ivf");
+    concatenate(&output, &[part.clone(), part.clone()]).expect("equal PTS are valid records");
+    let joined = fs::read(&output).expect("read duplicate-PTS concat");
+    assert_eq!(&joined[24..28], &[8, 0, 0, 0]);
+    assert_eq!(&joined[16..24], &bytes[16..24]);
+    assert_eq!(
+        records(&joined),
+        vec![
+            (0, vec![11]),
+            (1, vec![22]),
+            (1, vec![33]),
+            (2, vec![44]),
+            (3, vec![11]),
+            (4, vec![22]),
+            (4, vec![33]),
+            (5, vec![44]),
+        ]
+    );
+    assert_eq!(
+        fs::read(&part).expect("duplicate-PTS input unchanged"),
+        bytes
+    );
+}
+
+#[test]
+fn x07_native_vp8_alt_ref_records_are_not_visible_frame_count() {
+    let dir = tempfile::tempdir().expect("VP8 ARF fixture directory");
+    let source = dir.path().join("source.y4m");
+    native(
+        "ffmpeg",
+        &[
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x64:rate=24000/1001",
+            "-frames:v",
+            "30",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+        Some(&source),
+    );
+    let part = dir.path().join("vp8.ivf");
+    native(
+        "vpxenc",
+        &[
+            "--ivf",
+            "--codec=vp8",
+            "--passes=2",
+            "--auto-alt-ref=1",
+            "--lag-in-frames=16",
+            "--good",
+            "--cpu-used=5",
+            "--fps=24000/1001",
+            "--timebase=1001/24000",
+            "-o",
+            part.to_str().expect("VP8 output path"),
+        ],
+        Some(&source),
+    );
+    let bytes = fs::read(&part).expect("read native VP8");
+    let source_records = records(&bytes);
+    let timestamps = source_records.iter().map(|r| r.0).collect::<Vec<_>>();
+    eprintln!(
+        "VP8 native record count={}, timestamps={timestamps:?}",
+        source_records.len()
+    );
+    assert!(
+        source_records.len() > 30,
+        "invisible ARF records must actually exist"
+    );
+    assert!(timestamps.windows(2).any(|p| p[0] == p[1]));
+    assert!(timestamps.windows(2).all(|p| p[0] <= p[1]));
+    assert_eq!(timestamps.first(), Some(&0));
+    assert_eq!(timestamps.last(), Some(&29));
+    let pixels = decoded(&part);
+    assert_eq!(
+        pixels.len(),
+        30 * 6144,
+        "30 visible frames, not record count"
+    );
+    let output = dir.path().join("joined.ivf");
+    concatenate(&output, &[part.clone(), part.clone()])
+        .expect("concat native invisible-ARF duplicates");
+    let joined = fs::read(&output).expect("read joined VP8");
+    assert_eq!(
+        u32::from_le_bytes(joined[24..28].try_into().expect("standard count")) as usize,
+        2 * source_records.len()
+    );
+    assert_eq!(&joined[16..24], &bytes[16..24]);
+    let expected = source_records
+        .iter()
+        .cloned()
+        .chain(source_records.iter().map(|(t, data)| (t + 30, data.clone())))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        records(&joined),
+        expected,
+        "all payloads/order and equal PTS retained"
+    );
+    assert_eq!(decoded(&output), [pixels.as_slice(), &pixels].concat());
+    let probe = native(
+        "ffprobe",
+        &[
+            "-v",
+            "error",
+            "-count_frames",
+            "-show_entries",
+            "stream=r_frame_rate,nb_read_frames",
+            "-of",
+            "default=nw=1",
+        ],
+        Some(&output),
+    );
+    let probe = String::from_utf8(probe).expect("VP8 probe output");
+    assert!(probe.contains("nb_read_frames=60\n"), "{probe}");
+    assert!(probe.contains("r_frame_rate=24000/1001\n"), "{probe}");
+    assert_eq!(fs::read(&part).expect("VP8 input unchanged"), bytes);
 }
