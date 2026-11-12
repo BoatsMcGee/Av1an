@@ -703,6 +703,7 @@ fn x05_probe_child() {
     };
     let case = std::env::var("X05_CASE").expect("case");
     let source = root.join("source 'quoted'.mkv");
+    let scene = root.join("scene.mkv");
     let output = root.join("output.mkv");
     let scratch = SceneConcatenator::scratch_directory(&root);
     std::fs::create_dir_all(&scratch).expect("scratch");
@@ -711,6 +712,7 @@ fn x05_probe_child() {
         (&source, b"source sentinel".as_slice()),
         (&output, b"output sentinel"),
         (&concat, b"concat sentinel"),
+        (&scene, b"owned scene fixture"),
     ] {
         std::fs::write(path, bytes).expect("sentinel");
     }
@@ -733,7 +735,7 @@ fn x05_probe_child() {
     let result = SceneConcatenator::ffmpeg_cancel(
         &root,
         &output,
-        &[],
+        std::slice::from_ref(&scene),
         Some(&source),
         6,
         Ratio::new(24, 1),
@@ -774,6 +776,10 @@ fn x05_probe_child() {
     assert_eq!(
         std::fs::read(concat).expect("concat intact"),
         b"concat sentinel"
+    );
+    assert_eq!(
+        std::fs::read(scene).expect("scene intact"),
+        b"owned scene fixture"
     );
     #[cfg(target_os = "linux")]
     if root.join("pids").exists() {

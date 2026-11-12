@@ -49,6 +49,7 @@ impl SceneConcatenator {
         cancellation: &Cancellation,
     ) -> Result<()> {
         cancellation.check_admission()?;
+        Self::validate_scene_paths(scene_paths)?;
         let scratch_directory = scenes_directory.join("Scene Concatenator");
         let concat_file_path = scratch_directory.join("concat.txt");
         let streams = ffmpeg_sources(input, config)

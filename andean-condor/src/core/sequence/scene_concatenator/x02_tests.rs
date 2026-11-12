@@ -148,7 +148,11 @@ fn x02_mux_child() {
     }
     // 513 distinct paths exercise production grouping without a configurable group-size seam.
     let scenes = (0..if phase == "final" { 1 } else { 513 })
-        .map(|index| root.join(format!("scene {index} 'quoted'.mkv")))
+        .map(|index| {
+            let path = root.join(format!("scene {index} 'quoted'.mkv"));
+            std::fs::write(&path, b"owned scene fixture").expect("nonempty mux input");
+            path
+        })
         .collect::<Vec<_>>();
     let (tx, _rx) = sync::mpsc::channel();
     let token = Cancellation::default();

@@ -27,6 +27,7 @@ impl SceneConcatenator {
         cancellation: &Cancellation,
     ) -> Result<()> {
         cancellation.check_admission()?;
+        Self::validate_scene_paths(scene_paths)?;
         let mut partial = InterruptedOutput::new(output, cancellation);
         let output = File::create(output)?;
         let mut muxer = MuxerContext::new(IvfMuxer::new(), Writer::new(output));

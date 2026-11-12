@@ -635,6 +635,7 @@ fn e12_scene_child() {
         {
             fs::create_dir_all(root.join("Scene Concatenator")).expect("scratch");
             let scenes = vec![root.join("scene.264")];
+            fs::write(&scenes[0], b"owned scene fixture").expect("nonempty mux input");
             if case.starts_with("commit-ffmpeg") {
                 SceneConcatenator::ffmpeg_cancel(
                     &root,
@@ -883,6 +884,7 @@ fn e12_scene_child() {
     } else if case.starts_with("ffmpeg") || case.starts_with("mkv") {
         fs::create_dir_all(root.join("Scene Concatenator")).expect("scratch");
         let scenes = vec![root.join("scene.264"); if case == "mkv-group" { 513 } else { 1 }];
+        fs::write(&scenes[0], b"owned scene fixture").expect("nonempty mux input");
         let (tx, _rx) = mpsc::channel();
         if case.starts_with("ffmpeg") {
             SceneConcatenator::ffmpeg_cancel(

@@ -61,6 +61,7 @@ impl SceneConcatenator {
         cancellation: &Cancellation,
     ) -> Result<()> {
         cancellation.check_admission()?;
+        Self::validate_scene_paths(scene_paths)?;
         // Option-file paths must round-trip, not silently target a lossy replacement.
         for path in
             std::iter::once(output)

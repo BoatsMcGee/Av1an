@@ -1,7 +1,7 @@
 use std::{
     ffi::OsString,
     fs::File,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{self, Arc, Mutex, atomic::AtomicBool},
@@ -117,8 +117,6 @@ where
         condor: &mut Condor<DataHandler, ConfigHandler>,
         _progress_tx: sync::mpsc::Sender<SequenceStatus>,
     ) -> Result<((), Vec<anyhow::Error>)> {
-        let mut warnings = vec![];
-
         let scenes_directory = &condor.sequence_config.scene_concatenator()?.scenes_directory;
         if !scenes_directory.exists() {
             bail!(SceneConcatenatorError::ScenesDirectoryMissing {
@@ -130,37 +128,14 @@ where
                 path: scenes_directory.clone(),
             });
         }
+        let scene_paths = Self::scene_paths(scenes_directory, &condor.scenes);
+        Self::validate_scene_paths(&scene_paths)?;
         let scratch_directory = Self::scratch_directory(scenes_directory.as_path());
         if !scratch_directory.exists() {
             std::fs::create_dir_all(scratch_directory)?;
         }
 
-        let scene_files = condor
-            .scenes
-            .iter()
-            .enumerate()
-            .map(|(index, scene)| {
-                let path = scenes_directory.join(format!(
-                    "{}.{}",
-                    ParallelEncoder::scene_id(index),
-                    scene.encoder.output_extension()
-                ));
-                let exists = path.exists();
-
-                (index, path, exists)
-            })
-            .filter(|(_, _, exists)| !*exists)
-            .collect::<Vec<_>>();
-
-        if !scene_files.is_empty() {
-            warnings.push(anyhow::Error::new(
-                SceneConcatenatorError::SceneFilesMissing {
-                    scenes: scene_files.iter().map(|(index, _, _)| *index).collect(),
-                },
-            ));
-        }
-
-        Ok(((), warnings))
+        Ok(((), vec![]))
     }
 
     #[inline]
@@ -191,21 +166,18 @@ where
         let probe = provenance::probe_input(&root, pe, tq);
         let metric = tq.and_then(|c| c.metric_input.as_ref());
         let mut admission = provenance::Admission::default();
-        for (index, scene) in condor.scenes.iter().enumerate() {
-            let config = condor.sequence_config.scene_concatenator()?;
-            let path = config.scenes_directory.join(format!(
-                "{}.{}",
-                ParallelEncoder::scene_id(index),
-                scene.encoder.output_extension()
-            ));
-            admission.admit_encode(input, probe, metric, scene, tq, &path, index)?;
+        let config = condor.sequence_config.scene_concatenator()?;
+        let scene_paths = Self::scene_paths(&config.scenes_directory, &condor.scenes);
+        for (index, (scene, path)) in condor.scenes.iter().zip(&scene_paths).enumerate() {
+            admission.admit_encode(input, probe, metric, scene, tq, path, index)?;
             super::parallel_encoder::artifact::validate(
-                &path,
+                path,
                 scene.end_frame - scene.start_frame,
                 false, // PE owns decode/count validation; concat checks only identity/nonempty.
                 &cancelled,
             )?;
         }
+        Self::validate_scene_paths(&scene_paths)?;
 
         let framerate = condor.input.clip_info()?.frame_rate;
         let input_path = {
@@ -214,7 +186,6 @@ where
                 Input::VapourSynthScript { .. } => None, // May be invalid/Optional in the future
             }
         };
-        let config = condor.sequence_config.scene_concatenator()?;
         let destination = config.effective_output(&condor.output.path);
         let destination = std::env::current_dir()?.join(destination);
         // Native muxers can require a nonexistent path. A private owned sibling
@@ -229,27 +200,8 @@ where
                 .and_then(|ext| ext.to_str())
                 .unwrap_or_else(|| config.method.extension())
         ));
-        let scenes = condor
-            .scenes
-            .iter()
-            .enumerate()
-            .map(|(index, scene)| {
-                let path = config.scenes_directory.join(format!(
-                    "{}.{}",
-                    ParallelEncoder::scene_id(index),
-                    scene.encoder.output_extension()
-                ));
-                let exists = path.exists();
-
-                (index, scene, path, exists)
-            })
-            .filter(|(_, _, _, exists)| *exists)
-            .collect::<Vec<_>>();
-
-        let total_frames = scenes.iter().fold(0, |acc, (_, scene, _, _)| {
-            acc + (scene.end_frame - scene.start_frame)
-        });
-        let scene_paths = scenes.iter().map(|(_, _, path, _)| path.clone()).collect::<Vec<_>>();
+        let total_frames =
+            condor.scenes.iter().map(|scene| scene.end_frame - scene.start_frame).sum();
 
         match &config.method {
             ConcatMethod::MKVMerge(mkvmerge) => {
@@ -313,14 +265,48 @@ impl SceneConcatenator {
         let mut paths = config.protected_sources();
         paths.extend(input.path().map(Path::to_path_buf));
         paths.extend(concat.mux_sources());
-        paths.extend(scenes.iter().enumerate().map(|(index, scene)| {
-            concat.scenes_directory.join(format!(
-                "{}.{}",
-                ParallelEncoder::scene_id(index),
-                scene.encoder.output_extension()
-            ))
-        }));
+        paths.extend(Self::scene_paths(&concat.scenes_directory, scenes));
         Ok(paths)
+    }
+
+    fn scene_paths<Data>(
+        scenes_directory: &Path,
+        scenes: &[crate::models::scene::Scene<Data>],
+    ) -> Vec<PathBuf> {
+        scenes
+            .iter()
+            .enumerate()
+            .map(|(index, scene)| {
+                scenes_directory.join(format!(
+                    "{}.{}",
+                    ParallelEncoder::scene_id(index),
+                    scene.encoder.output_extension()
+                ))
+            })
+            .collect()
+    }
+
+    // ponytail: filesystem shape/readability only, not codec validity or C14 saved eligibility.
+    fn validate_scene_paths(scene_paths: &[PathBuf]) -> Result<()> {
+        anyhow::ensure!(
+            !scene_paths.is_empty(),
+            "Cannot concatenate an empty scene list"
+        );
+        for (index, path) in scene_paths.iter().enumerate() {
+            let checked = || -> Result<()> {
+                let metadata = path.metadata()?;
+                anyhow::ensure!(
+                    metadata.is_file() && metadata.len() > 0,
+                    "not a nonempty regular file"
+                );
+                File::open(path)?.read_exact(&mut [0])?;
+                Ok(())
+            };
+            checked().with_context(|| {
+                format!("Validating requested scene {index}: {}", path.display())
+            })?;
+        }
+        Ok(())
     }
 
     fn admit_final<
@@ -392,6 +378,7 @@ pub enum SceneConcatenatorError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod x06_tests;
     use crate::models::{
         input::{Input as InputModel, VapourSynthScriptSource},
         output::Output as OutputModel,

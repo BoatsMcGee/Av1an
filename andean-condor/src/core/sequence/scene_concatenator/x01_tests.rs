@@ -125,7 +125,8 @@ fn x01_native_wmv_audio_is_losslessly_adapted_and_scratch_is_owned() {
     let scratch = SceneConcatenator::scratch_directory(dir.path());
     std::fs::create_dir_all(&scratch).expect("scratch");
     std::fs::write(scratch.join("source.mkv"), b"caller scratch sentinel").expect("sentinel");
-    mux(dir.path(), &source, &chunks(dir.path()), None).expect("native ancillary adaptation");
+    let scenes = chunks(dir.path());
+    mux(dir.path(), &source, &scenes, None).expect("native ancillary adaptation");
     let output = dir.path().join("out.mkv");
     let data = probe(&output);
     let streams = data["streams"].as_array().expect("streams");
@@ -181,7 +182,7 @@ fn x01_native_wmv_audio_is_losslessly_adapted_and_scratch_is_owned() {
     let error = mux(
         dir.path(),
         &dir.path().join("source 'audio'.wmv"),
-        &[],
+        &scenes,
         Some(&config),
     )
     .expect_err("source index 1 cannot be reused as remux mkvmerge ID 0");
