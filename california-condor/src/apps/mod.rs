@@ -1,7 +1,7 @@
 use std::{
     io::{self, BufWriter, IsTerminal, Write, stderr, stdout},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Once, Weak,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
     },
@@ -35,10 +35,68 @@ pub type PanicHook = Box<dyn Fn(&std::panic::PanicHookInfo<'_>) + Sync + Send + 
 type OwnedTerminal = Terminal<CrosstermBackend<SelectedWriter>>;
 type TerminalBuffer = BufWriter<Box<dyn Write + Send>>;
 
+static PANIC_HOOK: Once = Once::new();
+static PANIC_TERMINAL: Mutex<Weak<Mutex<TerminalOwner>>> = Mutex::new(Weak::new());
+static PANIC_STAGE: Mutex<Weak<PanicStage>> = Mutex::new(Weak::new());
+
+/// Install once, retaining the host's diagnostic hook. Never exit here: process
+/// owners must unwind, kill their trees and reap before the caller fails.
+pub(crate) fn install_panic_hook() {
+    PANIC_HOOK.call_once(|| {
+        let prior: PanicHook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let stage = PANIC_STAGE.lock().unwrap_or_else(|e| e.into_inner()).upgrade();
+            if let Some(stage) = stage {
+                stage.panicked.store(true, Ordering::SeqCst);
+                stage.cancelled.store(true, Ordering::SeqCst);
+            }
+            let terminal = PANIC_TERMINAL.lock().unwrap_or_else(|e| e.into_inner()).upgrade();
+            if let Some(terminal) = terminal {
+                let mut owner = terminal.lock().unwrap_or_else(|e| e.into_inner());
+                owner.cancelled.store(true, Ordering::SeqCst);
+                let _ = owner.cleanup();
+            }
+            // No owner/registry lock spans an arbitrary host hook callback.
+            prior(info);
+        }));
+    });
+}
+
+struct PanicStage {
+    panicked: AtomicBool,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl PanicStage {
+    fn check(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.panicked.load(Ordering::SeqCst),
+            "stage thread panicked"
+        );
+        Ok(())
+    }
+}
+
+// The progress sender can outlive a failed display. Stop receiving and join on
+// every return/unwind instead of detaching a worker or waiting for disconnect.
+struct ProgressThread {
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for ProgressThread {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 /// Owns terminal resources from before initialization through the last flush.
 pub struct StdOutOrErrTerminal {
     terminal: OwnedTerminal,
-    owner: TerminalOwner,
+    owner: Arc<Mutex<TerminalOwner>>,
     restored: bool,
 }
 
@@ -57,7 +115,7 @@ impl StdOutOrErrTerminal {
                 Arc::new(AtomicBool::new(false)),
             )),
         );
-        self.owner.cleanup()
+        self.owner.lock().unwrap_or_else(|e| e.into_inner()).cleanup()
     }
 }
 
@@ -73,7 +131,6 @@ struct TerminalOwner {
     raw: bool,
     screen: bool,
     cursor: bool,
-    hook: Option<PanicHook>,
     // A concrete function pointer keeps OS failures injectable without a driver trait.
     raw_mode: fn(bool) -> io::Result<()>,
 }
@@ -94,7 +151,6 @@ impl TerminalOwner {
             raw: false,
             screen: false,
             cursor: false,
-            hook: None,
             raw_mode: set_raw_mode,
         }
     }
@@ -133,7 +189,7 @@ impl TerminalOwner {
             return Ok(());
         };
         let (mut writer, _) = buffered.into_parts();
-        let active = self.raw || self.screen || self.cursor || self.hook.is_some();
+        let active = self.raw || self.screen || self.cursor;
         let mut result = self.disable_raw();
         if std::mem::take(&mut self.screen) {
             let leave = queue!(writer, LeaveAlternateScreen);
@@ -146,13 +202,6 @@ impl TerminalOwner {
             let flush = writer.flush();
             result = result.and(flush);
         }
-        if !thread::panicking()
-            && let Some(hook) = self.hook.take()
-        {
-            std::panic::set_hook(hook);
-        }
-        // HAZARD: std forbids global hook mutation during unwinding. T04 owns
-        // central hook recovery; terminal resources above still get released.
         self.cancel_on_error(result)
     }
 }
@@ -208,34 +257,27 @@ impl Drop for TerminalOwner {
 }
 
 fn init_terminal(
-    mut owner: TerminalOwner,
+    owner: TerminalOwner,
     terminal_ops: bool,
-    use_stdout: bool,
     construct: impl FnOnce(CrosstermBackend<SelectedWriter>) -> io::Result<OwnedTerminal>,
 ) -> Result<StdOutOrErrTerminal> {
+    install_panic_hook();
     let cancelled = Arc::clone(&owner.cancelled);
+    let owner = Arc::new(Mutex::new(owner));
+    *PANIC_TERMINAL.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&owner);
     let result = (|| {
+        let writer = owner.lock().unwrap_or_else(|e| e.into_inner()).writer.clone();
         if terminal_ops {
-            (owner.raw_mode)(true)?;
-            owner.raw = true;
+            let mut resources = owner.lock().unwrap_or_else(|e| e.into_inner());
+            (resources.raw_mode)(true)?;
+            resources.raw = true;
             // Even a failed write/flush may already have entered the screen.
-            owner.screen = true;
-            owner.cursor = true;
-            enter_alternate_screen(&mut owner.writer)?;
-            owner.hook = Some(std::panic::take_hook());
-            std::panic::set_hook(Box::new(move |panic_info| {
-                let _ = disable_raw_mode();
-                let mut w: Box<dyn Write + Send> = if use_stdout {
-                    Box::new(stdout())
-                } else {
-                    Box::new(stderr())
-                };
-                let _ = execute!(w, LeaveAlternateScreen);
-                let _ = execute!(w, crossterm::cursor::Show);
-                println!("{:?}", panic_info);
-            }));
+            resources.screen = true;
+            resources.cursor = true;
+            drop(resources);
+            enter_alternate_screen(&mut writer.clone())?;
         }
-        let terminal = construct(CrosstermBackend::new(owner.writer.clone()))?;
+        let terminal = construct(CrosstermBackend::new(writer))?;
         Ok(StdOutOrErrTerminal {
             terminal,
             owner,
@@ -409,7 +451,6 @@ pub trait TuiApp: Send + Sync + 'static {
         init_terminal(
             TerminalOwner::new(selected_writer(use_stdout), cancelled),
             !is_test_mode(),
-            use_stdout,
             Terminal::new,
         )
     }
@@ -418,10 +459,24 @@ pub trait TuiApp: Send + Sync + 'static {
         if terminal.restored {
             return Ok(());
         }
+        // A worker's panic hook may already have retired this backend. Never
+        // render, hide the cursor or replay buffers after that restoration.
+        if terminal
+            .owner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .writer
+            .inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none()
+        {
+            return terminal.cleanup().map_err(Into::into);
+        }
         let result = (|| -> Result<()> {
             if !is_test_mode() {
                 let (_columns, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-                terminal.owner.leave(rows)?;
+                terminal.owner.lock().unwrap_or_else(|e| e.into_inner()).leave(rows)?;
                 // RATIONALE: clear() queries the cursor through crossterm's stdout,
                 // even with a stderr backend. Fullscreen resize clears and resets
                 // the render buffers without sending that query to piped stdout.
@@ -431,7 +486,12 @@ pub trait TuiApp: Send + Sync + 'static {
             Ok(())
         })();
         if result.is_err() {
-            terminal.owner.cancelled.store(true, Ordering::SeqCst);
+            terminal
+                .owner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cancelled
+                .store(true, Ordering::SeqCst);
         }
         let cleanup = terminal.cleanup().map_err(Into::into);
         result.and(cleanup)
@@ -480,6 +540,12 @@ pub trait TuiApp: Send + Sync + 'static {
         progress_rx: Receiver<SequenceStatus>,
         cancelled: Arc<AtomicBool>,
     ) -> Result<()> {
+        install_panic_hook();
+        let panic_stage = Arc::new(PanicStage {
+            panicked: AtomicBool::new(false),
+            cancelled: Arc::clone(&cancelled),
+        });
+        *PANIC_STAGE.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&panic_stage);
         // Install the render theme for the whole run. Reading an env var keeps
         // the plumbing out of every `new()`; the default (dark) is the
         // historical look. Headless runs never render, so this is a no-op
@@ -490,40 +556,66 @@ pub trait TuiApp: Send + Sync + 'static {
         let (event_tx, event_rx) = mpsc::channel();
 
         let shared_progress = self.shared_progress().clone();
-        let quit = Arc::new(AtomicBool::new(false));
-        let quit_flag = Arc::clone(&quit);
-        thread::spawn(move || {
-            for progress in progress_rx {
-                shared_progress.apply(|state| Self::map_progress(progress, state));
-            }
-            let _ = event_tx.send(AppEvent::Quit);
-            quit_flag.store(true, Ordering::Release);
-        });
-
-        if run_headless(
+        let terminal = if run_headless(
             stdout().is_terminal(),
             stderr().is_terminal(),
             is_test_mode(),
         ) {
+            None
+        } else {
+            Some(self.init(Arc::clone(&cancelled))?)
+        };
+        let quit = Arc::new(AtomicBool::new(false));
+        let quit_flag = Arc::clone(&quit);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop);
+        let worker_stage = Arc::clone(&panic_stage);
+        let progress_thread = ProgressThread {
+            stop,
+            handle: Some(thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    while !stop_flag.load(Ordering::SeqCst) && worker_stage.check().is_ok() {
+                        match progress_rx.recv_timeout(Duration::from_millis(10)) {
+                            Ok(progress) => {
+                                shared_progress.apply(|state| Self::map_progress(progress, state));
+                            },
+                            Err(RecvTimeoutError::Timeout) => (),
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+                }));
+                if result.is_err() {
+                    worker_stage.panicked.store(true, Ordering::SeqCst);
+                    worker_stage.cancelled.store(true, Ordering::SeqCst);
+                }
+                let _ = event_tx.send(AppEvent::Quit);
+                quit_flag.store(true, Ordering::Release);
+            })),
+        };
+
+        let Some(mut terminal) = terminal else {
             // No terminal to take over (or test mode): avoid any terminal
             // operations - headless wait.
             while !quit.load(Ordering::Acquire) {
                 thread::sleep(Duration::from_millis(10));
+                panic_stage.check()?;
                 if let Some(snapshot) = self.shared_progress().read_if_dirty() {
                     self.on_snapshot(snapshot);
                 }
                 while event_rx.try_recv().is_ok() {}
             }
+            drop(progress_thread);
+            panic_stage.check()?;
             let snapshot = self.shared_progress().read();
             self.on_snapshot(snapshot);
             self.after_loop();
             return Ok(());
-        }
+        };
 
-        let mut terminal = self.init(Arc::clone(&cancelled))?;
         let stdout_is_terminal = stdout().is_terminal();
         let result = (|| -> Result<()> {
             loop {
+                panic_stage.check()?;
                 // Keyboard input is read here, never on a helper thread:
                 // crossterm's event reader is process-wide, so no other thread may
                 // hold it. Teardown uses fullscreen resize, not a cursor query.
@@ -546,6 +638,7 @@ pub trait TuiApp: Send + Sync + 'static {
                     self.on_snapshot(snapshot);
                 }
 
+                panic_stage.check()?;
                 if quit.load(Ordering::Acquire) {
                     let snapshot = self.shared_progress().read();
                     self.on_snapshot(snapshot);
@@ -556,6 +649,7 @@ pub trait TuiApp: Send + Sync + 'static {
 
                 match event_rx.recv_timeout(Duration::from_millis(33)) {
                     Ok(AppEvent::Quit) => {
+                        panic_stage.check()?;
                         if let Some(snapshot) = self.shared_progress().read_if_dirty() {
                             self.on_snapshot(snapshot);
                         }
@@ -564,9 +658,11 @@ pub trait TuiApp: Send + Sync + 'static {
                         break;
                     },
                     Err(RecvTimeoutError::Timeout) => {
+                        panic_stage.check()?;
                         terminal.terminal.draw(|f| self.render(f))?;
                     },
                     Err(RecvTimeoutError::Disconnected) => {
+                        panic_stage.check()?;
                         if let Some(snapshot) = self.shared_progress().read_if_dirty() {
                             self.on_snapshot(snapshot);
                         }
@@ -584,6 +680,8 @@ pub trait TuiApp: Send + Sync + 'static {
         let cleanup = terminal.cleanup().map_err(Into::into);
         result.and(cleanup)?;
 
+        drop(progress_thread);
+        panic_stage.check()?;
         self.after_loop();
         Ok(())
     }
@@ -684,6 +782,7 @@ mod tests {
         state: (),
         cancelled: bool,
         render_failure: Option<Arc<AtomicBool>>,
+        panic_case: Option<String>,
     }
 
     impl TestApp {
@@ -693,6 +792,7 @@ mod tests {
                 state: (),
                 cancelled: false,
                 render_failure: None,
+                panic_case: None,
             }
         }
     }
@@ -719,14 +819,157 @@ mod tests {
             "cancelled"
         }
         fn map_progress(_: SequenceStatus, _: &mut ()) -> bool {
+            assert!(
+                !std::env::var("T04_CASE").is_ok_and(|case| case == "progress"),
+                "T04-progress-payload"
+            );
             false
         }
         fn render(&self, frame: &mut Frame) {
+            assert!(self.panic_case.as_deref() != Some("ui"), "T04-ui-payload");
             if let Some(armed) = &self.render_failure {
                 armed.store(true, Ordering::SeqCst);
             }
             frame.render_widget("T01-final-render", frame.area());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn t04_isolated_panic_lifecycle() {
+        let output = std::process::Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/apps/t01_pty.py"))
+            .arg(std::env::current_exe().unwrap())
+            .arg("t04")
+            .output()
+            .expect("python3 is required for the Unix PTY regression test");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    // Exact-name subprocess protocol: no hook mutation in the parent libtest.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn t04_panic_child() -> Result<()> {
+        use andean_condor::{core::process::OwnedProcess, utils::cancellation::Cancellation};
+        use std::{
+            io::BufRead,
+            process::{Command, Stdio},
+            sync::atomic::AtomicUsize,
+        };
+        let Ok(case) = std::env::var("T04_CASE") else {
+            return Ok(());
+        };
+        let root = std::path::PathBuf::from(std::env::var_os("T04_ROOT").unwrap());
+        let custom = case == "subsequent";
+        let calls = Arc::new(AtomicUsize::new(0));
+        if custom {
+            let calls = Arc::clone(&calls);
+            std::panic::set_hook(Box::new(move |info| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                assert!(!crossterm::terminal::is_raw_mode_enabled().unwrap());
+                eprintln!("T04_PRIOR: {info}");
+            }));
+        }
+        println!("T04_BEGIN\nsource-output-sentinel\nT04_END");
+        stdout().flush()?;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+            let mut command = Command::new("sh");
+            command
+                .args(["-c", "sleep 300 & echo $$ $!; wait"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            let mut owned = OwnedProcess::spawn(&mut command, &Cancellation::default())?;
+            let mut pids = String::new();
+            io::BufReader::new(owned.stdout.take().unwrap()).read_line(&mut pids)?;
+            std::fs::write(root.join("pids"), pids)?;
+            let mut owned = Some(owned);
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let mut app = TestApp::new();
+            app.panic_case = Some(case.clone());
+            if matches!(case.as_str(), "main" | "subsequent") {
+                crate::TEST_ENTRY_RUN.with_borrow_mut(|slot| {
+                    *slot = Some(Box::new(move || {
+                        let _owned = owned;
+                        let _terminal = if stdout().is_terminal() || stderr().is_terminal() {
+                            Some(app.init(Arc::clone(&cancelled))?)
+                        } else {
+                            None
+                        };
+                        panic!("T04-main-payload");
+                    }));
+                });
+                return crate::entry_point();
+            }
+            let (tx, rx) = mpsc::channel();
+            let worker = (case == "worker").then(|| {
+                let owned = owned.take();
+                thread::spawn(move || {
+                    let _owned = owned;
+                    // Wait for the actual selected stream to enter raw mode.
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while !crossterm::terminal::is_raw_mode_enabled().unwrap() {
+                        assert!(std::time::Instant::now() < deadline, "UI never initialized");
+                        thread::yield_now();
+                    }
+                    panic!("T04-worker-payload");
+                })
+            });
+            if case == "progress" {
+                tx.send(SequenceStatus::Whole(
+                    andean_condor::core::sequence::Status::Completed { id: "t04".into() },
+                ))?;
+            }
+            let display_cancelled = Arc::clone(&cancelled);
+            let displayed = thread::spawn(move || app.run(rx, display_cancelled)).join();
+            drop(tx);
+            if let Some(worker) = worker {
+                assert!(worker.join().is_err());
+            }
+            assert!(cancelled.load(Ordering::SeqCst), "panic must cancel stage");
+            if case == "ui" {
+                assert!(displayed.is_err(), "UI panic must escape display thread");
+            } else {
+                assert!(
+                    displayed.unwrap().is_err(),
+                    "worker panic must fail application"
+                );
+            }
+            Ok(())
+        }));
+        if matches!(case.as_str(), "main" | "subsequent") {
+            assert!(
+                outcome.is_err(),
+                "main panic must unwind through entry_point"
+            );
+        } else {
+            outcome.expect("test boundary must not panic")?;
+        }
+        let pids = std::fs::read_to_string(root.join("pids"))?;
+        let leader = pids.split_whitespace().next().unwrap();
+        assert!(
+            !std::path::Path::new(&format!("/proc/{leader}")).exists(),
+            "direct child must be reaped before outcome"
+        );
+        std::fs::write(root.join("unwound"), b"owned child reaped")?;
+        if custom {
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            let mut app = TestApp::new();
+            let mut terminal = app.init(Arc::new(AtomicBool::new(false)))?;
+            assert!(std::panic::catch_unwind(|| panic!("T04-second-payload")).is_err());
+            app.restore(&mut terminal)?;
+            drop(terminal);
+            assert!(std::panic::catch_unwind(|| panic!("T04-third-payload")).is_err());
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
+            eprintln!("T04_PRIOR_COUNT=3");
+        }
+        // Return an error only after real unwind/join cleanup; no exit simulation.
+        anyhow::bail!("T04 failed application outcome")
     }
 
     #[test]
@@ -932,20 +1175,15 @@ mod tests {
             }
             let mut owner = TerminalOwner::new(Box::new(recorder.clone()), Arc::clone(&cancelled));
             owner.raw_mode = raw_mode;
-            let initialized = init_terminal(
-                owner,
-                case != "inactive",
-                stdout().is_terminal(),
-                |backend| {
-                    if case == "construct" {
-                        return Err(io::Error::new(
-                            io::ErrorKind::NotFound,
-                            "T03 terminal size failure",
-                        ));
-                    }
-                    Terminal::new(backend)
-                },
-            );
+            let initialized = init_terminal(owner, case != "inactive", |backend| {
+                if case == "construct" {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "T03 terminal size failure",
+                    ));
+                }
+                Terminal::new(backend)
+            });
             let mut app = TestApp::new();
             let result = match initialized {
                 Err(error) => Err(error),
@@ -971,11 +1209,6 @@ mod tests {
                             }))
                             .is_err()
                         );
-                        // Recovery of the global hook during unwinding is T04.
-                        let calls = Arc::clone(&hook_calls);
-                        std::panic::set_hook(Box::new(move |_| {
-                            calls.fetch_add(1, Ordering::SeqCst);
-                        }));
                         Ok(())
                     } else {
                         let result = if matches!(
@@ -1021,7 +1254,7 @@ mod tests {
             assert_eq!(result.is_ok(), success, "{case}: {result:?}");
             assert_eq!(
                 cancelled.load(Ordering::SeqCst),
-                !success,
+                !success || case == "unwind",
                 "{case}: cancellation"
             );
             if let Err(error) = result {

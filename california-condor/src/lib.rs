@@ -3,7 +3,7 @@
 //! helpers (including persistence callbacks and joins). These low-level helpers
 //! do not lock or make stale snapshots safe. The CLI owns that outer lifetime.
 
-use std::{panic, path::Path, process};
+use std::path::Path;
 
 use andean_condor::core::Condor;
 use anyhow::{Context, Result};
@@ -61,17 +61,26 @@ pub mod test_helpers;
 pub const DEFAULT_CONFIG_PATH: &str = "./condor.json";
 pub const DEFAULT_LOG_PATH: &str = "./logs/condor.log";
 
+#[cfg(test)]
+type TestEntryRun = Box<dyn FnOnce() -> Result<()>>;
+
+#[cfg(test)]
+thread_local! {
+    // Exercise the real entry hook without parsing libtest's argv or running encoders.
+    static TEST_ENTRY_RUN: std::cell::RefCell<Option<TestEntryRun>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Entry point used by both `main()` binary and externally (e.g., tests).
 pub fn entry_point() -> anyhow::Result<()> {
-    let orig_hook = panic::take_hook();
-    panic::set_hook(Box::new(move |panic_info| {
-        orig_hook(panic_info);
-        process::exit(1);
-    }));
+    apps::install_panic_hook();
     run()
 }
 
 fn run() -> anyhow::Result<()> {
+    #[cfg(test)]
+    if let Some(run) = TEST_ENTRY_RUN.with_borrow_mut(Option::take) {
+        return run();
+    }
     let mut cmd = CondorCli::command();
     cmd = process_command_tree(cmd);
     let matches = cmd.get_matches_mut();

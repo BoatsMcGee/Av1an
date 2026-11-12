@@ -46,7 +46,7 @@ struct SecondaryDisplayFailure {
 
 // Execute must consume/drop its progress sender before finalization so the
 // display can exit on disconnect. Join before warnings or either error escapes:
-// a running display still owns the terminal and the panic hook.
+// a running display still owns the terminal's panic-restoration registration.
 fn finish_stage(
     stage: &str,
     executed: Result<((), Vec<anyhow::Error>)>,
