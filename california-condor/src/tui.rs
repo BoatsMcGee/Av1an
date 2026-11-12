@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     io::{IsTerminal, Write},
     sync::{Arc, atomic::AtomicBool},
     thread,
@@ -29,9 +28,13 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     apps::{
-        TuiApp, benchmarker::BenchmarkerApp, noise_detection::NoiseDetectionApp,
-        parallel_encoder::ParallelEncoderApp, quality_check::QualityCheckApp,
-        scene_concatenator::SceneConcatenatorApp, scene_detection::SceneDetectionApp,
+        TuiApp,
+        benchmarker::BenchmarkerApp,
+        noise_detection::NoiseDetectionApp,
+        parallel_encoder::{ParallelEncoderApp, SceneDisplay},
+        quality_check::QualityCheckApp,
+        scene_concatenator::SceneConcatenatorApp,
+        scene_detection::SceneDetectionApp,
         target_quality::TargetQualityApp,
     },
     configuration::{CliSequenceConfig, CliSequenceData},
@@ -310,11 +313,10 @@ pub fn run_noise_detector_tui(
     }
 
     debug!("Running Noise Detector");
-    let initial_scenes = condor.scenes.clone();
+    let mut nd_app = NoiseDetectionApp::new(&condor.scenes, clip_info);
     let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
-        let mut nd_app = NoiseDetectionApp::new(&initial_scenes, clip_info);
         nd_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
@@ -400,21 +402,25 @@ pub fn run_benchmarker_tui(
 
 fn target_quality_app(
     clip_info: ClipInfo,
-    mut scenes: Vec<Scene<CliSequenceData>>,
+    scenes: &[Scene<CliSequenceData>],
     encoder: &Encoder,
     config: &TargetQualityConfig,
 ) -> Result<TargetQualityApp> {
-    // Display copies use execution's resolver; saved scenes keep their final settings.
-    for scene in &mut scenes {
-        scene.encoder = config.probe_encoder(&scene.encoder);
-    }
-    TargetQualityApp::new(
+    // Resolve only encoder settings, not full scenes and their measurement histories.
+    let encoders: Vec<_> =
+        scenes.iter().map(|scene| config.probe_encoder(&scene.encoder)).collect();
+    let encoder = config.probe_encoder(encoder);
+    let summary =
+        crate::components::encoder_info::representative_encoder(encoders.iter(), &encoder).cloned();
+    let mut app = TargetQualityApp::new(
         clip_info,
         scenes,
-        config.probe_encoder(encoder),
+        encoder,
         config.probing.statistic,
         &config.metric,
-    )
+    )?;
+    app.encoder_summary = summary;
+    Ok(app)
 }
 
 #[tracing::instrument(skip_all)]
@@ -477,7 +483,7 @@ pub fn run_target_quality_tui(
         .expect("target_quality is required");
     let mut tq_app = target_quality_app(
         clip_info,
-        condor.scenes.clone(),
+        &condor.scenes,
         &condor.encoder,
         target_quality_config,
     )?;
@@ -532,7 +538,6 @@ pub fn run_quality_check_tui(
     }
 
     debug!("Running Quality Check");
-    let initial_scenes = condor.scenes.clone();
     let quality_check_config = condor
         .sequence_config
         .quality_check
@@ -540,10 +545,10 @@ pub fn run_quality_check_tui(
         .expect("quality_check is required");
     let metric = quality_check_config.metric.clone();
     let statistic = quality_check_config.statistic;
+    let mut qc_app = QualityCheckApp::new(clip_info, &condor.scenes, metric, statistic)?;
     let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
     let tui_handle = thread::spawn(move || -> Result<()> {
-        let mut qc_app = QualityCheckApp::new(clip_info, &initial_scenes, metric, statistic)?;
         qc_app.run(progress_rx, ctrlc_cancelled)?;
         Ok(())
     });
@@ -660,36 +665,12 @@ pub fn run_parallel_encoder_tui(
 
     debug!("Running Parallel Encoder");
     let encoder = condor.encoder.clone();
-    let initial_scenes = condor
+    let scenes_map = condor
         .scenes
         .iter()
         .enumerate()
-        .map(|(index, scene)| {
-            (
-                index,
-                scene,
-                condor
-                    .sequence_config
-                    .parallel_encoder
-                    .scenes_directory
-                    .join(format!(
-                        "{}.{}",
-                        ParallelEncoder::scene_id(index),
-                        scene.encoder.output_extension()
-                    ))
-                    .exists(),
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut scenes_map = BTreeMap::new();
-    for (index, scene, already_encoded) in initial_scenes {
-        let scene_frames_encoded = if already_encoded {
-            (scene.end_frame - scene.start_frame) as u64
-        } else {
-            0
-        };
-        scenes_map.insert(index as u64, (scene_frames_encoded, scene.clone()));
-    }
+        .map(|(index, scene)| (index as u64, (0, SceneDisplay::from(scene))))
+        .collect();
 
     let ctrlc_cancelled = cancelled.clone();
     let (progress_tx, progress_rx) = std::sync::mpsc::channel();
@@ -795,7 +776,7 @@ mod tests {
                     .collect(),
                 );
             }
-            let app = target_quality_app(clip, scenes.clone(), &global, &config).unwrap();
+            let app = target_quality_app(clip, &scenes, &global, &config).unwrap();
             let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
             terminal.draw(|frame| app.render(frame)).unwrap();
             let buf = terminal.backend().buffer();

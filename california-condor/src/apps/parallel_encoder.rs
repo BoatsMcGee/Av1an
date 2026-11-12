@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io::IsTerminal};
+use std::{collections::BTreeMap, io::IsTerminal, sync::Arc};
 
 use andean_condor::{
     core::{
@@ -32,7 +32,7 @@ use crate::{
 
 #[derive(Clone)]
 pub struct ParallelEncoderState {
-    pub scenes: BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
+    pub scenes: BTreeMap<u64, (u64, SceneDisplay)>,
     pub active_encoders: BTreeMap<u64, SceneEncoder>,
     pub clip_info: ClipInfo,
     pub completed_scenes_count: usize,
@@ -41,6 +41,27 @@ pub struct ParallelEncoderState {
     pub validation: Option<(u64, u64)>,
     pub initial_frames: u64,
     pub completed: bool,
+}
+
+/// Rendering and validated-size inputs only; never retains sequence results or zoning proofs.
+#[derive(Debug, Clone)]
+pub struct SceneDisplay {
+    pub start_frame: usize,
+    pub end_frame: usize,
+    pub encoder: Arc<Encoder>,
+    pub bytes: Option<u64>,
+}
+
+impl From<&Scene<CliSequenceData>> for SceneDisplay {
+    fn from(scene: &Scene<CliSequenceData>) -> Self {
+        Self {
+            start_frame: scene.start_frame,
+            end_frame: scene.end_frame,
+            encoder: Arc::new(scene.encoder.clone()),
+            // Historical bytes cannot authorize progress before runtime validation.
+            bytes: None,
+        }
+    }
 }
 
 pub struct ParallelEncoderApp {
@@ -117,7 +138,7 @@ impl TuiApp for ParallelEncoderApp {
                         state.completed = false;
                         state.active_encoders.remove(&scene);
                         if let Some((frames, data)) = state.scenes.get_mut(&scene)
-                            && data.sequence_data.parallel_encoder.bytes.is_none()
+                            && data.bytes.is_none()
                         {
                             *frames = 0;
                         }
@@ -130,20 +151,18 @@ impl TuiApp for ParallelEncoderApp {
                     }
                     if name == "resumed-size"
                         && let Some((_, data)) = state.scenes.get(&scene)
-                        && data.sequence_data.parallel_encoder.bytes.is_none()
+                        && data.bytes.is_none()
                     {
                         state.initial_frames += (data.end_frame - data.start_frame) as u64;
                     }
                     state.scenes.entry(scene).and_modify(|(completed, scene)| {
                         *completed = (scene.end_frame - scene.start_frame) as u64;
-                        scene.sequence_data.parallel_encoder.bytes = Some(bytes);
+                        scene.bytes = Some(bytes);
                     });
                     state.completed_scenes_count = state
                         .scenes
                         .iter()
-                        .filter(|(_, (_, s))| {
-                            s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0)
-                        })
+                        .filter(|(_, (_, s))| s.bytes.is_some_and(|b| b > 0))
                         .count();
                     let (bitrate, estimated_bytes) =
                         Self::estimate_size(&state.scenes, &state.clip_info);
@@ -176,7 +195,7 @@ impl TuiApp for ParallelEncoderApp {
                     let (current_pass, total_passes) = passes;
                     if current_pass == 0
                         || current_pass > total_passes
-                        || scene_data.sequence_data.parallel_encoder.bytes.is_some()
+                        || scene_data.bytes.is_some()
                     {
                         return false;
                     }
@@ -184,7 +203,7 @@ impl TuiApp for ParallelEncoderApp {
                     let current_frame = frames.0.min(total_frames);
                     let active =
                         state.active_encoders.entry(scene).or_insert_with(|| SceneEncoder {
-                            scene: scene_data.clone(),
+                            encoder: Arc::clone(&scene_data.encoder),
                             started: std::time::Instant::now(),
                             current_pass,
                             total_passes,
@@ -212,7 +231,7 @@ impl TuiApp for ParallelEncoderApp {
                 Status::Completed { id } => {
                     let scene = id.parse::<u64>().expect("Scene index is a number");
                     state.scenes.entry(scene).and_modify(|(completed, scene)| {
-                        if scene.sequence_data.parallel_encoder.bytes.is_some() {
+                        if scene.bytes.is_some() {
                             *completed = (scene.end_frame - scene.start_frame) as u64;
                         }
                     });
@@ -220,9 +239,7 @@ impl TuiApp for ParallelEncoderApp {
                     state.completed_scenes_count = state
                         .scenes
                         .iter()
-                        .filter(|(_, (_, s))| {
-                            s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0)
-                        })
+                        .filter(|(_, (_, s))| s.bytes.is_some_and(|b| b > 0))
                         .count();
                     true
                 },
@@ -230,7 +247,7 @@ impl TuiApp for ParallelEncoderApp {
                     let scene = id.parse::<u64>().expect("Scene index is a number");
                     state.active_encoders.remove(&scene);
                     if let Some((completed, scene)) = state.scenes.get_mut(&scene)
-                        && scene.sequence_data.parallel_encoder.bytes.is_none()
+                        && scene.bytes.is_none()
                     {
                         *completed = 0;
                     }
@@ -256,7 +273,7 @@ impl TuiApp for ParallelEncoderApp {
             self.cached_state.scenes.iter().map(|(_, (completed, _))| completed).sum();
         let total_frames = self.total_frames;
         let actual_encoder = representative_encoder(
-            self.cached_state.scenes.values().map(|(_, scene)| &scene.encoder),
+            self.cached_state.scenes.values().map(|(_, scene)| scene.encoder.as_ref()),
             &self.encoder,
         );
         let top_info = Block::bordered()
@@ -341,22 +358,20 @@ impl ParallelEncoderApp {
     pub fn new(
         workers: u8,
         encoder: Encoder,
-        mut scenes: BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
+        mut scenes: BTreeMap<u64, (u64, SceneDisplay)>,
         clip_info: ClipInfo,
     ) -> ParallelEncoderApp {
         // Saved bytes are historical, not evidence about the current file.
         // The sequence emits size only after validating each resumed/new chunk.
         for (completed, scene) in scenes.values_mut() {
             *completed = 0;
-            scene.sequence_data.parallel_encoder.bytes = None;
+            scene.bytes = None;
         }
         let total_frames =
             scenes.iter().map(|(_, (_, s))| (s.end_frame - s.start_frame) as u64).sum();
 
-        let completed_scenes_count = scenes
-            .iter()
-            .filter(|(_, (_, s))| s.sequence_data.parallel_encoder.bytes.is_some_and(|b| b > 0))
-            .count();
+        let completed_scenes_count =
+            scenes.iter().filter(|(_, (_, s))| s.bytes.is_some_and(|b| b > 0)).count();
         let (estimated_bitrate, estimated_bytes) = Self::estimate_size(&scenes, &clip_info);
         let initial_state = ParallelEncoderState {
             scenes,
@@ -383,19 +398,17 @@ impl ParallelEncoderApp {
     }
 
     pub fn estimate_size(
-        scenes: &BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
+        scenes: &BTreeMap<u64, (u64, SceneDisplay)>,
         clip_info: &ClipInfo,
     ) -> (f64, u64) {
         let total_frames = clip_info.num_frames;
-        let (frames_completed, bytes_completed) = scenes
-            .iter()
-            .filter(|(_, (_, scene))| scene.sequence_data.parallel_encoder.bytes.is_some())
-            .fold(
+        let (frames_completed, bytes_completed) =
+            scenes.iter().filter(|(_, (_, scene))| scene.bytes.is_some()).fold(
                 (0, 0),
                 |(frames_completed, bytes_completed), (_, (_, scene))| {
                     (
                         frames_completed + (scene.end_frame - scene.start_frame) as u64,
-                        bytes_completed + scene.sequence_data.parallel_encoder.bytes.unwrap_or(0),
+                        bytes_completed + scene.bytes.unwrap_or(0),
                     )
                 },
             );
@@ -413,7 +426,7 @@ impl ParallelEncoderApp {
 
 #[derive(Debug, Clone)]
 pub struct SceneEncoder {
-    pub scene: Scene<CliSequenceData>,
+    pub encoder: Arc<Encoder>,
     pub started: std::time::Instant,
     pub current_pass: u8,
     pub total_passes: u8,
@@ -473,8 +486,64 @@ mod tests {
 
     const FRAMES: usize = 400;
 
+    #[test]
+    fn t07_parallel_snapshot_drops_raw_scene_payloads() {
+        let mut input = scenes();
+        let (_, quality) = crate::test_helpers::quality_scene_fixture();
+        for (_, scene) in input.values_mut() {
+            scene.sequence_data.target_quality = quality[0].sequence_data.target_quality.clone();
+            for pass in &mut scene.sequence_data.target_quality.passes {
+                pass.scores = vec![73.125; 8192];
+            }
+            scene.sequence_data.quality_check.quality.scores = vec![73.125; 8192];
+        }
+        let template = input[&0].1.clone();
+        input.extend((4..64).map(|index| (index, (0, template.clone()))));
+        let definition = crate::zoner::SceneDefinition::from(&input[&0].1);
+        input.get_mut(&0).unwrap().1.sequence_data.zoner.lifecycle =
+            Some(crate::zoner::ZoneLifecycle {
+                algorithm_revision: 1,
+                baseline: vec![definition.clone(); 128],
+                applied: vec![definition; 128],
+                zones: vec![],
+            });
+        let app = app(2, encoder(), input, clip_info());
+        app.shared_progress
+            .apply(|state| ParallelEncoderApp::map_progress(progress(0, (1, 1), 30), state));
+        let snapshot = app.shared_progress.read_if_dirty().unwrap();
+        assert_eq!(snapshot.scenes.len(), 64);
+        assert_eq!(snapshot.scenes[&0].0, 30);
+        let retained = format!("{:?} {:?}", snapshot.scenes, snapshot.active_encoders);
+        for payload in ["73.125", "scores:", "sequence_data:", "lifecycle:", "sub_scenes:"] {
+            assert!(
+                !retained.contains(payload),
+                "render snapshot retains {payload}"
+            );
+        }
+        assert_eq!(snapshot.active_encoders[&0].frames_processed, 30);
+    }
+
     fn encoder() -> Encoder {
         Encoder::default_from_base(&EncoderBase::SVTAV1, false)
+    }
+
+    fn app(
+        workers: u8,
+        encoder: Encoder,
+        scenes: BTreeMap<u64, (u64, Scene<CliSequenceData>)>,
+        clip: ClipInfo,
+    ) -> ParallelEncoderApp {
+        ParallelEncoderApp::new(
+            workers,
+            encoder,
+            scenes
+                .into_iter()
+                .map(|(index, (frames, scene))| {
+                    (index, (frames, super::SceneDisplay::from(&scene)))
+                })
+                .collect(),
+            clip,
+        )
     }
 
     fn clip_info() -> ClipInfo {
@@ -554,7 +623,7 @@ mod tests {
     #[test]
     fn c05_parallel_header_uses_actual_uniform_or_mixed_scene_settings() {
         let global = Encoder::default_from_base(&EncoderBase::AOM, false);
-        let uniform = ParallelEncoderApp::new(2, global.clone(), scenes(), clip_info());
+        let uniform = app(2, global.clone(), scenes(), clip_info());
         let header = screen(&uniform).lines().take(8).collect::<Vec<_>>().join("\n");
         assert!(
             header.contains("Scalable Video Technology for AV1"),
@@ -574,13 +643,13 @@ mod tests {
                 3 => scene.encoder.set_append_color_data(false),
                 _ => scene.encoder.set_ffmpeg_filter(Some("hflip".into())),
             }
-            let app = ParallelEncoderApp::new(2, global.clone(), scenes, clip_info());
+            let app = app(2, global.clone(), scenes, clip_info());
             let header = screen(&app).lines().take(8).collect::<Vec<_>>().join("\n");
             assert!(header.contains("Mixed encoders"), "{header}");
             assert!(header.contains("per-scene settings"), "{header}");
             assert!(!header.contains("cpu-used"), "{header}");
         }
-        let empty = ParallelEncoderApp::new(2, global, BTreeMap::new(), clip_info());
+        let empty = app(2, global, BTreeMap::new(), clip_info());
         assert!(
             screen(&empty).contains("cpu-used"),
             "empty scenes retain the fallback"
@@ -593,7 +662,7 @@ mod tests {
         for (index, base) in [(0, EncoderBase::X264), (1, EncoderBase::X265)] {
             scene_map.get_mut(&index).unwrap().1.encoder = Encoder::default_from_base(&base, false);
         }
-        let mut app = ParallelEncoderApp::new(
+        let mut app = app(
             2,
             Encoder::default_from_base(&EncoderBase::AOM, false),
             scene_map,
@@ -626,7 +695,7 @@ mod tests {
         }
         scene_map.get_mut(&0).unwrap().1.encoder.set_quantizer(17.0);
         scene_map.get_mut(&1).unwrap().1.encoder.set_quantizer(21.0);
-        let mut app = ParallelEncoderApp::new(2, global, scene_map, clip_info());
+        let mut app = app(2, global, scene_map, clip_info());
         for index in [0, 1] {
             ParallelEncoderApp::map_progress(progress(index, (1, 1), 10), &mut app.cached_state);
         }
@@ -671,7 +740,7 @@ mod tests {
         for (_, scene) in scene_map.values_mut() {
             scene.encoder = actual.clone();
         }
-        let mut app = ParallelEncoderApp::new(2, global, scene_map, clip_info());
+        let mut app = app(2, global, scene_map, clip_info());
         for index in [0, 1] {
             ParallelEncoderApp::map_progress(progress(index, (1, 1), 10), &mut app.cached_state);
         }
@@ -730,7 +799,8 @@ mod tests {
             );
             let mut scenes = scenes();
             scenes.get_mut(&0).expect("scene").1.sequence_data.parallel_encoder = restored;
-            let mut app = ParallelEncoderApp::new(2, encoder(), scenes, clip_info());
+            let saved = scenes[&0].1.sequence_data.parallel_encoder.clone();
+            let mut app = app(2, encoder(), scenes, clip_info());
             app.started = started;
             assert!(ParallelEncoderApp::map_progress(
                 progress(0, (1, 1), 50),
@@ -749,7 +819,6 @@ mod tests {
                 ),
                 (started, started, 50, 400, 0)
             );
-            let saved = &app.cached_state.scenes[&0].1.sequence_data.parallel_encoder;
             assert_eq!(
                 (saved.started_on, saved.completed_on),
                 (Some(20_000), Some(completed_on))
@@ -775,7 +844,7 @@ mod tests {
         let mut scenes = scenes();
         *scenes.get_mut(&1).expect("scene").1.encoder.passes_mut().expect("passes") =
             andean_condor::models::encoder::EncoderPasses::All(2);
-        let mut app = ParallelEncoderApp::new(2, encoder(), scenes, clip_info());
+        let mut app = app(2, encoder(), scenes, clip_info());
         let state = app.cached_state_mut();
         ParallelEncoderApp::map_progress(progress(0, (1, 1), 10), state);
         assert_eq!(state.scenes[&0].0, 10, "first final-pass record counts");
@@ -807,7 +876,7 @@ mod tests {
         ] {
             let mut scenes = scenes();
             *scenes.get_mut(&0).expect("scene").1.encoder.passes_mut().expect("passes") = passes;
-            let mut app = ParallelEncoderApp::new(2, encoder(), scenes, clip_info());
+            let mut app = app(2, encoder(), scenes, clip_info());
             for frame in [1, 10, 10, 9, 30] {
                 ParallelEncoderApp::map_progress(
                     progress(0, (native_pass, 2), frame),
@@ -839,7 +908,7 @@ mod tests {
 
     #[test]
     fn e16_final_native_frame_is_not_a_completion_title() {
-        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let mut app = app(2, encoder(), scenes(), clip_info());
         for scene in 0..4 {
             ParallelEncoderApp::map_progress(progress(scene, (1, 1), 100), app.cached_state_mut());
         }
@@ -852,7 +921,7 @@ mod tests {
 
     #[test]
     fn e16_validated_resume_has_no_new_work_fps() {
-        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let mut app = app(2, encoder(), scenes(), clip_info());
         for scene in 0..4 {
             for _ in 0..2 {
                 ParallelEncoderApp::map_progress(
@@ -880,7 +949,7 @@ mod tests {
 
     #[test]
     fn e16_failure_cleanup_and_publication_do_not_inflate_resume_baseline() {
-        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let mut app = app(2, encoder(), scenes(), clip_info());
         let state = app.cached_state_mut();
         ParallelEncoderApp::map_progress(custom(0, "resumed-size", 1000.0), state);
         ParallelEncoderApp::map_progress(progress(1, (1, 1), 100), state);
@@ -923,7 +992,7 @@ mod tests {
         let mut scenes = scenes();
         scenes.retain(|id, _| *id == 0);
         scenes.get_mut(&0).expect("scene").1.end_frame = 0;
-        let mut app = ParallelEncoderApp::new(1, encoder(), scenes, clip_info());
+        let mut app = app(1, encoder(), scenes, clip_info());
         ParallelEncoderApp::map_progress(progress(0, (1, 1), u64::MAX), app.cached_state_mut());
         assert_eq!(app.cached_state.scenes[&0].0, 0);
         let text = screen(&app);
@@ -937,7 +1006,7 @@ mod tests {
     /// the corner. Without it the bar has nothing to show.
     #[test]
     fn a_finished_scene_updates_the_counter_and_the_estimate() {
-        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let mut app = app(2, encoder(), scenes(), clip_info());
         let state = app.cached_state_mut();
         assert_eq!(state.completed_scenes_count, 0);
         assert_eq!(state.estimated_bytes, 0);
@@ -965,7 +1034,7 @@ mod tests {
     /// scene as finished, or the estimate would claim bytes that do not exist.
     #[test]
     fn a_completed_scene_without_a_size_is_not_counted() {
-        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let mut app = app(2, encoder(), scenes(), clip_info());
         let state = app.cached_state_mut();
 
         let completed = SequenceStatus::Subprocess {
@@ -993,7 +1062,7 @@ mod tests {
             scene.sequence_data.parallel_encoder.started_on = Some(10);
             scene.sequence_data.parallel_encoder.completed_on = Some(20);
         }
-        let mut app = ParallelEncoderApp::new(2, encoder(), scenes, clip_info());
+        let mut app = app(2, encoder(), scenes, clip_info());
         let state = app.cached_state_mut();
         assert_eq!(
             state.completed_scenes_count, 0,
@@ -1023,7 +1092,7 @@ mod tests {
 
     #[test]
     fn e14_r1_validation_progress_renders_without_completing_scenes() {
-        let mut app = ParallelEncoderApp::new(2, encoder(), scenes(), clip_info());
+        let mut app = app(2, encoder(), scenes(), clip_info());
         let event = SequenceStatus::Whole(Status::Processing {
             id: "Parallel Encoder".into(),
             completion: SequenceCompletion::Custom {
@@ -1070,14 +1139,14 @@ mod tests {
     /// whether the right slot count reached it.
     #[test]
     fn the_screen_reserves_a_slot_per_worker_and_fills_from_the_bottom() {
-        let mut app = ParallelEncoderApp::new(4, encoder(), scenes(), clip_info());
+        let mut app = app(4, encoder(), scenes(), clip_info());
         let all = scenes();
         for index in [1_u64, 2] {
             let state = app.cached_state_mut();
             state.active_encoders.insert(
                 index,
                 SceneEncoder {
-                    scene: all[&index].1.clone(),
+                    encoder: std::sync::Arc::new(all[&index].1.encoder.clone()),
                     started: std::time::Instant::now(),
                     current_pass: 1,
                     total_passes: 2,

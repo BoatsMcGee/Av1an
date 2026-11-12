@@ -1,5 +1,5 @@
 use anyhow::Context;
-use std::{collections::BTreeMap, io::IsTerminal};
+use std::{collections::BTreeMap, io::IsTerminal, sync::Arc};
 
 use andean_condor::{
     core::{
@@ -32,7 +32,8 @@ use crate::{
 };
 #[derive(Clone)]
 pub struct TargetQualityState {
-    pub quality_passes: BTreeMap<u64, Vec<QualityPass>>,
+    // Frame-only snapshots share the chart; new results copy only the changed scene's history.
+    pub quality_passes: Arc<BTreeMap<u64, Arc<Vec<QualityPass>>>>,
     pub current_pass: u8,
     pub frames_encoded: u64,
     pub frames_compared: u64,
@@ -41,7 +42,7 @@ pub struct TargetQualityState {
 
 pub struct TargetQualityApp {
     pub encoder: Encoder,
-    encoder_summary: Option<Encoder>,
+    pub(crate) encoder_summary: Option<Encoder>,
     pub clip_info: ClipInfo,
     pub pass_started: std::time::Instant,
     /// The stopped clock of a pass whose frames are all done, held so the
@@ -208,7 +209,9 @@ impl TuiApp for TargetQualityApp {
                         score,
                         bitrate,
                     };
-                    state.quality_passes.entry(index).or_default().push(pass.clone());
+                    let history =
+                        Arc::make_mut(&mut state.quality_passes).entry(index).or_default();
+                    Arc::make_mut(history).push(pass.clone());
                     if !std::io::stdout().is_terminal() {
                         let event = TargetQualityConsoleEvent::QualityPass(pass);
                         println!(
@@ -396,15 +399,15 @@ impl TargetQualityApp {
     /// An empty history is a valid unmeasured screen, not a zero quality score.
     pub fn new(
         clip_info: ClipInfo,
-        scenes: Vec<Scene<CliSequenceData>>,
+        scenes: &[Scene<CliSequenceData>],
         encoder: Encoder,
         probe_statistic: ProbeStatistic,
         metric: &QualityMetric,
     ) -> anyhow::Result<TargetQualityApp> {
         let encoder_summary =
             representative_encoder(scenes.iter().map(|scene| &scene.encoder), &encoder).cloned();
-        let quality_passes: BTreeMap<u64, Vec<QualityPass>> = scenes
-            .into_iter()
+        let quality_passes: BTreeMap<u64, Arc<Vec<QualityPass>>> = scenes
+            .iter()
             .enumerate()
             .map(|(scene_index, scene)| {
                 Ok((
@@ -432,12 +435,13 @@ impl TargetQualityApp {
                                 bitrate: pass.bitrate,
                             })
                         })
-                        .collect::<anyhow::Result<_>>()?,
+                        .collect::<anyhow::Result<Vec<_>>>()?
+                        .into(),
                 ))
             })
             .collect::<anyhow::Result<_>>()?;
         let state = TargetQualityState {
-            quality_passes,
+            quality_passes: Arc::new(quality_passes),
             current_pass: 1,
             frames_encoded: 0,
             frames_compared: 0,
@@ -487,6 +491,120 @@ pub struct QualityPass {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn t07_tq_frame_snapshots_share_all_display_history() {
+        use crate::apps::TuiApp;
+        use andean_condor::{
+            core::sequence::{SequenceCompletion, SequenceStatus, Status},
+            models::sequence::target_quality::types::{ProbeStatistic, QualityMetric},
+        };
+        let (clip, mut scenes) = crate::test_helpers::quality_scene_fixture();
+        for scene in scenes.iter_mut().take(2) {
+            let mut pass = scene.sequence_data.target_quality.passes[0].clone();
+            pass.scores = vec![73.125; 8192];
+            scene.sequence_data.target_quality.passes = vec![pass; 32];
+        }
+        let mut app = TargetQualityApp::new(
+            clip,
+            &scenes,
+            Default::default(),
+            ProbeStatistic::Mean,
+            &QualityMetric::default(),
+        )
+        .unwrap();
+        let initial = app.shared_progress.read();
+        let owner = initial.quality_passes[&0].as_ptr();
+        for completed in 1..=8 {
+            app.shared_progress.apply(|state| {
+                TargetQualityApp::map_progress(
+                    SequenceStatus::Whole(Status::Processing {
+                        id: "Encode".into(),
+                        completion: SequenceCompletion::Frames {
+                            completed,
+                            total: 9,
+                        },
+                    }),
+                    state,
+                )
+            });
+            let snapshot = app.shared_progress.read_if_dirty().unwrap();
+            assert_eq!(snapshot.quality_passes[&0].len(), 32);
+            assert_eq!(snapshot.quality_passes[&0][31].score, 73.125);
+            assert_eq!(
+                snapshot.quality_passes[&0].as_ptr(),
+                owner,
+                "frame-only updates must not copy display history"
+            );
+            assert_eq!(snapshot.frames_encoded, completed);
+            app.on_snapshot(snapshot);
+        }
+        for pass in [33, 34] {
+            app.shared_progress.apply(|state| {
+                TargetQualityApp::map_progress(
+                    SequenceStatus::Subprocess {
+                        parent: Status::Processing {
+                            id: "Target Quality".into(),
+                            completion: SequenceCompletion::Passes {
+                                completed: pass,
+                                total: 40,
+                            },
+                        },
+                        child: Status::Processing {
+                            id: "Quality".into(),
+                            completion: SequenceCompletion::SceneQuality {
+                                index: 1,
+                                quantizer: f64::from(pass),
+                                score: 90.0,
+                                bitrate: 123.0,
+                            },
+                        },
+                    },
+                    state,
+                )
+            });
+            let snapshot = app.shared_progress.read_if_dirty().unwrap();
+            assert_eq!(
+                snapshot.quality_passes[&0].as_ptr(),
+                owner,
+                "new scene results must share other histories"
+            );
+            assert_eq!(snapshot.quality_passes[&1].len(), usize::from(pass));
+            let last = snapshot.quality_passes[&1].last().unwrap();
+            assert_eq!(
+                (
+                    last.scene,
+                    last.current_pass,
+                    last.total_passes,
+                    last.quantizer,
+                    last.score,
+                    last.bitrate
+                ),
+                (1, pass, 40, f64::from(pass), 90.0, 123.0)
+            );
+            assert_eq!(
+                snapshot.quality_passes.keys().copied().collect::<Vec<_>>(),
+                [0, 1, 2]
+            );
+            assert_eq!(
+                initial.quality_passes[&1].len(),
+                32,
+                "cached histories stay immutable"
+            );
+            app.on_snapshot(snapshot);
+        }
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Quantizer and Score per Scene") && text.contains("Quantizer/Score"));
+    }
+
+    #[test]
     fn c05_tq_header_uses_actual_uniform_or_mixed_scene_settings() {
         use crate::apps::TuiApp;
         use andean_condor::models::{
@@ -510,7 +628,7 @@ mod tests {
             }
             let app = TargetQualityApp::new(
                 clip,
-                scenes,
+                &scenes,
                 global.clone(),
                 ProbeStatistic::Mean,
                 &QualityMetric::default(),
@@ -556,7 +674,7 @@ mod tests {
             assert!(
                 TargetQualityApp::new(
                     clip,
-                    corrupt,
+                    &corrupt,
                     Default::default(),
                     ProbeStatistic::Harmonic,
                     &QualityMetric::default()
@@ -567,7 +685,7 @@ mod tests {
         assert!(
             TargetQualityApp::new(
                 clip,
-                vec![],
+                &[],
                 Default::default(),
                 ProbeStatistic::Mean,
                 &QualityMetric::default()
@@ -578,8 +696,6 @@ mod tests {
             .is_empty()
         );
     }
-    use std::collections::BTreeMap;
-
     use super::{TargetQualityApp, TargetQualityState};
 
     #[test]
@@ -625,7 +741,7 @@ mod tests {
             }
             let mut app = TargetQualityApp::new(
                 clip,
-                scenes,
+                &scenes,
                 Default::default(),
                 ProbeStatistic::Mean,
                 &QualityMetric::default(),
@@ -704,21 +820,16 @@ mod tests {
                 (ProbeStatistic::Minimum, [2.0, 1.0]),
                 (ProbeStatistic::Maximum, [9.0, 8.0]),
             ] {
-                let app = TargetQualityApp::new(
-                    clip,
-                    scenes.clone(),
-                    Default::default(),
-                    statistic,
-                    &metric,
-                )
-                .expect("app");
+                let app =
+                    TargetQualityApp::new(clip, &scenes, Default::default(), statistic, &metric)
+                        .expect("app");
                 let expected = if disabled == Some(true) {
                     independent
                 } else {
                     [4.0, 6.0]
                 };
                 let mut live =
-                    TargetQualityApp::new(clip, vec![], Default::default(), statistic, &metric)
+                    TargetQualityApp::new(clip, &[], Default::default(), statistic, &metric)
                         .expect("app")
                         .cached_state;
                 for (index, score) in expected.into_iter().enumerate() {
@@ -759,7 +870,7 @@ mod tests {
                 assert!(app.cached_state.quality_passes[&2].is_empty());
                 let control = TargetQualityApp::new(
                     clip,
-                    scenes.clone(),
+                    &scenes,
                     Default::default(),
                     statistic,
                     &QualityMetric::default(),
@@ -781,7 +892,7 @@ mod tests {
 
     fn state(current_pass: u8, frames_encoded: u64, frames_compared: u64) -> TargetQualityState {
         TargetQualityState {
-            quality_passes: BTreeMap::new(),
+            quality_passes: Default::default(),
             current_pass,
             frames_encoded,
             frames_compared,

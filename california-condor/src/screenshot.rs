@@ -651,8 +651,8 @@ fn parallel_encoder_fixture(ci: ClipInfo) -> ParallelEncoderApp {
                 } else {
                     0
                 };
-                let mut scene = s.clone();
-                scene.sequence_data.parallel_encoder.bytes = (i < complete_to)
+                let mut scene = crate::apps::parallel_encoder::SceneDisplay::from(s);
+                scene.bytes = (i < complete_to)
                     .then_some((est_bitrate / 8.0 * (len as f64 / CLIP_FPS)) as u64);
                 (i as u64, (completed, scene))
             })
@@ -669,7 +669,7 @@ fn parallel_encoder_fixture(ci: ClipInfo) -> ParallelEncoderApp {
         .filter(|(i, _)| (20u64..24).contains(i))
         .map(|(idx, (processed, s))| {
             let mut se = SceneEncoder {
-                scene: s.clone(),
+                encoder: std::sync::Arc::clone(&s.encoder),
                 started: Instant::now(),
                 current_pass: 1,
                 total_passes: 2,
@@ -702,8 +702,10 @@ fn parallel_encoder_fixture(ci: ClipInfo) -> ParallelEncoderApp {
 
 /// Representative target-quality probe results (one pass per scene), with a
 /// quantizer/score/bitrate that track scene complexity.
-fn tq_passes(scenes: &[Scene<CliSequenceData>]) -> BTreeMap<u64, Vec<QualityPass>> {
-    scenes
+fn tq_passes(
+    scenes: &[Scene<CliSequenceData>],
+) -> std::sync::Arc<BTreeMap<u64, std::sync::Arc<Vec<QualityPass>>>> {
+    let passes = scenes
         .iter()
         .enumerate()
         .map(|(i, _)| {
@@ -716,9 +718,10 @@ fn tq_passes(scenes: &[Scene<CliSequenceData>]) -> BTreeMap<u64, Vec<QualityPass
                 score: (i * 0.7).cos().mul_add(3.0, 92.0),
                 bitrate: (i * 1.3).sin().mul_add(1400.0, 4200.0),
             };
-            (i as u64, vec![pass])
+            (i as u64, std::sync::Arc::new(vec![pass]))
         })
-        .collect()
+        .collect();
+    std::sync::Arc::new(passes)
 }
 
 // ---------------------------------------------------------------------------
@@ -783,7 +786,7 @@ fn tui_screens() -> Vec<Screen> {
         app.on_snapshot(NoiseDetectionState {
             frames_processed: processed,
             total_frames: scenes.len() as u64,
-            scene_noise,
+            scene_noise: std::sync::Arc::new(scene_noise),
         });
         // ~0.35 SPS => ~34s for 12 scenes.
         backdate_for_frames(&mut app.started, processed, 0.35);
@@ -849,7 +852,7 @@ fn tui_screens() -> Vec<Screen> {
         let passes = tq_passes(&scenes);
         let mut app = TargetQualityApp::new(
             ci,
-            scenes,
+            &scenes,
             encoder(),
             ProbeStatistic::Mean,
             &Default::default(),
@@ -879,7 +882,7 @@ fn tui_screens() -> Vec<Screen> {
         let passes = tq_passes(&scenes);
         let mut app = TargetQualityApp::new(
             ci,
-            scenes,
+            &scenes,
             encoder(),
             ProbeStatistic::Mean,
             &Default::default(),

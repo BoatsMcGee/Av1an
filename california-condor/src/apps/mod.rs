@@ -454,8 +454,15 @@ pub trait TuiApp: Send + Sync + 'static {
     /// if the state changed. Console (non-TTY) emission is handled here too.
     ///
     /// This is a static method (no `self`) so it can run on the spawned
-    /// progress thread. Any per-app context needed here must live in `State`.
+    /// progress thread. Producer-only context can be captured by `progress_mapper`.
     fn map_progress(status: SequenceStatus, state: &mut Self::State) -> bool;
+
+    /// Capture producer-only report storage without putting it in render snapshots.
+    fn progress_mapper(
+        &self,
+    ) -> impl FnMut(SequenceStatus, &mut Self::State) -> bool + Send + 'static {
+        Self::map_progress
+    }
 
     /// Optional hook invoked with each fresh snapshot read from the shared
     /// state. The default implementation caches it. Apps with UI-local state
@@ -590,6 +597,7 @@ pub trait TuiApp: Send + Sync + 'static {
         let (event_tx, event_rx) = mpsc::channel();
 
         let shared_progress = self.shared_progress().clone();
+        let mut map_progress = self.progress_mapper();
         let terminal = if run_headless(
             stdout().is_terminal(),
             stderr().is_terminal(),
@@ -611,7 +619,7 @@ pub trait TuiApp: Send + Sync + 'static {
                     while !stop_flag.load(Ordering::SeqCst) && worker_stage.check().is_ok() {
                         match progress_rx.recv_timeout(Duration::from_millis(10)) {
                             Ok(progress) => {
-                                shared_progress.apply(|state| Self::map_progress(progress, state));
+                                shared_progress.apply(|state| map_progress(progress, state));
                             },
                             Err(RecvTimeoutError::Timeout) => (),
                             Err(RecvTimeoutError::Disconnected) => break,
@@ -633,9 +641,12 @@ pub trait TuiApp: Send + Sync + 'static {
             while !quit.load(Ordering::Acquire) {
                 thread::sleep(Duration::from_millis(10));
                 panic_stage.check()?;
-                if let Some(snapshot) = self.shared_progress().read_if_dirty() {
-                    self.on_snapshot(snapshot);
-                }
+                #[cfg(test)]
+                tests::HEADLESS_TICK.with_borrow_mut(|hook| {
+                    if let Some(hook) = hook {
+                        hook();
+                    }
+                });
                 while event_rx.try_recv().is_ok() {}
             }
             drop(progress_thread);
@@ -723,6 +734,134 @@ mod tests {
     thread_local! {
         pub(super) static TEST_WRITER: std::cell::RefCell<Option<Box<dyn Write + Send>>> = const { std::cell::RefCell::new(None) };
         pub(super) static BEFORE_RAW: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+        pub(super) static HEADLESS_TICK: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    #[test]
+    fn t07_headless_maps_every_event_without_tick_clones() {
+        if std::env::var_os("T07_HEADLESS_CHILD").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "apps::tests::t07_headless_maps_every_event_without_tick_clones",
+                    "--nocapture",
+                ])
+                .env("T07_HEADLESS_CHILD", "1")
+                .env("CONDOR_TEST_MODE", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use std::sync::atomic::AtomicUsize;
+        struct Counted {
+            clones: Arc<AtomicUsize>,
+            events: Vec<String>,
+            ack: mpsc::SyncSender<()>,
+        }
+        impl Clone for Counted {
+            fn clone(&self) -> Self {
+                self.clones.fetch_add(1, Ordering::SeqCst);
+                Self {
+                    clones: Arc::clone(&self.clones),
+                    events: self.events.clone(),
+                    ack: self.ack.clone(),
+                }
+            }
+        }
+        struct App {
+            progress: SharedProgress<Counted>,
+            cached: Counted,
+            cancel: bool,
+            reported: bool,
+        }
+        impl TuiApp for App {
+            type State = Counted;
+            fn shared_progress(&self) -> &SharedProgress<Counted> {
+                &self.progress
+            }
+            fn cached_state(&self) -> &Counted {
+                &self.cached
+            }
+            fn cached_state_mut(&mut self) -> &mut Counted {
+                &mut self.cached
+            }
+            fn attempted_cancel(&self) -> bool {
+                self.cancel
+            }
+            fn attempted_cancel_mut(&mut self) -> &mut bool {
+                &mut self.cancel
+            }
+            fn cancel_message(&self) -> &'static str {
+                "cancel"
+            }
+            fn map_progress(status: SequenceStatus, state: &mut Counted) -> bool {
+                let SequenceStatus::Whole(andean_condor::core::sequence::Status::Completed { id }) =
+                    status
+                else {
+                    panic!("event")
+                };
+                state.events.push(id);
+                state.ack.send(()).unwrap();
+                true
+            }
+            fn after_loop(&mut self) {
+                self.reported = true;
+                assert_eq!(self.cached.events, ["0", "1", "2", "3"]);
+            }
+            fn render(&self, _: &mut Frame) {
+                panic!("headless render");
+            }
+        }
+        let clones = Arc::new(AtomicUsize::new(0));
+        let (ack, ack_rx) = mpsc::sync_channel(0);
+        let state = Counted {
+            clones: Arc::clone(&clones),
+            events: vec![],
+            ack,
+        };
+        let mut app = App {
+            progress: SharedProgress::new(state.clone()),
+            cached: state,
+            cancel: false,
+            reported: false,
+        };
+        clones.store(0, Ordering::SeqCst);
+        let (tx, rx) = mpsc::channel();
+        let mut tx = Some(tx);
+        let mut index = 0;
+        HEADLESS_TICK.with_borrow_mut(|slot| {
+            *slot = Some(Box::new(move || {
+                if let Some(sender) = tx.as_ref() {
+                    sender
+                        .send(SequenceStatus::Whole(
+                            andean_condor::core::sequence::Status::Completed {
+                                id: index.to_string(),
+                            },
+                        ))
+                        .unwrap();
+                    ack_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                    index += 1;
+                    if index == 4 {
+                        tx.take();
+                    }
+                }
+            }));
+        });
+        let result = app.run(rx, Arc::new(AtomicBool::new(false)));
+        HEADLESS_TICK.with_borrow_mut(|slot| slot.take());
+        result.unwrap();
+        assert!(app.reported);
+        assert_eq!(
+            clones.load(Ordering::SeqCst),
+            1,
+            "only the final complete state is needed headlessly"
+        );
     }
 
     struct RenderFailureWriter {

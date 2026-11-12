@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, io::IsTerminal};
+use std::{collections::BTreeMap, io::IsTerminal, sync::Arc};
 
 use andean_condor::{
     core::{
@@ -25,7 +25,7 @@ use crate::{
 pub struct NoiseDetectionState {
     pub frames_processed: u64,
     pub total_frames: u64,
-    pub scene_noise: BTreeMap<u64, f64>,
+    pub scene_noise: Arc<BTreeMap<u64, f64>>,
 }
 
 pub struct NoiseDetectionApp {
@@ -97,7 +97,7 @@ impl TuiApp for NoiseDetectionApp {
                 ) if id == "Noise" => {
                     state.frames_processed = completed as u64;
                     state.total_frames = total as u64;
-                    state.scene_noise.insert(index, score);
+                    Arc::make_mut(&mut state.scene_noise).insert(index, score);
                     if !std::io::stdout().is_terminal() {
                         let event = NoiseDetectionConsoleEvent::SceneNoise {
                             scene: index,
@@ -223,7 +223,7 @@ impl NoiseDetectionApp {
         let state = NoiseDetectionState {
             frames_processed,
             total_frames,
-            scene_noise,
+            scene_noise: Arc::new(scene_noise),
         };
         NoiseDetectionApp {
             started: std::time::Instant::now(),
@@ -240,4 +240,96 @@ impl NoiseDetectionApp {
 enum NoiseDetectionConsoleEvent {
     ProcessedFrame { completed: u64, total: u64 },
     SceneNoise { scene: u64, noise: f64 },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn t07_noise_frame_snapshots_share_exact_chart_points() {
+        let (clip, scenes) = crate::test_helpers::quality_scene_fixture();
+        let scenes: Vec<_> = (0..1024)
+            .map(|index| {
+                let mut scene = scenes[0].clone();
+                scene.sequence_data.noise_detection = Some(
+                    andean_condor::models::sequence::noise_detector::NoiseDetectorData {
+                        noise: index as f64 / 1024.0,
+                        luminance: 0.5,
+                        created_on: std::time::UNIX_EPOCH,
+                    },
+                );
+                scene
+            })
+            .collect();
+        let mut app = NoiseDetectionApp::new(&scenes, clip);
+        let initial = app.shared_progress.read();
+        let point = initial.scene_noise.get(&0).unwrap() as *const f64;
+        for completed in 1..=8 {
+            app.shared_progress.apply(|state| {
+                NoiseDetectionApp::map_progress(
+                    SequenceStatus::Whole(Status::Processing {
+                        id: "Noise".into(),
+                        completion: SequenceCompletion::Frames {
+                            completed,
+                            total: 1024,
+                        },
+                    }),
+                    state,
+                )
+            });
+            let snapshot = app.shared_progress.read_if_dirty().unwrap();
+            assert_eq!(snapshot.scene_noise.len(), 1024);
+            assert_eq!(snapshot.scene_noise[&1023], 1023.0 / 1024.0);
+            assert_eq!(
+                snapshot.scene_noise.get(&0).unwrap() as *const f64,
+                point,
+                "count updates must not copy the chart"
+            );
+            assert_eq!(snapshot.frames_processed, completed);
+        }
+        for (index, score) in [(1024, 0.125), (10, 0.375)] {
+            app.shared_progress.apply(|state| {
+                NoiseDetectionApp::map_progress(
+                    SequenceStatus::Subprocess {
+                        parent: Status::Processing {
+                            id: "Noise".into(),
+                            completion: SequenceCompletion::Custom {
+                                name: "Noise".into(),
+                                completed: 1024.0,
+                                total: 1025.0,
+                            },
+                        },
+                        child: Status::Processing {
+                            id: "Noise".into(),
+                            completion: SequenceCompletion::SceneQuality {
+                                index,
+                                score,
+                                quantizer: 0.0,
+                                bitrate: 0.0,
+                            },
+                        },
+                    },
+                    state,
+                )
+            });
+            let snapshot = app.shared_progress.read_if_dirty().unwrap();
+            assert_eq!(snapshot.scene_noise.len(), 1025);
+            assert_eq!(snapshot.scene_noise[&index], score);
+            assert_eq!(snapshot.scene_noise[&1023], 1023.0 / 1024.0);
+            assert_eq!(initial.scene_noise[&10], 10.0 / 1024.0);
+            app.on_snapshot(snapshot);
+        }
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Noise Level per Scene") && text.contains("1025 found"));
+    }
 }

@@ -48,7 +48,7 @@ impl Widget for ActiveEncoders<'_> {
                     scene_index,
                     scene_encoder.current_pass,
                     scene_encoder.total_passes,
-                    scene_encoder.scene.encoder.base().friendly_name()
+                    scene_encoder.encoder.base().friendly_name()
                 )));
             let worker_area_inner = bordered_area.inner(*worker_area);
             bordered_area.render(*worker_area, buf);
@@ -61,7 +61,7 @@ impl Widget for ActiveEncoders<'_> {
 
             // Only a visible same-codec reference can account for hidden options.
             let encoder_info = EncoderInfo::new(
-                scene_encoder.scene.encoder.clone(),
+                scene_encoder.encoder.as_ref().clone(),
                 self.parent_encoder.clone(),
             );
             encoder_info.generate(false).render(active_worker_areas[0], buf);
@@ -139,7 +139,7 @@ mod tests {
                 (
                     index,
                     SceneEncoder {
-                        scene: scene.clone(),
+                        encoder: std::sync::Arc::new(scene.encoder.clone()),
                         started: std::time::Instant::now(),
                         current_pass: 1,
                         total_passes: 2,
