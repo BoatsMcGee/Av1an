@@ -914,6 +914,67 @@ mod tests {
 
     #[serial]
     #[test]
+    fn z03_cli_bad_json_after_valid_inline_zone_preserves_job_and_files() {
+        let video = get_test_video();
+        let temp = tempfile::tempdir().expect("fixture");
+        let config_path = temp.path().join("condor.json");
+        let mut config = california_condor::test_helpers::default_config(
+            &video,
+            &temp.path().join("out.mkv"),
+            temp.path(),
+        );
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        config.condor.scenes[0].sequence_data.parallel_encoder.bytes = Some(123);
+        config.condor.sequence_config.zoner = Some(california_condor::zoner::ZonerConfig {
+            zones: vec![california_condor::zoner::parse_zone("200 300 x264").expect("saved zone")],
+        });
+        let scenes = &config.condor.sequence_config.parallel_encoder.scenes_directory;
+        std::fs::create_dir_all(scenes.join("Target Quality/0")).expect("artifact directories");
+        let encode = scenes.join("00000.ivf");
+        let probe = scenes.join("Target Quality/0/00000.ivf");
+        std::fs::write(&encode, b"saved encode").expect("encode");
+        std::fs::write(&probe, b"saved probe").expect("probe");
+        config.save(&config_path).expect("saved config");
+        let original = std::fs::read(&config_path).expect("config bytes");
+        let source = std::fs::read(&video.path).expect("source bytes");
+        std::fs::write(
+            temp.path().join("typo.json"),
+            r#"{"zone": [{"end_frame": 200}]}"#,
+        )
+        .expect("bad zone file");
+
+        for dry_run in [false, true] {
+            let mut command = condor_cmd(&temp);
+            command.arg("zone");
+            if dry_run {
+                command.arg("--dry-run");
+            }
+            let result = command.args(["0 100 replace x265", "typo.json"]).assert().failure();
+            let stderr = String::from_utf8_lossy(&result.get_output().stderr);
+            assert!(stderr.contains("typo.json"), "{stderr}");
+            assert!(stderr.contains("unknown field `zone`"), "{stderr}");
+            assert_eq!(
+                std::fs::read(&config_path).expect("unchanged config"),
+                original
+            );
+            assert!(!config_path.with_extension("temp").exists());
+            assert_eq!(
+                std::fs::read(&video.path).expect("unchanged source"),
+                source
+            );
+            assert_eq!(
+                std::fs::read(&encode).expect("unchanged encode"),
+                b"saved encode"
+            );
+            assert_eq!(
+                std::fs::read(&probe).expect("unchanged probe"),
+                b"saved probe"
+            );
+        }
+    }
+
+    #[serial]
+    #[test]
     fn failed_zoning_never_saves_definitions_or_scenes() {
         let video = get_test_video();
         let temp = tempfile::tempdir().expect("temp directory");

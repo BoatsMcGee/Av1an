@@ -46,7 +46,6 @@ use nom::{
     multi::{many0, many1},
     sequence::{delimited, preceded, terminated},
 };
-use serde::Deserialize;
 
 use crate::{
     utils::parameter_parser::EncoderParamsParser,
@@ -104,22 +103,14 @@ pub fn load_zones(path: &Path) -> Result<Vec<Zone>> {
     }
 }
 
-/// The shapes a JSON zone file can take.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ZoneDocument {
-    /// `{ "zones": [ ... ] }`, as in `condor.json`.
-    Config(ZonerConfig),
-    /// A bare array of zones.
-    List(Vec<Zone>),
-}
-
 fn from_json(contents: &str, path: &Path) -> Result<Vec<Zone>> {
-    match serde_json::from_str::<ZoneDocument>(contents) {
-        Ok(ZoneDocument::Config(config)) => Ok(config.zones),
-        Ok(ZoneDocument::List(zones)) => Ok(zones),
-        Err(error) => bail!("failed to read zones from {}: {error}", path.display()),
-    }
+    // Dispatch before deserialization so untagged matching cannot hide the bad key.
+    let zones = if contents.trim_start().starts_with('[') {
+        serde_json::from_str::<Vec<Zone>>(contents)
+    } else {
+        serde_json::from_str::<ZonerConfig>(contents).map(|config| config.zones)
+    };
+    zones.with_context(|| format!("failed to read zones from {}", path.display()))
 }
 
 fn from_json_lines(contents: &str, path: &Path) -> Result<Vec<Zone>> {
@@ -867,6 +858,79 @@ mod tests {
         assert_eq!(zones.len(), 1);
         assert_eq!(zones[0].end_frame, Some(200));
         assert_eq!(zones[0].encoder, None);
+    }
+
+    #[test]
+    fn z03_load_rejects_unknown_json_keys_with_file_and_cause() {
+        let directory = tempfile::tempdir().expect("a temp directory");
+        let path = directory.path().join("typo.json");
+        for (contents, key) in [
+            (r#"{"zone": [{"end_frame": 200}]}"#, "zone"),
+            (
+                r#"{"zones": [{"end_frame": 200}], "unexpected": []}"#,
+                "unexpected",
+            ),
+        ] {
+            write(&path, contents);
+            let error = load_zones(&path).expect_err("unknown top-level keys must not be ignored");
+            let message = format!("{error:#}");
+            assert!(message.contains("typo.json"), "{message}");
+            assert!(
+                message.contains(&format!("unknown field `{key}`")),
+                "{message}"
+            );
+            assert!(error.downcast_ref::<serde_json::Error>().is_some());
+            assert!(serde_json::from_str::<ZonerConfig>(contents).is_err());
+        }
+    }
+
+    #[test]
+    fn z03_parse_rejects_bad_json_after_valid_inline_zone() {
+        let directory = tempfile::tempdir().expect("a temp directory");
+        let path = directory.path().join("typo.json");
+        write(&path, r#"{"zone": [{"end_frame": 200}]}"#);
+        let error = parse_zones(&["0 100 x265".to_owned(), path.display().to_string()])
+            .expect_err("a valid earlier zone must not mask a bad file");
+        let message = format!("{error:#}");
+        assert!(message.contains("typo.json"), "{message}");
+        assert!(message.contains("unknown field `zone`"), "{message}");
+    }
+
+    #[test]
+    fn z03_json_keeps_empty_shapes_optional_fields_and_serde_errors() {
+        let directory = tempfile::tempdir().expect("a temp directory");
+        let path = directory.path().join("zones.json");
+        for contents in ["{}", r#"{"zones": []}"#, "[]"] {
+            write(&path, contents);
+            assert!(load_zones(&path).expect("empty zones are valid").is_empty());
+            assert!(parse_zones(&[path.display().to_string()]).expect("empty file").is_empty());
+        }
+        assert!(
+            serde_json::from_str::<ZonerConfig>("{}")
+                .expect("default config")
+                .zones
+                .is_empty()
+        );
+        for (contents, end_frame) in [
+            (r#"{"zones": [{}]}"#, None),
+            ("[{}]", None),
+            (r#"{"zones": [{"end_frame": 200}]}"#, Some(200)),
+            (r#"[{"end_frame": 200}]"#, Some(200)),
+        ] {
+            write(&path, contents);
+            let zones = load_zones(&path).expect("optional fields keep their defaults");
+            assert_eq!(zones.len(), 1);
+            assert_eq!(zones[0].start_frame, None);
+            assert_eq!(zones[0].maximum_frames, None);
+            assert_eq!(zones[0].encoder, None);
+            assert_eq!(zones[0].end_frame, end_frame);
+        }
+        for contents in ["{", "null", "true", r#"{"zones": false}"#, "[false]"] {
+            write(&path, contents);
+            let error = load_zones(&path).expect_err("invalid JSON or shapes must fail");
+            assert!(format!("{error:#}").contains("zones.json"));
+            assert!(error.downcast_ref::<serde_json::Error>().is_some());
+        }
     }
 
     #[test]

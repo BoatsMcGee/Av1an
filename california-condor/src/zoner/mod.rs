@@ -57,7 +57,9 @@ pub static DETAILS: SequenceDetails = SequenceDetails {
 };
 
 /// `condor.sequence_config.zoner` in `condor.json`.
+/// Unknown keys are rejected; an omitted `zones` list defaults to empty.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ZonerConfig {
     /// The overrides, applied in start-frame order.
     #[serde(default)]
