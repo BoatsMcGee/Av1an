@@ -122,6 +122,7 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ProbeEncoderTransition {
+    /// Raw scene settings, so removing a probe override restores inheritance.
     pub before: Encoder,
     pub after: Encoder,
 }

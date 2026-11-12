@@ -297,21 +297,27 @@ impl Admission {
 }
 
 #[inline]
+pub(crate) fn probe_encoder_base<Data: TargetQualityDataHandler>(
+    scene: &Scene<Data>,
+) -> Result<&crate::models::encoder::Encoder> {
+    if let Some(transition) = &scene.sequence_data.get_target_quality()?.speed_transition {
+        let mut actual = scene.encoder.clone();
+        let mut after = transition.after.clone();
+        actual.set_quantizer(0.0);
+        after.set_quantizer(0.0);
+        if actual == after {
+            return Ok(&transition.before);
+        }
+    }
+    Ok(&scene.encoder)
+}
+
+#[inline]
 pub fn probe_encoder<Data: TargetQualityDataHandler>(
     scene: &Scene<Data>,
     config: &TargetQualityConfig,
 ) -> Result<crate::models::encoder::Encoder> {
-    let current = config.probe_encoder(&scene.encoder);
-    if let Some(transition) = &scene.sequence_data.get_target_quality()?.speed_transition {
-        let mut actual = current.clone();
-        let mut after = config.probe_encoder(&transition.after);
-        actual.set_quantizer(0.0);
-        after.set_quantizer(0.0);
-        if actual == after {
-            return Ok(config.probe_encoder(&transition.before));
-        }
-    }
-    Ok(current)
+    Ok(config.probe_encoder(probe_encoder_base(scene)?))
 }
 
 impl Admission {

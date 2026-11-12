@@ -20,6 +20,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn c14_r1_tq_speed_scaler_parallel_and_cli_resume() {
+        tq_speed_scaler_pipeline(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn c14_r2_reset_explicit_probe_options_after_speed_scaling_refuses() {
+        tq_speed_scaler_pipeline(true);
+    }
+
+    #[cfg(unix)]
+    fn tq_speed_scaler_pipeline(explicit_probe_options: bool) {
         use andean_condor::{
             core::sequence::{
                 Sequence, parallel_encoder::ParallelEncoder, speed_scaler::SpeedScaler,
@@ -100,7 +111,19 @@ mod tests {
             ..Default::default()
         });
         config.condor.sequence_config.speed_scaler.speed_quantizers = vec![(9, 0.0), (9, 51.0)];
-        assert!(
+        if explicit_probe_options {
+            let mut parameters = config.condor.encoder.parameters().clone();
+            parameters.insert("preset".into(), CLIParameter::new_string("--", "=", "slow"));
+            config
+                .condor
+                .sequence_config
+                .target_quality
+                .as_mut()
+                .expect("TQ")
+                .probing
+                .encoder_options = Some(parameters);
+        }
+        assert_eq!(
             config
                 .condor
                 .sequence_config
@@ -109,7 +132,9 @@ mod tests {
                 .expect("TQ")
                 .probing
                 .encoder_options
-                .is_none()
+                .is_some(),
+            explicit_probe_options,
+            "the original pipeline control inherits probe options"
         );
         let scenes = &config.condor.sequence_config.parallel_encoder.scenes_directory;
         std::fs::create_dir_all(scenes.join("Target Quality/1/Scene Concatenator"))
@@ -130,6 +155,23 @@ mod tests {
             .execute_cancel(&mut job, tx, Default::default())
             .expect("real TQ");
         let measured = job.scenes[0].sequence_data.target_quality.passes.clone();
+        let raw_encoder = job.scenes[0].encoder.clone();
+        let measured_encoder: Encoder = serde_json::from_value(
+            measured[0].provenance.as_ref().expect("probe certificate").context["encoder"].clone(),
+        )
+        .expect("stamped encoder");
+        assert_eq!(
+            raw_encoder.parameters()["preset"].to_string_value(),
+            "medium"
+        );
+        assert_eq!(
+            measured_encoder.parameters()["preset"].to_string_value(),
+            if explicit_probe_options {
+                "slow"
+            } else {
+                "medium"
+            }
+        );
         let before = serde_json::to_vec(&job.scenes).expect("before failed callback");
         let save = std::mem::replace(
             &mut job.save_callback,
@@ -150,6 +192,36 @@ mod tests {
             job.scenes[0].encoder.parameters()["preset"].to_string_value(),
             "ultrafast"
         );
+        if explicit_probe_options {
+            // Both reruns must carry the original raw base, even across a q-only
+            // downstream adjustment and a changed SpeedScaler preset.
+            let calls = std::fs::read(temp.path().join("calls")).expect("probe calls");
+            job.scenes[0].encoder.set_quantizer(21.0);
+            for speed in [8, 9] {
+                job.sequence_config.speed_scaler.speed_quantizers =
+                    vec![(speed, 0.0), (speed, 51.0)];
+                let (tx, _rx) = std::sync::mpsc::channel();
+                SpeedScaler::default()
+                    .execute_cancel(&mut job, tx, Default::default())
+                    .expect("legitimate repeated speed transition");
+                Configuration::load(&file)
+                    .expect("saved")
+                    .expect("job")
+                    .admit_results()
+                    .expect("unchanged Some probe options remain eligible");
+            }
+            let tq = job.sequence_config.target_quality.as_mut().expect("TQ");
+            tq.maximum_probes = 2;
+            *tq.metric.target_range_mut() = (-999.0, 999.0);
+            let (tx, _rx) = std::sync::mpsc::channel();
+            TargetQuality::default()
+                .execute_cancel(&mut job, tx, Default::default())
+                .expect("target/budget reuse under unchanged Some options");
+            assert_eq!(
+                std::fs::read(temp.path().join("calls")).expect("no reprobe"),
+                calls
+            );
+        }
         let (tx, _rx) = std::sync::mpsc::channel();
         ParallelEncoder::default().execute_cancel(&mut job,tx,Default::default()).expect("H1: first TQ -> SpeedScaler -> PE must accept certified probe input and actual final preset");
         let saved = Configuration::load(&file).expect("saved model").expect("job");
@@ -169,6 +241,80 @@ mod tests {
                 .expect("retained raw history"),
             serde_json::to_value(&measured).expect("measured history")
         );
+        if explicit_probe_options {
+            let chunk =
+                saved.condor.sequence_config.parallel_encoder.scenes_directory.join("00000.264");
+            let chunk_bytes = std::fs::read(&chunk).expect("certified chunk");
+            condor_cmd(&temp).args(["target-quality", "reset", "params"]).assert().success();
+            let reset = load(&file);
+            assert!(
+                reset
+                    .condor
+                    .sequence_config
+                    .target_quality
+                    .as_ref()
+                    .expect("TQ")
+                    .probing
+                    .encoder_options
+                    .is_none()
+            );
+            assert_eq!(
+                serde_json::to_value(&reset.condor.scenes).expect("reset preserves results"),
+                serde_json::to_value(&saved.condor.scenes).expect("before explicit reset")
+            );
+            let json = std::fs::read(&file).expect("bytes after explicit reset");
+            let admission = reset.admit_results();
+            let saves = std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed = std::rc::Rc::clone(&saves);
+            let mut resumed = reset
+                .instantiate_condor(Box::new(move |_| {
+                    observed.set(observed.get() + 1);
+                    Ok(())
+                }))
+                .expect("owning direct job");
+            let before = serde_json::to_vec(&resumed.scenes).expect("saved history/q");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let direct =
+                TargetQuality::default().execute_cancel(&mut resumed, tx, Default::default());
+            let cli = condor_cmd(&temp)
+                .args(["encode", "-w", "2"])
+                .output()
+                .expect("actual saved CLI run");
+            let diagnostic = String::from_utf8_lossy(&cli.stderr);
+            let transition = &saved.condor.scenes[0]
+                .sequence_data
+                .target_quality
+                .speed_transition
+                .as_ref()
+                .expect("transition")
+                .before;
+            assert!(
+                admission.is_err() && direct.is_err() && diagnostic.contains("TQ probe"),
+                "N1: raw preset=medium, explicit P=slow, recorded before={}; reset Some->None must refuse: admission={admission:?}, direct={direct:?}, CLI={diagnostic}",
+                transition.parameters()["preset"].to_string_value()
+            );
+            assert!(format!("{:#}", admission.expect_err("refusal")).contains("TQ probe"));
+            assert!(format!("{:#}", direct.expect_err("refusal")).contains("TQ probe"));
+            assert_eq!(
+                transition, &raw_encoder,
+                "the persisted base is raw, not P and not the first scaled preset"
+            );
+            assert_eq!(std::fs::read(&file).expect("no handler resave"), json);
+            assert_eq!(
+                std::fs::read(&chunk).expect("no chunk rewrite"),
+                chunk_bytes
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join("calls")).expect("no native work"),
+                calls
+            );
+            assert_eq!(
+                serde_json::to_vec(&resumed.scenes).expect("unchanged history/q"),
+                before
+            );
+            assert_eq!(saves.get(), 0);
+            assert!(rx.try_iter().next().is_none());
+        }
         for edit in ["preset", "probe-options", "encoder"] {
             let mut edited = saved.clone();
             match edit {
@@ -197,9 +343,16 @@ mod tests {
             let error = edited
                 .admit_results()
                 .expect_err("only the owning speed transition preserves probe eligibility");
+            // An explicit probe preset makes a final-only preset edit a chunk
+            // change; inherited probe options must still refuse at TQ itself.
+            let owner = if explicit_probe_options && edit == "preset" {
+                "encoding"
+            } else {
+                "TQ probe"
+            };
             assert!(
-                format!("{error:#}").contains("TQ probe"),
-                "{edit}: probe invalidation, not merely a later chunk mismatch: {error:#}"
+                format!("{error:#}").contains(owner),
+                "{edit}: expected {owner} invalidation: {error:#}"
             );
         }
     }

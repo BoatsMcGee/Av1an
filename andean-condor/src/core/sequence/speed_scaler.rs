@@ -133,10 +133,10 @@ where
         let mut staged = condor.scenes.clone();
         for (index, encoder) in edits {
             let scene = &condor.scenes[index];
-            if let Some(tq) = condor.sequence_config.target_quality()?.as_ref()
+            if condor.sequence_config.target_quality()?.is_some()
                 && !scene.sequence_data.get_target_quality()?.passes.is_empty()
             {
-                let before = provenance::probe_encoder(scene, tq)?;
+                let before = provenance::probe_encoder_base(scene)?.clone();
                 staged[index].sequence_data.get_target_quality_mut()?.speed_transition =
                     Some(ProbeEncoderTransition {
                         before,
