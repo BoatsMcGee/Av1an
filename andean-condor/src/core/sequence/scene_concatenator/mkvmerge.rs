@@ -211,18 +211,13 @@ impl SceneConcatenator {
                 drained??;
                 let group_status = group_status?;
                 let group_stdout_output = group_stdout_output?;
-                if !group_status.success() {
-                    let error = SceneConcatenatorError::MkvmergeFailed {
-                        status: group_status,
-                        stdout: group_stdout_output,
-                        stderr: group_stderr_output
-                            .lock()
-                            .expect("mutex should acquire lock")
-                            .clone(),
-                    };
-                    error!("{}", error);
-                    bail!(error);
-                }
+                check_mux_output(
+                    "group",
+                    group_status,
+                    group_stdout_output,
+                    group_stderr_output.lock().expect("mutex should acquire lock").clone(),
+                    Path::new(&group_output_path),
+                )?;
                 group_partial.complete()?;
             }
 
@@ -292,15 +287,13 @@ impl SceneConcatenator {
         drained??;
         let status = status?;
         let stdout_output = stdout_output?;
-        if !status.success() {
-            let error = SceneConcatenatorError::MkvmergeFailed {
-                status,
-                stdout: stdout_output,
-                stderr: stderr_output.lock().expect("mutex should acquire lock").clone(),
-            };
-            error!("{}", error);
-            bail!(error);
-        }
+        check_mux_output(
+            "final",
+            status,
+            stdout_output,
+            stderr_output.lock().expect("mutex should acquire lock").clone(),
+            output,
+        )?;
 
         partial.complete()
     }
@@ -350,6 +343,44 @@ impl SceneConcatenator {
         let (_, progress) = line.split_at(progress + "Progress: ".len());
         progress.trim().strip_suffix('%')?.trim().parse().ok()
     }
+}
+
+/// mkvmerge alone defines exit 1 as completed with warnings, not a failed mux.
+fn check_mux_output(
+    phase: &str,
+    status: std::process::ExitStatus,
+    stdout: String,
+    stderr: String,
+    output: &Path,
+) -> Result<()> {
+    match status.code() {
+        Some(0) => {},
+        Some(1) => tracing::warn!(
+            phase, %status, %stdout, %stderr,
+            "mkvmerge completed with warnings; review the muxer diagnostics"
+        ),
+        _ => {
+            let error = SceneConcatenatorError::MkvmergeFailed {
+                status,
+                stdout,
+                stderr,
+            };
+            error!("{}", error);
+            bail!(error);
+        },
+    }
+    let metadata = std::fs::symlink_metadata(output).with_context(|| {
+        format!(
+            "mkvmerge {phase} output is missing or inaccessible: {}",
+            output.display()
+        )
+    })?;
+    anyhow::ensure!(
+        metadata.is_file() && metadata.len() > 0,
+        "mkvmerge {phase} output is not a nonempty regular file: {}",
+        output.display()
+    );
+    Ok(())
 }
 
 /// Writes an mkvmerge argument list to disk as the JSON array that mkvmerge

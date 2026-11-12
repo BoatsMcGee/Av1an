@@ -228,24 +228,8 @@ fn x01_native_known_mkv_mp4_keep_ids_selection_and_track_options() {
             ])
             .arg(&source));
         let config = serde_json::from_str(r#"{"tracks":{"1":{"type":"audio","copy":false},"2":{"type":"audio","language":"jpn","name":"selected track"}}}"#).expect("settings");
-        let result = mux(dir.path(), &source, &chunks(dir.path()), Some(&config));
-        if extension == "mp4" && result.is_err() {
-            // X02 owns final exit-1 policy. Native v103 warns about the excluded
-            // valid ID 1; the produced track selection must still remain correct.
-            let error = result.expect_err("native warning");
-            let Some(SceneConcatenatorError::MkvmergeFailed { status, stdout, .. }) =
-                error.downcast_ref()
-            else {
-                panic!("{error:#}")
-            };
-            assert_eq!(status.code(), Some(1));
-            assert!(
-                stdout.contains("ID 1 was requested but not found"),
-                "{stdout}"
-            );
-        } else {
-            result.expect("recognized source retains IDs");
-        }
+        mux(dir.path(), &source, &chunks(dir.path()), Some(&config))
+            .expect("recognized source retains IDs, including warning-only MP4 muxes");
         let data = probe(&dir.path().join("out.mkv"));
         let audio = data["streams"]
             .as_array()

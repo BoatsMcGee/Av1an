@@ -53,6 +53,9 @@ mod mkvmerge;
 mod source;
 #[cfg(test)]
 mod x01_tests;
+#[cfg(test)]
+#[cfg(unix)]
+mod x02_tests;
 
 pub static DETAILS: SequenceDetails = SequenceDetails {
     name: "Scene Concatenator",
