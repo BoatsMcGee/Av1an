@@ -99,8 +99,9 @@ def check_stream(
                         for stage in (1, 2):
                             if stage in released or not Path(root, f"produced-{stage}").exists():
                                 continue
-                            # Read all bytes already delivered before unblocking
-                            # the producer. A live console must not wait for join.
+                            # A live console must deliver before producer release.
+                            # PTY delivery may lag write(): leave it blocked and
+                            # retry under the existing watchdog until all arrive.
                             while select.select([master], [], [], 0)[0]:
                                 terminal_output.extend(os.read(master, 65536))
                             diagnostic_file = headless_stderr if stream == "headless" else redirected
@@ -108,10 +109,22 @@ def check_stream(
                                 bytes(terminal_output) if stream == "stderr"
                                 else os.pread(diagnostic_file.fileno(), 1048576, 0)
                             )
-                            live = stream == "headless" or logging_case == "testmode"
-                            for event in (b"scene-model", b"metric-fallback", b"retry", b"encoder-failure"):
-                                marker = b"T05-" + event + f"-{stage}".encode()
-                                assert (marker in diagnostic) == live, ("active console routing", marker, diagnostic)
+                            live = stream in ("stdout", "headless") or logging_case == "testmode"
+                            markers = [
+                                b"T05-" + event + f"-{stage}".encode()
+                                for event in (b"scene-model", b"metric-fallback", b"retry", b"encoder-failure")
+                            ]
+                            if live:
+                                if not all(marker in diagnostic for marker in markers):
+                                    continue
+                                if logging_case == "overflow" and not all(
+                                    diagnostic.count((f"T05-overflow-{index:02}-" + "🦜" * 3000).encode()) >= stage
+                                    for index in range(20)
+                                ):
+                                    continue
+                                assert b"deferred console diagnostics" not in diagnostic, diagnostic
+                            else:
+                                assert not any(marker in diagnostic for marker in markers), ("active console routing", markers, diagnostic)
                             Path(root, f"release-{stage}").touch()
                             released.add(stage)
                 # Close our slave after child exit so EOF, not a zero-time poll,
@@ -145,6 +158,8 @@ def check_stream(
             terminal_output = bytes(terminal_output)
             evidence = (stream, child.returncode, terminal_output, redirected_output)
             if logging_case:
+                stages = 2 if logging_case in ("normal", "overflow", "headless", "testmode") else 1
+                assert released == set(range(1, stages + 1)), ("console delivery handshake incomplete", released, evidence)
                 assert child.returncode == 0, evidence
                 assert restored_mode == original_mode, evidence
                 headless_stderr.seek(0)
@@ -159,8 +174,9 @@ def check_stream(
                 assert b"\x1b" not in redirected_output, evidence
                 log = Path(root, "events.log").read_text()
                 assert "\x1b" not in log and "T05-final-flush-marker" in log, log
-                stages = 2 if logging_case in ("normal", "overflow", "headless", "testmode") else 1
-                live = stream == "headless" or logging_case == "testmode"
+                live = stream in ("stdout", "headless") or logging_case == "testmode"
+                if live:
+                    assert b"deferred console diagnostics" not in diagnostic, evidence
                 for stage in range(1, stages + 1):
                     for event in ("scene-model", "metric-fallback", "retry", "encoder-failure"):
                         marker = f"T05-{event}-{stage}"
@@ -169,9 +185,10 @@ def check_stream(
                     if stages == 2:
                         for marker in (f"T05-between-stages-{stage}", f"T05-returned-stage-warning-{stage}"):
                             assert diagnostic.count(marker.encode()) == 1, evidence
-                if not live:
+                if stream != "headless" and logging_case != "testmode":
                     expected_screens = 0 if logging_case in ("raw", "startup") else stages
                     assert terminal_output.count(b"\x1b[?1049h") == expected_screens, evidence
+                    assert terminal_output.count(b"\x1b[?1049l") == expected_screens, evidence
                     assert terminal_output.count(b"\x1b[?25h") == expected_screens, evidence
                     if stream == "stderr":
                         for part in terminal_output.split(b"\x1b[?1049h")[1:]:
@@ -188,16 +205,23 @@ def check_stream(
                     if stream == "stderr":
                         assert diagnostic.index(b"\x1b[?25h") < diagnostic.index(b"T05-final-control-warning"), evidence
                 if logging_case == "overflow":
-                    assert diagnostic.count(b"15 dropped, 5 truncated") == 2, evidence
-                    assert diagnostic.count(b"T05-overflow-") == 10, evidence
-                    for line in diagnostic.splitlines():
-                        if b"T05-overflow-" in line:
-                            assert len(line) <= 1050, line
+                    if live:
+                        assert diagnostic.count(b"T05-overflow-") == 40, evidence
+                    else:
+                        assert diagnostic.count(b"15 dropped, 5 truncated") == 2, evidence
+                        assert diagnostic.count(b"T05-overflow-") == 10, evidence
+                        for line in diagnostic.splitlines():
+                            if b"T05-overflow-" in line:
+                                assert len(line) <= 1050, line
                     for index in range(20):
-                        assert log.count(f"T05-overflow-{index:02}-" + "🦜" * 3000) == 2, index
+                        message = f"T05-overflow-{index:02}-" + "🦜" * 3000
+                        assert log.count(message) == 2, index
+                        if live:
+                            assert diagnostic.count(message.encode()) == 2, index
                 if logging_case in ("panic", "startup"):
                     assert diagnostic.count(b"T05-prior-hook") == 1, evidence
-                print(f"{stream}/{logging_case}: live routing, deferred summary, file shutdown flush, owner controls passed")
+                routing = "live/full diagnostics" if live else "paused/bounded diagnostics"
+                print(f"{stream}/{logging_case}: {routing}, delivery handshake, file shutdown flush, owner controls passed")
                 return
             if panic_case:
                 headless_stderr.seek(0)

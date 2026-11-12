@@ -274,7 +274,7 @@ fn init_terminal(
     construct: impl FnOnce(CrosstermBackend<SelectedWriter>) -> io::Result<OwnedTerminal>,
 ) -> Result<StdOutOrErrTerminal> {
     install_panic_hook();
-    if terminal_ops && (stdout().is_terminal() || stderr().is_terminal()) {
+    if terminal_ops && stderr().is_terminal() {
         owner.console_pause = Some(crate::logging::ConsolePause::new());
     }
     let cancelled = Arc::clone(&owner.cancelled);
