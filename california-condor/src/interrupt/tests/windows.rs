@@ -147,8 +147,8 @@ fn supervise(root: &Path) -> Result<()> {
     // SAFETY: This function runs only in the dedicated, E12-owned child. Detach
     // only that child (it may have no console); never touch the libtest parent.
     let _ = unsafe { FreeConsole() };
-    // SAFETY: Allocate a private console for this supervisor and its descendants.
     ensure!(
+        // SAFETY: Allocate a private console for this supervisor and its descendants.
         unsafe { AllocConsole() } != 0,
         "AllocConsole: {}",
         std::io::Error::last_os_error()
@@ -167,10 +167,10 @@ fn supervise(root: &Path) -> Result<()> {
                 child.try_wait()?.is_none(),
                 "listener exited before event {index}"
             );
-            // SAFETY: Only the still-owned listener's known process group in
-            // this private console is targeted. BREAK can be group-targeted;
-            // CTRL_C_EVENT cannot. Never broadcast group zero to a host console.
             ensure!(
+                // SAFETY: Only the still-owned listener's known process group in
+                // this private console is targeted. BREAK can be group-targeted;
+                // CTRL_C_EVENT cannot. Never broadcast group zero to a host console.
                 unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) } != 0,
                 "GenerateConsoleCtrlEvent: {}",
                 std::io::Error::last_os_error()
