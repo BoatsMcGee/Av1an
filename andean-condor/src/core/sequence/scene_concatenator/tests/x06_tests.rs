@@ -258,7 +258,7 @@ fn x06_direct_child() {
     }
 }
 
-fn job(
+pub(super) fn job(
     root: &Path,
     output: &Path,
     count: usize,
@@ -448,7 +448,7 @@ fn decoded(path: &Path) -> Vec<u8> {
 }
 
 #[test]
-fn x06_native_complete_lists_keep_exact_order_count_and_c14() {
+pub(super) fn x06_native_complete_lists_keep_exact_order_count_and_c14() {
     let dir = tempfile::tempdir().expect("native fixture");
     let mut job = job(dir.path(), &dir.path().join("final.ivf"), 3);
     let paths = (0..3).map(|i| dir.path().join(format!("{i:05}.ivf"))).collect::<Vec<_>>();
@@ -485,6 +485,16 @@ fn x06_native_complete_lists_keep_exact_order_count_and_c14() {
     let scratch = SceneConcatenator::scratch_directory(dir.path());
     std::fs::create_dir_all(&scratch).expect("caller scratch");
     std::fs::write(scratch.join("sentinel"), b"caller scratch sentinel").expect("sentinel");
+    std::fs::write(scratch.join("source.mkv"), b"caller fixed scratch sentinel").expect("sentinel");
+    let protected = dir.path().join("source-config.vpy");
+    std::fs::write(&protected, b"declared source config sentinel").expect("source config");
+    job.sequence_config.scene_detector.input = Some(InputModel::VapourSynthScript {
+        source: VapourSynthScriptSource::Path(protected.clone()),
+        variables: Default::default(),
+        index: 0,
+        filters: vec![],
+        stream_concurrently: false,
+    });
     let (tx, _rx) = sync::mpsc::channel();
     // Direct order is caller-owned, including repeated paths, not sorted/deduplicated.
     let requested = [paths[2].clone(), paths[0].clone(), paths[1].clone(), paths[2].clone()];
@@ -532,11 +542,14 @@ fn x06_native_complete_lists_keep_exact_order_count_and_c14() {
             method.extension()
         );
         job.sequence_config.scene_concatenator.method = method;
-        job.output.path = dir.path().join(format!(
+        let final_path = dir.path().join(format!(
             "final-{index}.{}",
             job.sequence_config.scene_concatenator.method.extension()
         ));
+        job.output.path = dir.path().join(format!("unused-fallback-{index}.mkv"));
+        job.sequence_config.scene_concatenator.output = Some(final_path.clone());
         let (tx, rx) = sync::mpsc::channel();
+        let rx = Arc::new(Mutex::new(rx));
         let mut concat = SceneConcatenator::default();
         concat.initialize(&mut job, tx.clone()).expect("complete initialization");
         // Shape admission is not saved-job eligibility. No stamp means no mux or Completed.
@@ -544,26 +557,68 @@ fn x06_native_complete_lists_keep_exact_order_count_and_c14() {
             scene.sequence_data.parallel_encoder.provenance = None;
         }
         assert!(concat.execute_cancel(&mut job, tx.clone(), Cancellation::default()).is_err());
-        assert!(!job.output.path.exists());
+        assert!(!final_path.exists());
         assert!(
-            !rx.try_iter()
+            !rx.lock()
+                .expect("statuses")
+                .try_iter()
                 .any(|s| matches!(s, SequenceStatus::Whole(Status::Completed { .. })))
         );
         crate::core::sequence::c14_tests::current_encoding_fixture(&mut job);
+        // Real native chunks, synthetic current-context C14 stamp, not actual PE producer proof.
+        let old = (index != 0).then(|| std::fs::read(&output).expect("distinct valid old mux"));
+        if let Some(old) = &old {
+            std::fs::write(&final_path, old).expect("old valid output with explicit consent");
+        }
+        let saved_config = serde_json::to_value(&job.sequence_config).expect("config snapshot");
+        let destination = final_path.clone();
+        let statuses = Arc::clone(&rx);
+        let expected = frames.concat();
+        let reached = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&reached);
+        x09_tests::observe_commit(move |stage| {
+            assert_eq!(
+                std::fs::read(&destination).ok(),
+                old,
+                "no final output before commit"
+            );
+            assert_eq!(
+                decoded(stage),
+                expected,
+                "complete native stage before publication"
+            );
+            assert!(
+                !statuses
+                    .lock()
+                    .expect("statuses")
+                    .try_iter()
+                    .any(|s| matches!(s, SequenceStatus::Whole(Status::Completed { .. })))
+            );
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
         concat
             .execute_cancel(&mut job, tx, Cancellation::default())
             .expect("current C14 fixture admitted");
         assert_eq!(
-            decoded(&job.output.path),
+            decoded(&final_path),
             frames.concat(),
             "Sequence order/count"
         );
         assert_eq!(
-            rx.try_iter()
+            rx.lock()
+                .expect("statuses")
+                .try_iter()
                 .filter(|s| matches!(s, SequenceStatus::Whole(Status::Completed { .. })))
                 .count(),
             1
         );
+        assert!(reached.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!job.output.path.exists(), "effective output override");
+        assert_eq!(
+            serde_json::to_value(&job.sequence_config).expect("config"),
+            saved_config
+        );
+        x09_tests::assert_clean(dir.path());
     }
     for (path, bytes) in paths.iter().zip(originals) {
         assert_eq!(std::fs::read(path).expect("input intact"), bytes);
@@ -571,6 +626,14 @@ fn x06_native_complete_lists_keep_exact_order_count_and_c14() {
     assert_eq!(
         std::fs::read(scratch.join("sentinel")).expect("caller scratch intact"),
         b"caller scratch sentinel"
+    );
+    assert_eq!(
+        std::fs::read(scratch.join("source.mkv")).expect("fixed scratch intact"),
+        b"caller fixed scratch sentinel"
+    );
+    assert_eq!(
+        std::fs::read(protected).expect("declared source intact"),
+        b"declared source config sentinel"
     );
     dir.close().expect("native fixture cleanup");
 }

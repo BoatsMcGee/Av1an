@@ -228,8 +228,24 @@ where
             },
         };
 
+        #[cfg(test)]
+        tests::x09_tests::before_commit(&staged_path);
         cancelled.publish(|| {
+            // Final output differs from active chunks: graceful may finish muxing, but
+            // withdraws publication. Check under the transition lock, not before it.
+            cancelled.check()?;
+            // ponytail: shape only, not codec validity; mux/encode validation owns that.
+            let metadata = std::fs::symlink_metadata(&staged_path).with_context(|| {
+                format!("Inspecting final mux output {}", staged_path.display())
+            })?;
+            anyhow::ensure!(
+                metadata.is_file() && metadata.len() > 0,
+                "Final mux output is not a nonempty regular file: {}",
+                staged_path.display()
+            );
             Self::admit_final(condor)?;
+            #[cfg(test)]
+            tests::x09_tests::before_persist(&staged_path, &destination);
             crate::core::output::persist_output(
                 tempfile::TempPath::try_from_path(staged_path)?,
                 &destination,
@@ -373,6 +389,7 @@ pub enum SceneConcatenatorError {
 mod tests {
     use super::*;
     mod x06_tests;
+    pub(super) mod x09_tests;
     use crate::models::{
         input::{Input as InputModel, VapourSynthScriptSource},
         output::Output as OutputModel,
@@ -614,9 +631,6 @@ out=Path(sys.argv[-1])
 out.write_bytes(b'partial native output')
 (r/'partial-written').write_bytes(out.read_bytes())
 if c=='failure': sys.exit(42)
-if c=='publication':
- out.unlink()
- sys.exit(0)
 if c in ('force','graceful'):
  (r/'active').write_text('ready')
  deadline=time.monotonic()+8
@@ -627,6 +641,7 @@ if c=='alias':
  (r/'out.mkv').unlink()
  os.link(r/'protected',r/'out.mkv')
 out.write_bytes((r/'reference.mkv').read_bytes())
+(r/'mux-finished').write_text('admitted mux finished')
 "#,
                     python.display()
                 ),
@@ -728,6 +743,9 @@ out.write_bytes((r/'reference.mkv').read_bytes())
             })
         });
         let mut concatenator = SceneConcatenator::default();
+        if case == "publication" {
+            x09_tests::remove_stage_before_persist();
+        }
         let (tx, rx) = sync::mpsc::channel();
         concatenator.validate(&mut job).expect("final preflight");
         concatenator.initialize(&mut job, tx.clone()).expect("owning scratch setup");
@@ -735,7 +753,8 @@ out.write_bytes((r/'reference.mkv').read_bytes())
         if let Some(controller) = controller {
             controller.join().expect("controller joined");
         }
-        let success = case.starts_with("native") || case == "graceful";
+        // X09 intentionally withdraws final publication, not the admitted graceful mux.
+        let success = case.starts_with("native");
         let completed = rx
             .try_iter()
             .any(|status| matches!(status, SequenceStatus::Whole(Status::Completed { .. })));
@@ -773,10 +792,14 @@ out.write_bytes((r/'reference.mkv').read_bytes())
             }
         } else {
             let error = result.expect_err("failure or late conflict");
-            if case == "force" {
+            if case == "force" || case == "graceful" {
                 assert_eq!(
                     error.downcast_ref::<crate::utils::cancellation::Cancelled>(),
-                    Some(&crate::utils::cancellation::Cancelled::Forced)
+                    Some(&if case == "force" {
+                        crate::utils::cancellation::Cancelled::Forced
+                    } else {
+                        crate::utils::cancellation::Cancelled::Graceful
+                    })
                 );
             }
             if case == "failure" {
@@ -819,6 +842,9 @@ out.write_bytes((r/'reference.mkv').read_bytes())
                 .starts_with(".condor-output-"))
         );
         if !case.starts_with("native") {
+            if case == "force" || case == "graceful" {
+                assert_eq!(root.join("mux-finished").exists(), case == "graceful");
+            }
             assert_eq!(
                 std::fs::read(root.join("partial-written"))
                     .expect("native partial output snapshot"),

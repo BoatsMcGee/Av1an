@@ -186,6 +186,8 @@ impl SceneConcatenator {
                         )
                     })?;
                     remaining -= length as u32;
+                    #[cfg(test)]
+                    super::tests::x09_tests::during_payload(output, cancellation);
                 }
                 // Bounded by the already checked global record count.
                 part_records += 1;
