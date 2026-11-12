@@ -279,20 +279,15 @@ fn ffmpeg_args(
         let input_index = position + 1;
         match tracks {
             None => {
-                // Copy every audio, subtitle, and attachment/data stream
-                // from this input.
+                // Data streams are outside the supported track model.
                 args.push("-map".into());
                 args.push(format!("{input_index}:a?").into());
                 args.push("-map".into());
                 args.push(format!("{input_index}:s?").into());
                 args.push("-map".into());
                 args.push(format!("{input_index}:t?").into());
-                args.push("-map".into());
-                args.push(format!("{input_index}:d?").into());
             },
             Some(tracks) => {
-                args.push("-map".into());
-                args.push(format!("{input_index}:d?").into());
                 let mut ids = tracks.keys().copied().collect::<Vec<_>>();
                 ids.sort_unstable();
                 for id in ids {
@@ -510,12 +505,11 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair == ["-metadata:s:t:0", "comment=A font"]));
     }
 
-    /// An override map cannot name data streams, so they are mapped anyway
-    /// rather than dropped by the more specific mapping.
+    /// Explicit supported tracks are preserved without implicitly copying data.
     #[test]
-    fn ffmpeg_args_with_an_override_map_still_maps_data_streams() {
+    fn x04_ffmpeg_args_override_maps_supported_tracks_without_data() {
         let config: FfmpegConfig = serde_json::from_str(
-            r#"{"tracks":{"1":{"type":"audio"},"2":{"type":"audio","copy":false}}}"#,
+            r#"{"tracks":{"1":{"type":"audio"},"2":{"type":"audio","copy":false},"3":{"type":"subtitle"},"4":{"type":"attachment"}},"extra_inputs":[{"path":"extra.mkv","tracks":{"1":{"type":"audio","copy":false},"2":{"type":"audio"},"3":{"type":"subtitle"},"4":{"type":"attachment"}}}]}"#,
         )
         .expect("config should deserialize");
         let args = strings(ffmpeg_args(
@@ -529,7 +523,13 @@ mod tests {
             !args.iter().any(|arg| arg == "1:2"),
             "the dropped stream is not mapped"
         );
-        assert!(args.windows(2).any(|pair| pair == ["-map", "1:d?"]));
+        let maps = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-map")
+            .map(|pair| pair[1].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(maps, ["0", "1:1", "1:3", "1:4", "2:2", "2:3", "2:4"]);
+        assert!(!args.iter().any(|arg| arg.ends_with(":d?")));
     }
 
     /// Dropping chapters keeps the source's chapters out of the output.
@@ -556,11 +556,12 @@ mod tests {
         assert!(!args.iter().any(|arg| arg == "-map_chapters"));
     }
 
-    /// Copying every stream also carries attachment (`t`) and data (`d`)
-    /// streams, which the audio/subtitle maps alone would drop.
+    /// Copy-all includes supported ancillary types, not unsupported data streams.
     #[test]
-    fn ffmpeg_args_copy_all_maps_attachment_and_data_streams() {
-        let config = FfmpegConfig::default();
+    fn x04_ffmpeg_args_copy_all_maps_supported_tracks_without_data() {
+        let config: FfmpegConfig =
+            serde_json::from_str(r#"{"extra_inputs":[{"path":"extra.mkv"}]}"#)
+                .expect("config should deserialize");
         let args = strings(ffmpeg_args(
             Path::new("concat.txt"),
             Path::new("out.mkv"),
@@ -568,6 +569,189 @@ mod tests {
             Some(&config),
         ));
         assert!(args.windows(2).any(|pair| pair == ["-map", "1:t?"]));
-        assert!(args.windows(2).any(|pair| pair == ["-map", "1:d?"]));
+        let maps = args
+            .windows(2)
+            .filter(|pair| pair[0] == "-map")
+            .map(|pair| pair[1].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(maps, ["0", "1:a?", "1:s?", "1:t?", "2:a?", "2:s?", "2:t?"]);
+        assert!(!args.iter().any(|arg| arg.ends_with(":d?")));
+    }
+
+    #[test]
+    fn x04_native_mov_timecode_is_omitted_and_audio_selection_is_preserved() {
+        fn run(command: &mut Command) -> Vec<u8> {
+            let output = command.output().expect("required native fixture tool");
+            assert!(
+                output.status.success(),
+                "{command:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        }
+        fn probe(path: &Path) -> serde_json::Value {
+            serde_json::from_slice(&run(Command::new("ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-count_frames",
+                    "-show_streams",
+                    "-show_format",
+                    "-of",
+                    "json",
+                ])
+                .arg(path)))
+            .expect("native stream JSON")
+        }
+        let audio_hashes = |path: &Path, index: &str| {
+            let data: serde_json::Value = serde_json::from_slice(&run(Command::new("ffprobe")
+                .args([
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    index,
+                    "-show_packets",
+                    "-show_data_hash",
+                    "sha256",
+                    "-of",
+                    "json",
+                ])
+                .arg(path)))
+            .expect("native packet hashes");
+            let hashes = data["packets"]
+                .as_array()
+                .expect("audio packets")
+                .iter()
+                .map(|packet| packet["data_hash"].as_str().expect("packet hash").to_owned())
+                .collect::<Vec<_>>();
+            assert!(!hashes.is_empty(), "fixture has audio packets");
+            hashes
+        };
+        let dir = tempfile::tempdir().expect("fixture");
+        let source = dir.path().join("source 'timecode'.mov");
+        run(Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=32x16:rate=24",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=880:sample_rate=48000",
+                "-map",
+                "0:v",
+                "-map",
+                "1:a",
+                "-map",
+                "2:a",
+                "-frames:v",
+                "4",
+                "-t",
+                "0.2",
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "pcm_s16le",
+                "-timecode",
+                "01:00:00:00",
+                "-metadata:s:a:0",
+                "language=eng",
+                "-metadata:s:a:1",
+                "language=jpn",
+            ])
+            .arg(&source));
+        let original = std::fs::read(&source).expect("source bytes");
+        let data = probe(&source);
+        let streams = data["streams"].as_array().expect("source streams");
+        assert_eq!(streams.len(), 4);
+        assert_eq!(streams[0]["codec_type"], "video");
+        assert_eq!(streams[1]["codec_type"], "audio");
+        assert_eq!(streams[2]["codec_type"], "audio");
+        assert_eq!(streams[3]["codec_type"], "data");
+        assert_eq!(streams[3]["codec_tag_string"], "tmcd");
+        eprintln!("X04 source: video, eng audio, jpn audio, tmcd data verified by ffprobe");
+        let chunk = dir.path().join("chunk 'video'.mkv");
+        run(Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(&source)
+            .args(["-map", "0:v:0", "-c", "copy"])
+            .arg(&chunk));
+        let scratch = SceneConcatenator::scratch_directory(dir.path());
+        std::fs::create_dir_all(&scratch).expect("scratch");
+        let sentinel = scratch.join("source.mkv");
+        std::fs::write(&sentinel, b"caller scratch sentinel").expect("sentinel");
+        let selected: FfmpegConfig = serde_json::from_str(
+            r#"{"tracks":{"1":{"type":"audio","copy":false},"2":{"type":"audio"}}}"#,
+        )
+        .expect("explicit audio selection");
+        let (tx, _rx) = sync::mpsc::channel();
+        let mut failures = Vec::new();
+        for (case, config, languages) in [
+            ("copy-all", FfmpegConfig::default(), vec!["eng", "jpn"]),
+            ("selected", selected, vec!["jpn"]),
+        ] {
+            let output = dir.path().join(format!("{case}.mkv"));
+            let result = SceneConcatenator::ffmpeg_cancel(
+                dir.path(),
+                &output,
+                std::slice::from_ref(&chunk),
+                Some(&source),
+                4,
+                Ratio::new(24, 1),
+                Some(&config),
+                &tx,
+                &Cancellation::default(),
+            );
+            if let Err(error) = result {
+                failures.push(format!("{case}: {error:#}"));
+                continue;
+            }
+            let data = probe(&output);
+            assert!(data["format"]["format_name"].as_str().expect("format").contains("matroska"));
+            let streams = data["streams"].as_array().expect("output streams");
+            assert_eq!(
+                streams.len(),
+                1 + languages.len(),
+                "{case}: no data or other streams"
+            );
+            let video = streams
+                .iter()
+                .filter(|stream| stream["codec_type"] == "video")
+                .collect::<Vec<_>>();
+            assert_eq!(video.len(), 1, "{case}: encoded video preserved");
+            assert_eq!(video[0]["nb_read_frames"], "4");
+            let audio = streams
+                .iter()
+                .filter(|stream| stream["codec_type"] == "audio")
+                .collect::<Vec<_>>();
+            assert_eq!(audio.len(), languages.len());
+            for (index, (stream, language)) in audio.iter().zip(&languages).enumerate() {
+                assert_eq!(stream["tags"]["language"], *language);
+                let source_index = if *language == "eng" { "a:0" } else { "a:1" };
+                assert_eq!(
+                    audio_hashes(&output, &format!("a:{index}")),
+                    audio_hashes(&source, source_index),
+                    "{case}: selected audio bytes preserved"
+                );
+            }
+            assert!(!streams.iter().any(|stream| stream["codec_type"] == "data"));
+            eprintln!(
+                "X04 {case}: native MKV, four video frames, {languages:?} audio packet hashes preserved, no data"
+            );
+        }
+        assert_eq!(std::fs::read(&source).expect("source intact"), original);
+        assert_eq!(
+            std::fs::read(&sentinel).expect("scratch intact"),
+            b"caller scratch sentinel"
+        );
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+        dir.close().expect("fixture and backend scratch cleaned");
     }
 }
