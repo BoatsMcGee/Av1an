@@ -715,7 +715,11 @@ enum Codec {
 }
 
 /// Byte offset of the IVF header's frame count field.
-const IVF_NFRAME_OFFSET: usize = 22;
+const IVF_NFRAME_OFFSET: usize = 24;
+
+#[cfg(test)]
+#[path = "tests/x07_tests.rs"]
+mod x07_tests;
 
 /// Splits a whole-pass IVF file into one file per task, each with the shared
 /// 32-byte file header. Returns `(bytes, frames)` per task.
@@ -756,17 +760,28 @@ fn split_ivf_cancel(
             &header[..header.len().min(8)]
         );
     }
+    if header[4..8] != [0, 0, 32, 0] {
+        bail!("zone output requires a standard version 0, 32-byte IVF header");
+    }
+    if u32::from_le_bytes(header[16..20].try_into().expect("4 bytes")) == 0
+        || u32::from_le_bytes(header[20..24].try_into().expect("4 bytes")) == 0
+    {
+        bail!("zone output has an invalid zero IVF rate/scale");
+    }
 
     let mut parts: Vec<(PathBuf, u64, usize)> = Vec::with_capacity(tasks.len());
     let mut partials = Vec::new();
     let mut outputs = Vec::new();
+    let mut previous_timestamp = None;
     for task in tasks {
         cancellation.check_forced()?;
         let expected = task.frame_indices.len();
         // Each part declares only its own frames: the whole-pass count would be
         // summed as duration when the scenes are concatenated back together.
-        header[IVF_NFRAME_OFFSET..IVF_NFRAME_OFFSET + 4]
-            .copy_from_slice(&(expected as u32).to_le_bytes());
+        let count = u32::try_from(expected).with_context(|| {
+            format!("scene {} IVF frame count exceeds u32", task.original_index)
+        })?;
+        header[IVF_NFRAME_OFFSET..IVF_NFRAME_OFFSET + 4].copy_from_slice(&count.to_le_bytes());
         let temp = task.output.with_extension(format!("temp.{extension}"));
         outputs.push(super::parallel_encoder::TempOutput::new(temp.clone()));
         partials.push(crate::core::process::InterruptedOutput::new(
@@ -780,6 +795,7 @@ fn split_ivf_cancel(
         output.write_all(&header)?;
         let mut bytes = 32u64;
         let mut frames = 0usize;
+        let mut origin = None;
         while frames < expected {
             cancellation.check_forced()?;
             let mut frame_header = [0u8; 12];
@@ -790,6 +806,22 @@ fn split_ivf_cancel(
                 )
             })?;
             let size = u32::from_le_bytes(frame_header[..4].try_into().expect("4 bytes"));
+            let timestamp = u64::from_le_bytes(frame_header[4..12].try_into().expect("8 bytes"));
+            if previous_timestamp.is_some_and(|previous| timestamp <= previous) {
+                bail!(
+                    "zone IVF timestamp is not increasing at frame {frames} of scene {}",
+                    task.original_index
+                );
+            }
+            previous_timestamp = Some(timestamp);
+            let local =
+                timestamp.checked_sub(*origin.get_or_insert(timestamp)).with_context(|| {
+                    format!(
+                        "zone IVF timestamp underflow in scene {}",
+                        task.original_index
+                    )
+                })?;
+            frame_header[4..12].copy_from_slice(&local.to_le_bytes());
             output.write_all(&frame_header)?;
             let copied = std::io::copy(&mut reader.by_ref().take(size.into()), &mut output)?;
             if copied != u64::from(size) {
@@ -798,7 +830,8 @@ fn split_ivf_cancel(
                     task.original_index
                 );
             }
-            bytes += 12 + u64::from(size);
+            bytes =
+                bytes.checked_add(12 + u64::from(size)).context("zone IVF part size overflow")?;
             frames += 1;
         }
         output.flush()?;
@@ -2047,8 +2080,13 @@ mod tests {
     fn synthetic_ivf(frame_sizes: &[u32]) -> Vec<u8> {
         let mut ivf = vec![0u8; 32];
         ivf[..4].copy_from_slice(b"DKIF");
-        ivf[IVF_NFRAME_OFFSET..IVF_NFRAME_OFFSET + 4]
-            .copy_from_slice(&(frame_sizes.len() as u32).to_le_bytes());
+        ivf[6..8].copy_from_slice(&32u16.to_le_bytes());
+        ivf[8..12].copy_from_slice(b"AV01");
+        ivf[12..14].copy_from_slice(&64u16.to_le_bytes());
+        ivf[14..16].copy_from_slice(&64u16.to_le_bytes());
+        ivf[16..20].copy_from_slice(&24000u32.to_le_bytes());
+        ivf[20..24].copy_from_slice(&1001u32.to_le_bytes());
+        ivf[24..28].copy_from_slice(&(frame_sizes.len() as u32).to_le_bytes());
         for (index, size) in frame_sizes.iter().enumerate() {
             ivf.extend_from_slice(&size.to_le_bytes());
             ivf.extend_from_slice(&(index as u64).to_le_bytes());
@@ -2059,11 +2097,7 @@ mod tests {
 
     /// The frame count a file's IVF header declares.
     fn ivf_nframe(path: &Path) -> u32 {
-        u32::from_le_bytes(
-            fs::read(path).expect("part read")[IVF_NFRAME_OFFSET..][..4]
-                .try_into()
-                .expect("4 bytes"),
-        )
+        u32::from_le_bytes(fs::read(path).expect("part read")[24..28].try_into().expect("4 bytes"))
     }
 
     #[test]
@@ -2110,6 +2144,11 @@ mod tests {
         // Each part starts with the IVF header.
         let head = fs::read(&tasks[1].output).expect("scene1 read");
         assert_eq!(&head[..4], b"DKIF");
+        assert_eq!(
+            &head[20..24],
+            &1001u32.to_le_bytes(),
+            "scale is not a frame count"
+        );
         assert_eq!(head.len() as u64, split[1].0);
         // Each part declares its own frame count, not the whole pass's: the
         // scene concatenator sums these headers to rebuild the duration.

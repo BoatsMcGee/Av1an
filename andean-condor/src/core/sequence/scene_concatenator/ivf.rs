@@ -1,4 +1,34 @@
 use super::*;
+use std::io::{Seek, SeekFrom};
+
+// av-ivf 0.5 discards the header timebase; supplement it without replacing the codec pipeline.
+fn read_header(path: &Path) -> Result<([u8; 32], Ratio<i64>)> {
+    let mut header = [0; 32];
+    File::open(path)
+        .with_context(|| format!("opening IVF {}", path.display()))?
+        .read_exact(&mut header)
+        .with_context(|| format!("reading IVF header {}", path.display()))?;
+    if &header[..4] != b"DKIF" || header[4..8] != [0, 0, 32, 0] {
+        bail!(
+            "{} requires a standard version 0, 32-byte IVF header",
+            path.display()
+        );
+    }
+    let rate = u32::from_le_bytes(header[16..20].try_into().expect("4 bytes"));
+    let scale = u32::from_le_bytes(header[20..24].try_into().expect("4 bytes"));
+    if rate == 0 || scale == 0 {
+        bail!("{} has an invalid zero IVF rate/scale", path.display());
+    }
+    let timebase = Ratio::new(i64::from(scale), i64::from(rate));
+    // The pinned muxer narrows its reduced rational to signed 32-bit components.
+    if i32::try_from(*timebase.numer()).is_err() || i32::try_from(*timebase.denom()).is_err() {
+        bail!(
+            "{} IVF timebase exceeds the muxer's i32 range",
+            path.display()
+        );
+    }
+    Ok((header, timebase))
+}
 
 impl SceneConcatenator {
     /// Scratch writer: the caller must exclusively own `output`; this can overwrite it.
@@ -31,22 +61,35 @@ impl SceneConcatenator {
         let mut partial = InterruptedOutput::new(output, cancellation);
         let output = File::create(output)?;
         let mut muxer = MuxerContext::new(IvfMuxer::new(), Writer::new(output));
+        let headers =
+            scene_paths.iter().map(|path| read_header(path)).collect::<Result<Vec<_>>>()?;
+        let (first_header, timebase) = &headers[0];
+        let frame_count =
+            headers.iter().zip(scene_paths).try_fold(0u32, |sum, ((header, tb), path)| {
+                if header[8..16] != first_header[8..16] || tb != timebase {
+                    bail!(
+                        "{} has an incompatible IVF codec, dimensions or timebase",
+                        path.display()
+                    );
+                }
+                let count = u32::from_le_bytes(header[24..28].try_into().expect("4 bytes"));
+                if count == 0 {
+                    bail!("{} has an empty IVF frame count", path.display());
+                }
+                sum.checked_add(count)
+                    .with_context(|| format!("IVF frame count exceeds u32 at {}", path.display()))
+            })?;
         let global_info = {
             let acc = AccReader::new(std::fs::File::open(&scene_paths[0])?);
             let mut demuxer = DemuxerContext::new(IvfDemuxer::new(), acc);
             demuxer.read_headers()?;
-            // attempt to set the duration correctly
-            let duration = demuxer.info.duration.unwrap_or(0)
-                + scene_paths.iter().skip(1).try_fold(0u64, |sum, file| -> anyhow::Result<_> {
-                    let acc = AccReader::new(std::fs::File::open(file)?);
-                    let mut demuxer = DemuxerContext::new(IvfDemuxer::new(), acc);
-
-                    demuxer.read_headers()?;
-                    Ok(sum + demuxer.info.duration.unwrap_or(0))
-                })?;
-
             let mut info = demuxer.info;
-            info.duration = Some(duration);
+            info.timebase = Some(*timebase);
+            info.duration = Some(u64::from(frame_count));
+            // av-ivf 0.5 reads the count from the first stream, not GlobalInfo.duration.
+            let stream = info.streams.first_mut().context("IVF has no video stream")?;
+            stream.duration = info.duration;
+            stream.timebase = *timebase;
             info
         };
 
@@ -55,7 +98,7 @@ impl SceneConcatenator {
         muxer.write_header()?;
 
         let total_scenes = scene_paths.len();
-        let mut pos_offset: usize = 0;
+        let mut timestamp_offset = 0u64;
         for (index, file) in scene_paths.iter().enumerate() {
             cancellation.check_forced()?;
 
@@ -64,8 +107,15 @@ impl SceneConcatenator {
                 (index + 1) as f64 / total_scenes as f64 * 100.0,
             );
 
-            let mut last_pos: usize = 0;
+            let mut origin = None;
+            let mut previous_timestamp = None;
+            let mut last_local = 0u64;
+            let mut part_frames = 0u32;
             let input = std::fs::File::open(file)?;
+            // Reject timestamps the adapter's u64 -> usize conversion would truncate,
+            // including on 32-bit targets. Only framing is read, not codec payloads.
+            let mut frame_headers = BufReader::new(File::open(file)?);
+            frame_headers.seek(SeekFrom::Start(32))?;
 
             let acc = AccReader::new(input);
 
@@ -81,10 +131,49 @@ impl SceneConcatenator {
                         Event::MoreDataNeeded(sz) => panic!("needed more data: {sz} bytes"),
                         Event::NewStream(s) => panic!("new stream: {s:?}"),
                         Event::NewPacket(mut packet) => {
-                            if let Some(p) = packet.pos.as_mut() {
-                                last_pos = *p;
-                                *p += pos_offset;
+                            let mut frame_header = [0; 12];
+                            frame_headers.read_exact(&mut frame_header).with_context(|| {
+                                format!("reading IVF frame header {}", file.display())
+                            })?;
+                            let size =
+                                u32::from_le_bytes(frame_header[..4].try_into().expect("4 bytes"));
+                            let timestamp = u64::from_le_bytes(
+                                frame_header[4..12].try_into().expect("8 bytes"),
+                            );
+                            frame_headers.seek_relative(i64::from(size))?;
+                            let carrier = usize::try_from(timestamp).with_context(|| {
+                                format!("{} IVF timestamp exceeds usize", file.display())
+                            })?;
+                            // COMPAT: av-ivf 0.5 demuxer/muxer carry IVF timestamps in pos;
+                            // packet.t.pts is unset. pos is NOT a byte offset in this adapter.
+                            if packet.pos != Some(carrier) || packet.data.len() != size as usize {
+                                bail!(
+                                    "{} IVF timestamp/framing does not match the adapter",
+                                    file.display()
+                                );
                             }
+                            if previous_timestamp.is_some_and(|previous| timestamp <= previous) {
+                                bail!(
+                                    "{} IVF timestamp is not increasing at frame {part_frames}",
+                                    file.display()
+                                );
+                            }
+                            previous_timestamp = Some(timestamp);
+                            last_local = timestamp
+                                .checked_sub(*origin.get_or_insert(timestamp))
+                                .with_context(|| {
+                                    format!("{} IVF timestamp underflow", file.display())
+                                })?;
+                            let appended =
+                                last_local.checked_add(timestamp_offset).with_context(|| {
+                                    format!("{} IVF timestamp offset overflow", file.display())
+                                })?;
+                            packet.pos = Some(usize::try_from(appended).with_context(|| {
+                                format!("{} appended IVF timestamp exceeds usize", file.display())
+                            })?);
+                            part_frames = part_frames.checked_add(1).with_context(|| {
+                                format!("{} IVF frame count overflow", file.display())
+                            })?;
 
                             trace!("received packet with pos: {:?}", packet.pos);
                             muxer.write_packet(Arc::new(packet))?;
@@ -104,7 +193,22 @@ impl SceneConcatenator {
                     },
                 }
             }
-            pos_offset += last_pos + 1;
+            let declared =
+                u32::from_le_bytes(headers[index].0[24..28].try_into().expect("4 bytes"));
+            if part_frames != declared {
+                bail!(
+                    "{} IVF frame count mismatch: declared {declared}, read {part_frames}",
+                    file.display()
+                );
+            }
+            if index + 1 < total_scenes {
+                // IVF ticks are scale/rate seconds; retain gaps, with one nominal tick
+                // after the final frame. Do not add any part's absolute origin twice.
+                timestamp_offset = timestamp_offset
+                    .checked_add(last_local)
+                    .and_then(|end| end.checked_add(1))
+                    .with_context(|| format!("{} IVF timestamp end overflow", file.display()))?;
+            }
         }
 
         muxer.write_trailer()?;
