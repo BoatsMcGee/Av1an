@@ -392,8 +392,10 @@ pub fn invalidate_changed_results(
     original: &[Scene<CliSequenceData>],
     current: &mut [Scene<CliSequenceData>],
     config: &CliSequenceConfig,
+    input: &andean_condor::models::input::Input,
     reason: &str,
 ) -> Result<Vec<anyhow::Error>> {
+    prepare_noise(original, current, config, input)?;
     let (blocked, old_claims, warnings) = inspect_changes(original, current, config, reason)?;
     for index in affected_indices(original, current) {
         let Some(scene) = current.get_mut(index) else {
@@ -416,17 +418,126 @@ pub fn invalidate_changed_results(
         data.parallel_encoder.invalidated =
             already_invalid || blocked.contains(&index) || inherited_artifact;
         data.quality_check = Default::default();
-        data.noise_detection = None;
-        data.noise_scaling = None;
     }
     Ok(warnings)
 }
 
+fn prepare_noise(
+    original: &[Scene<CliSequenceData>],
+    current: &mut [Scene<CliSequenceData>],
+    config: &CliSequenceConfig,
+    input: &andean_condor::models::input::Input,
+) -> Result<()> {
+    use andean_condor::models::sequence::noise_scaler::scaling_context;
+    let source = serde_json::to_value(input)?;
+    let detector = serde_json::to_value(&config.noise_detector)?;
+    let retained_noise = current
+        .iter()
+        .enumerate()
+        .map(|(index, scene)| {
+            let source_matches = scene
+                .sequence_data
+                .noise_scaling
+                .as_ref()
+                .or_else(|| {
+                    original
+                        .get(index)
+                        .filter(|before| same_mapping(before, scene))
+                        .or_else(|| original.iter().find(|before| same_mapping(before, scene)))
+                        .and_then(|before| before.sequence_data.noise_scaling.as_ref())
+                })
+                .and_then(|data| data.baseline.as_ref())
+                .is_none_or(|baseline| {
+                    baseline.context.get("input") == Some(&source)
+                        && baseline.context.get("detector") == Some(&detector)
+                });
+            (source_matches
+                && original.iter().any(|before| {
+                    same_mapping(before, scene)
+                        && before.sequence_data.noise_detection
+                            == scene.sequence_data.noise_detection
+                }))
+            .then(|| scene.sequence_data.noise_detection.clone())
+            .flatten()
+        })
+        .collect::<Vec<_>>();
+    let maximum_noise = retained_noise.iter().flatten().map(|data| data.noise).reduce(f64::max);
+    let old_maximum = original
+        .iter()
+        .filter_map(|s| s.sequence_data.noise_detection.as_ref().map(|d| d.noise))
+        .reduce(f64::max);
+    let mut restored = Vec::new();
+    for (index, scene) in current.iter().enumerate() {
+        let before = original
+            .get(index)
+            .filter(|before| same_mapping(before, scene))
+            .or_else(|| original.iter().find(|before| same_mapping(before, scene)));
+        let record = scene
+            .sequence_data
+            .noise_scaling
+            .as_ref()
+            .or_else(|| before.and_then(|s| s.sequence_data.noise_scaling.as_ref()));
+        let Some(record) = record else { continue };
+        // An untouched legacy peer is not newly certified or reset by this edit.
+        if record.baseline.is_none()
+            && old_maximum == maximum_noise
+            && before.is_some_and(|before| {
+                before.encoder == scene.encoder
+                    && before.sequence_data.noise_detection == retained_noise[index]
+                    && before.sequence_data.noise_scaling == scene.sequence_data.noise_scaling
+            })
+        {
+            continue;
+        }
+        let valid = before.is_some()
+            && scene.sequence_data.noise_scaling.is_some()
+            && record
+                .baseline
+                .as_ref()
+                .is_some_and(|baseline| scene.encoder.photon_noise() == Some(&baseline.scaled))
+            && record.baseline.as_ref().is_some_and(|baseline| {
+                scaling_context(
+                    input,
+                    config.noise_detector.as_ref(),
+                    config.noise_scaler.as_ref(),
+                    scene,
+                    retained_noise[index].as_ref(),
+                    maximum_noise,
+                ) == baseline.context
+            });
+        if !valid {
+            let mut encoder = scene.encoder.clone();
+            record.restore(&mut encoder, index)?;
+            restored.push((index, encoder.photon_noise().cloned()));
+        }
+    }
+    // No candidate changes until every required restoration has been proven.
+    for (scene, noise) in current.iter_mut().zip(retained_noise) {
+        scene.sequence_data.noise_detection = noise;
+    }
+    for (index, photon) in restored {
+        current[index].encoder.set_photon_noise(photon);
+        current[index].sequence_data.noise_scaling = None;
+    }
+    Ok(())
+}
+
+fn withdrawn_noise(before: &Scene<CliSequenceData>, current: &[Scene<CliSequenceData>]) -> bool {
+    (before.sequence_data.noise_detection.is_some()
+        && !current.iter().any(|after| {
+            same_mapping(before, after)
+                && before.sequence_data.noise_detection == after.sequence_data.noise_detection
+        }))
+        || (before.sequence_data.noise_scaling.is_some()
+            && !current.iter().any(|after| {
+                same_mapping(before, after)
+                    && before.encoder.photon_noise() == after.encoder.photon_noise()
+                    && before.sequence_data.noise_scaling == after.sequence_data.noise_scaling
+            }))
+}
+
 fn saved_result_kinds(data: &CliSequenceData) -> Vec<&'static str> {
     let mut kinds = Vec::new();
-    if data.noise_detection.is_some() || data.noise_scaling.is_some() {
-        kinds.push("noise results");
-    }
     if !data.target_quality.passes.is_empty()
         || data.target_quality.selection.is_some()
         || data.target_quality.speed_transition.is_some()
@@ -485,6 +596,9 @@ fn inspect_changes(
         let scene = before.or(after).expect("an existing scene at this index");
         let mut saved_results =
             before.map_or_else(Vec::new, |s| saved_result_kinds(&s.sequence_data));
+        if before.is_some_and(|s| withdrawn_noise(s, current)) {
+            saved_results.push("noise results");
+        }
         if !saved_results.is_empty() {
             old_claims.push(index);
         }
@@ -587,11 +701,20 @@ mod tests {
         }
     }
 
+    fn input() -> andean_condor::models::input::Input {
+        andean_condor::models::input::Input::Video {
+            path: "unused.mkv".into(),
+            import_method: andean_condor::models::input::ImportMethod::FFMS2 {
+                index: None,
+                cache_path: None,
+            },
+            filters: vec![],
+        }
+    }
+
     #[test]
     fn z02_mapping_noise_and_empty_result_reset_controls() {
-        use andean_condor::models::sequence::{
-            noise_detector::NoiseDetectorData, noise_scaler::NoiseScalerData,
-        };
+        use andean_condor::models::sequence::noise_detector::NoiseDetectorData;
         let temp = tempfile::tempdir().expect("fixture");
         let mut config = CliSequenceConfig::default();
         config.parallel_encoder.scenes_directory = temp.path().join("scenes");
@@ -605,14 +728,15 @@ mod tests {
                 luminance: 30.0,
                 created_on: std::time::UNIX_EPOCH,
             });
-            scene.sequence_data.noise_scaling = Some(NoiseScalerData { scaler: 0.5 });
         }
+        original[1].sequence_data.parallel_encoder.bytes = Some(123);
         let mut edited = original.clone();
         edited[1].encoder.set_quantizer(19.0);
         assert_eq!(affected_indices(&original, &edited), vec![1]);
-        invalidate_changed_results(&original, &mut edited, &config, "test").expect("invalidate");
+        invalidate_changed_results(&original, &mut edited, &config, &input(), "test")
+            .expect("invalidate");
         assert!(
-            edited[1].sequence_data.noise_detection.is_none()
+            edited[1].sequence_data.noise_detection.is_some()
                 && edited[1].sequence_data.noise_scaling.is_none()
         );
         assert!(edited[1].sequence_data.parallel_encoder.invalidated);
@@ -623,7 +747,7 @@ mod tests {
         let before_reset = edited.clone();
         edited[1].sequence_data.parallel_encoder = Default::default();
         assert!(
-            invalidate_changed_results(&before_reset, &mut edited, &config, "reset")
+            invalidate_changed_results(&before_reset, &mut edited, &config, &input(), "reset")
                 .expect("reset")
                 .is_empty()
         );
@@ -634,19 +758,22 @@ mod tests {
         let mut shifted = original.clone();
         shifted.remove(1);
         assert_eq!(affected_indices(&original, &shifted), vec![1, 2]);
-        invalidate_changed_results(&original, &mut shifted, &config, "delete").expect("shift");
+        invalidate_changed_results(&original, &mut shifted, &config, &input(), "delete")
+            .expect("shift");
         assert_eq!(
             serde_json::to_value(&shifted[1].sequence_data.scene_detection).expect("mapped"),
             serde_json::to_value(&original[2].sequence_data.scene_detection).expect("range data")
         );
         let mut narrowed = original.clone();
         narrowed[1].end_frame = 239;
-        invalidate_changed_results(&original, &mut narrowed, &config, "range").expect("range");
+        invalidate_changed_results(&original, &mut narrowed, &config, &input(), "range")
+            .expect("range");
         assert!(narrowed[1].sequence_data.scene_detection.transnetv2_scores.is_none());
         let clean = scenes();
         let mut changed = clean.clone();
         changed[1].encoder.set_quantizer(19.0);
-        invalidate_changed_results(&clean, &mut changed, &config, "empty job").expect("empty edit");
+        invalidate_changed_results(&clean, &mut changed, &config, &input(), "empty job")
+            .expect("empty edit");
         assert!(changed.iter().all(|s| !s.sequence_data.parallel_encoder.invalidated));
     }
 
@@ -664,7 +791,8 @@ mod tests {
         .expect("old file");
         let mut shifted = original.clone();
         shifted.insert(1, scene(121, 180));
-        invalidate_changed_results(&original, &mut shifted, &config, "insert").expect("invalidate");
+        invalidate_changed_results(&original, &mut shifted, &config, &input(), "insert")
+            .expect("invalidate");
         assert!(
             shifted[2].sequence_data.parallel_encoder.invalidated,
             "old filename is occupied"
@@ -686,7 +814,8 @@ mod tests {
         original[1].sequence_data.parallel_encoder.bytes = Some(123);
         let mut shifted = original.clone();
         shifted.insert(1, scene(121, 180));
-        invalidate_changed_results(&original, &mut shifted, &config, "insert").expect("invalidate");
+        invalidate_changed_results(&original, &mut shifted, &config, &input(), "insert")
+            .expect("invalidate");
         assert!(shifted[1].sequence_data.parallel_encoder.invalidated);
         assert!(shifted[2].sequence_data.parallel_encoder.invalidated);
         assert!(

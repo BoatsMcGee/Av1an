@@ -9,7 +9,7 @@ use crate::{
     vapoursynth::vapoursynth_filters::VapourSynthFilter,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NoiseDetectorData {
     pub noise: f64,
     pub luminance: f64,

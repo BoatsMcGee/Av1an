@@ -44,10 +44,21 @@ pub(super) fn save_edit(
     before: &[Scene<CliSequenceData>],
 ) -> Result<()> {
     let mut staged = configuration.clone();
+    if let Some(lifecycle) = before.first().and_then(|s| s.sequence_data.zoner.lifecycle.as_ref()) {
+        for scene in &mut staged.condor.scenes {
+            scene.sequence_data.zoner.lifecycle = None;
+        }
+        if let Some(first) = staged.condor.scenes.first_mut() {
+            // Preserve the old applied definitions: relocation must not bless
+            // manual edits as a safe baseline for changed-zone rebasing.
+            first.sequence_data.zoner.lifecycle = Some(lifecycle.clone());
+        }
+    }
     let warnings = invalidate_changed_results(
         before,
         &mut staged.condor.scenes,
         &configuration.condor.sequence_config,
+        &configuration.condor.input,
         "scene edits",
     )?;
     staged.validate_output(false)?;

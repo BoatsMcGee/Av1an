@@ -44,11 +44,16 @@ After validation and application succeed, zones, scenes, and invalidation metada
 
 A failed command or dry-run leaves configuration bytes unchanged. Scenes still take whole overlapping zones: no zone-boundary splitting is introduced. Scenes longer than a zone's `maximum_frames` are split up.
 
+Scene-list edits carry the existing lifecycle onto the new first scene when the
+old first scene is deleted or displaced. They preserve the old applied definitions,
+so unchanged zones still skip without saving, but changed-zone rebasing cannot
+overwrite those manual edits. Resetting the whole list clears its lifecycle.
+
 A merge whose encoder base differs from the scene's leaves that scene unchanged with a warning, rather than put one encoder's parameters on another's command line.
 
 `condor zone` needs scenes to zone: run [detect-scenes](./detect-scenes.md) first, or let [`condor`](./condor.md) run detection before its Zoner step.
 
-Actual changes clear affected probe/selection, encode, quality-check and noise records before saving. Shifted indices count as changes even when a moved range is identical. Where old results or artifacts existed, a persisted barrier blocks encoding even if old files are later absent. Files, source and final output are preserved; there is no automatic cleanup. See [scene invalidation and recovery](scenes.md#invalidation-and-recovery).
+Actual changes clear affected probe/selection, encode and quality-check records before saving. Valid range-mapped noise measurements and proven scaling are retained; withdrawn scaling must restore its exact original PhotonNoise or refuse. Shifted indices count as changes even when a moved range is identical. Invalidated claims/artifacts set a persisted barrier even if old files are later absent. Files, source and final output are preserved; there is no automatic cleanup. See [scene invalidation and recovery](scenes.md#invalidation-and-recovery).
 
 Legacy `zoned: true` without original/applied proof cannot safely skip or restore settings. Manual scene edits (or downstream encoder changes) can also make a later rebase unsafe. These cases preserve edits and refuse: reset/redetect the **whole scene list** in a new/empty work directory, or [start a separate job](clean.md#start-a-separate-job) with a distinct config, empty temp directory and output. Clearing only the old zoning flag is not a safe migration.
 

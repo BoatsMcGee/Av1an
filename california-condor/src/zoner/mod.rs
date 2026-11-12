@@ -244,6 +244,7 @@ impl Sequence<CliSequenceData, CliSequenceConfig> for Zoner {
             &condor.scenes,
             &mut candidate,
             &condor.sequence_config,
+            &condor.input.as_data(),
             "zoning",
         )?);
         let applied = definitions(&candidate);

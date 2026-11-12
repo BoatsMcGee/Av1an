@@ -45,6 +45,315 @@ mod tests {
         configuration
     }
 
+    #[serial]
+    #[test]
+    fn z02_f2_owning_noise_scaler_scene_edit_recovery_never_scales_twice() {
+        let video = get_test_video();
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        let mut config = default_config(
+            &video,
+            &temp.path().join("out.mkv"),
+            &temp.path().join("work"),
+        );
+        config.condor.encoder.set_photon_noise(Some(PhotonNoise {
+            iso: 1003,
+            chroma_iso: Some(503),
+            width: None,
+            height: None,
+            c_y: None,
+            ccb: None,
+            ccr: None,
+        }));
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        for scene in &mut config.condor.scenes {
+            scene.sequence_data.noise_detection = Some(NoiseDetectorData {
+                noise: 0.6,
+                luminance: 0.3,
+                created_on: SystemTime::UNIX_EPOCH,
+            });
+        }
+        config.save(&path).expect("original");
+        condor_cmd(&temp)
+            .args(["zone", "0 121 svt-av1 \"--preset 3\" --iso 801 --chroma-iso 403"])
+            .assert()
+            .success();
+        // Zone edits retain valid range measurements; seed only if exercising the old bug.
+        let mut measured = load(&path);
+        for scene in &mut measured.condor.scenes {
+            scene.sequence_data.noise_detection = Some(NoiseDetectorData {
+                noise: 0.6,
+                luminance: 0.3,
+                created_on: SystemTime::UNIX_EPOCH,
+            });
+            scene.sequence_data.parallel_encoder = Default::default();
+        }
+        measured.save(&path).expect("fixed detector inputs");
+        condor_cmd(&temp)
+            .env("CONDOR_TEST_MODE", "1")
+            .args([
+                "scale-noise",
+                "--threshold",
+                "0.2",
+                "--minimum-scaler",
+                "0.5",
+                "--maximum-scaler",
+                "0.5",
+                "--scale-chroma",
+            ])
+            .assert()
+            .success();
+        let scaled = load(&path);
+        assert_eq!(
+            scaled.condor.scenes[0].encoder.photon_noise().expect("scaled").iso,
+            401
+        );
+        assert_eq!(
+            scaled.condor.scenes[0].encoder.photon_noise().expect("scaled").chroma_iso,
+            Some(202)
+        );
+        let peer = serde_json::to_value(&scaled.condor.scenes[1]).expect("peer");
+        for (edit, range_change) in [
+            (vec!["scenes", "0", "set", "params", "crf=19"], false),
+            (vec!["scenes", "0", "set", "end", "100"], true),
+        ] {
+            scaled.save(&path).expect("restore actually scaled job");
+            condor_cmd(&temp).args(edit).assert().success();
+            let edited = load(&path);
+            if range_change {
+                assert_eq!(
+                    edited.condor.scenes[0]
+                        .encoder
+                        .photon_noise()
+                        .expect("original ISO restored")
+                        .iso,
+                    801
+                );
+                assert!(edited.condor.scenes[0].sequence_data.noise_detection.is_none());
+            }
+            // Controlled same-job recovery uses explicit records and no encoder reset.
+            condor_cmd(&temp)
+                .args(["scenes", "0", "reset", "parallel-encoder"])
+                .assert()
+                .success();
+            let mut recovered = load(&path);
+            recovered.condor.scenes[0].sequence_data.noise_detection = Some(NoiseDetectorData {
+                noise: 0.6,
+                luminance: 0.3,
+                created_on: SystemTime::UNIX_EPOCH,
+            });
+            recovered.save(&path).expect("measurement for retained/new range");
+            condor_cmd(&temp)
+                .env("CONDOR_TEST_MODE", "1")
+                .arg("scale-noise")
+                .assert()
+                .success();
+            let resumed = load(&path);
+            assert_eq!(
+                resumed.condor.scenes[0].encoder.photon_noise().expect("not scaled twice").iso,
+                401,
+                "an already-scaled ISO must not become 201 after edit/recovery"
+            );
+            assert_eq!(
+                resumed.condor.scenes[0].encoder.photon_noise().expect("chroma").chroma_iso,
+                Some(202)
+            );
+            assert_eq!(
+                resumed.condor.scenes[0].encoder.parameters()["preset"].to_string_value(),
+                "3"
+            );
+            assert_eq!(
+                serde_json::to_value(&resumed.condor.scenes[1]).expect("peer"),
+                peer
+            );
+            if !range_change {
+                assert_eq!(
+                    serde_json::to_value(&edited.condor.scenes[0].sequence_data.noise_detection)
+                        .expect("retained detection"),
+                    serde_json::to_value(&scaled.condor.scenes[0].sequence_data.noise_detection)
+                        .expect("original detection")
+                );
+                assert_eq!(
+                    serde_json::to_value(&edited.condor.scenes[0].sequence_data.noise_scaling)
+                        .expect("retained scaling"),
+                    serde_json::to_value(&scaled.condor.scenes[0].sequence_data.noise_scaling)
+                        .expect("original scaling")
+                );
+                assert!(
+                    !edited.condor.scenes[0].sequence_data.parallel_encoder.invalidated,
+                    "valid noise is not a withdrawn claim"
+                );
+                assert_eq!(
+                    resumed.condor.scenes[0].encoder.parameters()["crf"].to_string_value(),
+                    "19"
+                );
+            }
+        }
+        // Legacy factor-only records cannot prove the original rounded ISO.
+        let mut legacy_json = serde_json::to_value(&scaled).expect("legacy fixture");
+        for scene in legacy_json["condor"]["scenes"].as_array_mut().expect("scenes") {
+            scene["sequence_data"]["noise_scaling"]
+                .as_object_mut()
+                .expect("scaling")
+                .remove("baseline");
+        }
+        let legacy: california_condor::configuration::Configuration =
+            serde_json::from_value(legacy_json).expect("old JSON still parses");
+        for edit in [
+            vec!["scenes", "0", "set", "end", "100"],
+            vec!["scenes", "0", "reset", "noise-scaling"],
+        ] {
+            legacy.save(&path).expect("legacy record");
+            let json = std::fs::read(&path).expect("before refusal");
+            let refused = condor_cmd(&temp).args(edit).assert().failure();
+            assert!(
+                String::from_utf8_lossy(&refused.get_output().stderr)
+                    .contains("original PhotonNoise baseline")
+            );
+            assert_eq!(std::fs::read(&path).expect("legacy preserved"), json);
+        }
+        // A PhotonNoise edit must not ambiguously mix new ISO with scaled chroma.
+        scaled.save(&path).expect("known producer record");
+        let json = std::fs::read(&path).expect("before conflicting edit");
+        condor_cmd(&temp)
+            .args(["scenes", "0", "set", "photon-noise", "803"])
+            .assert()
+            .failure();
+        assert_eq!(std::fs::read(&path).expect("conflict preserved"), json);
+        condor_cmd(&temp)
+            .args(["scenes", "0", "reset", "noise-scaling"])
+            .assert()
+            .success();
+        let reset = load(&path);
+        assert_eq!(
+            reset.condor.scenes[0].encoder.photon_noise().expect("exact original").iso,
+            801
+        );
+        assert_eq!(
+            reset.condor.scenes[0]
+                .encoder
+                .photon_noise()
+                .expect("original chroma")
+                .chroma_iso,
+            Some(403)
+        );
+        assert!(reset.condor.scenes[0].sequence_data.noise_scaling.is_none());
+        assert_eq!(
+            reset.condor.scenes[0].encoder.parameters()["preset"].to_string_value(),
+            "3"
+        );
+        condor_cmd(&temp)
+            .args(["scenes", "0", "set", "photon-noise", "803"])
+            .assert()
+            .success();
+        condor_cmd(&temp)
+            .args(["scenes", "0", "reset", "parallel-encoder"])
+            .assert()
+            .success();
+        condor_cmd(&temp)
+            .env("CONDOR_TEST_MODE", "1")
+            .arg("scale-noise")
+            .assert()
+            .success();
+        assert_eq!(
+            load(&path).condor.scenes[0].encoder.photon_noise().expect("new scale once").iso,
+            402
+        );
+        // Global maximum, calibration and detector/source context are dependencies,
+        // unlike CRF/preset options. Known-invalid scaling must be withdrawn.
+        for dependency in ["maximum", "calibration", "detector"] {
+            let mut changed = scaled.clone();
+            match dependency {
+                "maximum" => {
+                    changed.condor.scenes[1]
+                        .sequence_data
+                        .noise_detection
+                        .as_mut()
+                        .expect("noise")
+                        .noise = 1.0;
+                },
+                "calibration" => {
+                    changed
+                        .condor
+                        .sequence_config
+                        .noise_scaler
+                        .as_mut()
+                        .expect("config")
+                        .maximum_scaler = 0.75;
+                },
+                _ => {
+                    changed.condor.sequence_config.noise_detector = Some(NoiseDetectorConfig {
+                        input: Some(changed.condor.input.clone()),
+                        ..Default::default()
+                    });
+                },
+            }
+            changed.save(&path).expect("dependency edit");
+            let mut direct = changed
+                .instantiate_condor(Box::new(|_| {
+                    anyhow::bail!("changed dependencies must refuse before saving")
+                }))
+                .expect("direct producer");
+            let before = serde_json::to_value(direct.as_data()).expect("before direct refusal");
+            let (tx, rx) = std::sync::mpsc::channel();
+            let error = andean_condor::core::sequence::Sequence::execute(
+                &mut andean_condor::core::sequence::noise_scaler::NoiseScaler::default(),
+                &mut direct,
+                tx,
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .expect_err("known changed dependencies cannot skip as already scaled");
+            assert!(format!("{error:#}").contains("noise scaling dependencies changed"));
+            assert_eq!(
+                serde_json::to_value(direct.as_data()).expect("direct rollback"),
+                before
+            );
+            assert!(rx.try_iter().next().is_none());
+            condor_cmd(&temp)
+                .args(["scenes", "0", "set", "params", "crf=19"])
+                .assert()
+                .success();
+            let withdrawn = load(&path);
+            assert_eq!(
+                withdrawn.condor.scenes[0].encoder.photon_noise().expect("proven original").iso,
+                801,
+                "{dependency}"
+            );
+            assert!(
+                withdrawn.condor.scenes.iter().all(|s| s.sequence_data.noise_scaling.is_none())
+            );
+            assert!(
+                withdrawn
+                    .condor
+                    .scenes
+                    .iter()
+                    .all(|s| s.sequence_data.parallel_encoder.invalidated)
+            );
+            assert_eq!(
+                withdrawn.condor.scenes[0].encoder.parameters()["preset"].to_string_value(),
+                "3"
+            );
+            if dependency == "detector" {
+                assert!(
+                    withdrawn
+                        .condor
+                        .scenes
+                        .iter()
+                        .all(|s| s.sequence_data.noise_detection.is_none())
+                );
+                changed.save(&path).expect("known old source dependency");
+                condor_cmd(&temp)
+                    .args(["scenes", "0", "reset", "noise-scaling"])
+                    .assert()
+                    .success();
+                assert!(
+                    load(&path).condor.scenes[0].sequence_data.noise_detection.is_none(),
+                    "clearing the scaling record must not erase its proof that the measurement source changed"
+                );
+            }
+        }
+    }
+
     #[test]
     fn q12_flags_and_crud_errors_preserve_memory_and_saved_bytes_offline() {
         use california_condor::commands::{

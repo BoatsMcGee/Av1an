@@ -12,8 +12,11 @@ use crate::{
         encoder::Encoder,
         sequence::{
             SequenceConfigHandler, SequenceDataHandler,
-            noise_detector::NoiseDetectorDataHandler,
-            noise_scaler::{NoiseScalerConfigHandler, NoiseScalerData, NoiseScalerDataHandler},
+            noise_detector::{NoiseDetectorConfigHandler, NoiseDetectorDataHandler},
+            noise_scaler::{
+                NoiseScalerBaseline, NoiseScalerConfigHandler, NoiseScalerData,
+                NoiseScalerDataHandler, scaling_context,
+            },
         },
     },
 };
@@ -30,7 +33,7 @@ pub struct NoiseScaler {}
 impl<Data, Config> Sequence<Data, Config> for NoiseScaler
 where
     Data: SequenceDataHandler + NoiseDetectorDataHandler + NoiseScalerDataHandler,
-    Config: SequenceConfigHandler + NoiseScalerConfigHandler,
+    Config: SequenceConfigHandler + NoiseScalerConfigHandler + NoiseDetectorConfigHandler,
 {
     #[inline]
     fn details(&self) -> SequenceDetails {
@@ -99,7 +102,32 @@ where
                 Ok(noise)
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let Some(max_noise_level) = noise_levels.iter().flatten().copied().reduce(f64::max) else {
+        let maximum_noise = noise_levels.iter().flatten().copied().reduce(f64::max);
+        let input = condor.input.as_data();
+        let detector = condor.sequence_config.noise_detector()?.as_ref();
+        for (index, scene) in condor.scenes.iter().enumerate() {
+            if let Some(baseline) = scene
+                .sequence_data
+                .get_noise_scaling()?
+                .as_ref()
+                .and_then(|data| data.baseline.as_ref())
+            {
+                ensure!(
+                    scene.encoder.photon_noise() == Some(&baseline.scaled)
+                        && baseline.context
+                            == scaling_context(
+                                &input,
+                                detector,
+                                Some(config),
+                                scene,
+                                scene.sequence_data.get_noise_detection()?.as_ref(),
+                                maximum_noise
+                            ),
+                    "scene {index} noise scaling dependencies changed; explicitly reset noise-scaling to restore its original PhotonNoise before recomputing, or use a new job"
+                );
+            }
+        }
+        let Some(max_noise_level) = maximum_noise else {
             return Ok(((), warnings));
         };
         // No positive interval means no scaling, not a new NaN/zero/identity measurement.
@@ -139,6 +167,7 @@ where
             let Some(scene_photon_noise) = scene_photon_noise else {
                 continue;
             };
+            let original = scene_photon_noise.clone();
             let Some(noise_level) = noise_levels[index] else {
                 continue;
             };
@@ -179,7 +208,21 @@ where
             *data
                 .get_noise_scaling_mut()
                 .with_context(|| format!("scene {index} noise scaling update"))? =
-                Some(NoiseScalerData { scaler });
+                Some(NoiseScalerData {
+                    scaler,
+                    baseline: Some(NoiseScalerBaseline {
+                        original,
+                        scaled: scene_photon_noise.clone(),
+                        context: scaling_context(
+                            &input,
+                            detector,
+                            Some(config),
+                            scene,
+                            scene.sequence_data.get_noise_detection()?.as_ref(),
+                            maximum_noise,
+                        ),
+                    }),
+                });
             edits.push((index, encoder, data));
         }
 
@@ -344,6 +387,22 @@ mod tests {
         serde_json::to_vec(&condor.scenes).expect("scenes snapshot")
     }
 
+    fn assert_scaled(condor: &TestCondor, original: &[Scene<Data>], expected: &[Scene<Data>]) {
+        let mut actual = condor.scenes.clone();
+        for ((scene, original), expected) in actual.iter_mut().zip(original).zip(expected) {
+            if let Some(baseline) =
+                scene.sequence_data.scaling.as_mut().and_then(|data| data.baseline.take())
+            {
+                assert_eq!(Some(&baseline.original), original.encoder.photon_noise());
+                assert_eq!(Some(&baseline.scaled), expected.encoder.photon_noise());
+            }
+        }
+        assert_eq!(
+            serde_json::to_value(actual).expect("actual calibration"),
+            serde_json::to_value(expected).expect("expected calibration")
+        );
+    }
+
     #[test]
     fn q12_no_interval_preserves_iso_chroma_metadata_without_save() {
         for noises in [[0.2, 0.2], [0.1, 0.15], [0.0, 0.0]] {
@@ -373,6 +432,7 @@ mod tests {
             let scenes = [0.1, 0.2, 0.4, 0.6].map(|n| scene(EncoderBase::AOM, Some(n))).to_vec();
             let (mut condor, saved) = fixture(Some(config), scenes);
             let mut expected = condor.scenes.clone();
+            let original = expected.clone();
             for (s, (iso, chroma, scaler)) in expected.iter_mut().zip([
                 (800, 400, None),
                 (400, 200, Some(0.5)),
@@ -383,13 +443,13 @@ mod tests {
                 photon.iso = iso;
                 photon.chroma_iso = Some(if scale_chroma { chroma } else { 400 });
                 s.encoder.set_photon_noise(Some(photon));
-                s.sequence_data.scaling = scaler.map(|scaler| NoiseScalerData { scaler });
+                s.sequence_data.scaling = scaler.map(|scaler| NoiseScalerData {
+                    scaler,
+                    ..Default::default()
+                });
             }
             run(&mut condor).expect("ordinary scaling");
-            assert_eq!(
-                snapshot(&condor),
-                serde_json::to_vec(&expected).expect("expected")
-            );
+            assert_scaled(&condor, &original, &expected);
             assert_eq!(saved.borrow().as_slice(), &[snapshot(&condor)]);
             run(&mut condor).expect("already scaled repeat");
             assert_eq!(saved.borrow().len(), 1, "no repeated save");
@@ -415,11 +475,15 @@ mod tests {
             );
         }
         scenes[5].encoder.set_photon_noise(None);
-        scenes[6].sequence_data.scaling = Some(NoiseScalerData { scaler: 9.0 });
+        scenes[6].sequence_data.scaling = Some(NoiseScalerData {
+            scaler: 9.0,
+            ..Default::default()
+        });
         let mut photon = scenes[1].encoder.photon_noise().expect("photon").clone();
         photon.chroma_iso = None;
         scenes[1].encoder.set_photon_noise(Some(photon));
         let mut expected = scenes.clone();
+        let original = scenes.clone();
         for (s, (iso, chroma, scaler)) in expected.iter_mut().zip([
             (400, Some(200), 0.5),
             (600, None, 0.75),
@@ -429,21 +493,24 @@ mod tests {
             photon.iso = iso;
             photon.chroma_iso = chroma;
             s.encoder.set_photon_noise(Some(photon));
-            s.sequence_data.scaling = Some(NoiseScalerData { scaler });
+            s.sequence_data.scaling = Some(NoiseScalerData {
+                scaler,
+                ..Default::default()
+            });
         }
         let (mut condor, saved) = fixture(Some(config()), scenes);
         run(&mut condor).expect("mixed encoders");
-        assert_eq!(
-            snapshot(&condor),
-            serde_json::to_vec(&expected).expect("expected")
-        );
+        assert_scaled(&condor, &original, &expected);
         assert_eq!(saved.borrow().as_slice(), &[snapshot(&condor)]);
     }
 
     #[test]
     fn q12_disabled_empty_missing_and_already_done_do_not_save() {
         let mut done = scene(EncoderBase::AOM, Some(0.6));
-        done.sequence_data.scaling = Some(NoiseScalerData { scaler: 1.5 });
+        done.sequence_data.scaling = Some(NoiseScalerData {
+            scaler: 1.5,
+            ..Default::default()
+        });
         for (config, scenes) in [
             (None, vec![scene(EncoderBase::AOM, Some(f64::NAN))]),
             (Some(config()), vec![]),

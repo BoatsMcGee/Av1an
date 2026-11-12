@@ -178,7 +178,7 @@ Known changed definitions rebase automatically from the original scene baseline.
 For unknown legacy state or unsafe manual edits, preserve the job and reset/redetect
 the whole scene list in an empty work directory, or start a separate job.
 
-`frames` is the one key with no default: a frame range is the output of detection, so it can only be changed with `set start`/`set end` or rebuilt with [`condor detect-scenes`](./detect-scenes.md). Resetting scene data never touches the frame range or the encoder.
+`frames` is the one key with no default: a frame range is the output of detection, so it can only be changed with `set start`/`set end` or rebuilt with [`condor detect-scenes`](./detect-scenes.md). Most result resets leave the encoder alone. `reset noise-scaling` instead restores the producer-recorded original PhotonNoise before clearing the scaling record. It refuses legacy records without that proof, or conflicting PhotonNoise edits; it never divides rounded ISO values or resets other encoder options. Reset scaling **before** editing PhotonNoise ISO/chroma/calibration fields.
 
 ## Delete `delete`
 
@@ -228,24 +228,42 @@ Writes report overlaps and stale results:
 - **Staleness** covers everything the change may have invalidated: saved results (noise, target-quality, encode, quality-check) of the touched scenes, and existing index-named encode/probe files on disk. Scenes whose index shifted — because a scene was added or deleted — are reported too.
 
 Range, sub-scene, encoder and index changes clear affected target-quality passes,
-selection/speed transitions, encode timestamps/bytes/provenance, claimed QC and
-noise records before saving. Detection records survive only for a still-valid
-range/sub-scene mapping. Unaffected results are preserved. Result-only resets do
-not count as scene edits; clean jobs with no affected results/files remain runnable.
+selection/speed transitions, encode timestamps/bytes/provenance and claimed QC
+before saving. Detection and noise measurements survive valid range/sub-scene
+mappings, including moved ranges. Known source/detector changes invalidate their
+noise measurements. Noise scaling survives only with matching producer proof for
+PhotonNoise, declared source/detector/scaler settings, measurement and global noise
+maximum. Withdrawing scaling restores its exact original PhotonNoise, preserving
+zone-specific encoder options; unknown or conflicting originals refuse before save.
+An encoder-only edit does not withdraw otherwise-valid noise results. Unaffected
+results are preserved. Result-only resets do not count as scene edits, except that
+restoring an unscaled ISO is an actual encoder change. Clean jobs remain runnable.
 
 `sequence_data.parallel_encoder.invalidated: true` blocks CLI and direct core
 encoding even when old files are absent, because the encoder may retain a derived
 quantizer. Resetting `parallel-encoder` explicitly clears that barrier, **not** the
-physical files or inherited encoder settings. To recover, reset the applicable
-encoder, target-quality, quality-check and parallel-encoder records, select a
-properly empty/new work directory, then rerun current producers. Existing chunks
-without matching current provenance remain refused. There is no automatic deletion
-or cleanup; do not reuse an old work directory merely with a new config filename.
+physical files or inherited encoder settings. The CLI cannot relocate a populated
+scene job using `--temp`. For a job with old probe/encode/quality artifacts or an
+unknown inherited quantizer, [start a separate job](clean.md#start-a-separate-job)
+with a distinct config, empty temp directory and output. Existing chunks without
+matching current provenance remain refused; a new config filename alone does not
+make the old work directory safe. There is no automatic deletion or cleanup.
+
+For an already-empty work directory with only noise results (no inherited TQ
+quantizer or old probe/encode/quality files), known scaling can be reset/restored
+without resetting the whole encoder or losing zone overrides. Make encoder/range
+edits first, reset applicable TQ/QC records, and reset `parallel-encoder` **last**
+before rerunning detection/scaling. A later encoder edit can set the barrier again.
+The direct Rust API can also reset records and select an empty work directory;
+that API control is not a CLI work-directory migration feature.
 
 The safer alternative is to [start a separate job](clean.md#start-a-separate-job)
 with a distinct `--config-file`, empty `--temp` directory and output. Full
 `condor scenes reset` drops the scene list and its zoning lifecycle before
-redetection; it does not remove files. `condor clean` is unavailable. Failed
+redetection; it does not remove files. Deleting/prepending the first scene carries
+existing zoning proof onto the new first scene, without changing its old applied
+definitions: unchanged zones still skip, while unsafe changed-zone rebases refuse.
+`condor clean` is unavailable. Failed
 validation/save leaves original JSON and files unchanged. The generic `WARN`
 described in [Editing saved settings](./config-editing.md) is also reported.
 

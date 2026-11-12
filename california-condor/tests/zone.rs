@@ -279,6 +279,67 @@ mod tests {
 
     #[serial]
     #[test]
+    fn z02_f1_cli_anchor_moves_without_laundering_manual_edits() {
+        use california_condor::zoner::Zoner;
+        let video = get_test_video();
+        let temp = tempfile::tempdir().expect("fixture");
+        let path = temp.path().join("condor.json");
+        let mut config = california_condor::test_helpers::default_config(
+            &video,
+            &temp.path().join("out.mkv"),
+            temp.path(),
+        );
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        config.save(&path).expect("original scenes");
+        condor_cmd(&temp)
+            .args(["zone", "0 240 svt-av1 \"--preset 3\""])
+            .assert()
+            .success();
+        let (zoned, _) = load_configuration(Some(&path)).expect("actual zoning proof");
+        let proof = serde_json::to_value(&zoned.condor.scenes[0].sequence_data.zoner.lifecycle)
+            .expect("proof");
+        for args in [
+            vec!["scenes", "0", "delete"],
+            vec!["scenes", "add", "0", "60", "--prepend"],
+            vec!["scenes", "add", "0", "60"],
+        ] {
+            zoned.save(&path).expect("restore actual proof");
+            condor_cmd(&temp).args(args).assert().success();
+            let json = std::fs::read(&path).expect("edited JSON");
+            condor_cmd(&temp).arg("zone").assert().success();
+            assert_eq!(std::fs::read(&path).expect("no extra save"), json);
+            let (edited, _) = load_configuration(Some(&path)).expect("edited");
+            assert_eq!(
+                serde_json::to_value(&edited.condor.scenes[0].sequence_data.zoner.lifecycle)
+                    .expect("relocated proof"),
+                proof
+            );
+            assert!(
+                edited.condor.scenes.iter().skip(1).all(|s| s
+                    .sequence_data
+                    .zoner
+                    .lifecycle
+                    .is_none())
+            );
+            let mut direct = edited
+                .instantiate_condor(Box::new(|_| {
+                    anyhow::bail!("unchanged definitions must not save")
+                }))
+                .expect("direct");
+            Zoner::run(&mut direct).expect("direct unchanged skip after edit");
+            condor_cmd(&temp).args(["zone", "240 480 replace x264"]).assert().failure();
+            assert_eq!(std::fs::read(&path).expect("unsafe rebase preserved"), json);
+        }
+        condor_cmd(&temp).args(["scenes", "reset"]).assert().success();
+        let (empty, _) = load_configuration(Some(&path)).expect("empty");
+        assert!(empty.condor.scenes.is_empty());
+        condor_cmd(&temp).args(["scenes", "add", "0", "60"]).assert().success();
+        let (fresh, _) = load_configuration(Some(&path)).expect("fresh");
+        assert!(fresh.condor.scenes[0].sequence_data.zoner.lifecycle.is_none());
+    }
+
+    #[serial]
+    #[test]
     fn zones_replace_and_merge_scene_encoders() {
         if !ffmpeg_is_available() {
             return;

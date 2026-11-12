@@ -17,6 +17,24 @@ When the maximum recorded noise across all scenes is at or below `threshold`, sc
 
 `scale_chroma` affects only an existing chroma ISO; `null` stays `null`. Only Photon Noise on AOM, rav1e and SVT-AV1 is scaled; SVT-AV1 with native `film-grain` is excluded, as are already-scaled scenes. Recorded noise must be finite and non-negative even on excluded scenes. Invalid data, non-finite calculations or a rounded ISO outside `u32` return an error before scene changes or a save. Lower the factors if the resulting ISO is too large. See [Scale Noise](../../../commands/scale-noise.md) for safe saved-setting repairs.
 
+New successful scaling records include optional `baseline` in
+`scenes[].sequence_data.noise_scaling`, with exact `original` and `scaled`
+PhotonNoise plus a scoped `context` of declared source, detector/scaler settings,
+range/sub-scenes, measurement and global maximum. This is not a new source-file
+or binary attestation framework. Old factor-only JSON still parses; absence is
+not proof of an invertible original ISO. Unchanged legacy peers are not certified
+or rewritten by an unrelated scene edit.
+
+Scene edits retain valid scaling and range-mapped measurements. If scaling must
+be withdrawn, its original PhotonNoise is restored before publication without
+resetting zone-specific encoder options. Missing proof or conflicting PhotonNoise
+edits refuse and preserve the old job. `condor scenes INDEX reset noise-scaling`
+uses the same restoration before clearing metadata. Reset it before editing ISO,
+chroma or calibration fields; never recover an original by dividing rounded ISO.
+New producer records with changed dependencies refuse direct rescaling until
+explicitly reset. See [scene recovery](../../../commands/scenes.md#invalidation-and-recovery)
+for the distinction between an already-empty same-job workflow and a new CLI job.
+
 Example:
 
 ```json

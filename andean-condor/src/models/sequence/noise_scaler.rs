@@ -3,11 +3,68 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::models::sequence::SequenceConfigHandler;
+use crate::models::{
+    encoder::{Encoder, photon_noise::PhotonNoise},
+    input::Input,
+    scene::Scene,
+    sequence::{
+        SequenceConfigHandler,
+        noise_detector::{NoiseDetectorConfig, NoiseDetectorData},
+    },
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct NoiseScalerData {
     pub scaler: f64,
+    /// Only NoiseScaler's successful publication supplies reversible ISO proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<NoiseScalerBaseline>,
+}
+
+/// Exact PhotonNoise before/after scaling, plus its declared measurement inputs.
+/// No inverse of rounded ISO values can recover this original reliably.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NoiseScalerBaseline {
+    pub original: PhotonNoise,
+    pub scaled: PhotonNoise,
+    pub context: serde_json::Value,
+}
+
+impl NoiseScalerData {
+    /// Withdraw only a proven scaling effect; preserve every other encoder option.
+    #[inline]
+    pub fn restore(&self, encoder: &mut Encoder, index: usize) -> Result<()> {
+        let baseline = self.baseline.as_ref().ok_or_else(|| anyhow::anyhow!(
+            "scene {index} noise scaling has no original PhotonNoise baseline; preserve this job and use a new job with distinct config, empty temp directory and output; resetting a legacy scaling record cannot safely undo rounded ISO values"))?;
+        anyhow::ensure!(
+            encoder
+                .photon_noise()
+                .is_some_and(|photon| photon == &baseline.scaled || photon == &baseline.original),
+            "scene {index} PhotonNoise changed after noise scaling; cannot safely restore its original values. Reset noise-scaling before editing PhotonNoise, or preserve this job and use a new job with distinct config, empty temp directory and output"
+        );
+        encoder.set_photon_noise(Some(baseline.original.clone()));
+        Ok(())
+    }
+}
+
+/// Scoped dependency snapshot for scaling, not a source-file/binary attestation.
+#[inline]
+pub fn scaling_context<Data>(
+    input: &Input,
+    detector: Option<&NoiseDetectorConfig>,
+    config: Option<&NoiseScalerConfig>,
+    scene: &Scene<Data>,
+    noise: Option<&NoiseDetectorData>,
+    maximum_noise: Option<f64>,
+) -> serde_json::Value {
+    let eligible = match &scene.encoder {
+        Encoder::AOM { .. } | Encoder::RAV1E { .. } => true,
+        Encoder::SVTAV1 { options, .. } => !options.contains_key("film-grain"),
+        _ => false,
+    };
+    serde_json::json!({"input": input, "detector": detector, "config": config,
+        "start": scene.start_frame, "end": scene.end_frame, "sub_scenes": scene.sub_scenes,
+        "noise": noise, "maximum_noise": maximum_noise, "eligible": eligible})
 }
 
 pub trait NoiseScalerDataHandler {

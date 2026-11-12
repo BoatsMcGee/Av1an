@@ -22,6 +22,11 @@ Affected derived results are cleared before publication; old claims/files set th
 
 Legacy zoning flags without lifecycle proof refuse. Rebasing also refuses if manual or downstream encoder edits no longer match the last applied scene definitions. Preserve edits and reset/redetect the whole scene list in an empty work directory, or start a distinct job; clearing only the flag cannot recover original settings.
 
+Scene CRUD carries an existing first-scene lifecycle onto the new first scene
+after deletion/prepending, but does not rewrite its `applied` definitions. A full
+list reset clears it. Unchanged definitions continue to skip; changed definitions
+still refuse unsafe rebasing over manual edits.
+
 Example:
 
 ```json
