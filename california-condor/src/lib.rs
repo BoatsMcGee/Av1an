@@ -231,7 +231,7 @@ fn run() -> anyhow::Result<()> {
             },
         )
     };
-    set_logs(&logs)?;
+    let _logging_guard = set_logs(&logs)?;
     let temp = cli.temp;
 
     match cli.command {

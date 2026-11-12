@@ -36,6 +36,13 @@ def check_stream(
         env["T01_PTY_STREAM"] = stream
         env["TERM"] = "xterm-256color"
         panic_case = mode.removeprefix("t04-") if mode.startswith("t04-") else None
+        logging_case = mode.removeprefix("t05-") if mode.startswith("t05-") else None
+        if logging_case:
+            env["T05_CASE"] = logging_case
+            env["T05_ROOT"] = root
+            env.pop("RUST_LOG", None)
+            if logging_case == "testmode":
+                env["CONDOR_TEST_MODE"] = "1"
         if panic_case:
             env["T04_CASE"] = panic_case
             env["T04_ROOT"] = root
@@ -51,6 +58,7 @@ def check_stream(
                      else "apps::tests::t04_cli_child" if panic_case.startswith("cli-")
                      else "apps::tests::t04_panic_child")
                     if panic_case
+                    else "apps::tests::t05_logging_child" if logging_case
                     else {
                         "normal": "apps::tests::t01_pty_child",
                         "t03": "apps::tests::t03_pty_child",
@@ -71,6 +79,7 @@ def check_stream(
             )
             terminal_output = bytearray()
             answered_queries = 0
+            released = set()
             deadline = time.monotonic() + 30
             try:
                 while child.poll() is None:
@@ -86,6 +95,25 @@ def check_stream(
                     while answered_queries < queries:
                         os.write(master, b"\x1b[1;1R")
                         answered_queries += 1
+                    if logging_case:
+                        for stage in (1, 2):
+                            if stage in released or not Path(root, f"produced-{stage}").exists():
+                                continue
+                            # Read all bytes already delivered before unblocking
+                            # the producer. A live console must not wait for join.
+                            while select.select([master], [], [], 0)[0]:
+                                terminal_output.extend(os.read(master, 65536))
+                            diagnostic_file = headless_stderr if stream == "headless" else redirected
+                            diagnostic = (
+                                bytes(terminal_output) if stream == "stderr"
+                                else os.pread(diagnostic_file.fileno(), 1048576, 0)
+                            )
+                            live = stream == "headless" or logging_case == "testmode"
+                            for event in (b"scene-model", b"metric-fallback", b"retry", b"encoder-failure"):
+                                marker = b"T05-" + event + f"-{stage}".encode()
+                                assert (marker in diagnostic) == live, ("active console routing", marker, diagnostic)
+                            Path(root, f"release-{stage}").touch()
+                            released.add(stage)
                 # Close our slave after child exit so EOF, not a zero-time poll,
                 # marks the end of all terminal output.
                 restored_mode = termios.tcgetattr(slave)
@@ -116,6 +144,61 @@ def check_stream(
             redirected_output = redirected.read()
             terminal_output = bytes(terminal_output)
             evidence = (stream, child.returncode, terminal_output, redirected_output)
+            if logging_case:
+                assert child.returncode == 0, evidence
+                assert restored_mode == original_mode, evidence
+                headless_stderr.seek(0)
+                diagnostic = (
+                    headless_stderr.read() if stream == "headless"
+                    else terminal_output if stream == "stderr" else redirected_output
+                )
+                data = terminal_output if stream == "stdout" else redirected_output
+                sentinel = b"T05_BEGIN\nsource-output-sentinel\nT05_END\n"
+                assert data.replace(b"\r\n", b"\n").split(b"T05_BEGIN\n", 1)[1].split(b"T05_END\n", 1)[0] == b"source-output-sentinel\n", evidence
+                assert sentinel in data.replace(b"\r\n", b"\n"), evidence
+                assert b"\x1b" not in redirected_output, evidence
+                log = Path(root, "events.log").read_text()
+                assert "\x1b" not in log and "T05-final-flush-marker" in log, log
+                stages = 2 if logging_case in ("normal", "overflow", "headless", "testmode") else 1
+                live = stream == "headless" or logging_case == "testmode"
+                for stage in range(1, stages + 1):
+                    for event in ("scene-model", "metric-fallback", "retry", "encoder-failure"):
+                        marker = f"T05-{event}-{stage}"
+                        assert log.count(marker) == 1, (marker, log)
+                        assert diagnostic.count(marker.encode()) == (int(live) if event == "scene-model" else 1), evidence
+                    if stages == 2:
+                        for marker in (f"T05-between-stages-{stage}", f"T05-returned-stage-warning-{stage}"):
+                            assert diagnostic.count(marker.encode()) == 1, evidence
+                if not live:
+                    expected_screens = 0 if logging_case in ("raw", "startup") else stages
+                    assert terminal_output.count(b"\x1b[?1049h") == expected_screens, evidence
+                    assert terminal_output.count(b"\x1b[?25h") == expected_screens, evidence
+                    if stream == "stderr":
+                        for part in terminal_output.split(b"\x1b[?1049h")[1:]:
+                            assert b"T05-" not in part.split(b"\x1b[?25h", 1)[0], evidence
+                elif stream == "headless":
+                    assert b"\x1b" not in terminal_output + diagnostic, evidence
+                else:
+                    assert b"\x1b[?1049h" not in terminal_output, evidence
+                    assert b"\x1b[?25h" not in terminal_output, evidence
+                diagnostic.decode("utf-8")  # bounded prefixes cannot split a code point
+                if logging_case in ("construct", "draw", "restore", "panic"):
+                    assert diagnostic.count(b"T05-final-control-warning") == 1, evidence
+                    assert log.count("T05-final-control-warning") == 1, log
+                    if stream == "stderr":
+                        assert diagnostic.index(b"\x1b[?25h") < diagnostic.index(b"T05-final-control-warning"), evidence
+                if logging_case == "overflow":
+                    assert diagnostic.count(b"15 dropped, 5 truncated") == 2, evidence
+                    assert diagnostic.count(b"T05-overflow-") == 10, evidence
+                    for line in diagnostic.splitlines():
+                        if b"T05-overflow-" in line:
+                            assert len(line) <= 1050, line
+                    for index in range(20):
+                        assert log.count(f"T05-overflow-{index:02}-" + "🦜" * 3000) == 2, index
+                if logging_case in ("panic", "startup"):
+                    assert diagnostic.count(b"T05-prior-hook") == 1, evidence
+                print(f"{stream}/{logging_case}: live routing, deferred summary, file shutdown flush, owner controls passed")
+                return
             if panic_case:
                 headless_stderr.seek(0)
                 diagnostic = (
@@ -357,7 +440,17 @@ def check_panics(binary: str) -> None:
     assert not failures, "\n".join(failures)
 
 
-if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] == "t04":
+if __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] == "t05":
+    for selected_stream in ("stderr", "stdout", "headless"):
+        cases = ("headless",) if selected_stream == "headless" else (
+            "normal", "overflow", "raw", "construct", "draw", "restore", "panic", "startup",
+        )
+        if selected_stream == "stderr":
+            cases += ("testmode",)
+        for case in cases:
+            with tempfile.TemporaryDirectory(prefix="t05-") as root:
+                check_stream(sys.argv[1], selected_stream, f"t05-{case}", root)
+elif __name__ == "__main__" and len(sys.argv) > 2 and sys.argv[2] == "t04":
     check_panics(sys.argv[1])
 elif __name__ == "__main__":
     for selected_stream in ("stderr", "stdout"):

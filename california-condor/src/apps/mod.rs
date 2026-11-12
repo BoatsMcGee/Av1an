@@ -134,6 +134,7 @@ impl Drop for StdOutOrErrTerminal {
 struct TerminalOwner {
     writer: SelectedWriter,
     cancelled: Arc<AtomicBool>,
+    console_pause: Option<crate::logging::ConsolePause>,
     raw: bool,
     screen: bool,
     cursor: bool,
@@ -154,6 +155,7 @@ impl TerminalOwner {
         Self {
             writer: SelectedWriter::new(writer, Arc::clone(&cancelled)),
             cancelled,
+            console_pause: None,
             raw: false,
             screen: false,
             cursor: false,
@@ -194,22 +196,25 @@ impl TerminalOwner {
         let active = self.raw || self.screen || self.cursor;
         // Raw ownership is independent of whether a panic already retired the writer.
         let mut result = self.disable_raw();
-        let Some(buffered) = buffered else {
-            return result;
-        };
-        let (mut writer, _) = buffered.into_parts();
-        if std::mem::take(&mut self.screen) {
-            let leave = queue!(writer, LeaveAlternateScreen);
-            result = result.and(leave);
+        if let Some(buffered) = buffered {
+            let (mut writer, _) = buffered.into_parts();
+            if std::mem::take(&mut self.screen) {
+                let leave = queue!(writer, LeaveAlternateScreen);
+                result = result.and(leave);
+            }
+            if std::mem::take(&mut self.cursor) {
+                let finish = finish_restore(&mut writer);
+                result = result.and(finish);
+            } else if active {
+                let flush = writer.flush();
+                result = result.and(flush);
+            }
         }
-        if std::mem::take(&mut self.cursor) {
-            let finish = finish_restore(&mut writer);
-            result = result.and(finish);
-        } else if active {
-            let flush = writer.flush();
-            result = result.and(flush);
-        }
-        self.cancel_on_error(result)
+        let result = self.cancel_on_error(result);
+        // Retire the writer and attempt every final control/flush before any
+        // deferred console event (including the host panic hook) can print.
+        drop(self.console_pause.take());
+        result
     }
 }
 
@@ -264,11 +269,14 @@ impl Drop for TerminalOwner {
 }
 
 fn init_terminal(
-    owner: TerminalOwner,
+    mut owner: TerminalOwner,
     terminal_ops: bool,
     construct: impl FnOnce(CrosstermBackend<SelectedWriter>) -> io::Result<OwnedTerminal>,
 ) -> Result<StdOutOrErrTerminal> {
     install_panic_hook();
+    if terminal_ops && (stdout().is_terminal() || stderr().is_terminal()) {
+        owner.console_pause = Some(crate::logging::ConsolePause::new());
+    }
     let cancelled = Arc::clone(&owner.cancelled);
     let owner = Arc::new(Mutex::new(owner));
     *PANIC_TERMINAL.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&owner);
@@ -835,6 +843,9 @@ mod tests {
             "cancelled"
         }
         fn map_progress(_: SequenceStatus, _: &mut ()) -> bool {
+            if std::env::var_os("T05_ROOT").is_some() {
+                t05_emit();
+            }
             assert!(
                 !std::env::var("T04_CASE").is_ok_and(|case| case == "progress"),
                 "T04-progress-payload"
@@ -848,6 +859,229 @@ mod tests {
             }
             frame.render_widget("T01-final-render", frame.area());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn t05_isolated_logging_lifecycle() {
+        let output = std::process::Command::new("python3")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/src/apps/t01_pty.py"))
+            .arg(std::env::current_exe().unwrap())
+            .arg("t05")
+            .output()
+            .expect("python3 is required for the Unix PTY regression test");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn t05_emit() {
+        static STAGE: AtomicU64 = AtomicU64::new(0);
+        let stage = STAGE.fetch_add(1, Ordering::SeqCst) + 1;
+        tracing::info!(target: "andean_condor::core::sequence::scene_detector", "T05-scene-model-{stage}");
+        tracing::error!(target: "andean_condor::core::sequence::quality_check", "T05-metric-fallback-{stage}");
+        tracing::warn!(target: "andean_condor::core::encoder", "T05-retry-{stage}");
+        tracing::error!(target: "andean_condor::core::encoder", "T05-encoder-failure-{stage}");
+        if std::env::var("T05_CASE").unwrap() == "overflow" {
+            let long = "🦜".repeat(3000);
+            for index in 0..20 {
+                tracing::warn!(target: "andean_condor::core::encoder", "T05-overflow-{index:02}-{long}");
+            }
+        }
+        let root = std::path::PathBuf::from(std::env::var_os("T05_ROOT").unwrap());
+        std::fs::write(root.join(format!("produced-{stage}")), b"ready").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !root.join(format!("release-{stage}")).exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "T05 producer not released"
+            );
+            thread::yield_now();
+        }
+    }
+
+    struct T05FailureWriter {
+        writer: Box<dyn Write + Send>,
+        fail_write: Arc<AtomicBool>,
+        fail_flush: Arc<AtomicBool>,
+    }
+
+    impl Write for T05FailureWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_write.swap(false, Ordering::SeqCst) {
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "T05 draw failure",
+                ));
+            }
+            if bytes.windows(6).any(|part| part == b"\x1b[?25h") {
+                tracing::warn!(target: "california_condor", "T05-final-control-warning");
+            }
+            self.writer.write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.writer.flush()?;
+            if self.fail_flush.swap(false, Ordering::SeqCst) {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "T05 restore failure",
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    // Isolated child only: actual global subscriber and terminal owner, never
+    // a test-only pause switch. Removing owner integration must fail the driver.
+    #[cfg(unix)]
+    #[test]
+    fn t05_logging_child() -> Result<()> {
+        let Ok(case) = std::env::var("T05_CASE") else {
+            return Ok(());
+        };
+        let root = std::path::PathBuf::from(std::env::var_os("T05_ROOT").unwrap());
+        let log = root.join("events.log");
+        println!("T05_BEGIN\nsource-output-sentinel\nT05_END");
+        stdout().flush()?;
+        std::panic::set_hook(Box::new(|_| {
+            assert!(!crossterm::terminal::is_raw_mode_enabled().unwrap());
+            tracing::warn!(target: "california_condor", "T05-prior-hook");
+        }));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+            let _logging_guard = crate::logging::init_logging(
+                tracing_subscriber::filter::LevelFilter::INFO,
+                &log,
+                tracing_subscriber::filter::LevelFilter::DEBUG,
+            )?;
+            if matches!(
+                case.as_str(),
+                "normal" | "overflow" | "headless" | "testmode"
+            ) {
+                for stage in 1..=2 {
+                    let (tx, rx) = mpsc::channel();
+                    tx.send(SequenceStatus::Whole(
+                        andean_condor::core::sequence::Status::Completed { id: "t05".into() },
+                    ))?;
+                    drop(tx);
+                    TestApp::new().run(rx, Arc::new(AtomicBool::new(false)))?;
+                    tracing::info!(target: "california_condor", "T05-between-stages-{stage}");
+                    tracing::warn!(target: "california_condor", "T05-returned-stage-warning-{stage}");
+                }
+            } else {
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let fail_write = Arc::new(AtomicBool::new(false));
+                let fail_flush = Arc::new(AtomicBool::new(false));
+                let mut owner = TerminalOwner::new(
+                    Box::new(T05FailureWriter {
+                        writer: selected_writer(stdout().is_terminal()),
+                        fail_write: Arc::clone(&fail_write),
+                        fail_flush: Arc::clone(&fail_flush),
+                    }),
+                    Arc::clone(&cancelled),
+                );
+                if case == "raw" {
+                    owner.raw_mode = |enabled| {
+                        assert!(enabled);
+                        thread::spawn(t05_emit).join().unwrap();
+                        Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "T05 raw failure",
+                        ))
+                    };
+                }
+                if case == "startup" {
+                    BEFORE_RAW.with_borrow_mut(|slot| {
+                        *slot = Some(Box::new(|| {
+                            assert!(
+                                thread::spawn(|| {
+                                    t05_emit();
+                                    panic!("T05 startup panic");
+                                })
+                                .join()
+                                .is_err()
+                            );
+                        }));
+                    });
+                }
+                let initialized = init_terminal(owner, true, |backend| {
+                    if case == "construct" {
+                        thread::spawn(t05_emit).join().unwrap();
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "T05 construct failure",
+                        ));
+                    }
+                    Terminal::new(backend)
+                });
+                let error = match initialized {
+                    Err(error) => error,
+                    Ok(mut terminal) => {
+                        thread::spawn(t05_emit).join().unwrap();
+                        if case == "panic" {
+                            tracing::debug!(target: "california_condor", "T05-final-flush-marker");
+                            panic!("T05 owner unwind");
+                        }
+                        let mut app = TestApp::new();
+                        if case == "draw" {
+                            fail_write.store(true, Ordering::SeqCst);
+                            let error =
+                                terminal.terminal.draw(|frame| app.render(frame)).unwrap_err();
+                            terminal.cleanup()?;
+                            error.into()
+                        } else {
+                            fail_flush.store(true, Ordering::SeqCst);
+                            app.restore(&mut terminal).unwrap_err()
+                        }
+                    },
+                };
+                let expected = match case.as_str() {
+                    "raw" => io::ErrorKind::PermissionDenied,
+                    "draw" => io::ErrorKind::BrokenPipe,
+                    "startup" => io::ErrorKind::Other,
+                    _ => io::ErrorKind::NotFound,
+                };
+                assert_eq!(error.downcast_ref::<io::Error>().unwrap().kind(), expected);
+                assert!(cancelled.load(Ordering::SeqCst));
+                tracing::warn!(target: "california_condor", "T05-after-error");
+            }
+            // Backlog plus a final marker, checked immediately after this owner
+            // returns. No polling/sleep may hide a missing WorkerGuard drop.
+            for index in 0..1024 {
+                tracing::debug!(target: "california_condor", "T05-shutdown-{index:04}");
+            }
+            tracing::debug!(target: "california_condor", "T05-final-flush-marker");
+            if case == "restore" {
+                anyhow::bail!("T05 early error return");
+            }
+            Ok(())
+        }));
+        if case == "panic" {
+            assert!(outcome.is_err());
+        } else if case == "restore" {
+            assert_eq!(
+                outcome.unwrap().unwrap_err().to_string(),
+                "T05 early error return"
+            );
+        } else {
+            outcome.unwrap()?;
+        }
+        assert!(
+            std::fs::read_to_string(&log)?.contains("T05-final-flush-marker"),
+            "logging owner did not flush"
+        );
+        assert!(
+            crate::logging::init_logging(
+                tracing_subscriber::filter::LevelFilter::INFO,
+                &root.join("rejected.log"),
+                tracing_subscriber::filter::LevelFilter::DEBUG,
+            )
+            .is_err(),
+            "duplicate subscriber setup must return an error"
+        );
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
