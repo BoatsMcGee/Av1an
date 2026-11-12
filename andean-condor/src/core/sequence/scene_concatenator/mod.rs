@@ -184,6 +184,7 @@ where
         let input = pe.input.as_ref().unwrap_or(&root);
         let probe = provenance::probe_input(&root, pe, tq);
         let metric = tq.and_then(|c| c.metric_input.as_ref());
+        let mut admission = provenance::Admission::default();
         for (index, scene) in condor.scenes.iter().enumerate() {
             let config = condor.sequence_config.scene_concatenator()?;
             let path = config.scenes_directory.join(format!(
@@ -191,11 +192,11 @@ where
                 ParallelEncoder::scene_id(index),
                 scene.encoder.output_extension()
             ));
-            provenance::admit_encode(input, probe, metric, scene, tq, &path, index)?;
+            admission.admit_encode(input, probe, metric, scene, tq, &path, index)?;
             super::parallel_encoder::artifact::validate(
                 &path,
                 scene.end_frame - scene.start_frame,
-                pe.validate_frame_count,
+                false, // PE owns decode/count validation; concat checks only identity/nonempty.
                 &cancelled,
             )?;
         }
@@ -612,11 +613,6 @@ mod tests {
             );
             let bin = root.join("bin");
             std::fs::create_dir_all(&bin).expect("bin");
-            std::os::unix::fs::symlink(
-                which::which("ffprobe").expect("required installed ffprobe"),
-                bin.join("ffprobe"),
-            )
-            .expect("isolated artifact validator");
             let script = bin.join("ffmpeg");
             std::fs::write(
                 &script,

@@ -209,11 +209,12 @@ impl Configuration {
         let metric = tq.and_then(|c| c.metric_input.as_ref());
         let input = pe.input.as_ref().unwrap_or(&model.input);
         let qc = model.sequence_config.quality_check.as_ref();
-        let reference = qc.and_then(|c| c.input.as_ref()).unwrap_or(&model.input);
+        let reference = provenance::quality_input(&model.input, pe, qc);
         let output = model.sequence_config.scene_concatenator.effective_output(&model.output.path);
+        let mut admission = provenance::Admission::default();
         for (index, scene) in model.scenes.iter().enumerate() {
-            provenance::admit_target(probe, metric, scene, tq, index)?;
-            provenance::admit_quality(
+            admission.admit_target(probe, metric, scene, tq, index)?;
+            admission.admit_quality(
                 reference,
                 output,
                 scene,
@@ -232,7 +233,7 @@ impl Configuration {
                 || data.completed_on.is_some()
                 || path.symlink_metadata().is_ok()
             {
-                provenance::admit_encode(input, probe, metric, scene, tq, &path, index)?;
+                admission.admit_encode(input, probe, metric, scene, tq, &path, index)?;
             }
         }
         Ok(())

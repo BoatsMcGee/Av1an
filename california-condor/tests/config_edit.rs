@@ -17,6 +17,193 @@ mod tests {
 
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn c14_r1_tq_speed_scaler_parallel_and_cli_resume() {
+        use andean_condor::{
+            core::sequence::{
+                Sequence, parallel_encoder::ParallelEncoder, speed_scaler::SpeedScaler,
+                target_quality::TargetQuality,
+            },
+            models::{
+                encoder::{Encoder, EncoderBase, cli_parameter::CLIParameter},
+                input::ImportMethod,
+                sequence::target_quality::{TargetQualityConfig, types::QualityMetric},
+            },
+        };
+        use california_condor::configuration::Configuration;
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("fixture");
+        let source = temp.path().join("source.mkv");
+        let generated = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=128x128:rate=24",
+                "-frames:v",
+                "2",
+                "-c:v",
+                "ffv1",
+            ])
+            .arg(&source)
+            .output()
+            .expect("installed ffmpeg");
+        assert!(generated.status.success(), "{generated:?}");
+        let video = TestVideo {
+            path: source.clone(),
+            width: 128,
+            height: 128,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: andean_condor::ffmpeg::FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        let mut config = default_config(
+            &video,
+            &temp.path().join("out.mkv"),
+            &temp.path().join("work"),
+        );
+        config.condor.input = Input::Video {
+            path: source,
+            import_method: ImportMethod::FFMS2 {
+                index: None,
+                cache_path: None,
+            },
+            filters: vec![],
+        };
+        let wrapper = temp.path().join("codec");
+        std::fs::write(&wrapper, format!("#!/bin/sh\nfor argument do if [ \"$argument\" = -o ]; then printf 'encode\\n' >> '{}'; break; fi; done\nexec x264 \"$@\"\n",temp.path().join("calls").display())).expect("counter");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755))
+            .expect("executable");
+        config.condor.encoder = Encoder::default_from_base(&EncoderBase::X264, false);
+        config.condor.encoder.set_executable(Some(wrapper));
+        config.condor.encoder.set_quantizer(20.0);
+        config.condor.encoder.parameters_mut().insert(
+            "preset".into(),
+            CLIParameter::new_string("--", "=", "medium"),
+        );
+        config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+        config.condor.sequence_config.target_quality = Some(TargetQualityConfig {
+            maximum_probes: 1,
+            quantizer_range: (20, 20),
+            metric: QualityMetric::VMAF {
+                target_range: (-1000.0, 1000.0),
+                resolution: None,
+                scaler: "bicubic".into(),
+                threads: 0,
+                model: None,
+                features: vec![],
+            },
+            ..Default::default()
+        });
+        config.condor.sequence_config.speed_scaler.speed_quantizers = vec![(9, 0.0), (9, 51.0)];
+        assert!(
+            config
+                .condor
+                .sequence_config
+                .target_quality
+                .as_ref()
+                .expect("TQ")
+                .probing
+                .encoder_options
+                .is_none()
+        );
+        let scenes = &config.condor.sequence_config.parallel_encoder.scenes_directory;
+        std::fs::create_dir_all(scenes.join("Target Quality/1/Scene Concatenator"))
+            .expect("scratch");
+        let file = temp.path().join("condor.json");
+        let original = config.clone();
+        let saved_path = file.clone();
+        let mut job = config
+            .instantiate_condor(Box::new(move |data| {
+                let mut saved = original.clone();
+                saved.condor = data;
+                saved.save(&saved_path)?;
+                Ok(())
+            }))
+            .expect("native job");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        TargetQuality::default()
+            .execute_cancel(&mut job, tx, Default::default())
+            .expect("real TQ");
+        let measured = job.scenes[0].sequence_data.target_quality.passes.clone();
+        let before = serde_json::to_vec(&job.scenes).expect("before failed callback");
+        let save = std::mem::replace(
+            &mut job.save_callback,
+            Box::new(|_| anyhow::bail!("speed save failure")),
+        );
+        let (tx, _rx) = std::sync::mpsc::channel();
+        assert!(SpeedScaler::default().execute_cancel(&mut job, tx, Default::default()).is_err());
+        assert_eq!(
+            serde_json::to_vec(&job.scenes).expect("full rollback"),
+            before
+        );
+        job.save_callback = save;
+        let (tx, _rx) = std::sync::mpsc::channel();
+        SpeedScaler::default()
+            .execute_cancel(&mut job, tx, Default::default())
+            .expect("actual downstream speed transition");
+        assert_eq!(
+            job.scenes[0].encoder.parameters()["preset"].to_string_value(),
+            "ultrafast"
+        );
+        let (tx, _rx) = std::sync::mpsc::channel();
+        ParallelEncoder::default().execute_cancel(&mut job,tx,Default::default()).expect("H1: first TQ -> SpeedScaler -> PE must accept certified probe input and actual final preset");
+        let saved = Configuration::load(&file).expect("saved model").expect("job");
+        saved.admit_results().expect("saved CLI admission after speed scaling");
+        let calls = std::fs::read(temp.path().join("calls")).expect("encode counter");
+        condor_cmd(&temp)
+            .env("CONDOR_TEST_MODE", "1")
+            .args(["encode"])
+            .assert()
+            .success();
+        assert_eq!(
+            std::fs::read(temp.path().join("calls")).expect("no repeat encode"),
+            calls
+        );
+        assert_eq!(
+            serde_json::to_value(&load(&file).condor.scenes[0].sequence_data.target_quality.passes)
+                .expect("retained raw history"),
+            serde_json::to_value(&measured).expect("measured history")
+        );
+        for edit in ["preset", "probe-options", "encoder"] {
+            let mut edited = saved.clone();
+            match edit {
+                "preset" => {
+                    edited.condor.scenes[0]
+                        .encoder
+                        .parameters_mut()
+                        .insert("preset".into(), CLIParameter::new_string("--", "=", "fast"));
+                },
+                "probe-options" => {
+                    edited
+                        .condor
+                        .sequence_config
+                        .target_quality
+                        .as_mut()
+                        .expect("TQ")
+                        .probing
+                        .encoder_options =
+                        Some(CLIParameter::new_strings("--", "=", &[("preset", "fast")]));
+                },
+                _ => {
+                    edited.condor.scenes[0].encoder =
+                        Encoder::default_from_base(&EncoderBase::X265, false);
+                },
+            }
+            let error = edited
+                .admit_results()
+                .expect_err("only the owning speed transition preserves probe eligibility");
+            assert!(
+                format!("{error:#}").contains("TQ probe"),
+                "{edit}: probe invalidation, not merely a later chunk mismatch: {error:#}"
+            );
+        }
+    }
+
     #[test]
     fn c14_cli_legacy_admission_precedes_handler_resave() {
         let temp = tempfile::tempdir().expect("fixture");

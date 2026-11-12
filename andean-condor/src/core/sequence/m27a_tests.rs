@@ -78,12 +78,16 @@ fn c06_qc_output_case(test: &str, root_kind: &str) {
                 sequence_data: DefaultSequenceData::default(),
             })
             .collect::<Vec<_>>();
-        scenes[0].sequence_data.quality_check.quality = QualityPass {
-            scores: vec![17.0, 18.0],
-            started_on: 100,
-            completed_on: 200,
-            ..Default::default()
-        };
+        // This is the fresh/unclaimed missing-output warning control, not a
+        // previously certified result whose measured output disappeared.
+        if root_kind != "missing-override" {
+            scenes[0].sequence_data.quality_check.quality = QualityPass {
+                scores: vec![17.0, 18.0],
+                started_on: 100,
+                completed_on: 200,
+                ..Default::default()
+            };
+        }
         let saved = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let recorded = std::rc::Rc::clone(&saved);
         let mut config = DefaultSequenceConfig {
@@ -117,9 +121,7 @@ fn c06_qc_output_case(test: &str, root_kind: &str) {
                 Ok(())
             }),
         );
-        if root_kind == "missing-override" {
-            job.scenes[0].sequence_data.quality_check.quality = QualityPass::default();
-        } else {
+        if root_kind != "missing-override" {
             super::c14_tests::current_quality_fixture(&mut job);
         }
         let history = serde_json::to_vec(&job.scenes[0]).unwrap();
@@ -465,9 +467,9 @@ fn q05_qc_execute_corrupt_last_scene_does_not_attach_save_or_complete() {
 }
 
 #[test]
-fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
+fn q05_m1_qc_refuses_tampered_history_until_explicit_reset() {
     native_children(
-        "core::sequence::m27a_tests::q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements",
+        "core::sequence::m27a_tests::q05_m1_qc_refuses_tampered_history_until_explicit_reset",
         &[
             ("m27a-f-qc", ""),
             ("m27a-v-qc", ""),
@@ -490,7 +492,7 @@ fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
             let source = y4m_fixture(&[32, 48, 64, 80, 96, 112]);
             let output = y4m_fixture(&[40, 56, 72, 88, 104, 120]);
             let saved = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            let make_condor = |first: Vec<f64>, second: Vec<f64>, statistic, disabled| {
+            let make_condor = |statistic, disabled| {
                 let input = Input::from_video(&InputModel::Video {
                     path: source.path().to_owned(),
                     import_method: ImportMethod::FFMS2 {
@@ -502,25 +504,15 @@ fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
                 .unwrap();
                 let scenes = [(0, 2), (4, 6)]
                     .into_iter()
-                    .zip([first, second])
-                    .map(|((start_frame, end_frame), scores)| {
-                        let mut sequence_data = DefaultSequenceData::default();
-                        sequence_data.quality_check.quality = QualityPass {
-                            scores,
-                            started_on: 100,
-                            completed_on: 200,
-                            ..Default::default()
-                        };
-                        Scene {
-                            start_frame,
-                            end_frame,
-                            sub_scenes: None,
-                            encoder: Default::default(),
-                            sequence_data,
-                        }
+                    .map(|(start_frame, end_frame)| Scene {
+                        start_frame,
+                        end_frame,
+                        sub_scenes: None,
+                        encoder: Default::default(),
+                        sequence_data: DefaultSequenceData::default(),
                     })
                     .collect();
-                let saved = std::rc::Rc::clone(&saved);
+                let recorded = std::rc::Rc::clone(&saved);
                 let mut job = Condor::new(
                     input,
                     Output {
@@ -540,24 +532,33 @@ fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
                         ..Default::default()
                     }),
                     Box::new(move |data| {
-                        saved.borrow_mut().push(serde_json::to_vec(&data.scenes)?);
+                        recorded.borrow_mut().push(serde_json::to_vec(&data.scenes)?);
                         Ok(())
                     }),
                 );
-                super::c14_tests::current_quality_fixture(&mut job);
+                let failure = std::env::var("M15_FAIL").unwrap();
+                // SAFETY: native_children runs this body in a dedicated child;
+                // measurement workers have joined before restoring the setting.
+                unsafe { std::env::set_var("M15_FAIL", "") };
+                let (tx, _rx) = mpsc::channel();
+                QualityCheck::default()
+                    .execute(&mut job, tx, Arc::new(AtomicBool::new(false)))
+                    .expect("real valid QC publication before external tampering");
+                // SAFETY: the dedicated child's measurement workers have joined.
+                unsafe { std::env::set_var("M15_FAIL", failure) };
+                saved.borrow_mut().clear();
                 job
             };
 
-            // Matching counts still claim completion, so corruption must fail before scoring.
-            for scores in [vec![1.0, f64::NAN], vec![1.0, -1.0]] {
-                let mut condor =
-                    make_condor(scores, vec![10.0; 3], ProbeStatistic::Harmonic, Some(true));
+            for scores in [vec![1.0, f64::NAN], vec![1.0, -1.0], vec![10.0], vec![20.0; 3]] {
+                let mut condor = make_condor(ProbeStatistic::Harmonic, Some(true));
+                condor.scenes[0].sequence_data.quality_check.quality.scores = scores;
                 let before = serde_json::to_vec(&condor.scenes).unwrap();
                 let (tx, rx) = mpsc::channel();
                 clear();
                 let error = QualityCheck::default()
                     .execute(&mut condor, tx, Arc::new(AtomicBool::new(false)))
-                    .expect_err("matching-count corrupt history is not eligible for silent reuse");
+                    .expect_err("corrupt certified history requires an explicit reset");
                 assert!(error.is::<MeasurementError>(), "{error:#}");
                 assert!(format!("{error:#}").contains("recorded Quality Check history"));
                 assert!(
@@ -568,8 +569,12 @@ fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
                 assert_eq!(serde_json::to_vec(&condor.scenes).unwrap(), before);
             }
 
-            // Both shorter and longer saved selections are stale, not completed current work.
-            let mut condor = make_condor(vec![10.0], vec![20.0; 3], ProbeStatistic::Mean, None);
+            // An explicit metadata reset, unlike a count mismatch, permits fresh
+            // measurement; a failed fresh batch still attaches no partial result.
+            let mut condor = make_condor(ProbeStatistic::Mean, None);
+            for scene in &mut condor.scenes {
+                scene.sequence_data.quality_check.quality = QualityPass::default();
+            }
             let before = serde_json::to_vec(&condor.scenes).unwrap();
             let (tx, rx) = mpsc::channel();
             clear();
@@ -609,7 +614,7 @@ fn q05_m1_qc_remeasures_stale_counts_without_discarding_failed_replacements() {
                     "failed replacement must not save"
                 );
             } else {
-                let ((), warnings) = result.expect("stale saved counts must be remeasured");
+                let ((), warnings) = result.expect("explicitly reset records can be remeasured");
                 assert!(warnings.is_empty());
                 // The ABI double sees RGB on Fmetrics and YUV on Vship; this test
                 // checks selection/attachment, not pixel conversion or metric math.

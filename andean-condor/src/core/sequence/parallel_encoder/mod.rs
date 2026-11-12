@@ -255,8 +255,9 @@ where
         let probe_model = provenance::probe_input(&root_model, &config, tq.as_ref()).clone();
         let metric_model = tq.as_ref().and_then(|c| c.metric_input.as_ref());
         // Admit the entire batch before metadata withdrawal, saves, or resumed events.
+        let mut admission = provenance::Admission::default();
         for (index, scene) in condor.scenes.iter().enumerate() {
-            provenance::admit_target(&probe_model, metric_model, scene, tq.as_ref(), index)?;
+            admission.admit_target(&probe_model, metric_model, scene, tq.as_ref(), index)?;
             provenance::admit_selection(scene, tq.as_ref(), index)?;
             let output = config.scenes_directory.join(format!(
                 "{}.{}",
@@ -269,16 +270,17 @@ where
                 || data.completed_on.is_some()
                 || output.symlink_metadata().is_ok()
             {
-                provenance::admit_encode(
-                    &input_model,
-                    &probe_model,
-                    metric_model,
-                    scene,
-                    tq.as_ref(),
-                    &output,
-                    index,
-                )
-                .map_err(|e| e.context(format!("saved artifact {}", output.display())))?;
+                admission
+                    .admit_encode(
+                        &input_model,
+                        &probe_model,
+                        metric_model,
+                        scene,
+                        tq.as_ref(),
+                        &output,
+                        index,
+                    )
+                    .map_err(|e| e.context(format!("saved artifact {}", output.display())))?;
             }
         }
         let workers = config.workers.unwrap_or(1);
@@ -468,6 +470,7 @@ where
                 "Encoding input changed during processing; recompute or use a new job"
             );
             let mut staged = scenes.clone();
+            let mut publication = provenance::Admission::default();
             let mut published = Vec::new();
             for encoder_result in results {
                 if let Some(scene) = staged.get_mut(encoder_result.scene)
@@ -479,7 +482,7 @@ where
                         Self::scene_id(encoder_result.scene),
                         scene.encoder.output_extension()
                     ));
-                    let context = provenance::encode_context(
+                    let context = publication.encode_context(
                         &input_model,
                         &probe_model,
                         metric_model,

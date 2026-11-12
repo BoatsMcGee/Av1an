@@ -29,6 +29,116 @@ mod tests {
     use super::*;
 
     #[test]
+    fn c14_r1_qc_cli_effective_reference_precedence_and_resume() {
+        use andean_condor::models::input::VapourSynthScriptSource;
+        let temp = tempfile::tempdir().expect("fixture");
+        let output = temp.path().join("out.mkv");
+        let generated = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=size=128x128:rate=24",
+                "-frames:v",
+                "2",
+                "-c:v",
+                "ffv1",
+            ])
+            .arg(&output)
+            .output()
+            .expect("ffmpeg");
+        assert!(generated.status.success(), "{generated:?}");
+        let mut inputs = vec![];
+        for (name, color) in [("root", 16), ("pe", 64), ("qc", 128)] {
+            let script = temp.path().join(format!("{name}.vpy"));
+            let marker = serde_json::to_string(&temp.path().join(format!("{name}.frames")))
+                .expect("literal");
+            std::fs::write(&script,format!("import vapoursynth as vs\nfrom pathlib import Path\nc=vs.core\nclip=c.std.BlankClip(width=128,height=128,length=2,format=vs.YUV420P8,fpsnum=24,color=[{color},128,128])\ndef record(n,f):\n if n==1:\n  with Path({marker}).open('a') as out: out.write('frame\\n')\n return f\nclip.std.ModifyFrame(clip,record).set_output()\n")).expect("script");
+            inputs.push(Input::VapourSynthScript {
+                source: VapourSynthScriptSource::Path(script),
+                variables: Default::default(),
+                index: 0,
+                filters: vec![],
+                stream_concurrently: false,
+            });
+        }
+        let video = TestVideo {
+            path: temp.path().join("root.vpy"),
+            width: 128,
+            height: 128,
+            frames: 2,
+            fps_rational: (24, 1),
+            format: FFPixelFormat::YUV420P,
+            scenes: vec![(0, 2)],
+        };
+        for chosen in [1, 2, 0] {
+            let mut config = default_config(&video, &output, &temp.path().join("work"));
+            config.condor.input = inputs[0].clone();
+            config.condor.scenes = video.mock_scenes(&config.condor.encoder);
+            config.condor.sequence_config.parallel_encoder.input =
+                (chosen != 0).then(|| inputs[1].clone());
+            config.condor.sequence_config.quality_check = Some(QualityCheckConfig {
+                input: (chosen == 2).then(|| inputs[2].clone()),
+                metric: QualityMetric::VMAF {
+                    target_range: (0.0, 100.0),
+                    resolution: None,
+                    scaler: "bicubic".into(),
+                    threads: 0,
+                    model: None,
+                    features: vec![],
+                },
+                ..Default::default()
+            });
+            let file = temp.path().join("condor.json");
+            config.save(&file).expect("settings");
+            condor_cmd(&temp)
+                .env("CONDOR_TEST_MODE", "1")
+                .args(["quality-check"])
+                .assert()
+                .success();
+            let saved = load(&file);
+            let pass = &saved.condor.scenes[0].sequence_data.quality_check.quality;
+            assert_eq!(pass.scores.len(), 2, "actual owning QC measurement");
+            assert_eq!(
+                pass.provenance.as_ref().expect("stamp").context["input"],
+                andean_condor::models::sequence::provenance::input_identity(&inputs[chosen])
+                    .expect("literal chosen declared input")
+            );
+            saved.admit_results().expect(
+                "H2: producer and CLI admission must resolve the same effective QC reference",
+            );
+            let markers = ["root", "pe", "qc"].map(|name| {
+                std::fs::read(temp.path().join(format!("{name}.frames"))).unwrap_or_default()
+            });
+            assert!(
+                !markers[chosen].is_empty(),
+                "measurement decoded the selected reference's last frame"
+            );
+            let history = serde_json::to_vec(pass).expect("saved measurement");
+            condor_cmd(&temp)
+                .env("CONDOR_TEST_MODE", "1")
+                .args(["quality-check"])
+                .assert()
+                .success();
+            let resumed = load(&file);
+            assert_eq!(
+                serde_json::to_vec(&resumed.condor.scenes[0].sequence_data.quality_check.quality)
+                    .expect("unchanged measurement"),
+                history
+            );
+            for (name, before) in ["root", "pe", "qc"].iter().zip(markers) {
+                assert_eq!(
+                    std::fs::read(temp.path().join(format!("{name}.frames"))).unwrap_or_default(),
+                    before,
+                    "matching CLI resume must not measure another frame"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn c06_qc_cli_plugin_scores_override_with_missing_root_like_fallback() {
         let temp = tempfile::tempdir().expect("fixture");
         let source = temp.path().join("source.mkv");

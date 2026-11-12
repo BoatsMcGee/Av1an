@@ -24,6 +24,16 @@ use crate::{
 /// Deliberate compatibility boundary for repaired conversion, math and selection semantics.
 pub const RESULT_REVISION: u32 = 1;
 
+#[cfg(test)]
+thread_local! {
+    static IDENTITY_COUNTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+pub(crate) fn take_identity_counts() -> (usize, usize) {
+    IDENTITY_COUNTS.with(|counts| counts.replace((0, 0)))
+}
+
 /// Only successful owning producers attach this; missing fields deserialize untrusted.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ResultProvenance {
@@ -103,6 +113,11 @@ impl MetricBackend {
 
     #[inline]
     pub fn available_plugin(metric: &QualityMetric) -> Result<Self> {
+        #[cfg(test)]
+        IDENTITY_COUNTS.with(|counts| {
+            let (models, plugins) = counts.get();
+            counts.set((models, plugins + 1));
+        });
         let environment = crate::vapoursynth::get_environment()?;
         Self::plugin_for_metric(crate::vapoursynth::get_core(&environment)?, metric)
     }
@@ -201,6 +216,8 @@ fn metric_identity(metric: &QualityMetric) -> Result<Value> {
             selection.find_stock_model_file()
         };
         let file = path.as_ref().map(|path| -> Result<Value> {
+            #[cfg(test)]
+            IDENTITY_COUNTS.with(|counts| { let (models, plugins) = counts.get(); counts.set((models + 1, plugins)); });
             Ok(json!({"identity": file_identity(path)?, "sha256": Sha256::digest(std::fs::read(path)?).to_vec()}))
         }).transpose()?;
         // Stock builtin versus disk fallback is a libvmaf load detail; retain both
@@ -235,26 +252,230 @@ fn measurement_backend(
     Ok(json!({"planned": MetricBackend::current(planned), "actual": actual}))
 }
 
+/// One owning admission/publication batch. Drop it before revalidating work;
+/// model bytes and plugin environments must not be cached across that boundary.
+#[derive(Default)]
+pub struct Admission {
+    metrics: Vec<(Value, Value)>,
+    backends: Vec<(Value, bool, MetricBackend, Value)>,
+}
+
+impl Admission {
+    fn metric(&mut self, metric: &QualityMetric) -> Result<Value> {
+        let key = serde_json::to_value(metric)?;
+        if let Some((_, identity)) = self.metrics.iter().find(|(saved, _)| *saved == key) {
+            return Ok(identity.clone());
+        }
+        let identity = metric_identity(metric)?;
+        self.metrics.push((key, identity.clone()));
+        Ok(identity)
+    }
+
+    fn backend(
+        &mut self,
+        metric: &QualityMetric,
+        input: &Input,
+        actual: &MetricBackend,
+    ) -> Result<Value> {
+        let script = !matches!(input, Input::Video { .. });
+        let key = serde_json::to_value(metric)?;
+        if let Some((_, _, current, context)) =
+            self.backends.iter().find(|(saved, kind, backend, _)| {
+                *saved == key && *kind == script && backend.engine == actual.engine
+            })
+        {
+            ensure!(
+                *actual == *current,
+                "recorded metric backend version/plugin admission identity changed"
+            );
+            return Ok(context.clone());
+        }
+        let context = measurement_backend(metric, input, actual)?;
+        self.backends.push((key, script, actual.clone(), context.clone()));
+        Ok(context)
+    }
+}
+
 #[inline]
-pub fn target_context<Data>(
+pub fn probe_encoder<Data: TargetQualityDataHandler>(
+    scene: &Scene<Data>,
+    config: &TargetQualityConfig,
+) -> Result<crate::models::encoder::Encoder> {
+    let current = config.probe_encoder(&scene.encoder);
+    if let Some(transition) = &scene.sequence_data.get_target_quality()?.speed_transition {
+        let mut actual = current.clone();
+        let mut after = config.probe_encoder(&transition.after);
+        actual.set_quantizer(0.0);
+        after.set_quantizer(0.0);
+        if actual == after {
+            return Ok(config.probe_encoder(&transition.before));
+        }
+    }
+    Ok(current)
+}
+
+impl Admission {
+    #[inline]
+    pub fn target_context<Data: TargetQualityDataHandler>(
+        &mut self,
+        input: &Input,
+        metric_input: Option<&Input>,
+        scene: &Scene<Data>,
+        config: &TargetQualityConfig,
+        pass: &QualityPass,
+    ) -> Result<Value> {
+        let backend = pass
+            .backend
+            .as_ref()
+            .context("successful probe has no actual backend identity")?;
+        let mut encoder = probe_encoder(scene, config)?;
+        encoder.set_quantizer(pass.quantizer);
+        Ok(
+            json!({"input": input_identity(input)?, "reference": input_identity(metric_input.unwrap_or(input))?,
+        "range": [scene.start_frame, scene.end_frame], "strategy": config.probing.strategy,
+        "encoder": encoder, "metric": self.metric(&config.metric)?, "statistic": config.probing.statistic,
+        "backend": self.backend(&config.metric, metric_input.unwrap_or(input), backend)?}),
+        )
+    }
+
+    #[inline]
+    pub fn admit_target<Data: TargetQualityDataHandler>(
+        &mut self,
+        input: &Input,
+        metric_input: Option<&Input>,
+        scene: &Scene<Data>,
+        config: Option<&TargetQualityConfig>,
+        index: usize,
+    ) -> Result<()> {
+        let passes = &scene.sequence_data.get_target_quality()?.passes;
+        for pass in passes {
+            require_revision(pass.provenance.as_ref(), index, "TQ probe")?;
+            let config =
+                config.ok_or_else(|| refusal(index, "TQ probe", "measurement settings removed"))?;
+            let expected = self
+                .target_context(input, metric_input, scene, config, pass)
+                .map_err(|e| refusal(index, "TQ probe", &format!("{e:#}")))?;
+            require_context(pass.provenance.as_ref(), &expected, index, "TQ probe")?;
+            ensure!(
+                pass.backend == passes[0].backend,
+                refusal(index, "TQ probe", "mixed actual metric backends")
+            );
+        }
+        if let Some(config) = config
+            && !passes.is_empty()
+        {
+            let expected =
+                config.probing.strategy.frame_indices(scene.start_frame, scene.end_frame)?.len();
+            crate::core::sequence::target_quality::TargetQuality::validate_history(
+                config, index, expected, passes,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Capture before work and compare after: changing a declared input mid-run cannot
+    /// certify results measured/encoded from its previous contents.
+    #[inline]
+    pub fn measurement_inputs(
+        &mut self,
+        input: &Input,
+        reference: Option<&Input>,
+        metric: Option<&QualityMetric>,
+    ) -> Result<Value> {
+        Ok(
+            json!({"input": input_identity(input)?, "reference": reference.map(input_identity).transpose()?, "metric": metric.map(|metric| self.metric(metric)).transpose()?}),
+        )
+    }
+
+    #[inline]
+    pub fn quality_context<Data>(
+        &mut self,
+        input: &Input,
+        output: &Path,
+        scene: &Scene<Data>,
+        config: &QualityCheckConfig,
+        backend: &MetricBackend,
+    ) -> Result<Value> {
+        Ok(
+            json!({"input": input_identity(input)?, "output": file_identity(output)?, "range": [scene.start_frame, scene.end_frame],
+        "strategy": config.strategy, "statistic": config.statistic, "metric": self.metric(&config.metric)?,
+        "backend": self.backend(&config.metric, input, backend)?}),
+        )
+    }
+
+    #[inline]
+    pub fn admit_quality<Data>(
+        &mut self,
+        input: &Input,
+        output: &Path,
+        scene: &Scene<Data>,
+        config: Option<&QualityCheckConfig>,
+        quality: &QualityPass,
+        index: usize,
+    ) -> Result<()> {
+        if quality.is_unmeasured() {
+            return Ok(());
+        }
+        require_revision(quality.provenance.as_ref(), index, "quality")?;
+        let config = config.ok_or_else(|| refusal(index, "quality", "quality settings removed"))?;
+        let expected_count =
+            config.strategy.frame_indices(scene.start_frame, scene.end_frame)?.len();
+        crate::models::sequence::target_quality::types::validate_scores(&quality.scores,Some(expected_count))
+        .and_then(|()| config.metric.calculate_score(config.statistic,&quality.scores).map(|_| ()))
+        .with_context(|| refusal(index,"quality","recorded Quality Check history is malformed; explicitly reset quality-check before remeasurement"))?;
+        let expected = (|| {
+            self.quality_context(
+                input,
+                output,
+                scene,
+                config,
+                quality.backend.as_ref().context("actual backend missing")?,
+            )
+        })()
+        .map_err(|e| refusal(index, "quality", &format!("{e:#}")))?;
+        require_context(quality.provenance.as_ref(), &expected, index, "quality")
+    }
+
+    #[inline]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "batch form retains the existing context API"
+    )]
+    pub fn encode_context<Data: SequenceDataHandler + TargetQualityDataHandler>(
+        &mut self,
+        input: &Input,
+        probe_input: &Input,
+        metric_input: Option<&Input>,
+        scene: &Scene<Data>,
+        tq: Option<&TargetQualityConfig>,
+        output: &Path,
+        index: usize,
+    ) -> Result<Value> {
+        self.admit_target(probe_input, metric_input, scene, tq, index)?;
+        admit_selection(scene, tq, index)?;
+        let passes = &scene.sequence_data.get_target_quality()?.passes;
+        let dependency = if passes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::to_value(&scene.sequence_data.get_target_quality()?.selection)?
+        };
+        Ok(
+            json!({"input": input_identity(input)?, "range": [scene.start_frame, scene.end_frame], "sub_scenes": scene.sub_scenes,
+        "encoder": scene.encoder, "tq_dependency": dependency, "artifact": file_identity(output)?}),
+        )
+    }
+}
+
+// Single-scene callers retain the narrow API; owning loops share an Admission.
+#[inline]
+pub fn target_context<Data: TargetQualityDataHandler>(
     input: &Input,
     metric_input: Option<&Input>,
     scene: &Scene<Data>,
     config: &TargetQualityConfig,
     pass: &QualityPass,
 ) -> Result<Value> {
-    let backend = pass
-        .backend
-        .as_ref()
-        .context("successful probe has no actual backend identity")?;
-    let mut encoder = config.probe_encoder(&scene.encoder);
-    encoder.set_quantizer(pass.quantizer);
-    Ok(
-        json!({"input": input_identity(input)?, "reference": input_identity(metric_input.unwrap_or(input))?,
-        "range": [scene.start_frame, scene.end_frame], "strategy": config.probing.strategy,
-        "encoder": encoder, "metric": metric_identity(&config.metric)?, "statistic": config.probing.statistic,
-        "backend": measurement_backend(&config.metric, metric_input.unwrap_or(input), backend)?}),
-    )
+    Admission::default().target_context(input, metric_input, scene, config, pass)
 }
 
 #[inline]
@@ -265,42 +486,16 @@ pub fn admit_target<Data: TargetQualityDataHandler>(
     config: Option<&TargetQualityConfig>,
     index: usize,
 ) -> Result<()> {
-    let passes = &scene.sequence_data.get_target_quality()?.passes;
-    for pass in passes {
-        require_revision(pass.provenance.as_ref(), index, "TQ probe")?;
-        let config =
-            config.ok_or_else(|| refusal(index, "TQ probe", "measurement settings removed"))?;
-        let expected = target_context(input, metric_input, scene, config, pass)
-            .map_err(|e| refusal(index, "TQ probe", &format!("{e:#}")))?;
-        require_context(pass.provenance.as_ref(), &expected, index, "TQ probe")?;
-        ensure!(
-            pass.backend == passes[0].backend,
-            refusal(index, "TQ probe", "mixed actual metric backends")
-        );
-    }
-    if let Some(config) = config
-        && !passes.is_empty()
-    {
-        let expected =
-            config.probing.strategy.frame_indices(scene.start_frame, scene.end_frame)?.len();
-        crate::core::sequence::target_quality::TargetQuality::validate_history(
-            config, index, expected, passes,
-        )?;
-    }
-    Ok(())
+    Admission::default().admit_target(input, metric_input, scene, config, index)
 }
 
-/// Capture before work and compare after: changing a declared input mid-run cannot
-/// certify results measured/encoded from its previous contents.
 #[inline]
 pub fn measurement_inputs(
     input: &Input,
     reference: Option<&Input>,
     metric: Option<&QualityMetric>,
 ) -> Result<Value> {
-    Ok(
-        json!({"input": input_identity(input)?, "reference": reference.map(input_identity).transpose()?, "metric": metric.map(metric_identity).transpose()?}),
-    )
+    Admission::default().measurement_inputs(input, reference, metric)
 }
 
 #[inline]
@@ -311,11 +506,7 @@ pub fn quality_context<Data>(
     config: &QualityCheckConfig,
     backend: &MetricBackend,
 ) -> Result<Value> {
-    Ok(
-        json!({"input": input_identity(input)?, "output": file_identity(output)?, "range": [scene.start_frame, scene.end_frame],
-        "strategy": config.strategy, "statistic": config.statistic, "metric": metric_identity(&config.metric)?,
-        "backend": measurement_backend(&config.metric, input, backend)?}),
-    )
+    Admission::default().quality_context(input, output, scene, config, backend)
 }
 
 #[inline]
@@ -327,21 +518,7 @@ pub fn admit_quality<Data>(
     quality: &QualityPass,
     index: usize,
 ) -> Result<()> {
-    if quality.is_unmeasured() {
-        return Ok(());
-    }
-    require_revision(quality.provenance.as_ref(), index, "quality")?;
-    let expected = (|| {
-        quality_context(
-            input,
-            output,
-            scene,
-            config.context("quality settings removed")?,
-            quality.backend.as_ref().context("actual backend missing")?,
-        )
-    })()
-    .map_err(|e| refusal(index, "quality", &format!("{e:#}")))?;
-    require_context(quality.provenance.as_ref(), &expected, index, "quality")
+    Admission::default().admit_quality(input, output, scene, config, quality, index)
 }
 
 #[inline]
@@ -354,18 +531,7 @@ pub fn encode_context<Data: SequenceDataHandler + TargetQualityDataHandler>(
     output: &Path,
     index: usize,
 ) -> Result<Value> {
-    admit_target(probe_input, metric_input, scene, tq, index)?;
-    admit_selection(scene, tq, index)?;
-    let passes = &scene.sequence_data.get_target_quality()?.passes;
-    let dependency = if passes.is_empty() {
-        Value::Null
-    } else {
-        serde_json::to_value(&scene.sequence_data.get_target_quality()?.selection)?
-    };
-    Ok(
-        json!({"input": input_identity(input)?, "range": [scene.start_frame, scene.end_frame], "sub_scenes": scene.sub_scenes,
-        "encoder": scene.encoder, "tq_dependency": dependency, "artifact": file_identity(output)?}),
-    )
+    Admission::default().encode_context(input, probe_input, metric_input, scene, tq, output, index)
 }
 
 /// Structured policy plus canonical content identity of the separately stored raw
@@ -412,6 +578,33 @@ pub fn admit_selection<Data: TargetQualityDataHandler>(
     Ok(())
 }
 
+impl Admission {
+    #[inline]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "batch form retains the existing admission API"
+    )]
+    pub fn admit_encode<
+        Data: SequenceDataHandler + TargetQualityDataHandler + ParallelEncoderDataHandler,
+    >(
+        &mut self,
+        input: &Input,
+        probe_input: &Input,
+        metric_input: Option<&Input>,
+        scene: &Scene<Data>,
+        tq: Option<&TargetQualityConfig>,
+        output: &Path,
+        index: usize,
+    ) -> Result<()> {
+        let saved = scene.sequence_data.get_parallel_encoder()?.provenance.as_ref();
+        require_revision(saved, index, "encoding")?;
+        let expected = self
+            .encode_context(input, probe_input, metric_input, scene, tq, output, index)
+            .map_err(|e| refusal(index, "encoding", &format!("{e:#}")))?;
+        require_context(saved, &expected, index, "encoding")
+    }
+}
+
 #[inline]
 pub fn admit_encode<
     Data: SequenceDataHandler + TargetQualityDataHandler + ParallelEncoderDataHandler,
@@ -424,11 +617,7 @@ pub fn admit_encode<
     output: &Path,
     index: usize,
 ) -> Result<()> {
-    let saved = scene.sequence_data.get_parallel_encoder()?.provenance.as_ref();
-    require_revision(saved, index, "encoding")?;
-    let expected = encode_context(input, probe_input, metric_input, scene, tq, output, index)
-        .map_err(|e| refusal(index, "encoding", &format!("{e:#}")))?;
-    require_context(saved, &expected, index, "encoding")
+    Admission::default().admit_encode(input, probe_input, metric_input, scene, tq, output, index)
 }
 
 /// Effective declared inputs, also used by CLI preflight without opening decoders.
@@ -439,4 +628,15 @@ pub fn probe_input<'a>(
     tq: Option<&'a TargetQualityConfig>,
 ) -> &'a Input {
     tq.and_then(|c| c.input.as_ref()).or(pe.input.as_ref()).unwrap_or(root)
+}
+
+/// Shared declared QC reference policy; runtime QualityCheck::input remains an
+/// explicit owning override. Merely resolving this model opens no decoder.
+#[inline]
+pub fn quality_input<'a>(
+    root: &'a Input,
+    pe: &'a ParallelEncoderConfig,
+    qc: Option<&'a QualityCheckConfig>,
+) -> &'a Input {
+    qc.and_then(|c| c.input.as_ref()).or(pe.input.as_ref()).unwrap_or(root)
 }

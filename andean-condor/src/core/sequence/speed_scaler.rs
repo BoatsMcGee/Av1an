@@ -9,7 +9,11 @@ use crate::{
         sequence::{Sequence, SequenceDetails, SequenceStatus},
     },
     models::sequence::{
-        SequenceConfigHandler, SequenceDataHandler, speed_scaler::SpeedScalerConfigHandler,
+        SequenceConfigHandler, SequenceDataHandler, provenance,
+        speed_scaler::SpeedScalerConfigHandler,
+        target_quality::{
+            ProbeEncoderTransition, TargetQualityConfigHandler, TargetQualityDataHandler,
+        },
     },
     utils::interpolators::{linear, natural_cubic_spline},
 };
@@ -25,8 +29,8 @@ pub struct SpeedScaler {}
 
 impl<Data, Config> Sequence<Data, Config> for SpeedScaler
 where
-    Data: SequenceDataHandler,
-    Config: SequenceConfigHandler + SpeedScalerConfigHandler,
+    Data: SequenceDataHandler + TargetQualityDataHandler,
+    Config: SequenceConfigHandler + SpeedScalerConfigHandler + TargetQualityConfigHandler,
 {
     #[inline]
     fn details(&self) -> SequenceDetails {
@@ -124,14 +128,26 @@ where
         if edits.is_empty() {
             return Ok(((), vec![]));
         }
-        // Publish only after every scene and prospective encoder passes the pure checks.
-        for (index, encoder) in &mut edits {
-            std::mem::swap(&mut condor.scenes[*index].encoder, encoder);
-        }
-        if let Err(error) = condor.save() {
-            for (index, encoder) in edits {
-                condor.scenes[index].encoder = encoder;
+        // Stage the encoder and its producer-owned transition together; callbacks
+        // cannot leave a certificate for a transition whose save failed.
+        let mut staged = condor.scenes.clone();
+        for (index, encoder) in edits {
+            let scene = &condor.scenes[index];
+            if let Some(tq) = condor.sequence_config.target_quality()?.as_ref()
+                && !scene.sequence_data.get_target_quality()?.passes.is_empty()
+            {
+                let before = provenance::probe_encoder(scene, tq)?;
+                staged[index].sequence_data.get_target_quality_mut()?.speed_transition =
+                    Some(ProbeEncoderTransition {
+                        before,
+                        after: encoder.clone(),
+                    });
             }
+            staged[index].encoder = encoder;
+        }
+        let previous = std::mem::replace(&mut condor.scenes, staged);
+        if let Err(error) = condor.save() {
+            condor.scenes = previous;
             return Err(error);
         }
 
@@ -169,12 +185,45 @@ mod tests {
     };
 
     #[derive(Clone, Default, Serialize)]
-    struct Data(Vec<f64>);
+    struct Data(
+        Vec<f64>,
+        crate::models::sequence::target_quality::TargetQualityData,
+    );
     impl SequenceDataHandler for Data {}
+    impl TargetQualityDataHandler for Data {
+        fn get_target_quality(
+            &self,
+        ) -> anyhow::Result<&crate::models::sequence::target_quality::TargetQualityData> {
+            Ok(&self.1)
+        }
+        fn get_target_quality_mut(
+            &mut self,
+        ) -> anyhow::Result<&mut crate::models::sequence::target_quality::TargetQualityData>
+        {
+            Ok(&mut self.1)
+        }
+    }
 
     #[derive(Clone, Default, Serialize)]
-    struct Config(SpeedScalerConfig);
+    struct Config(
+        SpeedScalerConfig,
+        Option<crate::models::sequence::target_quality::TargetQualityConfig>,
+    );
     impl SequenceConfigHandler for Config {}
+    impl TargetQualityConfigHandler for Config {
+        fn target_quality(
+            &self,
+        ) -> anyhow::Result<&Option<crate::models::sequence::target_quality::TargetQualityConfig>>
+        {
+            Ok(&self.1)
+        }
+        fn target_quality_mut(
+            &mut self,
+        ) -> anyhow::Result<&mut Option<crate::models::sequence::target_quality::TargetQualityConfig>>
+        {
+            Ok(&mut self.1)
+        }
+    }
     impl SpeedScalerConfigHandler for Config {
         fn speed_scaler(&self) -> anyhow::Result<&SpeedScalerConfig> {
             Ok(&self.0)
@@ -202,7 +251,7 @@ mod tests {
                 end_frame: 34,
             }]),
             encoder,
-            sequence_data: Data(vec![20.0, 40.0]),
+            sequence_data: Data(vec![20.0, 40.0], Default::default()),
         }
     }
 
@@ -236,9 +285,12 @@ mod tests {
             },
             Encoder::default_from_base(&EncoderBase::AOM, true),
             scenes,
-            Some(Config(SpeedScalerConfig {
-                speed_quantizers: points,
-            })),
+            Some(Config(
+                SpeedScalerConfig {
+                    speed_quantizers: points,
+                },
+                None,
+            )),
             Box::new(move |data| {
                 callback.borrow_mut().push(serde_json::to_vec(&data.scenes)?);
                 Ok(())

@@ -130,10 +130,26 @@ Execution refuses legacy, future-revision or changed-context results before run
 handlers resave the job. It preserves original records, chunks and final output.
 Changing a probe's source, filters, scene, encoder, metric, model or backend also
 withholds its derived quantizer/chunk eligibility, even when encoding or concatenation
-is called directly. Matching chunks still undergo the configured integrity checks.
+is called directly. Parallel Encoder still runs its configured decode/frame-count
+checks on matching chunks. Saved-job concatenation checks provenance and regular,
+nonempty chunk files without decoding every chunk a second time.
 Target/budget-only edits retain raw TQ measurements for current-policy reselection;
 dependent chunks must match that selection policy. Worker/retry changes do not
-invalidate pixels. Serial-encoder outputs have no saved-job resume certification.
+invalidate pixels. Speed Scaler records its own downstream preset transition so
+original TQ measurements remain usable; arbitrary probe-option/preset edits are not
+whitelisted. QC reference precedence is its explicit input, then the Parallel
+Encoder input override, then the root input.
+
+Certified chunks that disappear or are truncated, malformed certified QC score
+counts/values, and a missing previously measured QC output are **refused**, not
+automatically withdrawn, repaired or remeasured. Records and files remain untouched;
+use the explicit reset/new-job procedure below. A fresh QC job with no measurement
+record still warns normally when its output is missing.
+
+SerialEncoder and raw zone outputs do not issue saved-job chunk certificates.
+Passing them to the saved-job `SceneConcatenator` sequence now refuses, even if
+their frame counts match. This is an intentional Rust API behavior break; raw
+caller-owned muxing remains separate from saved-job resume.
 
 Prefer a new job with a different config and empty work directory when recomputing.
 For an explicit metadata reset, inspect the affected scene first, then use the

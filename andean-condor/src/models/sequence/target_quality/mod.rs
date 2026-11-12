@@ -115,6 +115,15 @@ where
     /// Selection over certified raw measurements, before later bitrate/speed edits.
     #[serde(default)]
     pub selection: Option<super::provenance::ResultProvenance>,
+    /// Owning Speed Scaler transition; it does not certify measurements by itself.
+    #[serde(default)]
+    pub speed_transition: Option<ProbeEncoderTransition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ProbeEncoderTransition {
+    pub before: Encoder,
+    pub after: Encoder,
 }
 
 impl Default for TargetQualityData {
@@ -123,6 +132,7 @@ impl Default for TargetQualityData {
         Self {
             passes: Vec::new(),
             selection: None,
+            speed_transition: None,
         }
     }
 }

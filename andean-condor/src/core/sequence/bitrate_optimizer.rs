@@ -256,6 +256,7 @@ mod tests {
             sequence_data: Data(Some(TargetQualityData {
                 passes,
                 selection: None,
+                speed_transition: None,
             })),
         }
     }

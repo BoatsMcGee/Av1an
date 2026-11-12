@@ -477,14 +477,15 @@ pub fn run_quality_check_tui(
     cancelled: Arc<AtomicBool>,
 ) -> Result<()> {
     debug!("Instantiating Quality Check Input");
-    let (quality_check_input, clip_info) = if let Some(Some(input)) =
-        &condor.sequence_config.quality_check.as_ref().map(|qc| qc.input.clone())
-    {
+    let root = condor.input.as_data();
+    let reference = andean_condor::models::sequence::provenance::quality_input(
+        &root,
+        &condor.sequence_config.parallel_encoder,
+        condor.sequence_config.quality_check.as_ref(),
+    );
+    let (quality_check_input, clip_info) = if !std::ptr::eq(reference, &root) {
+        let input = reference;
         let (qc_input, clip_info) = open_input(input, &cancelled)?;
-        (Some(qc_input), clip_info)
-    } else if let Some(pe_input) = &condor.sequence_config.parallel_encoder.input {
-        debug!("Falling back to Parallel Encoder input");
-        let (qc_input, clip_info) = open_input(pe_input, &cancelled)?;
         (Some(qc_input), clip_info)
     } else {
         (None, condor.input.clip_info()?)

@@ -238,8 +238,9 @@ where
             .map(Input::as_data)
             .or_else(|| config.input.clone())
             .unwrap_or_else(|| condor.input.as_data());
+        let mut admission = provenance::Admission::default();
         for (index, scene) in condor.scenes.iter().enumerate() {
-            provenance::admit_quality(
+            admission.admit_quality(
                 &input_model,
                 &output_path,
                 scene,
@@ -298,7 +299,7 @@ where
         // filter graph, so it takes a separate path. Every other metric runs as
         // a plugin over the nodes built by `measure`, unless a native
         // engine takes it first.
-        let before = provenance::measurement_inputs(&input_model, None, Some(&config.metric))?;
+        let before = admission.measurement_inputs(&input_model, None, Some(&config.metric))?;
         let output_before = provenance::file_identity(&output_path)?;
         let planned = metrics::engine(&config.metric, Self::input_is_vapoursynth(input));
         let (measurements, actual) = if matches!(config.metric, QualityMetric::VMAF { .. }) {
@@ -336,8 +337,9 @@ where
             )?
         };
 
+        let mut publication = provenance::Admission::default();
         ensure!(
-            before == provenance::measurement_inputs(&input_model, None, Some(&config.metric))?
+            before == publication.measurement_inputs(&input_model, None, Some(&config.metric))?
                 && output_before == provenance::file_identity(&output_path)?,
             "Quality Check inputs changed during measurement; recompute or use a new job"
         );
@@ -345,7 +347,7 @@ where
         Self::attach_measurements(&mut staged, config, &scene_frame_indices, measurements)?;
         for (index, _) in &scene_frame_indices {
             let backend = actual.clone();
-            let context = provenance::quality_context(
+            let context = publication.quality_context(
                 &input_model,
                 &output_path,
                 &staged[*index],

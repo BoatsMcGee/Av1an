@@ -16,6 +16,76 @@ use crate::{
 };
 use std::{cell::Cell, rc::Rc};
 
+#[test]
+fn c14_r1_identity_work_is_batch_local_not_per_history_record() {
+    use crate::models::sequence::{provenance, target_quality::types::QualityMetric};
+    let mut observed = Vec::new();
+    for plugin in [false, true] {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut job = fixture(temp.path());
+        let model = temp.path().join("model.json");
+        std::fs::write(&model, b"declared identity only; no scoring is requested").expect("model");
+        job.sequence_config.target_quality = Some(TargetQualityConfig {
+            maximum_probes: 3,
+            metric: if plugin {
+                QualityMetric::default()
+            } else {
+                QualityMetric::VMAF {
+                    target_range: (70.0, 80.0),
+                    resolution: None,
+                    scaler: "bicubic".into(),
+                    threads: 0,
+                    model: Some(model),
+                    features: vec![],
+                }
+            },
+            ..Default::default()
+        });
+        job.scenes[0].sequence_data.target_quality.passes = [20.0, 26.0, 30.0]
+            .map(|quantizer| QualityPass {
+                quantizer,
+                scores: vec![75.0; 3],
+                started_on: 1,
+                completed_on: 2,
+                ..Default::default()
+            })
+            .to_vec();
+        current_target_fixture(&mut job);
+        job.scenes = vec![job.scenes[0].clone(); 3];
+        let current = job.scenes.clone();
+        job.scenes[0].sequence_data.target_quality.passes[0]
+            .provenance
+            .as_mut()
+            .expect("stamp")
+            .revision = 0;
+        provenance::take_identity_counts();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        assert!(
+            target_quality::TargetQuality::default()
+                .execute_cancel(&mut job, tx, Default::default())
+                .is_err()
+        );
+        assert_eq!(
+            provenance::take_identity_counts(),
+            (0, 0),
+            "legacy refusal precedes identity initialization"
+        );
+        job.scenes = current;
+        for _ in 0..2 {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            target_quality::TargetQuality::default()
+                .execute_cancel(&mut job, tx, Default::default())
+                .expect("owning matching admission without a probe");
+            observed.push(provenance::take_identity_counts());
+        }
+    }
+    assert_eq!(
+        observed,
+        [(1, 0), (1, 0), (0, 1), (0, 1)],
+        "each invocation captures once, with no process-global cache"
+    );
+}
+
 fn fixture(root: &std::path::Path) -> Condor<DefaultSequenceData, DefaultSequenceConfig> {
     let source = root.join("source.mkv");
     let output = std::process::Command::new("ffmpeg")
@@ -74,6 +144,201 @@ fn fixture(root: &std::path::Path) -> Condor<DefaultSequenceData, DefaultSequenc
         Some(config),
         Box::new(|_| Ok(())),
     )
+}
+
+#[cfg(unix)]
+fn produced_job(root: &std::path::Path) -> Condor<DefaultSequenceData, DefaultSequenceConfig> {
+    use crate::models::{
+        encoder::cli_parameter::CLIParameter, sequence::target_quality::types::QualityMetric,
+    };
+    use std::os::unix::fs::PermissionsExt;
+    let mut job = fixture(root);
+    let wrapper = root.join("encoder");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf 'encode\\n' >> '{}'\nexec '{}' \"$@\"\n",
+            root.join("calls").display(),
+            which::which("ffmpeg").expect("ffmpeg").display()
+        ),
+    )
+    .expect("counter");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    job.scenes[0].encoder.set_executable(Some(wrapper));
+    job.scenes[0].encoder.parameters_mut().extend(CLIParameter::new_strings(
+        "-",
+        " ",
+        &[("c:v", "libx264"), ("preset", "ultrafast")],
+    ));
+    job.scenes[0].encoder.set_quantizer(20.0);
+    let (tx, _rx) = std::sync::mpsc::channel();
+    parallel_encoder::ParallelEncoder::default()
+        .execute_cancel(&mut job, tx, Default::default())
+        .expect("actual successful certified chunk before corruption");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    scene_concatenator::SceneConcatenator::default()
+        .execute_cancel(&mut job, tx, Default::default())
+        .expect("actual final output");
+    job.sequence_config.quality_check = Some(QualityCheckConfig {
+        metric: QualityMetric::VMAF {
+            target_range: (0.0, 100.0),
+            resolution: None,
+            scaler: "bicubic".into(),
+            threads: 0,
+            model: None,
+            features: vec![],
+        },
+        ..Default::default()
+    });
+    let (tx, _rx) = std::sync::mpsc::channel();
+    quality_check::QualityCheck::default()
+        .execute_cancel(&mut job, tx, Default::default())
+        .expect("actual successful QC before corruption");
+    assert!(job.scenes[0].sequence_data.parallel_encoder.provenance.is_some());
+    assert_eq!(
+        job.scenes[0].sequence_data.quality_check.quality.scores.len(),
+        3
+    );
+    assert!(job.scenes[0].sequence_data.quality_check.quality.provenance.is_some());
+    job
+}
+
+#[cfg(unix)]
+#[test]
+fn c14_r1_reachable_corruption_refuses_without_repair_or_work() {
+    for case in ["chunk-missing", "chunk-truncated", "qc-short", "qc-long", "qc-missing-output"] {
+        let temp = tempfile::tempdir().expect("fixture");
+        let mut job = produced_job(temp.path());
+        let chunk = temp.path().join("scenes/00000.mkv");
+        match case {
+            "chunk-missing" => {
+                std::fs::remove_file(&chunk).expect("simulate removal after certification");
+            },
+            "chunk-truncated" => {
+                std::fs::write(&chunk, []).expect("simulate truncation after certification");
+            },
+            "qc-short" => {
+                job.scenes[0].sequence_data.quality_check.quality.scores.pop();
+            },
+            "qc-long" => job.scenes[0].sequence_data.quality_check.quality.scores.push(1.0),
+            _ => std::fs::remove_file(&job.output.path).expect("remove previously measured output"),
+        }
+        let before = serde_json::to_vec(&job.scenes).expect("record after external corruption");
+        let source = std::fs::read(temp.path().join("source.mkv")).expect("source");
+        let chunk_bytes = std::fs::read(&chunk).ok();
+        let final_bytes = std::fs::read(&job.output.path).ok();
+        let calls = std::fs::read(temp.path().join("calls")).expect("native count");
+        let saves = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&saves);
+        job.save_callback = Box::new(move |_| {
+            observed.set(observed.get() + 1);
+            Ok(())
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = if case.starts_with("chunk") {
+            parallel_encoder::ParallelEncoder::default().execute_cancel(
+                &mut job,
+                tx,
+                Default::default(),
+            )
+        } else {
+            quality_check::QualityCheck::default().execute_cancel(&mut job, tx, Default::default())
+        };
+        let error = result.expect_err(
+            "M1: reachable corruption must refuse rather than repair/remeasure current records",
+        );
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("scene 0") && text.contains("new job"),
+            "{case}: {text}"
+        );
+        assert_eq!(saves.get(), 0, "{case}");
+        assert!(
+            rx.try_iter().next().is_none(),
+            "no scoring, resumed-size, or completion for {case}"
+        );
+        assert_eq!(
+            serde_json::to_vec(&job.scenes).expect("preserved record"),
+            before,
+            "{case}"
+        );
+        assert_eq!(std::fs::read(&chunk).ok(), chunk_bytes);
+        assert_eq!(std::fs::read(&job.output.path).ok(), final_bytes);
+        assert_eq!(
+            std::fs::read(temp.path().join("source.mkv")).expect("source preserved"),
+            source
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("calls")).expect("no encoder work"),
+            calls
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn c14_r1_concat_has_no_second_full_count_child() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    if let Some(root) = std::env::var_os("C14_R1_CONCAT") {
+        let root = std::path::PathBuf::from(root);
+        let model: crate::models::Condor<DefaultSequenceData, DefaultSequenceConfig> =
+            serde_json::from_slice(
+                &std::fs::read(root.join("saved.json")).expect("current saved model"),
+            )
+            .expect("model");
+        let mut job = Condor::new(
+            Input::from_data(&model.input).expect("native source"),
+            Output::new(&model.output).expect("output"),
+            model.encoder,
+            model.scenes,
+            Some(model.sequence_config),
+            Box::new(|_| anyhow::bail!("concat cannot resave chunk metadata")),
+        );
+        let (tx, _rx) = std::sync::mpsc::channel();
+        scene_concatenator::SceneConcatenator::default()
+            .execute_cancel(&mut job, tx, Default::default())
+            .expect("M2: concat must not look up or launch a second ffprobe decode");
+        assert!(!root.join("probe-called").exists());
+        return;
+    }
+    let temp = tempfile::tempdir().expect("fixture");
+    let job = produced_job(temp.path());
+    std::fs::write(
+        temp.path().join("saved.json"),
+        serde_json::to_vec(&job.as_data()).expect("saved model"),
+    )
+    .expect("snapshot");
+    let bin = temp.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("isolated PATH");
+    symlink(which::which("ffmpeg").expect("ffmpeg"), bin.join("ffmpeg")).expect("native muxer");
+    std::fs::write(
+        bin.join("ffprobe"),
+        format!(
+            "#!/bin/sh\nprintf called > '{}'\nexit 42\n",
+            temp.path().join("probe-called").display()
+        ),
+    )
+    .expect("probe trap");
+    std::fs::set_permissions(bin.join("ffprobe"), std::fs::Permissions::from_mode(0o755))
+        .expect("trap executable");
+    let child = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args([
+            "--exact",
+            "core::sequence::c14_tests::c14_r1_concat_has_no_second_full_count_child",
+            "--nocapture",
+        ])
+        .env("C14_R1_CONCAT", temp.path())
+        .env("PATH", bin)
+        .output()
+        .expect("isolated owning concat");
+    assert!(
+        child.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed;"));
+    assert!(!temp.path().join("probe-called").exists());
 }
 
 // Explicit synthetic-current fixture construction. Never called by production or

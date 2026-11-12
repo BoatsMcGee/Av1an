@@ -187,7 +187,12 @@ fn e14_public_child() {
         "hevc" => ("libx265", "hevc"),
         _ => ("libx264", "h264"),
     };
-    fixture(&root, codec, container, if kind == "wrong" { 2 } else { 3 });
+    fixture(
+        &root,
+        codec,
+        container,
+        if kind == "wrong" && !resume { 2 } else { 3 },
+    );
     if matches!(kind, "av1" | "vp9") {
         use std::io::{Seek, Write};
         let mut file = fs::OpenOptions::new().write(true).open(root.join("fixture")).expect("IVF");
@@ -211,16 +216,6 @@ fn e14_public_child() {
     if kind == "api-existing" {
         fs::write(&output, "caller-owned existing chunk").expect("existing public API output");
     }
-    if resume && kind != "missing" {
-        match kind {
-            "zero" | "save-error" => fs::write(&output, b"").expect("zero"),
-            "corrupt" => fs::write(&output, b"corrupt").expect("corrupt"),
-            _ => {
-                fs::copy(root.join("fixture"), &output).expect("existing");
-            },
-        }
-    }
-    let original = fs::read(&output).ok();
     let mut encoder = Encoder::default_from_base(&EncoderBase::X264, true);
     encoder.set_append_color_data(false);
     encoder.set_executable(Some(root.join("encoder")));
@@ -236,12 +231,7 @@ fn e14_public_child() {
             .insert("demuxer".into(), CLIParameter::new_string("--", " ", "y4m"));
         encoder.set_ffmpeg_filter(Some("select=not(mod(n\\,2))".into()));
     }
-    let mut data = DefaultSequenceData::default();
-    if resume && kind != "bare" {
-        data.parallel_encoder.bytes = Some(999999);
-        data.parallel_encoder.started_on = Some(10);
-        data.parallel_encoder.completed_on = Some(20);
-    }
+    let data = DefaultSequenceData::default();
     let mut config = DefaultSequenceConfig::default();
     config.parallel_encoder.workers = Some(1);
     config.parallel_encoder.scenes_directory = scenes.clone();
@@ -278,8 +268,35 @@ fn e14_public_child() {
         }),
     );
     if resume && kind != "bare" {
-        crate::core::sequence::c14_tests::current_encoding_fixture(&mut condor);
+        let callback = std::mem::replace(&mut condor.save_callback, Box::new(|_| Ok(())));
+        // SAFETY: this entry runs in its own isolated subprocess, with no active
+        // workers during either environment change.
+        unsafe { std::env::set_var("E08_CASE", "e14-seed-valid") };
+        let (tx, _rx) = std::sync::mpsc::channel();
+        ParallelEncoder::default()
+            .execute_cancel(&mut condor, tx, Cancellation::default())
+            .expect("owning publication of a genuinely valid chunk before corruption");
+        // SAFETY: the isolated child's seed encoder and relays have all joined.
+        unsafe { std::env::set_var("E08_CASE", format!("e14-{path}-{case}")) };
+        condor.save_callback = callback;
+        fs::remove_file(root.join("starts")).expect("clear only seed invocation marker");
+        condor.scenes[0].sequence_data.parallel_encoder.bytes = Some(999999);
+        match kind {
+            "missing" => fs::remove_file(&output).expect("remove certified chunk"),
+            "zero" => fs::write(&output, []).expect("truncate certified chunk"),
+            "corrupt" => fs::write(&output, b"corrupt").expect("corrupt certified chunk"),
+            "wrong" => {
+                fs::remove_file(root.join("fixture")).expect("replace fixture");
+                fixture(&root, codec, container, 2);
+                fs::copy(root.join("fixture"), &output).expect("replace with wrong count");
+            },
+            _ => (),
+        }
+    } else if resume {
+        fs::copy(root.join("fixture"), &output).expect("unclaimed bare chunk");
     }
+    let original = fs::read(&output).ok();
+    let prior_data = condor.scenes[0].sequence_data.parallel_encoder.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     let token = Cancellation::default();
     let result = std::thread::scope(|scope| {
@@ -373,7 +390,7 @@ fn e14_public_child() {
             );
             assert_eq!(
                 (data.started_on, data.completed_on),
-                (Some(10), Some(20)),
+                (prior_data.started_on, prior_data.completed_on),
                 "retain real history"
             );
             assert_eq!(
@@ -419,14 +436,32 @@ fn e14_public_child() {
             };
             assert!(text.contains(diagnostic), "{text}");
         }
-        assert!(text.to_lowercase().contains("scene 0"), "{text}");
-        let withheld_history = resume && matches!(kind, "corrupt" | "wrong" | "missing");
+        if kind == "save-error" {
+            assert!(
+                text.contains("Saving artifact eligibility metadata"),
+                "{text}"
+            );
+        } else {
+            assert!(text.to_lowercase().contains("scene 0"), "{text}");
+        }
+        let withheld_history = resume && matches!(kind, "corrupt" | "wrong" | "missing" | "zero");
         if withheld_history {
             assert_eq!(
                 (data.bytes, data.started_on, data.completed_on),
-                (Some(999999), Some(10), Some(20)),
+                (
+                    prior_data.bytes,
+                    prior_data.started_on,
+                    prior_data.completed_on
+                ),
                 "withhold current eligibility without destroying repairable historical records"
             );
+        } else if kind == "save-error" {
+            assert_eq!(
+                data.bytes,
+                Some(output.metadata().expect("validated output").len())
+            );
+            assert_eq!(data.provenance, prior_data.provenance);
+            assert!(text.contains("E14 save failed"), "{text}");
         } else {
             assert!(
                 data.bytes.is_none() && data.started_on.is_none() && data.completed_on.is_none(),
@@ -450,10 +485,12 @@ fn e14_public_child() {
                 assert!(!root.join("starts").exists(), "fail closed, not overwrite");
             }
             assert_eq!(fs::read(&output).ok(), original, "preserve user artifact");
-            assert!(
-                text.contains("new job") && text.contains("00000.264"),
-                "actionable: {text}"
-            );
+            if kind != "save-error" {
+                assert!(
+                    text.contains("new job") && text.contains("00000.264"),
+                    "actionable: {text}"
+                );
+            }
             if resume && kind != "bare" {
                 let saved = saved.lock().expect("saved");
                 if withheld_history {
@@ -464,9 +501,13 @@ fn e14_public_child() {
                 } else {
                     assert!(
                         !saved.is_empty(),
-                        "withdraw conclusively unusable completion through save path"
+                        "validated stale byte correction reaches the failing save"
                     );
-                    assert!(saved.iter().all(|d| d.bytes.is_none() && d.completed_on.is_none()));
+                    assert!(
+                        saved
+                            .iter()
+                            .all(|d| d.bytes == data.bytes && d.completed_on == data.completed_on)
+                    );
                 }
             }
         } else {

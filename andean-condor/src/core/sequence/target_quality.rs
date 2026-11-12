@@ -254,8 +254,9 @@ impl TargetQuality {
             .as_ref()
             .map(Input::as_data)
             .or_else(|| config.metric_input.clone());
+        let mut admission = provenance::Admission::default();
         for (index, scene) in condor.scenes.iter().enumerate() {
-            provenance::admit_target(
+            admission.admit_target(
                 &input_model,
                 metric_model.as_ref(),
                 scene,
@@ -345,7 +346,7 @@ impl TargetQuality {
                     {
                         return Ok(None);
                     }
-                    let mut encoder = config.probe_encoder(&scene.encoder);
+                    let mut encoder = provenance::probe_encoder(scene, &config)?;
                     let Some(predicted_quantizer) = Self::next_probe_quantizer(
                         &config,
                         &encoder,
@@ -475,7 +476,7 @@ impl TargetQuality {
                 Ok(())
             });
 
-            let before = provenance::measurement_inputs(
+            let before = admission.measurement_inputs(
                 &input_model,
                 metric_model.as_ref(),
                 Some(&config.metric),
@@ -507,9 +508,10 @@ impl TargetQuality {
             );
             let (completed_tasks, pass_warnings) = probed?;
             relayed?;
+            let mut publication = provenance::Admission::default();
             ensure!(
                 before
-                    == provenance::measurement_inputs(
+                    == publication.measurement_inputs(
                         &input_model,
                         metric_model.as_ref(),
                         Some(&config.metric)
@@ -530,6 +532,13 @@ impl TargetQuality {
             let mut completions = Vec::with_capacity(completed_tasks.len());
             for mut completed_task in completed_tasks {
                 let index = completed_task.original_index;
+                publication.admit_target(
+                    &input_model,
+                    metric_model.as_ref(),
+                    &staged[index],
+                    Some(&config),
+                    index,
+                )?;
                 let previous = staged[index].sequence_data.get_target_quality()?.passes.len();
                 Self::validate_history(
                     &config,
@@ -539,7 +548,7 @@ impl TargetQuality {
                 )?;
                 // Only newly successful measurements are stamped; never certify a prefix.
                 for quality in completed_task.passes.iter_mut().skip(previous) {
-                    quality.provenance = Some(ResultProvenance::new(provenance::target_context(
+                    quality.provenance = Some(ResultProvenance::new(publication.target_context(
                         &input_model,
                         metric_model.as_ref(),
                         &staged[index],
@@ -598,6 +607,7 @@ impl TargetQuality {
                     },
                 });
             }
+            admission = publication;
             condor.scenes = staged;
             for completion in completions {
                 progress_tx.send(completion)?;
@@ -3016,6 +3026,7 @@ mod tests {
             sequence_data: AcceptedData {
                 target_quality: TargetQualityData {
                     selection: None,
+                    speed_transition: None,
                     passes: task.passes,
                 },
                 ..Default::default()
@@ -3544,6 +3555,90 @@ mod tests {
         }
 
         type SavedScenes = std::rc::Rc<std::cell::RefCell<Vec<Vec<Scene<DefaultSequenceData>>>>>;
+
+        #[test]
+        fn c14_r1_publication_rechecks_model_source_and_backend_after_work() {
+            for edit in ["model", "source", "backend", "matching"] {
+                let (temp, mut condor, saved) = q13_fixture(&[0, 0], 1);
+                let model = temp.path().join("custom.json");
+                std::fs::write(&model, b"AAA").expect("model identity fixture");
+                if let QualityMetric::VMAF {
+                    model: configured, ..
+                } = &mut condor.sequence_config.target_quality.as_mut().expect("TQ").metric
+                {
+                    *configured = Some(model.clone());
+                }
+                let source = condor.input.as_data().path().expect("declared source").to_path_buf();
+                let before = serde_json::to_vec(&condor.scenes).expect("before");
+                let (tx, _rx) = sync::mpsc::channel();
+                provenance::take_identity_counts();
+                let result = TargetQuality::default().execute_with_probe(
+                    &mut condor,
+                    &tx,
+                    &Default::default(),
+                    |_, _, _, _, _, _, _, tasks, _, _, _| {
+                        if matches!(edit, "model" | "source") {
+                            let path = if edit == "model" { &model } else { &source };
+                            let modified = path.metadata()?.modified()?;
+                            std::fs::write(
+                                path,
+                                if edit == "model" {
+                                    b"BBB".as_slice()
+                                } else {
+                                    b"ordinary source replacement".as_slice()
+                                },
+                            )?;
+                            if edit == "model" {
+                                std::fs::File::open(path)?
+                                    .set_times(std::fs::FileTimes::new().set_modified(modified))?;
+                            }
+                        }
+                        let mut backend = MetricBackend::current(Engine::Vmaf);
+                        if edit == "backend" {
+                            backend.version = Some("changed during work".into());
+                        }
+                        let mut completed = tasks.to_vec();
+                        for task in &mut completed {
+                            task.passes.push(QualityPass {
+                                quantizer: task.encoder.quantizer().expect("q"),
+                                scores: vec![75.0; 2],
+                                started_on: 1,
+                                completed_on: 2,
+                                backend: Some(backend.clone()),
+                                ..Default::default()
+                            });
+                        }
+                        Ok((completed, vec![]))
+                    },
+                );
+                assert_eq!(
+                    provenance::take_identity_counts(),
+                    (2, 0),
+                    "one model capture before work and one at publication, shared by both scenes"
+                );
+                if edit == "matching" {
+                    result.expect("matching batch publication");
+                    assert_eq!(saved.borrow().len(), 1);
+                    assert!(condor.scenes.iter().all(|scene| {
+                        scene.sequence_data.target_quality.passes[0].provenance.is_some()
+                    }));
+                } else {
+                    let error =
+                        result.expect_err("changed inputs cannot receive a cached certificate");
+                    let expected = if edit == "backend" {
+                        "backend version/plugin admission identity changed"
+                    } else {
+                        "inputs changed during measurement"
+                    };
+                    assert!(format!("{error:#}").contains(expected), "{error:#}");
+                    assert!(saved.borrow().is_empty());
+                    assert_eq!(
+                        serde_json::to_vec(&condor.scenes).expect("no attached pass/selection"),
+                        before
+                    );
+                }
+            }
+        }
 
         #[test]
         fn c14_fallback_router_stamps_actual_branch_at_owning_attachment() {
