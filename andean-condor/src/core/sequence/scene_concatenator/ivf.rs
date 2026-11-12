@@ -1,11 +1,10 @@
 use super::*;
-use std::io::{Seek, SeekFrom};
+use std::io::{BufWriter, Seek, SeekFrom};
 
 fn count_record(count: u32) -> Result<u32> {
     count.checked_add(1).context("IVF record count exceeds u32")
 }
 
-// av-ivf 0.5 discards the header timebase; supplement it without replacing the codec pipeline.
 fn read_header(path: &Path) -> Result<([u8; 32], Ratio<i64>)> {
     let mut header = [0; 32];
     File::open(path)
@@ -18,19 +17,18 @@ fn read_header(path: &Path) -> Result<([u8; 32], Ratio<i64>)> {
             path.display()
         );
     }
+    if !matches!(&header[8..12], b"AV01" | b"VP80" | b"VP90") {
+        bail!("{} has an unsupported IVF codec", path.display());
+    }
+    if header[12..14] == [0, 0] || header[14..16] == [0, 0] {
+        bail!("{} has invalid zero IVF dimensions", path.display());
+    }
     let rate = u32::from_le_bytes(header[16..20].try_into().expect("4 bytes"));
     let scale = u32::from_le_bytes(header[20..24].try_into().expect("4 bytes"));
     if rate == 0 || scale == 0 {
         bail!("{} has an invalid zero IVF rate/scale", path.display());
     }
     let timebase = Ratio::new(i64::from(scale), i64::from(rate));
-    // The pinned muxer narrows its reduced rational to signed 32-bit components.
-    if i32::try_from(*timebase.numer()).is_err() || i32::try_from(*timebase.denom()).is_err() {
-        bail!(
-            "{} IVF timebase exceeds the muxer's i32 range",
-            path.display()
-        );
-    }
     Ok((header, timebase))
 }
 
@@ -54,13 +52,15 @@ impl SceneConcatenator {
     }
 
     /// Concatenates nonempty standard version-0/32-byte-header IVF parts with matching
-    /// codec/dimensions and equal rational timebases (reduced components must fit i32).
+    /// codec/dimensions and equal rational timebases (nonzero u32 rate/scale).
     /// Input counts are hints: zero means unknown; output counts actual records, including
     /// invisible frames, not decoded visible frames. The total must fit u32.
-    /// Timestamps must be nondecreasing and fit usize, as must appended timestamps.
+    /// Timestamps must be nondecreasing; all timestamp arithmetic is checked u64.
     /// Equal PTS and gaps are preserved; each origin is removed once. The next part starts
     /// one nominal tick (scale/rate seconds) after the previous part's final record.
-    /// Premature adapter EOF is rejected unless the independent raw reader also reaches EOF.
+    /// EOF is valid only between complete records at actual input EOF. Framing is checked,
+    /// not codec decodability; opaque payloads stream in bounded chunks with force checks.
+    /// The first input's exact rate/scale pair is preserved; output counts actual records.
     /// Caller must exclusively own the scratch output (it may be truncated on error).
     #[inline]
     pub fn ivf_cancel(
@@ -71,13 +71,9 @@ impl SceneConcatenator {
     ) -> Result<()> {
         cancellation.check_admission()?;
         Self::validate_scene_paths(scene_paths)?;
-        let mut partial = InterruptedOutput::new(output, cancellation);
-        let output = File::create(output)?;
-        let mut muxer = MuxerContext::new(IvfMuxer::new(), Writer::new(output));
-        let headers =
-            scene_paths.iter().map(|path| read_header(path)).collect::<Result<Vec<_>>>()?;
-        let (first_header, timebase) = &headers[0];
-        for ((header, tb), path) in headers.iter().zip(scene_paths) {
+        let (first_header, timebase) = read_header(&scene_paths[0])?;
+        for path in &scene_paths[1..] {
+            let (header, tb) = read_header(path)?;
             if header[8..16] != first_header[8..16] || tb != timebase {
                 bail!(
                     "{} has an incompatible IVF codec, dimensions or timebase",
@@ -85,28 +81,20 @@ impl SceneConcatenator {
                 );
             }
         }
-        let global_info = {
-            let acc = AccReader::new(std::fs::File::open(&scene_paths[0])?);
-            let mut demuxer = DemuxerContext::new(IvfDemuxer::new(), acc);
-            demuxer.read_headers()?;
-            let mut info = demuxer.info;
-            info.timebase = Some(*timebase);
-            info.duration = None;
-            // av-ivf 0.5 reads first-stream duration. Leave the provisional count unknown;
-            // rav1e's header count is always zero, so patch the actual record count at EOF.
-            let stream = info.streams.first_mut().context("IVF has no video stream")?;
-            stream.duration = None;
-            stream.timebase = *timebase;
-            info
-        };
-
-        muxer.set_global_info(global_info)?;
-        muxer.configure()?;
-        muxer.write_header()?;
+        let mut partial = InterruptedOutput::new(output, cancellation);
+        let mut writer = BufWriter::new(
+            File::create(output)
+                .with_context(|| format!("creating IVF output {}", output.display()))?,
+        );
+        let mut output_header = first_header;
+        output_header[24..32].fill(0); // Unknown count until all records are copied; reserved bytes zero.
+        writer.write_all(&output_header).context("writing IVF output header")?;
 
         let total_scenes = scene_paths.len();
         let mut timestamp_offset = 0u64;
         let mut record_count = 0u32;
+        // SECURITY: Never allocate the untrusted u32 payload size (up to 4 GiB).
+        let mut buffer = [0; 8192];
         for (index, file) in scene_paths.iter().enumerate() {
             cancellation.check_forced()?;
 
@@ -118,98 +106,89 @@ impl SceneConcatenator {
             let mut origin = None;
             let mut previous_timestamp = None;
             let mut last_local = 0u64;
-            let input = std::fs::File::open(file)?;
-            // Reject timestamps the adapter's u64 -> usize conversion would truncate,
-            // including on 32-bit targets. Only framing is read, not codec payloads.
-            let mut frame_headers = BufReader::new(File::open(file)?);
-            frame_headers.seek(SeekFrom::Start(32))?;
-
-            let acc = AccReader::new(input);
-
-            let mut demuxer = DemuxerContext::new(IvfDemuxer::new(), acc);
-            demuxer.read_headers()?;
-
-            trace!("global info: {:#?}", demuxer.info);
+            let mut input = BufReader::new(
+                File::open(file).with_context(|| format!("opening IVF {}", file.display()))?,
+            );
+            input
+                .seek(SeekFrom::Start(32))
+                .with_context(|| format!("seeking IVF records in {}", file.display()))?;
+            let mut part_records = 0u32;
 
             loop {
                 cancellation.check_forced()?;
-                match demuxer.read_event() {
-                    Ok(event) => match event {
-                        Event::MoreDataNeeded(sz) => panic!("needed more data: {sz} bytes"),
-                        Event::NewStream(s) => panic!("new stream: {s:?}"),
-                        Event::NewPacket(mut packet) => {
-                            let mut frame_header = [0; 12];
-                            frame_headers.read_exact(&mut frame_header).with_context(|| {
-                                format!("reading IVF frame header {}", file.display())
-                            })?;
-                            let size =
-                                u32::from_le_bytes(frame_header[..4].try_into().expect("4 bytes"));
-                            let timestamp = u64::from_le_bytes(
-                                frame_header[4..12].try_into().expect("8 bytes"),
-                            );
-                            frame_headers.seek_relative(i64::from(size))?;
-                            let carrier = usize::try_from(timestamp).with_context(|| {
-                                format!("{} IVF timestamp exceeds usize", file.display())
-                            })?;
-                            // COMPAT: av-ivf 0.5 demuxer/muxer carry IVF timestamps in pos;
-                            // packet.t.pts is unset. pos is NOT a byte offset in this adapter.
-                            if packet.pos != Some(carrier) || packet.data.len() != size as usize {
-                                bail!(
-                                    "{} IVF timestamp/framing does not match the adapter",
-                                    file.display()
-                                );
-                            }
-                            if previous_timestamp.is_some_and(|previous| timestamp < previous) {
-                                bail!(
-                                    "{} IVF timestamp decreases at output record {record_count}",
-                                    file.display()
-                                );
-                            }
-                            previous_timestamp = Some(timestamp);
-                            last_local = timestamp
-                                .checked_sub(*origin.get_or_insert(timestamp))
-                                .with_context(|| {
-                                    format!("{} IVF timestamp underflow", file.display())
-                                })?;
-                            let appended =
-                                last_local.checked_add(timestamp_offset).with_context(|| {
-                                    format!("{} IVF timestamp offset overflow", file.display())
-                                })?;
-                            packet.pos = Some(usize::try_from(appended).with_context(|| {
-                                format!("{} appended IVF timestamp exceeds usize", file.display())
-                            })?);
-                            record_count = count_record(record_count).with_context(|| {
-                                format!("counting IVF records in {}", file.display())
-                            })?;
-
-                            trace!("received packet with pos: {:?}", packet.pos);
-                            muxer.write_packet(Arc::new(packet))?;
-                        },
-                        Event::Continue => {
-                            // do nothing
-                        },
-                        Event::Eof => {
-                            trace!("EOF received.");
-                            break;
-                        },
-                        _ => unimplemented!(),
-                    },
-                    Err(e) => {
-                        error!("{:?}", e);
-                        break;
-                    },
+                // fill_buf refills an exhausted buffer; only actual EOF ends a part.
+                if input
+                    .fill_buf()
+                    .with_context(|| {
+                        format!(
+                            "reading IVF record {part_records} header in {}",
+                            file.display()
+                        )
+                    })?
+                    .is_empty()
+                {
+                    break;
                 }
-            }
-            // The pinned adapter can report EOF at a buffer boundary before the file ends.
-            if !frame_headers
-                .fill_buf()
-                .with_context(|| format!("checking IVF EOF for {}", file.display()))?
-                .is_empty()
-            {
-                bail!(
-                    "{} has unconsumed input after IVF demuxer stopped at {record_count} output records",
-                    file.display()
-                );
+                let mut frame_header = [0; 12];
+                input.read_exact(&mut frame_header).with_context(|| {
+                    format!(
+                        "reading IVF record {part_records} header in {}",
+                        file.display()
+                    )
+                })?;
+                let mut remaining =
+                    u32::from_le_bytes(frame_header[..4].try_into().expect("4 bytes"));
+                let timestamp =
+                    u64::from_le_bytes(frame_header[4..12].try_into().expect("8 bytes"));
+                if previous_timestamp.is_some_and(|previous| timestamp < previous) {
+                    bail!(
+                        "{} IVF timestamp decreases at record {part_records}",
+                        file.display()
+                    );
+                }
+                previous_timestamp = Some(timestamp);
+                last_local =
+                    timestamp.checked_sub(*origin.get_or_insert(timestamp)).with_context(|| {
+                        format!(
+                            "{} IVF timestamp underflow at record {part_records}",
+                            file.display()
+                        )
+                    })?;
+                let appended = last_local.checked_add(timestamp_offset).with_context(|| {
+                    format!(
+                        "{} IVF timestamp offset overflow at record {part_records}",
+                        file.display()
+                    )
+                })?;
+                record_count = count_record(record_count).with_context(|| {
+                    format!("counting IVF record {part_records} in {}", file.display())
+                })?;
+                frame_header[4..12].copy_from_slice(&appended.to_le_bytes());
+                writer.write_all(&frame_header).with_context(|| {
+                    format!(
+                        "writing IVF record {part_records} header from {}",
+                        file.display()
+                    )
+                })?;
+                while remaining > 0 {
+                    cancellation.check_forced()?;
+                    let length = remaining.min(buffer.len() as u32) as usize;
+                    input.read_exact(&mut buffer[..length]).with_context(|| {
+                        format!(
+                            "reading IVF record {part_records} payload in {}",
+                            file.display()
+                        )
+                    })?;
+                    writer.write_all(&buffer[..length]).with_context(|| {
+                        format!(
+                            "writing IVF record {part_records} payload from {}",
+                            file.display()
+                        )
+                    })?;
+                    remaining -= length as u32;
+                }
+                // Bounded by the already checked global record count.
+                part_records += 1;
             }
             if origin.is_none() {
                 bail!("{} has no IVF records", file.display());
@@ -224,8 +203,6 @@ impl SceneConcatenator {
             }
         }
 
-        muxer.write_trailer()?;
-        let mut writer = muxer.into_writer();
         writer.seek(SeekFrom::Start(24)).context("seeking IVF output record count")?;
         writer
             .write_all(&record_count.to_le_bytes())

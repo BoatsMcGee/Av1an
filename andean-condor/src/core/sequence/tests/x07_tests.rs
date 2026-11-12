@@ -430,18 +430,26 @@ fn x07_native_unknown_header_count_uses_actual_records() {
 
 #[test]
 fn x07_native_rav1e_unknown_count_concat() {
+    native_rav1e_unknown_count_concat();
+}
+
+#[test]
+fn x10_native_original_rav1e_testsrc2_concat() {
+    native_rav1e_unknown_count_concat();
+}
+
+fn native_rav1e_unknown_count_concat() {
     let dir = tempfile::tempdir().expect("rav1e fixture directory");
     let source = dir.path().join("source.y4m");
     native(
         "ffmpeg",
         &[
-            // Isolate unknown counts from the pinned demuxer's separate refill-boundary panic (X10).
             "-v",
             "error",
             "-f",
             "lavfi",
             "-i",
-            "color=red:size=64x64:rate=24000/1001",
+            "testsrc2=size=64x64:rate=24000/1001",
             "-frames:v",
             "3",
             "-pix_fmt",
@@ -474,16 +482,27 @@ fn x07_native_rav1e_unknown_count_concat() {
         "unmodified rav1e unknown count"
     );
     assert_eq!(records(&bytes).len(), 3);
+    let payload_sizes = records(&bytes).iter().map(|r| r.1.len()).collect::<Vec<_>>();
+    assert_eq!(bytes.len(), 68 + payload_sizes.iter().sum::<usize>());
+    assert!(bytes.len() > 4096, "original native stream spans a refill");
     eprintln!(
         "rav1e bytes={}, payload sizes={:?}",
         bytes.len(),
-        records(&bytes).iter().map(|r| r.1.len()).collect::<Vec<_>>()
+        payload_sizes
     );
     let pixels = decoded(&part);
     assert_eq!(pixels.len(), 3 * 6144);
     let output = dir.path().join("joined.ivf");
     concatenate(&output, &[part.clone(), part.clone()]).expect("concat native rav1e records");
     assert_output(&output, 6, &bytes[16..24], &[0, 1, 2, 3, 4, 5]);
+    let payloads = records(&bytes).into_iter().map(|r| r.1).collect::<Vec<_>>();
+    assert_eq!(
+        records(&fs::read(&output).expect("rav1e output bytes"))
+            .into_iter()
+            .map(|r| r.1)
+            .collect::<Vec<_>>(),
+        [payloads.as_slice(), &payloads].concat()
+    );
     assert_eq!(decoded(&output), [pixels.as_slice(), &pixels].concat());
     assert_eq!(fs::read(&part).expect("rav1e input unchanged"), bytes);
 }
@@ -623,17 +642,15 @@ fn x07_native_vp8_alt_ref_records_are_not_visible_frame_count() {
 }
 
 #[test]
-fn x07_adapter_early_eof_refuses_unconsumed_records() {
+fn x07_old_adapter_early_eof_now_consumes_all_records() {
     let dir = tempfile::tempdir().expect("early-EOF fixture directory");
     let part = dir.path().join("boundary.ivf");
     let output = dir.path().join("joined.ivf");
-    let mut accepted = Vec::new();
     for hint in [0u32, 3] {
         fixture(&part, &[]);
         let mut bytes = fs::read(&part).expect("standard IVF header");
         bytes[24..28].copy_from_slice(&hint.to_le_bytes());
         // Framing only: 32 + 12 + 4052 puts the first record's end at byte 4096.
-        // X10 must eventually process all three, not merely refuse this boundary.
         for (timestamp, size) in [(70u64, 4052u32), (71, 1), (72, 1)] {
             bytes.extend_from_slice(&size.to_le_bytes());
             bytes.extend_from_slice(&timestamp.to_le_bytes());
@@ -642,23 +659,191 @@ fn x07_adapter_early_eof_refuses_unconsumed_records() {
         assert_eq!(records(&bytes).len(), 3);
         assert_eq!(bytes.len(), 4122);
         fs::write(&part, &bytes).expect("write complete three-record stream");
-        if let Err(error) = concatenate(&output, std::slice::from_ref(&part)) {
-            let message = format!("{error:#}");
-            assert!(
-                message.contains(part.to_str().expect("fixture path")),
-                "{message}"
-            );
-            assert!(message.contains("unconsumed input"), "{message}");
-            assert!(message.contains("record"), "{message}");
-        } else {
-            let truncated = fs::read(&output).expect("read falsely completed output");
-            let count = u32::from_le_bytes(truncated[24..28].try_into().expect("header count"));
-            accepted.push((hint, count, records(&truncated).len()));
-        }
+        concatenate(&output, std::slice::from_ref(&part)).expect("all boundary records consumed");
+        let joined = fs::read(&output).expect("read complete output");
+        assert_eq!(&joined[24..28], &[3, 0, 0, 0]);
+        assert_eq!(
+            records(&joined),
+            vec![(0, vec![0xAB; 4052]), (1, vec![0xAB]), (2, vec![0xAB])]
+        );
         assert_eq!(fs::read(&part).expect("input unchanged"), bytes);
     }
-    assert!(
-        accepted.is_empty(),
-        "false completion (input hint, output count, records): {accepted:?}"
-    );
+}
+
+#[test]
+fn x10_old_4096_boundary_sweep_preserves_all_records() {
+    let dir = tempfile::tempdir().expect("boundary sweep directory");
+    let part = dir.path().join("boundary.ivf");
+    let output = dir.path().join("joined.ivf");
+    let mut failures = Vec::new();
+    // Opaque framing fixtures are deliberately not codec-decoding certificates.
+    for gap in 0..=12 {
+        for hint in [0u32, 1, 3, u32::MAX] {
+            fixture(&part, &[]);
+            let mut bytes = fs::read(&part).expect("standard header");
+            bytes[24..28].copy_from_slice(&hint.to_le_bytes());
+            for (timestamp, payload) in
+                [(70u64, vec![11; 4052 - gap]), (72, vec![22]), (72, vec![33])]
+            {
+                bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                bytes.extend_from_slice(&timestamp.to_le_bytes());
+                bytes.extend_from_slice(&payload);
+            }
+            fs::write(&part, &bytes).expect("boundary input");
+            let result =
+                std::panic::catch_unwind(|| concatenate(&output, std::slice::from_ref(&part)));
+            match result {
+                Ok(Ok(())) => {
+                    let joined = fs::read(&output).expect("boundary output");
+                    assert_eq!(&joined[24..28], &[3, 0, 0, 0]);
+                    assert_eq!(&joined[16..24], &bytes[16..24]);
+                    assert_eq!(
+                        records(&joined),
+                        vec![(0, vec![11; 4052 - gap]), (2, vec![22]), (2, vec![33])]
+                    );
+                },
+                Ok(Err(error)) => failures.push(format!("gap={gap} hint={hint}: {error:#}")),
+                Err(_) => failures.push(format!("gap={gap} hint={hint}: panic")),
+            }
+            assert_eq!(fs::read(&part).expect("input unchanged"), bytes);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn x10_malformed_framing_returns_contextual_errors_without_panics() {
+    let dir = tempfile::tempdir().expect("malformed directory");
+    let part = dir.path().join("malformed.ivf");
+    fixture(&part, &[50]);
+    let valid = fs::read(&part).expect("standard single-record input");
+    let mut cases = Vec::new();
+    for length in 1..32 {
+        cases.push((
+            format!("file-header-{length}"),
+            valid[..length].to_vec(),
+            "header".to_owned(),
+            true,
+        ));
+    }
+    for (label, offset, value) in [
+        ("magic", 0, 0),
+        ("version", 4, 1),
+        ("header-size", 6, 31),
+        ("codec", 8, 0),
+        ("width", 12, 0),
+        ("height", 14, 0),
+        ("rate", 16, 0),
+        ("scale", 20, 0),
+    ] {
+        let mut bytes = valid.clone();
+        let length = if offset < 16 && offset > 0 && offset != 8 {
+            2
+        } else {
+            4
+        };
+        bytes[offset..offset + length].fill(0);
+        bytes[offset] = value;
+        cases.push((label.to_owned(), bytes, "IVF".to_owned(), false));
+    }
+    for prefix in [32, 45] {
+        let record = if prefix == 32 { 0 } else { 1 };
+        for length in 1..12 {
+            let mut bytes = valid[..prefix].to_vec();
+            bytes.extend_from_slice(&valid[32..32 + length]);
+            cases.push((
+                format!("record-{record}-header-{length}"),
+                bytes,
+                format!("record {record}"),
+                true,
+            ));
+        }
+        for size in [1u32, u32::MAX] {
+            let mut bytes = valid[..prefix].to_vec();
+            bytes.extend_from_slice(&size.to_le_bytes());
+            bytes.extend_from_slice(&51u64.to_le_bytes());
+            cases.push((
+                format!("record-{record}-payload-{size}"),
+                bytes,
+                format!("record {record}"),
+                true,
+            ));
+        }
+        for (size, present) in [(3u32, 1usize), (10_000, 9999)] {
+            let mut bytes = valid[..prefix].to_vec();
+            bytes.extend_from_slice(&size.to_le_bytes());
+            bytes.extend_from_slice(&51u64.to_le_bytes());
+            bytes.extend(std::iter::repeat_n(0xAB, present));
+            cases.push((
+                format!("record-{record}-short-payload-{size}"),
+                bytes,
+                format!("record {record}"),
+                true,
+            ));
+        }
+    }
+    let mut failures = Vec::new();
+    for (index, (label, bytes, context, io_cause)) in cases.into_iter().enumerate() {
+        fs::write(&part, &bytes).expect("malformed input");
+        let output = dir.path().join(format!("joined-{index}.ivf"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let result = std::panic::catch_unwind(|| {
+            SceneConcatenator::ivf_cancel(
+                &output,
+                std::slice::from_ref(&part),
+                &tx,
+                &Cancellation::default(),
+            )
+        });
+        match result {
+            Ok(Err(error)) => {
+                let text = format!("{error:#}");
+                if !text.contains(&part.display().to_string()) || !text.contains(&context) {
+                    failures.push(format!("{label}: missing path/{context}: {text}"));
+                }
+                if io_cause
+                    && error.downcast_ref::<std::io::Error>().map(std::io::Error::kind)
+                        != Some(std::io::ErrorKind::UnexpectedEof)
+                {
+                    failures.push(format!("{label}: lost original UnexpectedEof: {text}"));
+                }
+            },
+            Ok(Ok(())) => failures.push(format!("{label}: false success")),
+            Err(_) => failures.push(format!("{label}: panic")),
+        }
+        assert!(
+            !rx.try_iter()
+                .any(|s| matches!(s, SequenceStatus::Whole(Status::Completed { .. })))
+        );
+        if !label.starts_with("record-") {
+            assert!(
+                !output.exists(),
+                "invalid file header must not create output: {label}"
+            );
+        }
+        assert_eq!(fs::read(&part).expect("malformed input unchanged"), bytes);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn x10_streamed_payload_and_full_unsigned_header_rate() {
+    let dir = tempfile::tempdir().expect("streaming fixture");
+    let part = dir.path().join("large.ivf");
+    fixture(&part, &[]);
+    let mut bytes = fs::read(&part).expect("standard header");
+    bytes[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes[20..24].copy_from_slice(&(u32::MAX - 1).to_le_bytes());
+    let payload = (0..100_000).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+    bytes.extend_from_slice(&payload);
+    fs::write(&part, &bytes).expect("large opaque payload");
+    let output = dir.path().join("joined.ivf");
+    concatenate(&output, &[part.clone(), part.clone()]).expect("full u32 rational, chunked copy");
+    let joined = fs::read(&output).expect("streamed output");
+    assert_eq!(&joined[16..24], &bytes[16..24]);
+    assert_eq!(&joined[24..28], &[2, 0, 0, 0]);
+    assert_eq!(records(&joined), vec![(0, payload.clone()), (1, payload)]);
+    assert_eq!(fs::read(part).expect("input unchanged"), bytes);
 }

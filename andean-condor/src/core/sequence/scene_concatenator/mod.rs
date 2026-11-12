@@ -18,15 +18,9 @@ use crate::{
     utils::cancellation::Cancellation,
 };
 use anyhow::{Context, Result, bail};
-use av_format::{
-    buffer::AccReader,
-    demuxer::{Context as DemuxerContext, Event},
-    muxer::{Context as MuxerContext, Writer},
-    rational::Ratio,
-};
-use av_ivf::{demuxer::IvfDemuxer, muxer::IvfMuxer};
+use av_format::rational::Ratio;
 use thiserror::Error;
-use tracing::{error, trace};
+use tracing::error;
 
 use crate::{
     core::{

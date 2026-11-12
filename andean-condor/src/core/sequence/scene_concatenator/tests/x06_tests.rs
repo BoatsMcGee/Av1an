@@ -282,6 +282,59 @@ fn job(
 }
 
 #[test]
+fn x10_sequence_current_context_malformed_ivf_never_completes_or_replaces_final() {
+    let dir = tempfile::tempdir().expect("Sequence framing fixture");
+    let output = dir.path().join("final.ivf");
+    std::fs::write(&output, b"old final sentinel").expect("old final");
+    let mut job = job(dir.path(), &output, 1);
+    let chunk = dir.path().join("00000.ivf");
+    let mut bytes = b"DKIF\0\0\x20\0AV01\x20\0\x10\0\x18\0\0\0\x01\0\0\0\0\0\0\0\0\0\0\0".to_vec();
+    bytes.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xAB]);
+    bytes.extend_from_slice(&[1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]); // Missing second payload.
+    std::fs::write(&chunk, &bytes).expect("malformed framing");
+    // Synthetic current C14 stamp only: not a claim that a foreign encoder produced valid media.
+    crate::core::sequence::c14_tests::current_encoding_fixture(&mut job);
+    let (tx, rx) = sync::mpsc::channel();
+    let mut concat = SceneConcatenator::default();
+    concat.validate(&mut job).expect("final admission");
+    concat.initialize(&mut job, tx.clone()).expect("readable requested list");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        concat.execute_cancel(&mut job, tx, Cancellation::default())
+    }));
+    let error = result
+        .expect("owning Sequence must not panic")
+        .expect_err("malformed IVF must reach caller");
+    let text = format!("{error:#}");
+    assert!(
+        text.contains(&chunk.display().to_string()) && text.contains("record 1"),
+        "{text}"
+    );
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .expect("original framing I/O cause")
+            .kind(),
+        std::io::ErrorKind::UnexpectedEof
+    );
+    assert!(
+        !rx.try_iter()
+            .any(|s| matches!(s, SequenceStatus::Whole(Status::Completed { .. })))
+    );
+    assert_eq!(
+        std::fs::read(&output).expect("final preserved"),
+        b"old final sentinel"
+    );
+    assert_eq!(std::fs::read(&chunk).expect("input preserved"), bytes);
+    assert!(
+        !std::fs::read_dir(dir.path()).expect("staging cleanup").any(|e| e
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".condor-output-"))
+    );
+}
+
+#[test]
 fn x06_sequence_initialization_and_bypassed_execution_reject_incomplete_lists() {
     let mut failures = Vec::new();
     for count in [0, 3] {
