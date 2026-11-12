@@ -106,7 +106,10 @@ impl SceneConcatenator {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let tags_xml_path = match config.and_then(|config| config.metadata.as_ref()) {
+        let tags_xml_path = match config
+            .and_then(|config| config.metadata.as_ref())
+            .filter(|metadata| metadata.title.is_some() || !metadata.tags.is_empty())
+        {
             Some(metadata) => {
                 let path = scratch_directory.join("global-tags.xml");
                 std::fs::write(&path, tags_xml(metadata))?;

@@ -275,26 +275,44 @@ fn x01_unsupported_ids_and_extra_inputs_refuse_before_output_mutation() {
 #[cfg(unix)]
 #[test]
 fn x01_isolated_preflight_errors_cancellation_and_preservation() {
-    use std::os::unix::fs::PermissionsExt;
-    let python = which::which("python3").expect("required Python fixture tool");
-    let ffmpeg = which::which("ffmpeg").expect("required FFmpeg");
-    let ffprobe = which::which("ffprobe").expect("required FFprobe");
-    let mkvmerge = which::which("mkvmerge").expect("required mkvmerge");
-    let fixtures = tempfile::tempdir().expect("native fixtures");
-    let scenes = chunks(fixtures.path());
-    let source = fixtures.path().join("source.mkv");
+    isolated_preflight_cases(&[
+        "adapt-content",
+        "strip-global-and-chapters",
+        "leader-exit",
+        "identify-warning",
+        "identify-errors",
+        "identify-status",
+        "malformed-identify",
+        "missing-identify",
+        "probe-failure",
+        "malformed-probe",
+        "probe-overflow",
+        "stderr-overflow",
+        "missing-probe",
+        "metadata-only",
+        "chapter-only",
+        "unsupported-type",
+        "empty-remux",
+        "missing-remux",
+        "invalid-remux",
+        "track-loss",
+        "codec-refusal",
+        "metadata-loss",
+        "force-probe",
+        "force-remux",
+    ]);
+}
+
+fn ancillary_source(root: &Path) -> PathBuf {
+    let source = root.join("source.mkv");
     std::fs::write(
-        fixtures.path().join("sub.srt"),
+        root.join("sub.srt"),
         "1\n00:00:00,000 --> 00:00:00,100\nX01 subtitle\n",
     )
     .expect("subtitle");
-    std::fs::write(
-        fixtures.path().join("attachment.txt"),
-        b"X01 attachment identity",
-    )
-    .expect("attachment");
-    std::fs::write(fixtures.path().join("metadata.txt"), ";FFMETADATA1\ntitle=X01 title\ncomment=X01 global tag\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=100\ntitle=X01 chapter\n").expect("chapters");
-    run(Command::new(&ffmpeg)
+    std::fs::write(root.join("attachment.txt"), b"X01 attachment identity").expect("attachment");
+    std::fs::write(root.join("metadata.txt"), ";FFMETADATA1\ntitle=X01 title\ncomment=X01 global tag\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=100\ntitle=X01 chapter\n").expect("chapters");
+    run(Command::new("ffmpeg")
         .args([
             "-v",
             "error",
@@ -308,9 +326,9 @@ fn x01_isolated_preflight_errors_cancellation_and_preservation() {
             "sine=sample_rate=48000",
             "-i",
         ])
-        .arg(fixtures.path().join("sub.srt"))
+        .arg(root.join("sub.srt"))
         .arg("-i")
-        .arg(fixtures.path().join("metadata.txt"))
+        .arg(root.join("metadata.txt"))
         .args([
             "-map",
             "0:v",
@@ -336,35 +354,132 @@ fn x01_isolated_preflight_errors_cancellation_and_preservation() {
             "title=X01 audio name",
             "-attach",
         ])
-        .arg(fixtures.path().join("attachment.txt"))
+        .arg(root.join("attachment.txt"))
         .args(["-metadata:s:t:0", "mimetype=text/plain"])
         .arg(&source));
-    for case in [
-        "adapt-content",
-        "strip-global-and-chapters",
-        "leader-exit",
-        "identify-warning",
-        "identify-errors",
-        "identify-status",
-        "malformed-identify",
-        "missing-identify",
-        "probe-failure",
-        "malformed-probe",
-        "probe-overflow",
-        "stderr-overflow",
-        "missing-probe",
-        "metadata-only",
-        "chapter-only",
-        "unsupported-type",
-        "empty-remux",
-        "missing-remux",
-        "invalid-remux",
-        "track-loss",
-        "codec-refusal",
-        "metadata-loss",
-        "force-probe",
-        "force-remux",
+    source
+}
+
+#[test]
+fn x03_native_strip_title_and_tags_preserve_ancillary_metadata() {
+    // Removing the owner's empty-tag filter breaks strip-only real muxes;
+    // coupling copy=false to XML emission loses the explicitly requested values.
+    let fixtures = tempfile::tempdir().expect("native fixtures");
+    let source = ancillary_source(fixtures.path());
+    let original = std::fs::read(&source).expect("source");
+    let before = probe(&source);
+    assert_eq!(before["format"]["tags"]["title"], "X01 title");
+    assert_eq!(before["format"]["tags"]["COMMENT"], "X01 global tag");
+    let scenes = chunks(fixtures.path());
+    for (case, metadata, expected_title, expected_tag) in [
+        // mkvmerge's --no-global-tags excludes Simple tags, not the Segment title.
+        (
+            "strip",
+            serde_json::json!({"copy": false}),
+            Some("X01 title"),
+            None,
+        ),
+        (
+            "title",
+            serde_json::json!({"copy": false, "title": "X03 & <title> \"double\" 'single'"}),
+            Some("X03 & <title> \"double\" 'single'"),
+            None,
+        ),
+        (
+            "tags",
+            serde_json::json!({"copy": false, "tags": {"X03_SPECIAL": "X03 & <value> \"double\" 'single'"}}),
+            Some("X01 title"),
+            Some("X03 & <value> \"double\" 'single'"),
+        ),
+        (
+            "empty-title",
+            serde_json::json!({"copy": false, "title": ""}),
+            Some(""),
+            None,
+        ),
     ] {
+        let dir = tempfile::tempdir_in(fixtures.path()).expect("case");
+        let config = serde_json::from_value(serde_json::json!({"metadata": metadata}))
+            .expect("metadata config");
+        let scratch = SceneConcatenator::scratch_directory(dir.path());
+        std::fs::create_dir_all(&scratch).expect("scratch");
+        std::fs::write(scratch.join("source.mkv"), b"caller scratch sentinel").expect("sentinel");
+        mux(dir.path(), &source, &scenes, Some(&config))
+            .unwrap_or_else(|error| panic!("{case}: actual native final mux: {error:#}"));
+        let output = dir.path().join("out.mkv");
+        let data = probe(&output);
+        let tags = &data["format"]["tags"];
+        assert_eq!(
+            tags["title"].as_str().or_else(|| tags["TITLE"].as_str()),
+            expected_title,
+            "{case}: {tags}"
+        );
+        assert_eq!(tags["X03_SPECIAL"].as_str(), expected_tag, "{case}: {tags}");
+        assert!(
+            tags["COMMENT"].is_null(),
+            "{case}: source global tag leaked"
+        );
+        let streams = data["streams"].as_array().expect("streams");
+        assert_eq!(streams.len(), 4, "{case}: video/audio/subtitle/attachment");
+        let audio = streams.iter().find(|stream| stream["codec_type"] == "audio").expect("audio");
+        assert_eq!(audio["tags"]["language"], "eng");
+        assert_eq!(audio["tags"]["title"], "X01 audio name");
+        let attachment = streams
+            .iter()
+            .find(|stream| stream["codec_type"] == "attachment")
+            .expect("attachment");
+        assert_eq!(attachment["tags"]["filename"], "attachment.txt");
+        assert_eq!(attachment["tags"]["mimetype"], "text/plain");
+        let options: Vec<String> = serde_json::from_slice(
+            &std::fs::read(scratch.join("options.json")).expect("actual mux options"),
+        )
+        .expect("options");
+        assert!(options.iter().any(|arg| arg == "--no-global-tags"));
+        assert_eq!(
+            options.iter().any(|arg| arg == "--global-tags"),
+            case != "strip"
+        );
+        let xml = scratch.join("global-tags.xml");
+        assert_eq!(xml.exists(), case != "strip");
+        if case != "strip" {
+            let xml =
+                std::fs::read_to_string(xml).expect("generated XML consumed by native mkvmerge");
+            let escaped = match case {
+                "title" => "X03 &amp; &lt;title&gt; &quot;double&quot; &apos;single&apos;",
+                "tags" => "X03 &amp; &lt;value&gt; &quot;double&quot; &apos;single&apos;",
+                "empty-title" => "<String></String>",
+                _ => unreachable!(),
+            };
+            assert!(xml.contains(escaped), "{case}: {xml}");
+        }
+        assert_eq!(std::fs::read(&source).expect("source intact"), original);
+        assert_eq!(
+            std::fs::read(scratch.join("source.mkv")).expect("sentinel"),
+            b"caller scratch sentinel"
+        );
+        eprintln!(
+            "X03 native {case}: real final mux/probe, source COMMENT stripped (Segment title separate), requested values/stream tags/options/XML/sentinels checked"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn x03_isolated_adapted_strip_reaches_native_final_mux() {
+    isolated_preflight_cases(&["strip-global-and-chapters"]);
+}
+
+#[cfg(unix)]
+fn isolated_preflight_cases(cases: &[&str]) {
+    use std::os::unix::fs::PermissionsExt;
+    let python = which::which("python3").expect("required Python fixture tool");
+    let ffmpeg = which::which("ffmpeg").expect("required FFmpeg");
+    let ffprobe = which::which("ffprobe").expect("required FFprobe");
+    let mkvmerge = which::which("mkvmerge").expect("required mkvmerge");
+    let fixtures = tempfile::tempdir().expect("native fixtures");
+    let scenes = chunks(fixtures.path());
+    let source = ancillary_source(fixtures.path());
+    for &case in cases {
         let dir = tempfile::tempdir().expect("isolated case");
         let root = dir.path();
         std::fs::copy(&source, root.join("source 'quoted'.mkv")).expect("source");
@@ -474,7 +589,6 @@ fn x01_preflight_child() {
     std::fs::write(&output, b"old output sentinel").expect("old output");
     let token = Cancellation::default();
     if case == "strip-global-and-chapters" {
-        // Exercise the actual source owner without X03's unrelated empty global-tag XML.
         let config: MkvmergeConfig = serde_json::from_value(serde_json::json!({
             "metadata": {"copy": false}, "chapters": {"copy": false}
         }))
@@ -483,6 +597,8 @@ fn x01_preflight_child() {
         assert_eq!(before["format"]["tags"]["title"], "X01 title");
         assert_eq!(before["format"]["tags"]["COMMENT"], "X01 global tag");
         let scratch = SceneConcatenator::scratch_directory(&root);
+        std::fs::create_dir_all(&scratch).expect("scratch");
+        std::fs::write(scratch.join("source.mkv"), b"caller scratch sentinel").expect("sentinel");
         let prepared = source::prepare(Some(&source), Some(&config), &scratch, &token)
             .expect("opting out of global tags must preserve ancillary track tags");
         let staged = prepared.path.as_ref().expect("owned ancillary source");
@@ -518,20 +634,68 @@ fn x01_preflight_child() {
             .args(["-f", "null", "-"]));
         assert_eq!(bytes, b"X01 attachment identity");
         drop(prepared);
+        assert_eq!(
+            std::fs::read(&output).expect("output sentinel"),
+            b"old output sentinel"
+        );
+        mux(&root, &source, &scenes, Some(&config))
+            .expect("strip-only actual adapter and native final mux");
+        let data = probe(&output);
+        let streams = data["streams"].as_array().expect("final streams");
+        assert_eq!(streams.len(), 4);
+        let audio = streams
+            .iter()
+            .find(|stream| stream["codec_type"] == "audio")
+            .expect("final audio");
+        assert_eq!(audio["tags"]["language"], "eng");
+        assert_eq!(audio["tags"]["title"], "X01 audio name");
+        let attachment = streams
+            .iter()
+            .find(|stream| stream["codec_type"] == "attachment")
+            .expect("final attachment");
+        assert_eq!(attachment["tags"]["filename"], "attachment.txt");
+        assert_eq!(attachment["tags"]["mimetype"], "text/plain");
         assert!(
-            !std::fs::read_dir(scratch).expect("scratch listing").any(|entry| entry
+            data["format"]["tags"]
+                .as_object()
+                .expect("final tags")
+                .keys()
+                .all(|key| key.eq_ignore_ascii_case("encoder") || key == "creation_time"),
+            "final source globals stripped: {}",
+            data["format"]["tags"]
+        );
+        let chapters: serde_json::Value = serde_json::from_slice(&run(Command::new("ffprobe")
+            .args(["-v", "error", "-show_chapters", "-of", "json"])
+            .arg(&output)))
+        .expect("final chapters");
+        assert!(chapters["chapters"].as_array().expect("chapters").is_empty());
+        assert_eq!(
+            run(Command::new("ffmpeg")
+                .args(["-v", "error", "-dump_attachment:t:0", "pipe:1", "-i"])
+                .arg(&output)
+                .args(["-f", "null", "-"])),
+            b"X01 attachment identity"
+        );
+        let options: Vec<String> =
+            serde_json::from_slice(&std::fs::read(scratch.join("options.json")).expect("options"))
+                .expect("mux options");
+        assert!(options.iter().any(|arg| arg == "--no-global-tags"));
+        assert!(!options.iter().any(|arg| arg == "--global-tags"));
+        assert!(!scratch.join("global-tags.xml").exists());
+        assert!(
+            !std::fs::read_dir(&scratch).expect("scratch listing").any(|entry| entry
                 .expect("entry")
                 .file_name()
                 .to_string_lossy()
                 .starts_with(".condor-source-"))
         );
         assert_eq!(
-            std::fs::read(&output).expect("output sentinel"),
-            b"old output sentinel"
+            std::fs::read(scratch.join("source.mkv")).expect("caller scratch sentinel"),
+            b"caller scratch sentinel"
         );
         assert_eq!(std::fs::read(source).expect("source intact"), original);
         println!(
-            "strip-global-and-chapters: actual adapter preserved audio language/name and attachment tags/bytes, removed source globals/chapters, kept sentinels and cleaned owned scratch; final mux not exercised (X03)"
+            "strip-global-and-chapters: actual adapter AND native final mux/probe preserved audio language/name and attachment tags/bytes, removed source globals/chapters, omitted tag XML, kept source/scratch sentinels and cleaned owned scratch; only unsupported source identify is a fixture"
         );
         return;
     }
