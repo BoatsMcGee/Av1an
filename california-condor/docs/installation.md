@@ -21,8 +21,12 @@ itself by relative path:
 ```text
 condor/
 ├── condor.exe
+├── ffms2.dll              mandatory native decoder/runtime dependency
+├── onnxruntime*.dll       when produced by the selected build
+├── DirectML.dll           when produced/required by that ONNX Runtime build
 ├── libvmaf.dll            VMAF
 ├── libvship.dll           SSIMULACRA2, Butteraugli and CVVDP on the GPU
+├── fmetrics.dll           CPU fallback metrics
 ├── libgcc_s_seh-1.dll     \  runtime dependencies of libvmaf
 ├── libstdc++-6.dll        |
 ├── libwinpthread-1.dll   /
@@ -40,10 +44,22 @@ Two mistakes produce confusing failures rather than an error:
   kept together in one directory as laid out above. The loose files are attached
   for reference and for partial updates, not as an install method.
 
-Every DLL here is optional: each one only disables the metric it belongs to, and
-`condor.exe` starts and runs without any of them. FFMS2 is linked statically into the
-executable, so decoding never depends on a separate `ffms2.dll` — only the
-VapourSynth plugin path and the FFVship CLI use one.
+**Keep the runtime bundle together.** `ffms2.dll` is dynamically linked and
+mandatory, even for `condor --version`. The pinned FFMS2 5.0 MSVC x64 DLL imports
+only Windows system DLLs; it does not need separate FFmpeg codec DLLs. Keep any
+ONNX Runtime, DirectML and other runtime DLLs included in the archive too: a
+missing process-loader dependency can prevent Condor from starting at all.
+
+The metric libraries (`libvmaf.dll`, `libvship.dll`, `fmetrics.dll`) are loaded
+on demand; their absence or failure disables their native metric path. This
+does not make FFMS2 or other process-loader dependencies optional. GPU metrics
+still require a compatible GPU/driver (including the Vulkan loader for libvship);
+bundling DLLs does not guarantee GPU availability. VMAF and TransNetV2 also need
+their respective files in `model/`.
+
+Windows release CI checks the actual bundled PE imports, then extracts the ZIP
+into clean scratch and runs `--version` plus native FFMS2 frame decoding without
+the build directory on PATH. Use the ZIP, not the loose executable.
 
 #### Linux releases
 
@@ -57,7 +73,7 @@ install.
 with `cannot execute: required file not found`, because the archive ships one
 x86-64 ELF. Build from source on those machines.
 
-Unlike Windows, the executable is **not** self-sufficient: the host provides
+The Linux executable is **not** self-sufficient: the host provides
 
 * **`libffms2`**, which `condor` links against directly. Without it the loader
   fails before the program starts (`error while loading shared libraries:

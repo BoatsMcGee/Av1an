@@ -12,8 +12,8 @@
       * The native libraries must sit beside the executable, because libvmaf.dll
         imports its MinGW runtime DLLs and neither it nor libvship.dll can be
         found anywhere else. fmetrics.dll has no dependencies of its own but is
-        still found by relative path. FFMS2 needs nothing here: it is linked
-        into the executable.
+        still found by relative path. FFMS2 is dynamically linked and mandatory.
+        Include build-produced ORT/DirectML/runtime DLLs beside it as well.
 
 .PARAMETER StageDir
     Directory holding the staged release. Defaults to `target\release`.
@@ -47,6 +47,7 @@ $ProgressPreference = 'SilentlyContinue'
 # than a file, which is the whole reason this archive exists.
 $Contents = @(
     'condor.exe'
+    'ffms2.dll'
     'libvmaf.dll'
     'libvship.dll'
     'fmetrics.dll'
@@ -55,6 +56,12 @@ $Contents = @(
     'libwinpthread-1.dll'
     'model'
 )
+
+# Cargo's copy-dylibs puts ORT/DirectML beside the executable, sometimes as
+# symlinks into its cache. Add only root DLLs, not the build tree; Add-ZipFile
+# reads their bytes so the archive never retains a build-cache symlink.
+$Contents += @(Get-ChildItem $StageDir -File -Filter '*.dll' |
+    Where-Object { $_.Name -notin $Contents } | ForEach-Object { $_.Name })
 
 function Write-Step {
     param([Parameter(Mandatory)][string] $Message)
@@ -111,21 +118,27 @@ function Add-ZipFile {
 }
 
 $archive = [System.IO.Compression.ZipFile]::Open($OutputPath, 'Create')
+$expected = @()
 try {
     foreach ($entry in $Contents) {
         $source = Join-Path $StageDir $entry
         if (Test-Path $source -PathType Container) {
             foreach ($file in Get-ChildItem $source -Recurse -File) {
-                Add-ZipFile -Source $file.FullName -EntryName "$entry/$($file.Name)" -Archive $archive
+                $relative = $file.FullName.Substring((Get-Item $source).FullName.Length + 1).Replace('\', '/')
+                $name = "$entry/$relative"
+                Add-ZipFile -Source $file.FullName -EntryName $name -Archive $archive
+                $expected += $name
             }
         } else {
             Add-ZipFile -Source $source -EntryName $entry -Archive $archive
+            $expected += $entry
         }
     }
 
     if ($schema) {
         # Sits at the archive root, where `condor init` looks for it.
         Add-ZipFile -Source $schema -EntryName (Split-Path $schema -Leaf) -Archive $archive
+        $expected += Split-Path $schema -Leaf
     }
 } finally {
     $archive.Dispose()
@@ -146,19 +159,9 @@ if ($flatModels) {
     throw "Models landed at the archive root, where they cannot be found: $($flatModels -join ', ')"
 }
 
-$expected = @(
-    'condor.exe'
-    'libvmaf.dll'
-    'libvship.dll'
-    'fmetrics.dll'
-    'model/vmaf_v0.6.1.json'
-)
-foreach ($name in $expected) {
-    $leaf = Split-Path $name -Leaf
-    if (-not ($names | Where-Object { $_ -like "*$leaf" })) {
-        throw "The archive is missing $name. It contains: $($names -join ', ')"
-    }
-}
+# Shared with offline fixtures and the mandatory clean-extracted Windows gate.
+python -B (Join-Path $PSScriptRoot 'verify-windows-bundle.py') $OutputPath --expect $expected
+if ($LASTEXITCODE -ne 0) { throw 'Windows archive verification failed.' }
 
 $size = [math]::Round((Get-Item $OutputPath).Length / 1MB, 2)
 Write-Host "    $($names.Count) entries, $size MB" -ForegroundColor DarkGray

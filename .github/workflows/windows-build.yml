@@ -49,12 +49,13 @@ jobs:
           vapoursynth config
           "VSSCRIPT_PATH=$(vapoursynth get-vsscript)" >> "$env:GITHUB_ENV"
 
-      # FFMS2 is a build input only: ffms2-sys needs its headers and import
-      # library, and condor.exe links it statically.
+      # Headers/import library for ffms2-sys AND the mandatory runtime DLL.
       - name: FFMS2 installation
         run: |
-          curl -L -o ffms2.7z "https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z"
+          curl.exe -fL -o ffms2.7z "https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z"
+          if ($LASTEXITCODE -ne 0) { throw 'FFMS2 download failed.' }
           7z x ffms2.7z
+          if ($LASTEXITCODE -ne 0) { throw 'FFMS2 extraction failed.' }
           Move-Item -Path "ffms2-5.0-msvc" -Destination "C:\ffms2"
 
       - name: Install Rust stable
@@ -63,7 +64,7 @@ jobs:
       # rust-cache prunes `target/`, so it runs before anything is staged there.
       - uses: Swatinem/rust-cache@v2
 
-      # Stages libvmaf and its MinGW runtime, libvship and fmetrics.
+      # Stages FFMS2, libvmaf and its MinGW runtime, libvship and fmetrics.
       - name: Stage native libraries
         shell: pwsh
         run: ./.github/scripts/stage-native-libs.ps1 -StageDir target/release
@@ -93,6 +94,20 @@ jobs:
       - name: Package the release archive
         shell: pwsh
         run: ./.github/scripts/package-release.ps1
+
+      # LLVM is a declared windows-latest prerequisite; never install or use
+      # a build-tree loader PATH. This gate must succeed before either upload.
+      - name: Verify clean-extracted Windows runtime bundle
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          # The executable fixtures use only stdlib; R01's Bash harness stays on Linux.
+          python -B .github/scripts/tests/test_release_scripts.py -v ReleaseScriptTests.test_r02_archive_rejects_missing_empty_and_wrong_relative_entries ReleaseScriptTests.test_r02_real_import_policy_fails_closed
+          if ($LASTEXITCODE -ne 0) { throw 'Offline release contracts failed.' }
+          $readobj = Join-Path $env:ProgramFiles 'LLVM/bin/llvm-readobj.exe'
+          if (-not (Test-Path $readobj -PathType Leaf)) { throw 'Runner prerequisite llvm-readobj is missing.' }
+          python -B ./.github/scripts/verify-windows-bundle.py target/condor-windows-x64.zip --native --readobj $readobj
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows archive smoke failed.' }
 
       - name: Create or update prerelease for Condor
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}

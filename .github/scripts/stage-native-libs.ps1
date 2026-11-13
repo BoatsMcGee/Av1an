@@ -21,7 +21,11 @@
     fmetrics has no prebuilt Windows release, so the crate's own install script
     compiles it from a pinned commit, which needs Zig on the runner.
 
-    FFMS2 is linked into the executable, so decoding never loads an ffms2.dll.
+    FFMS2 is dynamically linked: ffms2.dll is mandatory even for --version.
+    Copy it from FFMS_LIB_DIR, the same pinned package used by ffms2-sys.
+    The x64 5.0 MSVC package DLL imports only Windows inbox DLLs.
+    Cargo also stages ORT/DirectML DLLs when the selected build produces them;
+    package-release.ps1 includes those root DLLs as byte files.
 
     The TransNetV2 scene detection model is fetched into `model/` beside the
     executable the same way the VMAF model JSONs are: the scene detector
@@ -171,6 +175,14 @@ function Assert-Staged {
 
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
+Write-Step 'Staging FFMS2 from the configured build package'
+if (-not $env:FFMS_LIB_DIR) { throw 'FFMS_LIB_DIR must point to the pinned FFMS2 package x64 directory.' }
+$ffms2 = Join-Path $env:FFMS_LIB_DIR 'ffms2.dll'
+if (-not (Test-Path $ffms2 -PathType Leaf) -or (Get-Item $ffms2).Length -eq 0) {
+    throw "Missing or empty FFMS2 runtime: $ffms2"
+}
+Copy-Item -LiteralPath $ffms2 -Destination (Join-Path $StageDir 'ffms2.dll') -Force
+
 if (-not $SkipVmaf) {
     Write-Step 'Fetching libvmaf and its runtime dependencies'
 
@@ -276,7 +288,7 @@ Write-Step 'Verifying the staged release'
 
 # Only what this run was asked to produce: the Skip switches exist so one stage can
 # be exercised alone, and asserting on a skipped library made them always throw.
-$required = @('libvship.dll')
+$required = @('ffms2.dll', 'libvship.dll')
 if (-not $SkipVmaf) {
     $required += @('libvmaf.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')
 }
