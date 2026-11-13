@@ -51,7 +51,7 @@ The categories are:
 - `audio` - every audio track
 - `subtitle` - every subtitle track
 - `attachment` - every attachment (fonts, etc.)
-- `metadata` - the input's global tags; the output keeps the title and tags Condor writes
+- `metadata` - inherited global tags and title; explicitly requested replacement metadata still applies
 - `chapters` - the input's chapters
 - `video` - the video track itself, which for `mkvmerge` is track `0` and for FFmpeg is stream `0`
 

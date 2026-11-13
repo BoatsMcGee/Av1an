@@ -413,13 +413,7 @@ fn x03_native_strip_title_and_tags_preserve_ancillary_metadata() {
     assert_eq!(before["format"]["tags"]["COMMENT"], "X01 global tag");
     let scenes = chunks(fixtures.path());
     for (case, metadata, expected_title, expected_tag) in [
-        // mkvmerge's --no-global-tags excludes Simple tags, not the Segment title.
-        (
-            "strip",
-            serde_json::json!({"copy": false}),
-            Some("X01 title"),
-            None,
-        ),
+        ("strip", serde_json::json!({"copy": false}), None, None),
         (
             "title",
             serde_json::json!({"copy": false, "title": "X03 & <title> \"double\" 'single'"}),
@@ -429,7 +423,7 @@ fn x03_native_strip_title_and_tags_preserve_ancillary_metadata() {
         (
             "tags",
             serde_json::json!({"copy": false, "tags": {"X03_SPECIAL": "X03 & <value> \"double\" 'single'"}}),
-            Some("X01 title"),
+            None,
             Some("X03 & <value> \"double\" 'single'"),
         ),
         (

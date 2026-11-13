@@ -417,10 +417,10 @@ fn mkvmerge_args(
 
     if let Some(title) = config
         .and_then(|config| config.metadata.as_ref())
-        .and_then(|metadata| metadata.title.as_ref())
+        .and_then(|metadata| metadata.title.as_deref().or_else(|| (!metadata.copy).then_some("")))
     {
         args.push("--title".to_owned());
-        args.push(title.clone());
+        args.push(title.to_owned());
     }
     if let Some(xml) = tags_xml {
         args.push("--global-tags".to_owned());
@@ -497,6 +497,42 @@ fn push_source_metadata_flags(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f2_mkvmerge_title_discard_and_replacement_are_explicit() {
+        for (metadata, expected) in [
+            (serde_json::json!({"copy": false}), Some("")),
+            (
+                serde_json::json!({"copy": false, "title": "replacement"}),
+                Some("replacement"),
+            ),
+            (serde_json::json!({"copy": false, "title": ""}), Some("")),
+            (serde_json::json!({"copy": true}), None),
+            (serde_json::json!({"copy": true, "title": ""}), Some("")),
+        ] {
+            let config =
+                serde_json::from_value(serde_json::json!({"metadata": metadata})).expect("config");
+            let args = mkvmerge_args(
+                "out.mkv",
+                &["scene.mkv".into()],
+                Some("in.mkv"),
+                None,
+                Some(&config),
+                &[],
+                None,
+            );
+            let titles = args
+                .windows(2)
+                .filter(|pair| pair[0] == "--title")
+                .map(|pair| pair[1].as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                titles,
+                expected.into_iter().collect::<Vec<_>>(),
+                "{metadata}"
+            );
+        }
+    }
 
     /// With no output settings the mkvmerge argument list is unchanged.
     #[test]

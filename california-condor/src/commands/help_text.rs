@@ -473,7 +473,7 @@ content to drop instead.
 - `audio` - audio tracks
 - `subtitle` - subtitle tracks
 - `attachment` - attachments (fonts, etc.)
-- `metadata` - global tags/title
+- `metadata` - inherited global tags/title (explicit replacement metadata still applies)
 - `chapters` - chapters
 - `video` - the encoded video (audio/subtitles only output)
 
