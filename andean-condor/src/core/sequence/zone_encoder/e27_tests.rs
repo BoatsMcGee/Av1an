@@ -18,6 +18,15 @@ use std::{collections::HashMap, os::unix::fs::PermissionsExt, process::Command};
 // which the final per-scene encoder cannot reproduce. No production test switch.
 #[test]
 fn v02a_native_probe_parity() {
+    native_probe_parity(&["x264", "svt"]);
+}
+
+#[test]
+fn v02b_x265_native_probe_parity() {
+    native_probe_parity(&["x265"]);
+}
+
+fn native_probe_parity(bases: &[&str]) {
     let temp = tempfile::tempdir().expect("native parity supervisor");
     let root = temp.path();
     fs::write(
@@ -33,7 +42,7 @@ fn v02a_native_probe_parity() {
         .expect("rustc required");
     assert!(compiled.status.success(), "{compiled:?}");
     let mut failures = Vec::new();
-    for base in ["x264", "svt"] {
+    for &base in bases {
         let job = root.join(base);
         fs::create_dir_all(&job).expect("isolated native job");
         let file = fs::File::create(job.join("child.log")).expect("log");
@@ -101,6 +110,7 @@ fn v02a_native_probe_parity_child() {
     let case = supervisor_case.strip_prefix("v02a-").expect("native parity case");
     let base = match case {
         "x264" => EncoderBase::X264,
+        "x265" => EncoderBase::X265,
         "svt" => EncoderBase::SVTAV1,
         _ => panic!("unexpected V02a encoder case"),
     };
@@ -108,10 +118,10 @@ fn v02a_native_probe_parity_child() {
         "ffmpeg",
         "ffprobe",
         "mkvmerge",
-        if case == "x264" {
-            "x264"
-        } else {
-            "SvtAv1EncApp"
+        match case {
+            "x264" => "x264",
+            "x265" => "x265",
+            _ => "SvtAv1EncApp",
         },
     ] {
         let executable = which::which(tool).expect("designated native capability is mandatory");
@@ -131,6 +141,9 @@ fn v02a_native_probe_parity_child() {
             "-c:v",
             "ffv1",
         ])
+        // Production x265 defaults to 10-bit output; native VMAF requires
+        // matching reference depth rather than silently converting either side.
+        .args(["-pix_fmt", if case == "x265" { "yuv420p10le" } else { "yuv420p" }])
         .arg(&source)
         .output()
         .expect("native fixture");
@@ -161,17 +174,59 @@ fn v02a_native_probe_parity_child() {
     let mut encoder = Encoder::default_from_base(&base, false);
     encoder.set_append_color_data(false);
     encoder.set_quantizer(25.0);
-    let options: &[(&str, &str)] = if case == "x264" {
-        &[("preset", "medium"), ("threads", "1"), ("rc-lookahead", "12"), ("bframes", "2")]
-    } else {
-        &[("preset", "12"), ("lp", "2"), ("lookahead", "16")]
+    let options: &[(&str, &str)] = match case {
+        "x264" => {
+            &[("preset", "medium"), ("threads", "1"), ("rc-lookahead", "12"), ("bframes", "2")]
+        },
+        "x265" => &[
+            ("preset", "medium"),
+            ("pools", "1"),
+            ("frame-threads", "1"),
+            ("rc-lookahead", "12"),
+            ("bframes", "2"),
+        ],
+        _ => &[("preset", "12"), ("lp", "2"), ("lookahead", "16")],
     };
     encoder.parameters_mut().extend(CLIParameter::new_strings("--", " ", options));
     // Keep the final encoder identical to TQ's psychovisually sanitized encoder.
     let encoder = tq.probe_encoder(&encoder);
+    if case == "x265" {
+        // The failing zoned retry uses q32.5 on source frames 24..36.
+        // Prove the same native settings/input work without zone substitution.
+        let mut control = encoder.clone();
+        control.set_quantizer(32.5);
+        let output = root.join("independent-control.hevc");
+        let (tx, _rx) = mpsc::channel();
+        let result = control
+            .encode_with_input(
+                &mut Input::from_data(&input_model).expect("control FFMS2"),
+                &output,
+                24,
+                36,
+                tx,
+            )
+            .expect("same x265 settings must work independently");
+        assert!(result.status.success());
+        assert_eq!(v02a_decode(&output).len(), 12 * 128 * 128 * 3 / 2);
+        assert_eq!(
+            fs::read(&source).expect("control source bytes"),
+            source_bytes
+        );
+        println!(
+            "V02b x265 independent q32.5 frames=24..36: native success, 12 decoded frames; argv={:?}",
+            result.parameters
+        );
+    }
     let mut summaries = Vec::new();
     let mut failures = Vec::new();
-    for grouped in [true, false] {
+    // Eligibility describes ZonePlan only: H.26x TQ must stay independent,
+    // including retries whose completed peers have left the task subset.
+    let routes: &[bool] = if case == "x265" {
+        &[false, true]
+    } else {
+        &[true, false]
+    };
+    for &grouped in routes {
         let dir = root.join(if grouped { "grouped" } else { "individual" });
         fs::create_dir_all(&dir).expect("route output");
         let mut config = DefaultSequenceConfig::default();
@@ -190,8 +245,8 @@ fn v02a_native_probe_parity_child() {
             .enumerate()
             .map(|(index, (start_frame, end_frame))| {
                 let mut encoder = encoder.clone();
-                // Metadata-only difference forces the existing per-scene fallback;
-                // both routes still encode the same pixels with the same options.
+                // Metadata-only difference makes the initial plan ineligible;
+                // singleton retry subsets can become structurally eligible again.
                 if !grouped && index == 1 {
                     encoder.set_append_color_data(true);
                 }
@@ -285,7 +340,7 @@ fn v02a_native_probe_parity_child() {
                 .find(|pass| pass.quantizer == quantizer)
                 .expect("measured selected q");
             assert!(selected.provenance.is_some() && selected.backend.is_some());
-            if case == "x264" {
+            if matches!(case, "x264" | "x265") {
                 assert_eq!(
                     selected.provenance.as_ref().expect("owning stamp").context["probe_encoding"],
                     "independent-scenes-1"
@@ -327,7 +382,7 @@ fn v02a_native_probe_parity_child() {
         }
         summaries.push(summary);
         assert_eq!(fs::read(&source).expect("unchanged source"), source_bytes);
-        if case == "x264" && grouped {
+        if matches!(case, "x264" | "x265") && grouped {
             use crate::models::sequence::provenance::{self, ResultProvenance};
             // Migrate actual owning-producer output, not synthetic completed scores.
             let current = condor.as_data();
@@ -360,11 +415,8 @@ fn v02a_native_probe_parity_child() {
                     serde_json::to_value(&scene.sequence_data.target_quality.selection)
                         .expect("old dependency");
             }
-            assert_ne!(
-                old.scenes[0].sequence_data.target_quality.selection,
-                current.scenes[0].sequence_data.target_quality.selection,
-                "selection hash must bind the changed raw probe context"
-            );
+            let selection_changed = old.scenes[0].sequence_data.target_quality.selection
+                != current.scenes[0].sequence_data.target_quality.selection;
             let frozen = std::iter::once(source.clone())
                 .chain(std::iter::once(condor.output.path.clone()))
                 .chain(tasks.iter().map(|task| task.output.clone()))
@@ -379,6 +431,8 @@ fn v02a_native_probe_parity_child() {
                 let saved = dir.join(format!("{label}.json"));
                 let bytes = serde_json::to_vec(&model).expect("actual saved job");
                 fs::write(&saved, &bytes).expect("saved job bytes");
+                let saved_modified =
+                    fs::metadata(&saved).expect("saved metadata").modified().expect("saved mtime");
                 // Concat is a new mux operation, not a reusable completed stage.
                 let owners: &[&str] = if label == "current" {
                     &["TQ", "PE"]
@@ -421,7 +475,7 @@ fn v02a_native_probe_parity_child() {
                     } else {
                         let error = format!(
                             "{:#}",
-                            result.expect_err("old x264 policy must refuse before work")
+                            result.expect_err("old H.26x policy must refuse before work")
                         );
                         assert!(
                             error.contains("TQ probe")
@@ -439,6 +493,13 @@ fn v02a_native_probe_parity_child() {
                         before
                     );
                     assert_eq!(fs::read(&saved).expect("saved bytes preserved"), bytes);
+                    assert_eq!(
+                        fs::metadata(&saved)
+                            .expect("saved metadata")
+                            .modified()
+                            .expect("saved mtime"),
+                        saved_modified
+                    );
                     for (path, original, modified) in &frozen {
                         assert_eq!(
                             &fs::read(path).expect("artifact/source preserved"),
@@ -450,17 +511,21 @@ fn v02a_native_probe_parity_child() {
                         );
                     }
                     println!(
-                        "V02a {label} x264 {owner}: admission checked; config/artifact/source bytes and artifact mtimes preserved"
+                        "V02a/b {label} {case} {owner}: admission checked; config/artifact/source bytes and mtimes preserved"
                     );
                 }
             }
+            assert!(
+                selection_changed,
+                "selection hash must bind the changed raw probe context"
+            );
         }
     }
     println!("V02a {case} eligible/ineligible quantizers and scores: {summaries:?}");
-    if case == "x264" {
+    if matches!(case, "x264" | "x265") {
         assert_eq!(
             summaries[0], summaries[1],
-            "x264 eligibility must not change TQ measurements"
+            "H.26x structural eligibility must not change independent TQ measurements"
         );
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

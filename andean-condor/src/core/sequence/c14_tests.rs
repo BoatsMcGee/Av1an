@@ -534,7 +534,7 @@ fn c14_production_roundtrip_dependencies_and_refusal_bytes() {
     let pass = &job.scenes[0].sequence_data.target_quality.passes[0];
     assert_eq!(
         RESULT_REVISION, 1,
-        "x264 migration must not invalidate other v1 jobs"
+        "H.26x migration must not invalidate other v1 jobs"
     );
     assert!(
         pass.provenance
@@ -543,7 +543,7 @@ fn c14_production_roundtrip_dependencies_and_refusal_bytes() {
             .context
             .get("probe_encoding")
             .is_none(),
-        "the independent-scene policy belongs only to x264; this FFmpeg v1 job resumes below"
+        "the independent-scene policy belongs only to x264/x265; this FFmpeg v1 job resumes below"
     );
     assert_eq!(
         pass.backend.as_ref().expect("actual backend").engine,

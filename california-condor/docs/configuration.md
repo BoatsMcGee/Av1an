@@ -144,13 +144,14 @@ original TQ measurements remain usable; arbitrary probe-option/preset edits are 
 whitelisted. QC reference precedence is its explicit input, then the Parallel
 Encoder input override, then the root input.
 
-x264 Target Quality now probes scenes independently to match final scene encodes,
-instead of sharing a zone-encoded probe stream. This costs the grouped-probe
-optimization. Earlier x264 probe records lack the `independent-scenes-1` context
+x264/x265 Target Quality now probes scenes independently to match final scene
+encodes and avoid unsafe x265 zone retries, instead of sharing a zone-encoded probe
+stream. This costs the grouped-probe optimization. Earlier x264/x265 probe records
+lack the `independent-scenes-1` context
 marker and cannot resume, including their derived selections and chunks. Preserve
 the original files and recompute using the new-job or explicit-reset procedure
 below; do not add the marker to old records. Other encoders retain revision-1
-compatibility, and matching current x264 records still resume.
+compatibility, and matching current x264/x265 records still resume.
 
 Certified chunks that disappear or are truncated, malformed certified QC score
 counts/values, and a missing previously measured QC output are **refused**, not

@@ -340,7 +340,7 @@ impl Admission {
         "range": [scene.start_frame, scene.end_frame], "strategy": config.probing.strategy,
         "encoder": encoder, "metric": self.metric(&config.metric)?, "statistic": config.probing.statistic,
         "backend": self.backend(&config.metric, metric_input.unwrap_or(input), backend)?});
-        if encoder.base() == EncoderBase::X264 {
+        if matches!(encoder.base(), EncoderBase::X264 | EncoderBase::X265) {
             context["probe_encoding"] = json!("independent-scenes-1");
         }
         Ok(context)

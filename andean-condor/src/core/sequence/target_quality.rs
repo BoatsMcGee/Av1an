@@ -1362,9 +1362,11 @@ impl TargetQuality {
         // one encoder; anything else keeps the per-scene encoders. Probe
         // encoders never carry an FFmpeg filter, so filters cannot make scenes
         // differ here.
-        // ponytail: lose x264 grouping to match final independent-scene measurements;
-        // reenable only with native probe/final parity proof.
-        let zone_plan = if encode_tasks.iter().any(|task| task.encoder.base() == EncoderBase::X264)
+        // ponytail: lose H.26x grouping for final-scene parity and crash-safe probes;
+        // reenable only with native safety and probe/final parity proof.
+        let zone_plan = if encode_tasks
+            .iter()
+            .any(|task| matches!(task.encoder.base(), EncoderBase::X264 | EncoderBase::X265))
         {
             None
         } else {
