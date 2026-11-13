@@ -1,5 +1,42 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+pub(super) fn wait_for_owned_process_exit(pid: &str) {
+    let pid: u32 = pid.parse().expect("owned PID");
+    assert!(pid > 0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => {
+                let (identity, fields) = stat.rsplit_once(')').expect("valid process stat");
+                assert!(
+                    identity.starts_with(&format!("{pid} (")),
+                    "stat PID identity"
+                );
+                let state = fields.split_whitespace().next().expect("process state");
+                assert!(
+                    matches!(
+                        state,
+                        "R" | "S" | "D" | "Z" | "T" | "t" | "X" | "x" | "K" | "W" | "P" | "I"
+                    ),
+                    "invalid process state: {state}"
+                );
+                if state == "Z" {
+                    return;
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("reading owned process {pid}: {error}"),
+        }
+        // Pipe EOF precedes exit_notify; allow the killed grandchild to become a zombie.
+        assert!(
+            std::time::Instant::now() < deadline,
+            "owned process {pid} remains live"
+        );
+        thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn run(command: &mut Command) -> Vec<u8> {
     let output = command.output().expect("required native fixture tool");
     assert!(
@@ -805,18 +842,7 @@ fn x01_preflight_child() {
             .expect("owned PIDs")
             .split_whitespace()
         {
-            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
-            assert!(
-                stat.is_err()
-                    || stat
-                        .expect("stat")
-                        .split(')')
-                        .nth(1)
-                        .expect("state")
-                        .trim_start()
-                        .starts_with('Z'),
-                "owned process {pid} remains live"
-            );
+            wait_for_owned_process_exit(pid);
         }
     }
     println!(

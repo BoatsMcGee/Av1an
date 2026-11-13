@@ -787,18 +787,7 @@ fn x05_probe_child() {
             .expect("owned PIDs")
             .split_whitespace()
         {
-            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"));
-            assert!(
-                stat.is_err()
-                    || stat
-                        .expect("stat")
-                        .split(')')
-                        .nth(1)
-                        .expect("state")
-                        .trim_start()
-                        .starts_with('Z'),
-                "owned process {pid} remains live"
-            );
+            super::super::x01_tests::wait_for_owned_process_exit(pid);
         }
     }
     println!(
