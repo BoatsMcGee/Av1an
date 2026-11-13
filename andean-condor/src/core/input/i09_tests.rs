@@ -257,20 +257,26 @@ fn i09_native_reader_reuses_open_decoder_for_absolute_indices() {
 
 #[cfg(unix)]
 fn bounded_encoder(directory: &Path) -> Encoder {
-    use std::os::unix::fs::PermissionsExt;
     let binary = which::which("x264").expect("I09 requires x264");
     let timeout = which::which("timeout").expect("I09 requires timeout");
     let wrapper = directory.join("bounded-x264");
-    fs::write(
-        &wrapper,
-        format!(
-            "#!/bin/sh\nexec '{}' 20s '{}' \"$@\"\n",
-            timeout.display(),
-            binary.display()
-        ),
-    )
-    .expect("bounded encoder wrapper");
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("executable");
+    // Write outside libtest: concurrent forks cannot inherit this child's writable script fd.
+    let written = Command::new(&timeout)
+        .args(["20s", "sh", "-c", "printf '#!/bin/sh\nexec \"%s\" 20s \"%s\" \"$@\"\n' \"$2\" \"$3\" > \"$1\" && chmod 755 \"$1\"", "i09-wrapper"])
+        .arg(&wrapper)
+        .arg(&timeout)
+        .arg(&binary)
+        .output()
+        .expect("I09 requires timeout and sh");
+    assert!(written.status.success(), "wrapper creation: {written:?}");
+    let ready = Command::new(&wrapper)
+        .arg("--version")
+        .output()
+        .expect("immutable wrapper exec");
+    assert!(
+        ready.status.success(),
+        "real x264 wrapper readiness: {ready:?}"
+    );
     let mut encoder = Encoder::default_from_base(&EncoderBase::X264, false);
     let Encoder::X264 { executable, .. } = &mut encoder else {
         unreachable!()
