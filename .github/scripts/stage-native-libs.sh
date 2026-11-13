@@ -37,6 +37,11 @@ set -a
 set +a
 
 StageDir="${1:-target/release}"
+DownloadVerified="$(dirname "${BASH_SOURCE[0]}")/download-verified.sh"
+if [ "$VMAF_VERSION" != 3.2.1 ]; then
+    echo "ERROR: no verified VMAF package/model pins for $VMAF_VERSION; audit the new version first." >&2
+    exit 1
+fi
 
 step() { echo "==> $1"; }
 
@@ -52,7 +57,8 @@ fetch_vmaf_models() {
     )
     echo "No local VMAF models; fetching the pinned $VMAF_VERSION set"
     for model in "${models[@]}"; do
-        curl -sSfL --retry 3 --retry-delay 2 -o "$destination/$model.json" "$base/$model.json"
+        local pin="VMAF_MODEL_${model//./_}_SHA256"
+        bash "$DownloadVerified" "${!pin:?model SHA256 missing}" "$destination/$model.json" "$base/$model.json"
     done
 }
 
@@ -103,7 +109,7 @@ build_libvmaf() {
     local work
     work="$(mktemp -d "${TMPDIR:-/tmp}/vmaf-build-XXXXXX")"
     trap 'rm -rf "$work"' RETURN
-    curl -sSfL --retry 3 -o "$work/vmaf.tar.gz" \
+    bash "$DownloadVerified" "${VMAF_SOURCE_SHA256:?VMAF_SOURCE_SHA256 missing}" "$work/vmaf.tar.gz" \
         "https://github.com/Netflix/vmaf/archive/refs/tags/v${VMAF_VERSION:?VMAF_VERSION missing from .github/.env}.tar.gz"
     mkdir "$work/src" && tar -xzf "$work/vmaf.tar.gz" -C "$work/src" --strip-components=1
     # vmaf 3.x builds with meson, not make; float extractors serve the *_float_* models.

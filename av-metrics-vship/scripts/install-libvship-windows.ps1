@@ -31,6 +31,12 @@
 .PARAMETER Variant
     Which upstream build to install: `vulkan`, `nvidia` or `amd`.
 
+.PARAMETER ExpectedSha256
+    Independently audited expected hash for a deliberate version/variant override.
+    This is caller trust, not an upstream signature. Known Vulkan/NVIDIA defaults
+    need no override. An existing local candidate is preserved without downloading;
+    the returned Path/Downloaded fields distinguish that case from installation.
+
 .EXAMPLE
     .\install-libvship-windows.ps1
 
@@ -48,7 +54,11 @@ param(
 
     [Parameter()]
     [ValidateSet('vulkan', 'nvidia', 'amd')]
-    [string] $Variant = 'vulkan'
+    [string] $Variant = 'vulkan',
+
+    # Explicit caller trust for a deliberately different artifact/version.
+    [Parameter()]
+    [string] $ExpectedSha256
 )
 
 Set-StrictMode -Version Latest
@@ -91,9 +101,39 @@ $Variants = @{
 
 $BaseUrl = "https://codeberg.org/Line-fr/Vship/releases/download/v$Version/"
 
-# Nothing upstream is smaller than 1.1 MB, so half a megabyte is the floor for a
-# complete download.
-$MinimumBytes = 500KB
+# Do not replace a user/administrator installation or call file presence ABI proof.
+# The Rust loader remains responsible for version (5,1,2), backend and symbols.
+$directories = @($env:VSHIP_PLUGIN_PATH, $env:VSHIP_LIB_DIR)
+if ($env:VSSCRIPT_PATH) {
+    $runtime = Split-Path -Parent $env:VSSCRIPT_PATH
+    if ($runtime) { $directories += @((Join-Path $runtime 'plugins'), $runtime) }
+}
+if ($env:VAPOURSYNTH_EXTRA_PLUGIN_PATH) { $directories += $env:VAPOURSYNTH_EXTRA_PLUGIN_PATH.Split(';') }
+$directories += @([Environment]::SystemDirectory, [Environment]::GetFolderPath('SystemX86'))
+if ($env:PATH) { $directories += $env:PATH.Split(';') }
+$directories += $Destination
+foreach ($directory in $directories) {
+    if (-not $directory) { continue }
+    foreach ($name in @('libvship.dll', 'vship.dll')) {
+        $candidate = Join-Path $directory $name
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            Write-Host "No package installed; preserving local candidate: $candidate"
+            Write-Host "Set VSHIP_LIB_DIR to '$directory' if needed. Av1an must validate runtime version (5,1,2), backend and required symbols; file presence does not prove compatibility."
+            return [pscustomobject]@{ Path = $candidate; Downloaded = $false }
+        }
+    }
+}
+
+$Sha256 = $ExpectedSha256
+if (-not $Sha256 -and $Version -eq '5.1.2') {
+    $Sha256 = switch ($Variant) {
+        'vulkan' { '3bcfe626c9c41cb16d18be1ed4a89c58977c54761c988bfe04de0dfca0a37558' }
+        'nvidia' { 'b9715b881b52764d97444f660d63398ecc754c4e335cb572b671fbc9e2807e9e' }
+    }
+}
+if ($Sha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    throw "Verified package pin unavailable for Vship $Version ($Variant). No local runtime candidate found; nothing installed. Install a compatible runtime locally and set VSHIP_LIB_DIR, or independently audit the exact package and supply -ExpectedSha256."
+}
 
 function Get-Asset {
     <#
@@ -106,25 +146,24 @@ function Get-Asset {
     #>
     param(
         [Parameter(Mandatory)][string] $Uri,
-        [Parameter(Mandatory)][string] $OutFile
+        [Parameter(Mandatory)][string] $OutFile,
+        [Parameter(Mandatory)][string] $Sha256
     )
 
-    curl.exe -sSfL -A $UserAgent --retry 3 --retry-delay 2 -o $OutFile $Uri 2>$null
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to download $Uri (curl exit $LASTEXITCODE)."
+    if ($Sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'An independently verified SHA-256 is required.' }
+    $partial = "$OutFile.part.$([guid]::NewGuid().ToString('N'))"
+    try {
+        curl.exe -sSfL --proto '=https' --proto-redir '=https' -A $UserAgent --retry 3 --retry-delay 2 -o $partial $Uri 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to download $Uri (curl exit $LASTEXITCODE)." }
+        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $partial).Hash -ne $Sha256) {
+            throw "SHA-256 mismatch for $Uri; refusing installation."
+        }
+        $bytes = (Get-Item -LiteralPath $partial).Length
+        Move-Item -LiteralPath $partial -Destination $OutFile -Force
+        return $bytes
+    } finally {
+        if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
     }
-    if (-not (Test-Path $OutFile)) {
-        throw "curl reported success but $OutFile does not exist."
-    }
-
-    $bytes = (Get-Item $OutFile).Length
-    if ($bytes -lt $MinimumBytes) {
-        Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
-        throw "$Uri produced $bytes bytes, below the $MinimumBytes byte floor. Refusing to stage a partial download."
-    }
-
-    return $bytes
 }
 
 $selected = $Variants[$Variant]
@@ -139,7 +178,7 @@ if ($selected.Archive) {
     New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
     Write-Host "Downloading libvship $Version ($Variant)..." -ForegroundColor Cyan
-    $bytes = Get-Asset -Uri "$BaseUrl$($selected.Asset)" -OutFile $archive
+    $bytes = Get-Asset -Uri "$BaseUrl$($selected.Asset)" -OutFile $archive -Sha256 $Sha256
     Write-Host ("  {0}  {1,12:N0} bytes" -f $selected.Asset, $bytes)
 
     Expand-Archive -Path $archive -DestinationPath $stageDir -Force
@@ -153,7 +192,7 @@ if ($selected.Archive) {
     Copy-Item $member $target -Force
 } else {
     Write-Host "Downloading libvship $Version ($Variant)..." -ForegroundColor Cyan
-    $bytes = Get-Asset -Uri "$BaseUrl$($selected.Asset)" -OutFile $target
+    $bytes = Get-Asset -Uri "$BaseUrl$($selected.Asset)" -OutFile $target -Sha256 $Sha256
     Write-Host ("  {0}  {1,12:N0} bytes" -f $selected.Asset, $bytes)
 }
 
@@ -185,3 +224,4 @@ Write-Host 'Verify with:'
 Write-Host ''
 Write-Host '  cargo test -p av-metrics-vship'
 Write-Host ''
+return [pscustomobject]@{ Path = $target; Downloaded = $true }

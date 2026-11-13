@@ -5,7 +5,10 @@ RUN pacman -Syu --noconfirm
 # Install dependencies needed by all steps including runtime step
 RUN pacman -S --noconfirm --needed python python-pip ffms2 ffmpeg mkvtoolnix-cli aom svt-av1 rav1e libvpx vmaf
 # Install Python runtime dependencies system-wide so they are available to the app
-RUN python -m pip install --no-cache-dir --break-system-packages vsjetpack[full]==2.2.4 vsfgs==0.7.0 --extra-index-url https://jaded-encoding-thaumaturgy.github.io/vs-wheels/simple
+COPY .github/docker-requirements.txt /tmp/docker-requirements.txt
+RUN python -m pip --isolated install --no-cache-dir --break-system-packages \
+    --index-url https://pypi.org/simple --only-binary=:all: -r /tmp/docker-requirements.txt && \
+    rm /tmp/docker-requirements.txt
 
 # Add extra plugins to ENV to cover VS R74 packaging changes
 ENV VAPOURSYNTH_EXTRA_PLUGIN_PATH="/usr/lib/vapoursynth"
@@ -19,10 +22,14 @@ ENV VMAF_MODEL_PATH="/usr/share/model"
 ENV FMETRICS_LIB_DIR="/usr/lib"
 
 # Install ZooMVTools with generic linux binary
-RUN ZOOMVTOOLS_VERSION="v2.0.2" && \
+COPY .github/scripts/download-verified.sh /usr/local/bin/download-verified.sh
+RUN sed -i 's/\r$//' /usr/local/bin/download-verified.sh && \
+    ZOOMVTOOLS_VERSION="v2.0.2" && \
     PLUGIN_DIR="$(python -c 'import site; print(site.getsitepackages()[0])')/vapoursynth/plugins" && \
     mkdir -p "$PLUGIN_DIR" && \
-    curl -fL -o "$PLUGIN_DIR/libzoomvtools.so" \
+    bash /usr/local/bin/download-verified.sh \
+    c3446598c810eaa55334b6238de134d9f3e3041e5cf3e44775249f01d00d4d56 \
+    "$PLUGIN_DIR/libzoomvtools.so" \
     "https://gitlab.com/api/v4/projects/78027771/packages/generic/vapoursynth-zoomvtools/${ZOOMVTOOLS_VERSION}/vapoursynth-zoomvtools-${ZOOMVTOOLS_VERSION}-linux-x86_64.so"
 
 FROM base AS build-base

@@ -101,12 +101,18 @@ $UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
 $TransNetV2ModelUrl = Get-Pin 'TRANSNETV2_MODEL_URL'
 $TransNetV2ModelSha256 = Get-Pin 'TRANSNETV2_MODEL_SHA256'
 $VmafVersion = Get-Pin 'VMAF_VERSION'
+if ($VmafVersion -ne '3.2.1') { throw "Verified VMAF package/model pins unavailable for $VmafVersion." }
 $Msys2Packages = @(
     "mingw-w64-x86_64-vmaf-$VmafVersion-1-any.pkg.tar.zst",
     'mingw-w64-x86_64-libgcc-16.2.0-4-any.pkg.tar.zst',
     'mingw-w64-x86_64-libstdc%2B%2B-16.2.0-4-any.pkg.tar.zst',
     'mingw-w64-x86_64-libwinpthread-git-12.0.0.r747.g1a99f8514-1-any.pkg.tar.zst'
 )
+$Msys2Hashes = @{}
+$Msys2PinNames = @('VMAF_PACKAGE_SHA256', 'MSYS2_LIBGCC_SHA256', 'MSYS2_LIBSTDCPP_SHA256', 'MSYS2_LIBWINPTHREAD_SHA256')
+for ($i = 0; $i -lt $Msys2Packages.Count; $i++) {
+    $Msys2Hashes[$Msys2Packages[$i]] = Get-Pin $Msys2PinNames[$i]
+}
 
 # Tried in turn: the primary mirror refuses connections on some networks.
 $Msys2Repos = @(
@@ -116,7 +122,7 @@ $Msys2Repos = @(
 )
 
 $VshipVersion = Get-Pin 'VSHIP_VERSION'
-$VshipUrl = "https://codeberg.org/Line-fr/Vship/releases/download/$VshipVersion/libvship_VULKAN.dll"
+if ($VshipVersion -ne 'v5.1.2') { throw "Verified Vship Vulkan pin unavailable for $VshipVersion; use an independently audited pin." }
 
 # Every model libvmaf ships. The first four are what the MSYS2 build accepts; the
 # rest need a libvmaf built with -Denable_float=true or with the BOUND extractors.
@@ -140,21 +146,24 @@ function Invoke-Download {
     param(
         [Parameter(Mandatory)][string] $Uri,
         [Parameter(Mandatory)][string] $OutFile,
+        [Parameter(Mandatory)][string] $Sha256,
         [Parameter()] [int] $Retries = 3
     )
 
-    curl.exe -sSfL -A $UserAgent --retry $Retries --retry-delay 2 -o $OutFile $Uri 2>$null
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to download $Uri (curl exit $LASTEXITCODE)."
+    if ($Sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'An independently verified SHA-256 is required.' }
+    $partial = "$OutFile.part.$([guid]::NewGuid().ToString('N'))"
+    try {
+        curl.exe -sSfL --proto '=https' --proto-redir '=https' -A $UserAgent --retry $Retries --retry-delay 2 -o $partial $Uri 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "Failed to download $Uri (curl exit $LASTEXITCODE)." }
+        if ((Get-FileHash -Algorithm SHA256 -LiteralPath $partial).Hash -ne $Sha256) {
+            throw "SHA-256 mismatch for $Uri; refusing to stage bytes."
+        }
+        $size = (Get-Item -LiteralPath $partial).Length
+        Move-Item -LiteralPath $partial -Destination $OutFile -Force
+        Write-Host ("    {0}  {1:N0} bytes, sha256 verified" -f (Split-Path $OutFile -Leaf), $size)
+    } finally {
+        if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
     }
-
-    if (-not (Test-Path $OutFile) -or (Get-Item $OutFile).Length -eq 0) {
-        throw "The download from $Uri produced no file."
-    }
-
-    $size = (Get-Item $OutFile).Length
-    Write-Host ("    {0}  {1:N0} bytes" -f (Split-Path $OutFile -Leaf), $size)
 }
 
 function Assert-Staged {
@@ -226,7 +235,7 @@ if (-not $SkipVmaf) {
 
             foreach ($repo in $Msys2Repos) {
                 try {
-                    Invoke-Download -Uri "$repo$package" -OutFile $archive -Retries 2
+                    Invoke-Download -Uri "$repo$package" -OutFile $archive -Sha256 $Msys2Hashes[$package] -Retries 2
                     Write-Host "    $package <- $repo"
                     $failures.Clear()
                     break
@@ -259,10 +268,26 @@ if (-not $SkipVmaf) {
     }
 }
 
-Write-Step 'Fetching libvship (Vulkan build)'
+Write-Step 'Staging libvship (existing candidate or pinned Vulkan package)'
 
 $vshipStaging = Join-Path $StageDir 'libvship.dll'
-Invoke-Download -Uri $VshipUrl -OutFile $vshipStaging
+if (Test-Path -LiteralPath $vshipStaging -PathType Leaf) {
+    Write-Host "Preserving local candidate $vshipStaging; native runtime admission is still required, not a new hash-verified download."
+} else {
+    # Reuse the standalone installer's discovery/preservation and integrity boundary.
+    $vshipWork = Join-Path $StageDir "vship-stage-$([guid]::NewGuid().ToString('N'))"
+    try {
+        $vshipCandidate = & ./av-metrics-vship/scripts/install-libvship-windows.ps1 -Destination $vshipWork -Version ($VshipVersion.TrimStart('v')) -Variant vulkan -ExpectedSha256 (Get-Pin 'VSHIP_VULKAN_SHA256')
+        if ($vshipCandidate.Downloaded) {
+            Write-Host '    staging the SHA-256 verified package'
+        } else {
+            Write-Host '    staging a local candidate, not a new hash-verified download; native runtime admission is still required'
+        }
+        Copy-Item -LiteralPath $vshipCandidate.Path -Destination $vshipStaging
+    } finally {
+        if (Test-Path -LiteralPath $vshipWork) { Remove-Item -LiteralPath $vshipWork -Recurse -Force }
+    }
+}
 
 if (-not $SkipModels) {
     Write-Step 'Fetching VMAF models'
@@ -271,7 +296,7 @@ if (-not $SkipModels) {
     New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
 
     foreach ($model in $VmafModels) {
-        Invoke-Download -Uri "$VmafModelBase$model.json" -OutFile (Join-Path $modelDir "$model.json")
+        Invoke-Download -Uri "$VmafModelBase$model.json" -OutFile (Join-Path $modelDir "$model.json") -Sha256 (Get-Pin "VMAF_MODEL_$($model.Replace('.', '_'))_SHA256")
     }
 }
 
@@ -285,7 +310,7 @@ if (-not $SkipTransNetV2) {
     # an interrupted fetch can never pass for the real model.
     $model = Join-Path $modelDir 'transnetv2.onnx'
     $partial = "$model.part"
-    Invoke-Download -Uri $TransNetV2ModelUrl -OutFile $partial
+    Invoke-Download -Uri $TransNetV2ModelUrl -OutFile $partial -Sha256 $TransNetV2ModelSha256
 
     if ((Get-FileHash -Algorithm SHA256 $partial).Hash.ToLowerInvariant() -ne $TransNetV2ModelSha256) {
         Remove-Item $partial -ErrorAction SilentlyContinue

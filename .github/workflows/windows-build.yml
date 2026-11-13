@@ -52,6 +52,10 @@ jobs:
         run: |
           curl.exe -fL -o ffms2.7z "https://github.com/FFMS/ffms2/releases/download/5.0/ffms2-5.0-msvc.7z"
           if ($LASTEXITCODE -ne 0) { throw 'FFMS2 download failed.' }
+          $pin = (Get-Content .github/.env | Where-Object { $_ -match '^FFMS2_SHA256=' }) -replace '^FFMS2_SHA256=', ''
+          if ($pin -notmatch '^[0-9a-f]{64}$' -or (Get-FileHash -Algorithm SHA256 ffms2.7z).Hash -ne $pin) {
+            throw 'FFMS2 SHA-256 mismatch or missing pin; refusing extraction.'
+          }
           7z x ffms2.7z
           if ($LASTEXITCODE -ne 0) { throw 'FFMS2 extraction failed.' }
           Move-Item -Path "ffms2-5.0-msvc" -Destination "C:\ffms2"
@@ -97,7 +101,7 @@ jobs:
         timeout-minutes: 10
         run: |
           # The executable fixtures use only stdlib; R01's Bash harness stays on Linux.
-          python -B .github/scripts/tests/test_release_scripts.py -v ReleaseScriptTests.test_r02_archive_rejects_missing_empty_and_wrong_relative_entries ReleaseScriptTests.test_r02_real_import_policy_fails_closed
+          python -B .github/scripts/tests/test_release_scripts.py -v ReleaseScriptTests.test_r02_archive_rejects_missing_empty_and_wrong_relative_entries ReleaseScriptTests.test_r02_real_import_policy_fails_closed ReleaseScriptTests.test_r05_windows_installer_boundaries_and_local_candidate
           if ($LASTEXITCODE -ne 0) { throw 'Offline release contracts failed.' }
           $readobj = Join-Path $env:ProgramFiles 'LLVM/bin/llvm-readobj.exe'
           if (-not (Test-Path $readobj -PathType Leaf)) { throw 'Runner prerequisite llvm-readobj is missing.' }

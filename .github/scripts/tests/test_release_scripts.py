@@ -1,6 +1,7 @@
 """Offline release-script regressions: python3 -m unittest discover -s .github/scripts/tests."""
 
 import os
+import hashlib
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -17,6 +18,213 @@ import zipfile
 
 
 class ReleaseScriptTests(unittest.TestCase):
+    def test_r05_vmaf_stage_rejects_bytes_before_unpack(self) -> None:
+        """Removing the source checksum must expose the real staging tar boundary."""
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory(prefix="r05 stage ") as directory:
+            base = Path(directory)
+            scripts = base / ".github/scripts"
+            scripts.mkdir(parents=True)
+            for name in ("stage-native-libs.sh", "download-verified.sh"):
+                source = root / ".github/scripts" / name
+                if source.exists():
+                    shutil.copyfile(source, scripts / name)
+            good = b"R05 verified bytes\n"
+            digest = hashlib.sha256(good).hexdigest()
+            pins = (root / ".github/.env").read_text()
+            pins = re.sub(r"^TRANSNETV2_MODEL_SHA256=.*$", f"TRANSNETV2_MODEL_SHA256={digest}", pins, flags=re.M)
+            pins = re.sub(r"^VMAF_SOURCE_SHA256=.*\n?", "", pins, flags=re.M)
+            (base / "model").mkdir()
+            (base / "model/vmaf_v0.6.1.json").write_text("{}")
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            curl = bin_dir / "curl"
+            curl.write_text(f"#!{sys.executable}\n" + r'''
+import os, sys
+from pathlib import Path
+a = sys.argv[1:]
+assert "-o" in a and any("f" in v for v in a if v.startswith("-")), a
+Path(a[a.index("-o")+1]).write_bytes(b"R05 verified bytes\n" if "transnetv2" in a[-1] else bytes.fromhex(os.environ["PAYLOAD"]))
+''')
+            curl.chmod(0o755)
+            for name, body in {"ldconfig": "exit 0", "tar": 'touch "$MARKER"; exit 91'}.items():
+                path = bin_dir / name
+                path.write_text("#!/bin/bash\n" + body + "\n")
+                path.chmod(0o755)
+            env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "TMPDIR": str(base),
+                   "MARKER": str(base / "unpacked"), "GITHUB_WORKSPACE": str(base)}
+            for case, payload in (("good", good), ("corrupt", b"changed"), ("truncated", good[:3]), ("nohash", good)):
+                with self.subTest(case=case):
+                    marker = base / "unpacked"
+                    marker.unlink(missing_ok=True)
+                    (scripts.parent / ".env").write_text(pins + (f"\nVMAF_SOURCE_SHA256={digest}\n" if case != "nohash" else ""))
+                    result = subprocess.run(["bash", str(scripts / "stage-native-libs.sh"), str(base / "stage")],
+                                            cwd=base, env={**env, "PAYLOAD": payload.hex()}, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(marker.exists(), case == "good", result.stdout + result.stderr)
+
+    def test_r05_download_boundary_mirrors_http_overrides_and_preservation(self) -> None:
+        """Bypassing the production digest or HTTP check must publish bad bytes."""
+        helper = Path(__file__).resolve().parents[1] / "download-verified.sh"
+        self.assertTrue(helper.is_file(), "missing production verified-download boundary")
+        with tempfile.TemporaryDirectory(prefix="r05 download ") as directory:
+            base = Path(directory)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            curl = bin_dir / "curl"
+            curl.write_text(f"#!{sys.executable}\n" + r'''
+import os, sys
+from pathlib import Path
+a = sys.argv[1:]
+assert "-o" in a and any("f" in v for v in a if v.startswith("-")), a
+url = a[-1]
+with Path(os.environ["CALLS"]).open("a") as out: out.write(url + "\n")
+Path(a[a.index("-o")+1]).write_bytes({"good": b"R05 verified bytes\n", "bad": b"corrupt", "short": b"R05", "http": b"<html>503</html>"}[url.rsplit("/",1)[-1]])
+sys.exit(22 if url.endswith("/http") else 0)
+''')
+            curl.chmod(0o755)
+            destination = base / "payload"
+            calls = base / "calls"
+            digest = hashlib.sha256(b"R05 verified bytes\n").hexdigest()
+            cases = [(digest, ["good"], True), (digest, ["bad"], False),
+                     (digest, ["short"], False), (digest, ["http"], False),
+                     (digest, ["http", "bad", "good"], True),
+                     (digest, ["bad", "short"], False), ("", ["good"], False),
+                     ("not-a-hash", ["good"], False)]
+            for expected, sources, accepted in cases:
+                with self.subTest(expected=expected, sources=sources):
+                    destination.write_bytes(b"existing destination")
+                    calls.unlink(missing_ok=True)
+                    result = subprocess.run(["bash", str(helper), expected, str(destination),
+                                             *[f"https://override.invalid/{s}" for s in sources]],
+                                            env={"PATH": f"{bin_dir}:/usr/bin:/bin", "CALLS": str(calls)}, capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, accepted, result.stdout + result.stderr)
+                    self.assertEqual(destination.read_bytes(), b"R05 verified bytes\n" if accepted else b"existing destination")
+                    if accepted:
+                        self.assertEqual(destination.stat().st_mode & 0o777, 0o644, "Docker's runtime user must be able to read verified plugins")
+                    if expected in ("", "not-a-hash"):
+                        self.assertFalse(calls.exists(), "missing/invalid expected hash must fail before downloading")
+                    self.assertEqual(list(base.glob("*.part.*")), [], "partial payload leaked")
+
+    @unittest.skipUnless(os.name == "nt", "native PowerShell installer acceptance runs on Windows CI")
+    def test_r05_windows_installer_boundaries_and_local_candidate(self) -> None:
+        """Run real PS functions and installer; never load/execute fixture DLL bytes."""
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory(prefix="r05 native ") as directory:
+            base = Path(directory)
+            script = base / "check.ps1"
+            script.write_text(r'''
+$ErrorActionPreference = 'Stop'
+$global:Downloads = 0
+function curl.exe {
+    $global:Downloads++
+    $out = $args[[array]::IndexOf($args, '-o') + 1]
+    [IO.File]::WriteAllText($out, $env:PAYLOAD)
+    $global:LASTEXITCODE = if ($env:PAYLOAD -eq 'http') { 22 } else { 0 }
+}
+$vship = Join-Path $env:REPO 'av-metrics-vship/scripts/install-libvship-windows.ps1'
+$env:VSHIP_PLUGIN_PATH = ''
+$env:VSSCRIPT_PATH = ''
+$env:VAPOURSYNTH_EXTRA_PLUGIN_PATH = ''
+$env:PATH = ''
+$dest = Join-Path $env:FIXTURE 'destination'
+$local = Join-Path $env:FIXTURE 'local'
+New-Item -ItemType Directory $local | Out-Null
+$candidate = Join-Path $local 'vship.dll'
+[IO.File]::WriteAllText($candidate, 'local candidate, not ABI proof')
+$env:VSHIP_LIB_DIR = $local
+$found = & $vship -Version 0.0.0 -Variant amd -Destination $dest
+if (-not $found.Path -or $found.Downloaded) { throw 'local candidate misreported as a download' }
+if ($Downloads -ne 0) { throw 'local candidate attempted a download' }
+if (Test-Path $dest) { throw 'fallback mutated destination' }
+if ([IO.File]::ReadAllText($candidate) -ne 'local candidate, not ABI proof') { throw 'candidate changed' }
+Remove-Item $candidate
+$env:VSHIP_LIB_DIR = ''
+try { & $vship -Version 0.0.0 -Variant amd -Destination $dest; throw 'accepted unavailable pin' }
+catch { if ($_.Exception.Message -notmatch 'unavailable.*pin|pin.*unavailable') { throw } }
+if (Test-Path $dest) { throw 'unavailable pin mutated destination' }
+if ($Downloads -ne 0) { throw 'unavailable pin attempted a download' }
+$sha = '770e607624d689265ca6c44884d0807d9b054d23c473c106c72be9de08b7376c'
+function Expand-Archive {
+    param($Path, $DestinationPath, [switch]$Force)
+    [IO.File]::WriteAllText((Join-Path $env:FIXTURE 'unpacked'), 'marker')
+    throw 'R05 unpack marker; fixture is not an executable archive'
+}
+foreach ($payload in @('good', 'corrupt', 'g', 'http')) {
+    $env:PAYLOAD = $payload
+    $marker = Join-Path $env:FIXTURE 'unpacked'
+    if (Test-Path $marker) { Remove-Item $marker }
+    try { & $vship -Version 0.0.0 -Variant nvidia -Destination (Join-Path $env:FIXTURE $payload) -ExpectedSha256 $sha }
+    catch { }
+    if ((Test-Path $marker) -ne ($payload -eq 'good')) { throw "unsafe archive boundary: $payload" }
+}
+foreach ($relative in @('av-metrics-vship/scripts/install-libvship-windows.ps1', 'av-metrics-vmaf/scripts/install-libvmaf-windows.ps1', '.github/scripts/stage-native-libs.ps1')) {
+    $errors = $null; $tokens = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $env:REPO $relative), [ref]$tokens, [ref]$errors)
+    if ($errors.Count) { throw ($errors | Out-String) }
+    $function = $ast.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in @('Get-Asset', 'Save-File', 'Invoke-Download')}, $true)
+    . ([scriptblock]::Create($function.Extent.Text))
+    $UserAgent = 'offline'
+    $MinimumBytes = 0
+    $file = Join-Path $env:FIXTURE 'download'
+    $sha = '770e607624d689265ca6c44884d0807d9b054d23c473c106c72be9de08b7376c'
+    foreach ($payload in @('good', 'corrupt', 'g', 'http')) {
+        $env:PAYLOAD = $payload
+        [IO.File]::WriteAllText($file, 'preserve')
+        $accepted = $false
+        try { & $function.Name -Uri 'https://fixture.invalid' -OutFile $file -Sha256 $sha; $accepted = $true } catch { }
+        if ($accepted -ne ($payload -eq 'good')) { throw "wrong acceptance: $relative / $payload" }
+        if ([IO.File]::ReadAllText($file) -ne $(if ($accepted) {'good'} else {'preserve'})) { throw 'destination changed on rejection' }
+    }
+}
+''')
+            result = subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], capture_output=True, text=True,
+                                    env={**os.environ, "REPO": str(root), "FIXTURE": str(base)})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("candidate", result.stdout.lower())
+            self.assertIn("runtime", result.stdout.lower())
+
+    def test_r05_pin_propagation_and_download_consumers(self) -> None:
+        """Supplement runtime checks: consumers must not detach from verified boundaries."""
+        root = Path(__file__).resolve().parents[3]
+        pins = dict(re.findall(r"^([A-Za-z0-9_]+)=(\S+)$", (root / ".github/.env").read_text(), re.M))
+        vmaf = (root / "av-metrics-vmaf/scripts/install-libvmaf-windows.ps1").read_text()
+        vship = (root / "av-metrics-vship/scripts/install-libvship-windows.ps1").read_text()
+        stage = (root / ".github/scripts/stage-native-libs.ps1").read_text()
+        self.assertIn("install-libvship-windows.ps1", stage, "staging must reuse installer candidate-preservation policy")
+        self.assertIn("$vshipCandidate.Downloaded", stage, "local staging must not claim a newly verified download")
+        for key, value in pins.items():
+            if key.startswith(("VMAF_MODEL_", "MSYS2_")) or key == "VMAF_PACKAGE_SHA256":
+                self.assertIn(value, vmaf, f"standalone installer pin drift: {key}")
+                self.assertIn(key if not key.startswith("VMAF_MODEL_") else "VMAF_MODEL_", stage)
+            elif key in ("VSHIP_VULKAN_SHA256", "VSHIP_NVIDIA_SHA256"):
+                self.assertIn(value, vship, f"standalone Vship pin drift: {key}")
+        for source in (vmaf, vship, stage):
+            for line in source.splitlines():
+                if re.match(r"\s*(?:\$(?:\w+|null) = )?(?:Invoke-Download|Get-Asset|Save-File) -Uri", line):
+                    self.assertIn("-Sha256 ", line, "download consumer skipped expected digest")
+        steps = self._r03_workflow("windows-build")["jobs"]["build"]["steps"]
+        ffms = next(s["run"] for s in steps if s.get("name") == "FFMS2 installation")
+        self.assertLess(ffms.index("Get-FileHash"), ffms.index("7z x"))
+        self.assertIn("throw", ffms[ffms.index("Get-FileHash"):ffms.index("7z x")])
+        docker = (root / "Dockerfile").read_text()
+        self.assertNotIn("--extra-index-url", docker)
+        self.assertIn("--index-url https://pypi.org/simple --only-binary=:all:", docker)
+        self.assertIn("COPY .github/docker-requirements.txt", docker)
+        self.assertIn("COPY .github/scripts/download-verified.sh", docker)
+        self.assertIn("bash /usr/local/bin/download-verified.sh", docker)
+        requirements = (root / ".github/docker-requirements.txt").read_text()
+        entries = [line for line in requirements.splitlines() if line and not line.startswith("#")]
+        self.assertTrue(any(line.startswith("vsjetpack[full] @ ") for line in entries))
+        self.assertTrue(any(line.startswith("dfttest2[cpu] @ ") for line in entries))
+        for line in entries:
+            self.assertRegex(line, r" @ https://(?:files\.pythonhosted\.org/packages/|github\.com/Jaded-Encoding-Thaumaturgy/vs-wheels/releases/download/).*\.whl#sha256=[0-9a-f]{64}$")
+        jobs = self._r03_workflow("tests")["jobs"]
+        for job in ("unit-tests", "code-coverage"):
+            setup = next(s["run"] for s in jobs[job]["steps"] if s.get("name") == "Setup CPU-native test dependencies")
+            self.assertIn("--no-deps --no-index", setup)
+            self.assertRegex(setup, r"vapoursynth_vszip-24\.0\.0-py3-none-manylinux_2_17_x86_64\.whl#sha256=[0-9a-f]{64}")
+
     def _r04_workflows(self) -> dict:
         names = {"tests", "linux-build", "windows-build", "release", "mdbook", "miri-grain"}
         directory = Path(__file__).resolve().parents[2] / "workflows"

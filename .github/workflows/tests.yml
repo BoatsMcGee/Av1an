@@ -65,7 +65,8 @@ jobs:
 
           # WNNM integration tests need VSZip; keep Arch's VapourSynth installation.
           python -m pip install --no-cache-dir --break-system-packages \
-            --only-binary=:all: --no-deps vapoursynth-vszip==24.0.0
+            --only-binary=:all: --no-deps --no-index \
+            'https://files.pythonhosted.org/packages/e5/e5/3213ac70eb8796b55f97c5cd7e454d9e6a6edd7dcd0c5300f349b1ffe51d/vapoursynth_vszip-24.0.0-py3-none-manylinux_2_17_x86_64.whl#sha256=abf1be51f3b4733500eca04f7179236f8383e09b298ac4ca2c8e8959a93a92da'
 
           # Arch's `vmaf` package installs the models to /usr/share/model rather
           # than compiling them in. All nine upstream models are there, so point
@@ -199,7 +200,8 @@ jobs:
 
           # WNNM integration tests need VSZip; keep Arch's VapourSynth installation.
           python -m pip install --no-cache-dir --break-system-packages \
-            --only-binary=:all: --no-deps vapoursynth-vszip==24.0.0
+            --only-binary=:all: --no-deps --no-index \
+            'https://files.pythonhosted.org/packages/e5/e5/3213ac70eb8796b55f97c5cd7e454d9e6a6edd7dcd0c5300f349b1ffe51d/vapoursynth_vszip-24.0.0-py3-none-manylinux_2_17_x86_64.whl#sha256=abf1be51f3b4733500eca04f7179236f8383e09b298ac4ca2c8e8959a93a92da'
 
           # Arch's package installs the models to /usr/share/model, which the
           # crate searches on its own. Set this anyway so coverage does not

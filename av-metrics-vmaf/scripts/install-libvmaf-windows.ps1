@@ -58,6 +58,29 @@ $ProgressPreference = 'SilentlyContinue'
 if (-not $PSBoundParameters.ContainsKey('LibvmafVersion') -and $env:VMAF_VERSION) {
     $LibvmafVersion = $env:VMAF_VERSION
 }
+if ($LibvmafVersion -ne '3.2.1') {
+    throw "Verified package/model pins unavailable for VMAF $LibvmafVersion. Audit the exact version before installing; no files changed."
+}
+
+# Standalone known-byte pins: no checkout or adjacent manifest is required.
+# Keep these exact filenames/models in sync with .github/.env and native-artifacts.md.
+$PackageHashes = @{
+    'mingw-w64-x86_64-vmaf-3.2.1-1-any.pkg.tar.zst' = 'ae55f009377b3bd447a466109de70650e65296cff329d6bc699e6b74612e3f28'
+    'mingw-w64-x86_64-libgcc-16.2.0-4-any.pkg.tar.zst' = 'd615f6a8536ca16b1f049daea1fa440a3b7a405449ec0e93ad6106db43682d54'
+    'mingw-w64-x86_64-libstdc%2B%2B-16.2.0-4-any.pkg.tar.zst' = '3d4c3faf4c2c5c7a851ff12214ddcbf8c0d6df0964fc1d3ebd8c38f227183034'
+    'mingw-w64-x86_64-libwinpthread-git-12.0.0.r747.g1a99f8514-1-any.pkg.tar.zst' = '38e0a33fc8b3b6b761d4958fa69afef6e0804e4ef7ea64018004da02f9b2294f'
+}
+$ModelHashes = @{
+    'vmaf_v0.6.1' = '5950d61fa1f861bd45d8149d80539ed9f3376cfc2495b8f0fa8e9f57cb131ee3'
+    'vmaf_v0.6.1neg' = '1fcda193aaa2a3136471b7516b3c5dc344546c05fcde2d58609f8c60a2387392'
+    'vmaf_4k_v0.6.1' = '73b187001309703c89d57cf58baab01660bd11e4ea6fac62bc064c5f5da6dac8'
+    'vmaf_4k_v0.6.1neg' = 'f92048bf94401a5b915f551eb248709275c61df5f20d062a3ae010dcf4d4e8fc'
+    'vmaf_b_v0.6.3' = '34f620dbaff662fe7d33dd80326553c2cc3910e4135349ba4c367171d3a3cfbd'
+    'vmaf_float_v0.6.1' = '26573aa333346f1109226e7283969e8b3581119a1ab7f18897767351dd963ff8'
+    'vmaf_float_v0.6.1neg' = '8ac8e9bd6153e57fed4e9809c49711ea7654da2a14ea701423187905e914597a'
+    'vmaf_float_4k_v0.6.1' = '2af34f3068174720a35126807dbe8d0b19c5143fee328a9fc2331c15c54e4433'
+    'vmaf_float_b_v0.6.3' = 'e32df73119386b124836910956fe8e0b0583a35638d2c518719e5a5069d0248b'
+}
 
 # MSYS2's canonical host first, then mirrors carrying the same tree, tried in
 # turn: the primary refuses connections on some networks.
@@ -72,8 +95,7 @@ $UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
 
 $ModelBase = "https://raw.githubusercontent.com/Netflix/vmaf/v$LibvmafVersion/model/"
 
-# Pinned for reproducibility. Get-LatestPackage refreshes these from the live
-# repository listing, so they can be re-run as MSYS2 updates its packages.
+# Only these exact archives have verified pins; do not substitute latest filenames.
 $LibvmafPackage = "mingw-w64-x86_64-vmaf-$LibvmafVersion-1-any.pkg.tar.zst"
 $RuntimePackages = @(
     'mingw-w64-x86_64-libgcc-16.2.0-4-any.pkg.tar.zst',
@@ -142,26 +164,35 @@ function Save-File {
     #>
     param(
         [Parameter(Mandatory)][string[]] $Uri,
-        [Parameter(Mandatory)][string] $OutFile
+        [Parameter(Mandatory)][string] $OutFile,
+        [Parameter(Mandatory)][string] $Sha256
     )
 
+    if ($Sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'An independently verified SHA-256 is required.' }
     $errors = [System.Collections.Generic.List[string]]::new()
+    $partial = "$OutFile.part.$([guid]::NewGuid().ToString('N'))"
 
+    try {
     foreach ($candidate in $Uri) {
         # -A is required by some mirrors, which reject requests without a
         # User-Agent with 403. -f makes curl fail on 4xx/5xx instead of writing
         # the error page to disk, which would otherwise fail much later with a
         # confusing parse error.
-        curl.exe -sSfL -A $UserAgent --retry 2 --retry-delay 1 -o $OutFile $candidate 2>$null
+        curl.exe -sSfL --proto '=https' --proto-redir '=https' -A $UserAgent --retry 2 --retry-delay 1 -o $partial $candidate 2>$null
 
-        if ($LASTEXITCODE -eq 0 -and (Test-Path $OutFile) -and (Get-Item $OutFile).Length -gt 0) {
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $partial) -and
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $partial).Hash -eq $Sha256) {
+            Move-Item -LiteralPath $partial -Destination $OutFile -Force
             return $candidate
         }
 
-        $errors.Add("  $candidate -> curl exit $LASTEXITCODE")
+        $errors.Add("  $candidate -> HTTP/download failure or SHA-256 mismatch")
     }
 
     throw "Failed to download from any source:`n$($errors -join "`n")"
+    } finally {
+        if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Force }
+    }
 }
 
 $BinDir = Join-Path $InstallDir 'bin'
@@ -179,16 +210,18 @@ if (-not $ModelsOnly) {
     $usedRepos = [System.Collections.Generic.HashSet[string]]::new()
 
     foreach ($package in $packages) {
+        if (-not $PackageHashes.ContainsKey($package)) { throw "Verified pin unavailable for $package." }
         $archive = Join-Path $StageDir $package
         # One candidate per mirror; Save-File stops at the first that responds.
         $candidates = $Repos | ForEach-Object { "$_$package" }
-        $used = Save-File -Uri $candidates -OutFile $archive
+        $used = Save-File -Uri $candidates -OutFile $archive -Sha256 $PackageHashes[$package]
         $null = $usedRepos.Add(([uri]$used).Host)
         Write-Host ("  {0}  <- {1}" -f $package, ([uri]$used).Host)
 
         # Extract only the DLLs; the package also carries headers, an import
         # library, pkgconfig and vmaf.exe, none of which this crate needs.
         tar -xf $archive -C $StageDir 'mingw64/bin/*.dll' 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "tar failed to extract $package." }
     }
 
     $staged = Join-Path $StageDir 'mingw64/bin'
@@ -213,7 +246,7 @@ Write-Host "Downloading $($Models.Count) VMAF models..." -ForegroundColor Cyan
 
 foreach ($model in $Models) {
     $destination = Join-Path $ModelDir "$model.json"
-    $null = Save-File -Uri "$ModelBase$model.json" -OutFile $destination
+    $null = Save-File -Uri "$ModelBase$model.json" -OutFile $destination -Sha256 $ModelHashes[$model]
     Write-Host ("  {0,-26} {1,8:N0} bytes" -f $model, (Get-Item $destination).Length)
 }
 
