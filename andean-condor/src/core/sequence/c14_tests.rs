@@ -28,7 +28,11 @@ fn c14_r1_identity_work_is_batch_local_not_per_history_record() {
         job.sequence_config.target_quality = Some(TargetQualityConfig {
             maximum_probes: 3,
             metric: if plugin {
-                QualityMetric::default()
+                // XPSNR stays plugin-only even when native metric engines are installed.
+                QualityMetric::XPSNR {
+                    target_range: (70.0, 80.0),
+                    resolution: None,
+                }
             } else {
                 QualityMetric::VMAF {
                     target_range: (70.0, 80.0),
@@ -51,6 +55,16 @@ fn c14_r1_identity_work_is_batch_local_not_per_history_record() {
             })
             .to_vec();
         current_target_fixture(&mut job);
+        if plugin {
+            assert_eq!(
+                job.scenes[0].sequence_data.target_quality.passes[0]
+                    .backend
+                    .as_ref()
+                    .expect("installed XPSNR plugin backend")
+                    .engine,
+                crate::metrics::Engine::VapourSynth
+            );
+        }
         job.scenes = vec![job.scenes[0].clone(); 3];
         let current = job.scenes.clone();
         job.scenes[0].sequence_data.target_quality.passes[0]
