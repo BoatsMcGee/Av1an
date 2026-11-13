@@ -559,9 +559,6 @@ fn v01_remaining_cpu_one_and_two_pass_outputs_decode_exact_frames() {
                         "=",
                         &[("threads", 1.0), ("cpu-used", 6.0)],
                     ));
-                    encoder
-                        .parameters_mut()
-                        .insert("ivf".into(), CLIParameter::new_bool("--", true));
                     if base == EncoderBase::VPX {
                         encoder.parameters_mut().extend(CLIParameter::new_numbers(
                             "--",
@@ -662,6 +659,109 @@ fn v01_remaining_cpu_one_and_two_pass_outputs_decode_exact_frames() {
             assert_eq!(fs::read_dir(cwd).expect("no statistics spill").count(), 2);
         }
     }
+}
+
+#[test]
+fn v01b_vpx_default_and_conflicting_webm_outputs_are_ivf() {
+    let temp = tempfile::tempdir().expect("native fixture");
+    let root = temp.path();
+    let vpx = which::which("vpxenc").expect("required VPX executable");
+    let ffprobe = which::which("ffprobe").expect("required frame-count verifier");
+    let input = root.join("source.y4m");
+    let source = tiny_y4m();
+    fs::write(&input, &source).expect("finite source");
+    let mut clip = tests::clip_info();
+    clip.num_frames = 3;
+    clip.resolution = (64, 64);
+    clip.format_info = crate::core::input::pixel_format::PixelFormat::VapourSynth { bit_depth: 8 };
+    let mut failures = Vec::new();
+    for (codec, fourcc) in [("vp8", b"VP80"), ("vp9", b"VP90")] {
+        for webm in [false, true] {
+            let row = format!("{codec}-{}", if webm { "user-webm" } else { "default" });
+            let result = std::panic::catch_unwind(|| {
+                let cwd = root.join(&row);
+                fs::create_dir_all(&cwd).expect("private cwd");
+                let sentinel = cwd.join("scene0.log");
+                fs::write(&sentinel, b"unrelated statistics").expect("sentinel");
+                let output = cwd.join("scene0.ivf");
+                let stats = PassStatistics::new(&output).expect("owned statistics");
+                let mut encoder = Encoder::default_from_base(&EncoderBase::VPX, false);
+                *encoder.passes_mut().expect("passes") = EncoderPasses::All(1);
+                // Tune only CPU use and the eight-bit fixture, never select IVF in the test.
+                encoder.parameters_mut().extend(CLIParameter::new_numbers(
+                    "--",
+                    "=",
+                    &[
+                        ("threads", 1.0),
+                        ("cpu-used", 6.0),
+                        ("profile", 0.0),
+                        ("lag-in-frames", 0.0),
+                        ("auto-alt-ref", 0.0),
+                    ],
+                ));
+                encoder
+                    .parameters_mut()
+                    .insert("codec".into(), CLIParameter::new_string("--", "=", codec));
+                encoder
+                    .parameters_mut()
+                    .insert("b".into(), CLIParameter::new_number("-", " ", 8.0));
+                if codec == "vp8" {
+                    encoder.parameters_mut().remove("row-mt");
+                }
+                if webm {
+                    encoder
+                        .parameters_mut()
+                        .insert("webm".into(), CLIParameter::new_bool("--", true));
+                    encoder
+                        .parameters_mut()
+                        .insert("ivf".into(), CLIParameter::new_bool("--", false));
+                }
+                let argv = encoder
+                    .parameters_with_stats((1, 1), &output, &clip, stats.base())
+                    .expect("production argv");
+                eprintln!("V01b {row} production argv: {argv:?}");
+                run_bounded(
+                    Command::new(&vpx)
+                        .args(&argv)
+                        .stdin(fs::File::open(&input).expect("reopened finite input"))
+                        .current_dir(&cwd),
+                    &root.join(format!("{row}-encode.log")),
+                );
+                let bytes = fs::read(&output).expect("encoded output");
+                eprintln!(
+                    "V01b {row} header: {:?}; {} bytes; expected {codec}/ivf/3 frames",
+                    &bytes[..bytes.len().min(12)],
+                    bytes.len()
+                );
+                let owned_dir = stats.base().parent().expect("statistics dir").to_path_buf();
+                drop(stats);
+                assert!(!owned_dir.exists(), "owned statistics cleaned");
+                assert_eq!(fs::read(&input).expect("source unchanged"), source);
+                assert_eq!(
+                    fs::read(&sentinel).expect("sentinel"),
+                    b"unrelated statistics"
+                );
+                assert_eq!(fs::read_dir(&cwd).expect("no statistics spill").count(), 2);
+                probe(
+                    &ffprobe,
+                    &output,
+                    codec,
+                    "ivf",
+                    &root.join(format!("{row}-probe.log")),
+                );
+                assert!(bytes.starts_with(b"DKIF"), "{row}: not IVF");
+                assert_eq!(
+                    bytes.get(8..12),
+                    Some(fourcc.as_slice()),
+                    "{row}: IVF codec"
+                );
+            });
+            if result.is_err() {
+                failures.push(row);
+            }
+        }
+    }
+    assert!(failures.is_empty(), "V01b failed rows: {failures:?}");
 }
 
 fn probe(ffprobe: &Path, output: &Path, codec: &str, container: &str, log: &Path) {

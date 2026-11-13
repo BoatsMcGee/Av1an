@@ -421,6 +421,8 @@ impl Encoder {
                     }
                 }
 
+                // Chunk consumers require IVF, even when user options select WebM.
+                parameters.push("--ivf".to_owned());
                 parameters
             },
             Encoder::SVTAV1 { options, .. } => {
