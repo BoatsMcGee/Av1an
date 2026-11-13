@@ -9,15 +9,19 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
 class ReleaseScriptTests(unittest.TestCase):
     def _r07_git(self, repo: Path, *args: str) -> str:
+        # SECURITY: Hook/wrapper Git routing must never redirect fixture writes.
         return subprocess.run(
             ["git", *args], cwd=repo, check=True, capture_output=True, text=True,
-            env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1",
+            env={**{key: value for key, value in os.environ.items()
+                    if not key.startswith("GIT_")}, "GIT_CONFIG_NOSYSTEM": "1",
                  "GIT_CONFIG_GLOBAL": os.devnull,
+                 "GIT_CEILING_DIRECTORIES": str(repo.parent.resolve()),
                  "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000",
                  "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000"},
         ).stdout.strip()
@@ -36,10 +40,82 @@ class ReleaseScriptTests(unittest.TestCase):
         script = Path(__file__).resolve().parents[1] / "generate-changelog.sh"
         return subprocess.run(
             ["bash", str(script), *args], cwd=repo, capture_output=True, text=True,
-            env={**os.environ, "GITHUB_SHA": "OFFLINE_R07_SHA",
+            env={**{key: value for key, value in os.environ.items()
+                    if not key.startswith("GIT_")}, "GITHUB_SHA": "OFFLINE_R07_SHA",
                  "GITHUB_OUTPUT": str(output), "GIT_CONFIG_NOSYSTEM": "1",
-                 "GIT_CONFIG_GLOBAL": os.devnull},
+                 "GIT_CONFIG_GLOBAL": os.devnull,
+                 "GIT_CEILING_DIRECTORIES": str(repo.parent.resolve())},
         )
+
+    def test_r07_helpers_isolate_git_environment_and_parent_discovery(self) -> None:
+        """Inherited routing must not write to a containing repo or leak its history."""
+        with tempfile.TemporaryDirectory(prefix="r07 isolation ") as directory:
+            base = Path(directory)
+            env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT")
+                   if key in os.environ}
+            env["TMPDIR"] = str(base)
+            # SECURITY: Never route the unsafe RED helpers to the actual project.
+            with patch.dict(os.environ, env, clear=True):
+                outer = base / "outer repo"
+                self._r07_repo(outer)
+                (outer / "sentinel").write_text("preserve outer index and worktree\n")
+                self._r07_git(outer, "add", "--", "sentinel")
+                self._r07_git(outer, "commit", "-m", "R07_OUTER")
+                self._r07_git(outer, "tag", "v9.0.0")
+                self._r07_git(outer, "config", "user.name", "Outer Sentinel")
+
+                def outer_state() -> dict[str, bytes]:
+                    git_dir = outer / ".git"
+                    paths = [git_dir / name for name in
+                             ("HEAD", "config", "index", "packed-refs")]
+                    paths.extend((git_dir / "refs").rglob("*"))
+                    return {str(path.relative_to(git_dir)): path.read_bytes()
+                            for path in paths if path.is_file()}
+
+                before = outer_state()
+                inner = outer / "inner repo"
+                output = base / "inner output"
+                polluted = {
+                    "GIT_DIR": str(outer / ".git"),
+                    "GIT_COMMON_DIR": str(outer / ".git"),
+                    "GIT_WORK_TREE": str(outer),
+                    "GIT_INDEX_FILE": str(outer / ".git/index"),
+                    "GIT_OBJECT_DIRECTORY": str(outer / ".git/objects"),
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(outer / ".git/objects"),
+                    "GIT_CONFIG": str(outer / ".git/config"),
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "user.name",
+                    "GIT_CONFIG_VALUE_0": "Injected Outer Identity",
+                    "GIT_AUTHOR_NAME": "Injected Outer Author",
+                    "GIT_CEILING_DIRECTORIES": str(base),
+                }
+                with patch.dict(os.environ, polluted):
+                    self._r07_repo(inner)
+                    self._r07_git(inner, "commit", "--allow-empty", "-m", "R07_INNER")
+                    self._r07_git(inner, "tag", "v0.5.1")
+                    result = self._r07_changelog(inner, output)
+
+                self.assertEqual(outer_state(), before, "outer HEAD/config/index/refs changed")
+                self.assertTrue((inner / ".git").is_dir())
+                self.assertEqual(self._r07_git(inner, "log", "-1", "--format=%s"), "R07_INNER")
+                self.assertEqual(self._r07_git(inner, "tag", "--list"), "v0.5.1")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                body = output.read_text()
+                self.assertEqual(
+                    [line[2:] for line in body.splitlines() if line.startswith("- ")],
+                    ["R07_INNER"],
+                )
+                self.assertIn(": R07_INNER (Release Fixture)\n", body)
+
+                not_git = outer / "not git"
+                not_git.mkdir()
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self._r07_git(not_git, "rev-parse", "--show-toplevel")
+                output.write_text("existing=true\n")
+                result = self._r07_changelog(not_git, output)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(output.read_text(), "existing=true\n")
+                self.assertEqual(outer_state(), before)
 
     def test_r07_previous_reachable_version_excludes_head_aliases_and_latest(self) -> None:
         """Current, moving, non-version, or numerically largest tags are not baselines."""
