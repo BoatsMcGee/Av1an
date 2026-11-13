@@ -351,39 +351,43 @@ fn e26_vvenc_rejects_malformed_counts_and_non_stats_noise() {
     }
 }
 
-// #[test]
-// fn valid_params_works() {
-//     use std::borrow::Borrow;
-
-//     macro_rules! generate_tests {
-//       ($($x:ident),* $(,)?) => {
-//         $(
-//           let returned: HashSet<String> =
-// valid_params(include_str!(concat!("../../tests/", stringify!($x),
-// "_help.txt")), Encoder::$x)             .iter()
-//             .map(|s| s.to_string())
-//             .collect();
-//           let expected: HashSet<String> =
-// include_str!(concat!("../../tests/", stringify!($x), "_params.txt"))
-//             .split_ascii_whitespace()
-//             .map(|s| s.to_string())
-//             .collect();
-
-//           for arg in expected.iter() {
-//             assert!(returned.contains(Borrow::<str>::borrow(&**arg)),
-// "expected '{}', but it was missing in return value (for encoder {})", arg,
-// stringify!($x));           }
-//           for arg in returned.iter() {
-//             assert!(expected.contains(Borrow::<str>::borrow(&**arg)), "return
-// value contains '{}', but it was not expected (for encoder {})", arg,
-// stringify!($x));           }
-//           assert_eq!(returned, expected);
-//         )*
-//       };
-//     }
-
-//     generate_tests!(aom, rav1e, svt_av1, vpx, x264, x265);
-// }
+#[test]
+fn v01a_literal_help_options_and_negative_controls() {
+    // Losing aliases, no- expansion, or equals trimming must break these
+    // independent fixtures; native help is checked separately, not snapshotted.
+    for (base, help, expected) in [
+        (
+            EncoderBase::X265,
+            "-m/--subme <int> -w/--[no-]weightp --[no-]-hrd-concat --keyint <int> - --",
+            "-m --subme -w --weightp --no-weightp --hrd-concat --no-hrd-concat --keyint",
+        ),
+        (
+            EncoderBase::AOM,
+            "--passes=<arg> --fpf=<arg> --film-grain-table=<arg> -o <arg> - --",
+            "--passes --fpf --film-grain-table -o",
+        ),
+        (
+            EncoderBase::SVTAV1,
+            "-i, --input <file> --stats <file> --pass <int> --fgs-table <file>",
+            "-i --input --stats --pass --fgs-table",
+        ),
+        (
+            EncoderBase::RAV1E,
+            "--first-pass <STATS_FILE> --second-pass <STATS_FILE> --quiet -y",
+            "--first-pass --second-pass --quiet -y",
+        ),
+    ] {
+        let actual = valid_params(help, base);
+        assert_eq!(
+            actual,
+            expected.split_ascii_whitespace().map(Cow::Borrowed).collect(),
+            "{base}"
+        );
+        assert!(!actual.contains("--v01-deliberately-nonexistent"));
+        assert!(!actual.contains("--passes=<arg>"));
+        assert!(!actual.contains("--[no-]weightp"));
+    }
+}
 
 #[test]
 fn rav1e_parsing() {

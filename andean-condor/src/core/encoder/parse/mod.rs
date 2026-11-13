@@ -343,7 +343,7 @@ pub fn valid_params(help_text: &str, encoder: EncoderBase) -> HashSet<Cow<'_, st
     // slightly just in case
     let mut params = HashSet::with_capacity(300);
 
-    for s in help_text.split_ascii_whitespace() {
+    for mut s in help_text.split_ascii_whitespace() {
         if s.starts_with('-') {
             if s.len() == 1 || s == "--" {
                 continue;
@@ -354,7 +354,7 @@ pub fn valid_params(help_text: &str, encoder: EncoderBase) -> HashSet<Cow<'_, st
                 //        or even: -w/--[no-]weightp
                 // So we need to ensure that in this case the short parameter is
                 // also handled.
-                let s = s.get("-x/".len()..).map_or(s, |stripped| {
+                s = s.get("-x/".len()..).map_or(s, |stripped| {
                     if stripped.starts_with("--") {
                         #[expect(
                             clippy::string_slice,
