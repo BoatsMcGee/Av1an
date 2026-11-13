@@ -33,7 +33,7 @@
 #     Where to place `libfmetrics.so`. Defaults to `$PWD/fmetrics`.
 #
 # .PARAMETER Commit
-#     The commit to build. Defaults to the pinned revision of the branch below.
+#     The full commit ID to build. Defaults to the standalone pin below.
 #
 # .PARAMETER Quiet
 #     Suppress the environment-variable guidance printed at the end.
@@ -50,6 +50,7 @@ set -euo pipefail
 Destination="$PWD/fmetrics"
 Commit="${FMETRICS_COMMIT:-ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac}"
 Repository="${FMETRICS_REPO:-https://github.com/BoatsMcGee/fmetrics.git}"
+# Descriptive only; fetching the immutable pin does not require this branch.
 PatchRef="${FMETRICS_BRANCH:-add-windows-shared-build}"
 RequiredZigMajor='0.16'
 Quiet=0
@@ -64,11 +65,14 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [[ ! "$Commit" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "Expected a full 40-hex commit ID, not '$Commit'." >&2
+    exit 1
+fi
+Commit="${Commit,,}"
+
 library=libfmetrics.so
 
-# The branch head carries the shared-library target, so it is built rather than
-# the upstream commit -- but the pin is checked anyway, so a later push cannot
-# silently change what is installed.
 work="$(mktemp -d "${TMPDIR:-/tmp}/fmetrics-build-XXXXXX")"
 
 step() { echo "==> $1"; }
@@ -94,13 +98,24 @@ echo "    zig $zig_version"
 
 trap 'rm -rf "$work"' EXIT
 
-step "Fetching fmetrics $PatchRef"
-git clone --quiet --branch "$PatchRef" "$Repository" "$work"
+step "Fetching fmetrics commit $Commit (descriptive branch: $PatchRef)"
+git init --quiet "$work" || { echo 'git init failed for fmetrics checkout.' >&2; exit 1; }
+# No depth limit: Windows also needs the pin's ancestry, not today's branch head.
+if ! git -C "$work" fetch --quiet --no-tags -- "$Repository" "$Commit"; then
+    echo "Failed to fetch fmetrics commit $Commit from $Repository." >&2
+    exit 1
+fi
+if ! git -C "$work" checkout --quiet --detach "$Commit" --; then
+    echo "Failed to check out fmetrics commit $Commit." >&2
+    exit 1
+fi
 
-actual="$(git -C "$work" rev-parse HEAD)"
+if ! actual="$(git -C "$work" rev-parse --verify 'HEAD^{commit}')"; then
+    echo "Failed to verify fmetrics HEAD for commit $Commit." >&2
+    exit 1
+fi
 if [ "$actual" != "$Commit" ]; then
-    echo "$PatchRef is at $actual, not the expected $Commit. Rebase the branch, or" >&2
-    echo "pass -Commit to build a different one deliberately." >&2
+    echo "fmetrics HEAD is $actual, not the expected commit $Commit." >&2
     exit 1
 fi
 

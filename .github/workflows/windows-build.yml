@@ -101,7 +101,7 @@ jobs:
         timeout-minutes: 10
         run: |
           # The executable fixtures use only stdlib; R01's Bash harness stays on Linux.
-          python -B .github/scripts/tests/test_release_scripts.py -v ReleaseScriptTests.test_r02_archive_rejects_missing_empty_and_wrong_relative_entries ReleaseScriptTests.test_r02_real_import_policy_fails_closed ReleaseScriptTests.test_r05_windows_installer_boundaries_and_local_candidate
+          python -B .github/scripts/tests/test_release_scripts.py -v ReleaseScriptTests.test_r02_archive_rejects_missing_empty_and_wrong_relative_entries ReleaseScriptTests.test_r02_real_import_policy_fails_closed ReleaseScriptTests.test_r05_windows_installer_boundaries_and_local_candidate ReleaseScriptTests.test_r06_windows_fetch_patch_and_ancestry_before_compilation
           if ($LASTEXITCODE -ne 0) { throw 'Offline release contracts failed.' }
           $readobj = Join-Path $env:ProgramFiles 'LLVM/bin/llvm-readobj.exe'
           if (-not (Test-Path $readobj -PathType Leaf)) { throw 'Runner prerequisite llvm-readobj is missing.' }

@@ -23,7 +23,7 @@
     Where to place `fmetrics.dll`. Defaults to `$PWD\fmetrics`.
 
 .PARAMETER Commit
-    The commit to build. Defaults to the pinned revision of the branch below.
+    The full commit ID to build. Defaults to the standalone pin below.
 
 .PARAMETER ZigPath
     `zig` to look up on `PATH`, or a path to `zig.exe`.
@@ -54,6 +54,7 @@ $ProgressPreference = 'SilentlyContinue'
 # its pins without editing this script. It stays standalone: with nothing set,
 # these literals are what a direct run uses.
 $Repository   = if ($env:FMETRICS_REPO)          { $env:FMETRICS_REPO }          else { 'https://github.com/BoatsMcGee/fmetrics.git' }
+# Descriptive only; fetching the immutable pin does not require this branch.
 $PatchRef     = if ($env:FMETRICS_BRANCH)        { $env:FMETRICS_BRANCH }        else { 'add-windows-shared-build' }
 $UpstreamBase = if ($env:FMETRICS_UPSTREAM_BASE) { $env:FMETRICS_UPSTREAM_BASE } else { 'e8bf3cfe06fb78f51864804b2f7003667d4c5a71' }
 $RequiredZigMajor = '0.16'
@@ -61,6 +62,10 @@ $RequiredZigMajor = '0.16'
 if (-not $PSBoundParameters.ContainsKey('Commit') -and $env:FMETRICS_COMMIT) {
     $Commit = $env:FMETRICS_COMMIT
 }
+if ($Commit -notmatch '\A[0-9a-fA-F]{40}\z') {
+    throw "Expected a full 40-hex commit ID, not '$Commit'."
+}
+$Commit = $Commit.ToLowerInvariant()
 
 $dllName = 'fmetrics.dll'
 $target = Join-Path $Destination $dllName
@@ -113,16 +118,20 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 $work = Join-Path ([IO.Path]::GetTempPath()) "fmetrics-build-$PID"
 
 try {
-    Write-Step "Fetching fmetrics $PatchRef"
-    & git clone --quiet --branch $PatchRef $Repository $work
-    if ($LASTEXITCODE -ne 0) { throw 'git clone failed.' }
+    Write-Step "Fetching fmetrics commit $Commit (descriptive branch: $PatchRef)"
+    & git init --quiet $work
+    if ($LASTEXITCODE -ne 0) { throw 'git init failed for fmetrics checkout.' }
+    # Full history is needed for the upstream ancestry check below.
+    & git -C $work fetch --quiet --no-tags -- $Repository $Commit
+    if ($LASTEXITCODE -ne 0) { throw "Failed to fetch fmetrics commit $Commit from $Repository." }
+    & git -C $work checkout --quiet --detach $Commit --
+    if ($LASTEXITCODE -ne 0) { throw "Failed to check out fmetrics commit $Commit." }
 
-    # The branch head is what carries the shared-library target and the
-    # dependency patch, so it is built rather than the upstream commit. The pin
-    # is checked anyway, so a later push cannot silently change what is built.
-    $head = (& git -C $work rev-parse HEAD).Trim()
+    $head = & git -C $work rev-parse --verify 'HEAD^{commit}'
+    if ($LASTEXITCODE -ne 0 -or -not $head) { throw "Failed to verify fmetrics HEAD for commit $Commit." }
+    $head = $head.Trim()
     if ($head -ne $Commit) {
-        throw "$PatchRef is at $head, not the expected $Commit. Rebase the branch, or pass -Commit to build a different one deliberately."
+        throw "fmetrics HEAD is $head, not the expected commit $Commit."
     }
 
     & git -C $work merge-base --is-ancestor $UpstreamBase $Commit
@@ -138,7 +147,7 @@ try {
     # --directory.
     $patch = "$work/patches/0001-windows-portability.patch"
     if (-not (Test-Path $patch)) {
-        throw "the $PatchRef checkout has no patches/0001-windows-portability.patch; the shared-library work moved."
+        throw "the $Commit checkout has no patches/0001-windows-portability.patch; the shared-library work moved."
     }
 
     Write-Step 'Fetching dependencies'

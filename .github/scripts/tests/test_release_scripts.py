@@ -18,6 +18,189 @@ import zipfile
 
 
 class ReleaseScriptTests(unittest.TestCase):
+    def _r06_fixture(self, base: Path) -> tuple[dict, dict]:
+        # SECURITY: Only owned Git repositories/configs; no inherited Git routing,
+        # shell startup, credentials or global config may affect these fetches.
+        env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "COMSPEC", "PATHEXT")
+               if key in os.environ}
+        temp = base / "temp"
+        temp.mkdir()
+        env.update(TMPDIR=str(temp), TEMP=str(temp), TMP=str(temp),
+                   GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
+                   GIT_CEILING_DIRECTORIES=str(base), GIT_ALLOW_PROTOCOL="file",
+                   GIT_TERMINAL_PROMPT="0")
+        repo = base / "remote"
+        with patch.dict(os.environ, env, clear=True):
+            self._r07_repo(repo)
+            (repo / "payload").write_text("base\n")
+            self._r07_git(repo, "add", ".")
+            self._r07_git(repo, "commit", "-m", "R06 base")
+            upstream = self._r07_git(repo, "rev-parse", "HEAD")
+            (repo / "payload").write_text("pinned\n")
+            (repo / "patches").mkdir()
+            (repo / "patches/0001-windows-portability.patch").write_bytes(
+                b"diff --git a/payload.txt b/payload.txt\n"
+                b"--- a/payload.txt\n+++ b/payload.txt\n@@ -1 +1 @@\n-old\n+patched\n")
+            self._r07_git(repo, "add", ".")
+            self._r07_git(repo, "commit", "-m", "R06 pin")
+            pinned = self._r07_git(repo, "rev-parse", "HEAD")
+            (repo / "payload").write_text("advanced\n")
+            self._r07_git(repo, "commit", "-am", "R06 advanced branch")
+            advanced = self._r07_git(repo, "rev-parse", "HEAD")
+            other = base / "other remote"
+            self._r07_repo(other)
+            self._r07_git(other, "commit", "--allow-empty", "-m", "R06 unreachable")
+            unreachable = self._r07_git(other, "rev-parse", "HEAD")
+        destination = base / "destination"
+        destination.mkdir()
+        (destination / "sentinel").write_text("preserve destination\n")
+        env.update(FMETRICS_REPO=str(repo), FMETRICS_COMMIT=pinned,
+                   FMETRICS_BRANCH="main", FMETRICS_UPSTREAM_BASE=upstream,
+                   MARKER=str(base / "compiler"), FETCH_MARKER=str(base / "dependencies"))
+        return env, {"base": upstream, "pin": pinned, "advanced": advanced,
+                     "unreachable": unreachable}
+
+    @unittest.skipIf(os.name == "nt", "Linux installer uses Bash and ELF tooling")
+    def test_r06_linux_fetches_exact_commit_before_compilation(self) -> None:
+        """Branch-head checkout, ignored overrides or a fail-open fetch must fail."""
+        installer = Path(__file__).resolve().parents[3] / "av-metrics-fmetrics/scripts/install-fmetrics-linux.sh"
+        with tempfile.TemporaryDirectory(prefix="r06 fetch ") as directory:
+            base = Path(directory)
+            env, commits = self._r06_fixture(base)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            for name, body in {
+                "zig": '''if [ "$1" = version ]; then echo 0.16.0; exit 0; fi
+test "$*" = 'build --release=fast' || exit 93
+{ git rev-parse HEAD; cat payload; git rev-parse --abbrev-ref HEAD; } > "$MARKER"
+echo 'R06 compiler boundary; no native build' >&2
+exit 79
+''',
+                "gcc": 'touch "$FETCH_MARKER"; exit 81\n',
+            }.items():
+                tool = bin_dir / name
+                tool.write_text("#!/bin/bash\nset -eu\n" + body)
+                tool.chmod(0o755)
+            env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
+            cases = [
+                ("advanced-branch", commits["pin"], "main", [], "pinned", ""),
+                ("absent-branch", commits["pin"], "absent", [], "pinned", ""),
+                ("environment", commits["advanced"], "absent", [], "advanced", ""),
+                ("explicit-override", commits["advanced"], "absent", ["-Commit", commits["pin"]], "pinned", ""),
+                ("short", commits["pin"][:12], "main", [], None, "full.*commit"),
+                ("branch-as-pin", "main", "main", [], None, "full.*commit"),
+                ("nonhex", "z" * 40, "main", [], None, "full.*commit"),
+                ("newline", commits["pin"] + "\n", "main", [], None, "full.*commit"),
+                ("unknown", "1" * 40, "main", [], None, "failed to fetch fmetrics commit " + "1" * 40),
+                ("unreachable", commits["unreachable"], "main", [], None, "failed to fetch fmetrics commit " + commits["unreachable"]),
+            ]
+            for case, selected, branch, arguments, payload, error in cases:
+                with self.subTest(case=case):
+                    marker = base / "compiler"
+                    marker.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        ["bash", str(installer), "-Destination", str(base / "destination"), "-Quiet", *arguments],
+                        cwd=base, env={**env, "FMETRICS_COMMIT": selected, "FMETRICS_BRANCH": branch},
+                        capture_output=True, text=True)
+                    logs = result.stdout + result.stderr
+                    if payload:
+                        self.assertEqual(result.returncode, 79, logs)
+                        expected = commits["advanced"] if payload == "advanced" else commits["pin"]
+                        self.assertEqual(marker.read_text().splitlines(), [expected, payload, "HEAD"], logs)
+                        self.assertIn("R06 compiler boundary", logs)
+                    else:
+                        self.assertNotEqual(result.returncode, 0, logs)
+                        self.assertRegex(logs.lower(), error)
+                        self.assertFalse(marker.exists(), logs)
+                        if case in ("short", "branch-as-pin", "nonhex", "newline"):
+                            self.assertNotIn("Fetching fmetrics", logs, "invalid pin must fail before fetching")
+                    self.assertFalse((base / "dependencies").exists(), "linker must never run")
+                    self.assertEqual(list((base / "destination").iterdir()), [base / "destination/sentinel"])
+                    self.assertEqual((base / "destination/sentinel").read_text(), "preserve destination\n")
+                    self.assertEqual(list((base / "temp").iterdir()), [], logs)
+
+    @unittest.skipUnless(os.name == "nt", "native PowerShell fetch fixture runs on Windows CI")
+    def test_r06_windows_fetch_patch_and_ancestry_before_compilation(self) -> None:
+        """Run actual PS/Git/apply; fake Zig never compiles or installs fixture bytes."""
+        installer = Path(__file__).resolve().parents[3] / "av-metrics-fmetrics/scripts/install-fmetrics-windows.ps1"
+        with tempfile.TemporaryDirectory(prefix="r06 native ") as directory:
+            base = Path(directory)
+            env, commits = self._r06_fixture(base)
+            runner = base / "run.ps1"
+            runner.write_text('''param([string] $Installer, [string] $Destination, [string] $ZigPath, [string] $Commit)
+$parameters = @{ Destination = $Destination; ZigPath = $ZigPath }
+if ($PSBoundParameters.ContainsKey('Commit')) { $parameters.Commit = $Commit }
+try { & $Installer @parameters }
+catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+''')
+            zig = base / "zig.cmd"
+            zig.write_text(r'''@echo off
+if "%~1"=="version" (
+  echo 0.16.0
+  exit /b 0
+)
+if not "%~1"=="build" exit /b 93
+if "%~2"=="--fetch" (
+  echo dependencies> "%FETCH_MARKER%"
+  mkdir zig-pkg\fcvvdp-fixture
+  "%FIXTURE_PYTHON%" -c "import os; from pathlib import Path; Path('zig-pkg/fcvvdp-fixture/payload.txt').write_bytes(b'incompatible\n' if os.environ['BAD_DEP']=='1' else b'old\n')"
+  if errorlevel 1 exit /b 95
+  exit /b 0
+)
+if not "%~2 %~3"=="--release=fast -Dshared=true" exit /b 94
+(
+  git rev-parse HEAD
+  type payload
+  git rev-parse --abbrev-ref HEAD
+  type zig-pkg\fcvvdp-fixture\payload.txt
+)> "%MARKER%"
+echo R06 compiler boundary; no native build
+exit /b 79
+''')
+            cases = [
+                ("advanced-branch", commits["pin"], "main", [], commits["base"], False, "pinned", "build failed"),
+                ("absent-branch", commits["pin"], "absent", [], commits["base"], False, "pinned", "build failed"),
+                ("environment", commits["advanced"], "absent", [], commits["base"], False, "advanced", "build failed"),
+                ("explicit-override", commits["advanced"], "absent", ["-Commit", commits["pin"]], commits["base"], False, "pinned", "build failed"),
+                ("short", commits["pin"][:12], "main", [], commits["base"], False, None, "full.*commit"),
+                ("branch-as-pin", "main", "main", [], commits["base"], False, None, "full.*commit"),
+                ("nonhex", "z" * 40, "main", [], commits["base"], False, None, "full.*commit"),
+                ("newline", commits["pin"] + "\n", "main", [], commits["base"], False, None, "full.*commit"),
+                ("unknown", "1" * 40, "main", [], commits["base"], False, None, "failed to fetch fmetrics commit " + "1" * 40),
+                ("unreachable", commits["unreachable"], "main", [], commits["base"], False, None, "failed to fetch fmetrics commit " + commits["unreachable"]),
+                ("wrong-ancestry", commits["pin"], "main", [], commits["advanced"], False, None, "not built on.*upstream"),
+                ("missing-ancestry", commits["pin"], "main", [], "2" * 40, False, None, "not built on.*upstream"),
+                ("missing-patch", commits["base"], "main", [], commits["base"], False, None, "no patches/0001-windows-portability.patch"),
+                ("apply-failure", commits["pin"], "main", [], commits["base"], True, None, "applying.*patch failed"),
+            ]
+            for case, selected, branch, arguments, upstream, bad_dep, payload, error in cases:
+                with self.subTest(case=case):
+                    marker, fetched = base / "compiler", base / "dependencies"
+                    marker.unlink(missing_ok=True)
+                    fetched.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        ["pwsh", "-NoProfile", "-File", str(runner), "-Installer", str(installer), "-Destination", str(base / "destination"),
+                         "-ZigPath", str(zig), *arguments], cwd=base,
+                        env={**env, "FMETRICS_COMMIT": selected, "FMETRICS_BRANCH": branch,
+                             "FMETRICS_UPSTREAM_BASE": upstream, "BAD_DEP": "1" if bad_dep else "0",
+                             "FIXTURE_PYTHON": sys.executable},
+                        capture_output=True, text=True)
+                    logs = result.stdout + result.stderr
+                    self.assertNotEqual(result.returncode, 0, logs)
+                    self.assertRegex(logs.lower(), error)
+                    self.assertEqual(fetched.exists(), bool(payload) or bad_dep, logs)
+                    if payload:
+                        expected = commits["advanced"] if payload == "advanced" else commits["pin"]
+                        self.assertEqual(marker.read_text().splitlines(), [expected, payload, "HEAD", "patched"], logs)
+                        self.assertIn("R06 compiler boundary", logs)
+                    else:
+                        self.assertFalse(marker.exists(), logs)
+                        if case in ("short", "branch-as-pin", "nonhex", "newline"):
+                            self.assertNotIn("Fetching fmetrics", logs, "invalid pin must fail before fetching")
+                    self.assertEqual(list((base / "destination").iterdir()), [base / "destination/sentinel"])
+                    self.assertEqual((base / "destination/sentinel").read_text(), "preserve destination\n")
+                    self.assertEqual(list((base / "temp").iterdir()), [], logs)
+
     def test_r05_vmaf_stage_rejects_bytes_before_unpack(self) -> None:
         """Removing the source checksum must expose the real staging tar boundary."""
         root = Path(__file__).resolve().parents[3]
