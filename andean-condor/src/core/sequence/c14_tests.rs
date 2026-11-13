@@ -533,6 +533,19 @@ fn c14_production_roundtrip_dependencies_and_refusal_bytes() {
     assert_eq!(job.scenes[0].sequence_data.target_quality.passes.len(), 1);
     let pass = &job.scenes[0].sequence_data.target_quality.passes[0];
     assert_eq!(
+        RESULT_REVISION, 1,
+        "x264 migration must not invalidate other v1 jobs"
+    );
+    assert!(
+        pass.provenance
+            .as_ref()
+            .expect("actual FFmpeg stamp")
+            .context
+            .get("probe_encoding")
+            .is_none(),
+        "the independent-scene policy belongs only to x264; this FFmpeg v1 job resumes below"
+    );
+    assert_eq!(
         pass.backend.as_ref().expect("actual backend").engine,
         crate::metrics::Engine::Vmaf
     );

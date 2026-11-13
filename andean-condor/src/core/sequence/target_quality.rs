@@ -1362,21 +1362,28 @@ impl TargetQuality {
         // one encoder; anything else keeps the per-scene encoders. Probe
         // encoders never carry an FFmpeg filter, so filters cannot make scenes
         // differ here.
-        let zone_plan = match ZonePlan::try_build_cancel(&encode_tasks, cancellation) {
-            Ok(plan) => Some(plan),
-            Err(reason) => {
-                if cancellation.is_forced() {
-                    drop(encode_progress_tx);
-                    let relayed = crate::core::encoder::pipes::join_worker(
-                        encode_thread,
-                        "Joining cancelled probe progress",
-                    );
-                    relayed?;
-                    return Err(reason);
-                }
-                debug!("Probe pass {pass} encoding scenes individually: {reason}");
-                None
-            },
+        // ponytail: lose x264 grouping to match final independent-scene measurements;
+        // reenable only with native probe/final parity proof.
+        let zone_plan = if encode_tasks.iter().any(|task| task.encoder.base() == EncoderBase::X264)
+        {
+            None
+        } else {
+            match ZonePlan::try_build_cancel(&encode_tasks, cancellation) {
+                Ok(plan) => Some(plan),
+                Err(reason) => {
+                    if cancellation.is_forced() {
+                        drop(encode_progress_tx);
+                        let relayed = crate::core::encoder::pipes::join_worker(
+                            encode_thread,
+                            "Joining cancelled probe progress",
+                        );
+                        relayed?;
+                        return Err(reason);
+                    }
+                    debug!("Probe pass {pass} encoding scenes individually: {reason}");
+                    None
+                },
+            }
         };
         let results = match zone_plan {
             Some(plan) => ZoneEncoder::encode_tasks_with_validation(

@@ -511,10 +511,11 @@ fn e14_r1_child() {
                 "real scored pass"
             );
             let paths = fs::read_to_string(root.join("starts")).expect("actual encodes");
+            // x264 remains zone-eligible, but TQ must probe each scene independently.
             assert_eq!(
                 paths.lines().count(),
-                if case == "tq-zone-optout" { 1 } else { 2 },
-                "actual zone/individual dispatch selected"
+                2,
+                "actual x264 independent-scene dispatch selected"
             );
         } else {
             let error = result.expect_err("count optout cannot waive status/nonempty");

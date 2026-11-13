@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     metrics::{self, Engine},
-    models::{input::Input, scene::Scene},
+    models::{encoder::EncoderBase, input::Input, scene::Scene},
 };
 
 /// Deliberate compatibility boundary for repaired conversion, math and selection semantics.
@@ -336,12 +336,14 @@ impl Admission {
             .context("successful probe has no actual backend identity")?;
         let mut encoder = probe_encoder(scene, config)?;
         encoder.set_quantizer(pass.quantizer);
-        Ok(
-            json!({"input": input_identity(input)?, "reference": input_identity(metric_input.unwrap_or(input))?,
+        let mut context = json!({"input": input_identity(input)?, "reference": input_identity(metric_input.unwrap_or(input))?,
         "range": [scene.start_frame, scene.end_frame], "strategy": config.probing.strategy,
         "encoder": encoder, "metric": self.metric(&config.metric)?, "statistic": config.probing.statistic,
-        "backend": self.backend(&config.metric, metric_input.unwrap_or(input), backend)?}),
-        )
+        "backend": self.backend(&config.metric, metric_input.unwrap_or(input), backend)?});
+        if encoder.base() == EncoderBase::X264 {
+            context["probe_encoding"] = json!("independent-scenes-1");
+        }
+        Ok(context)
     }
 
     #[inline]

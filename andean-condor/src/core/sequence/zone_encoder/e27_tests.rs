@@ -14,6 +14,460 @@ use crate::{
 };
 use std::{collections::HashMap, os::unix::fs::PermissionsExt, process::Command};
 
+// V02a catches a probe route that certifies a quantizer using cross-scene state
+// which the final per-scene encoder cannot reproduce. No production test switch.
+#[test]
+fn v02a_native_probe_parity() {
+    let temp = tempfile::tempdir().expect("native parity supervisor");
+    let root = temp.path();
+    fs::write(
+        root.join("watchdog.rs"),
+        include_str!("../../encoder/e08_fixture.rs"),
+    )
+    .expect("existing watchdog");
+    let compiled = Command::new("rustc")
+        .arg(root.join("watchdog.rs"))
+        .arg("-o")
+        .arg(root.join("watchdog"))
+        .output()
+        .expect("rustc required");
+    assert!(compiled.status.success(), "{compiled:?}");
+    let mut failures = Vec::new();
+    for base in ["x264", "svt"] {
+        let job = root.join(base);
+        fs::create_dir_all(&job).expect("isolated native job");
+        let file = fs::File::create(job.join("child.log")).expect("log");
+        let status = Command::new(root.join("watchdog"))
+            .arg("--e08-watchdog")
+            .arg(std::env::current_exe().expect("test executable"))
+            .arg(&job)
+            .arg(format!("v02a-{base}"))
+            .arg("core::sequence::zone_encoder::e27_tests::v02a_native_probe_parity_child")
+            .stdout(file.try_clone().expect("log clone"))
+            .stderr(file)
+            .status()
+            .expect("native parity watchdog");
+        let log = fs::read_to_string(job.join("child.log")).expect("native log");
+        eprint!("{base}: {status}\n{log}");
+        let pending = base == "svt"
+            && std::env::var_os("CONDOR_REQUIRE_SVT_ZONES").is_none()
+            && fs::read_to_string(job.join("capability-pending"))
+                .is_ok_and(|marker| marker == "SVT grouped parity PENDING: NoZoneSupport")
+            && log.contains("SVT grouped parity PENDING: NoZoneSupport")
+            && !job.join("verified").exists();
+        if !status.success()
+            || !(job.join("verified").exists() || pending)
+            || !log.contains("E08 watchdog reaped 0 descendants; timeout=false")
+        {
+            failures.push(format!("{base}: {status}\n{log}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn v02a_decode(path: &Path) -> Vec<u8> {
+    let decoded = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-f", "rawvideo", "-pix_fmt", "yuv420p", "-"])
+        .output()
+        .expect("ffmpeg required, no capability skip");
+    assert!(decoded.status.success(), "{decoded:?}");
+    decoded.stdout
+}
+
+#[test]
+fn v02a_native_probe_parity_child() {
+    use crate::{
+        core::sequence::{
+            quality_check::QualityCheck, scene_concatenator::SceneConcatenator,
+            target_quality::TargetQuality,
+        },
+        models::sequence::{
+            quality_check::QualityCheckConfig,
+            scene_concatenator::ConcatMethod,
+            target_quality::{
+                TargetQualityConfig,
+                types::{ProbeStatistic, QualityMetric},
+            },
+        },
+    };
+    let Some(root) = std::env::var_os("E08_ROOT") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    let supervisor_case = std::env::var("E08_CASE").expect("encoder case");
+    // Existing library-test fault hooks share E08_CASE's path-kind convention.
+    let case = supervisor_case.strip_prefix("v02a-").expect("native parity case");
+    let base = match case {
+        "x264" => EncoderBase::X264,
+        "svt" => EncoderBase::SVTAV1,
+        _ => panic!("unexpected V02a encoder case"),
+    };
+    for tool in [
+        "ffmpeg",
+        "ffprobe",
+        "mkvmerge",
+        if case == "x264" {
+            "x264"
+        } else {
+            "SvtAv1EncApp"
+        },
+    ] {
+        let executable = which::which(tool).expect("designated native capability is mandatory");
+        println!("V02a capability {tool}: {}", executable.display());
+    }
+    let source = root.join("pattern.mkv");
+    let generated = Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=128x128:rate=24",
+            "-frames:v",
+            "36",
+            "-c:v",
+            "ffv1",
+        ])
+        .arg(&source)
+        .output()
+        .expect("native fixture");
+    assert!(generated.status.success(), "{generated:?}");
+    let source_bytes = fs::read(&source).expect("source bytes");
+    let input_model = InputModel::Video {
+        path: source.clone(),
+        import_method: ImportMethod::FFMS2 {
+            index: None,
+            cache_path: None,
+        },
+        filters: vec![],
+    };
+    let metric = QualityMetric::VMAF {
+        target_range: (94.0, 96.0),
+        resolution: None,
+        scaler: "bicubic".into(),
+        threads: 0,
+        model: None,
+        features: vec![],
+    };
+    let tq = TargetQualityConfig {
+        metric: metric.clone(),
+        quantizer_range: (10, 40),
+        maximum_probes: 4,
+        ..Default::default()
+    };
+    let mut encoder = Encoder::default_from_base(&base, false);
+    encoder.set_append_color_data(false);
+    encoder.set_quantizer(25.0);
+    let options: &[(&str, &str)] = if case == "x264" {
+        &[("preset", "medium"), ("threads", "1"), ("rc-lookahead", "12"), ("bframes", "2")]
+    } else {
+        &[("preset", "12"), ("lp", "2"), ("lookahead", "16")]
+    };
+    encoder.parameters_mut().extend(CLIParameter::new_strings("--", " ", options));
+    // Keep the final encoder identical to TQ's psychovisually sanitized encoder.
+    let encoder = tq.probe_encoder(&encoder);
+    let mut summaries = Vec::new();
+    let mut failures = Vec::new();
+    for grouped in [true, false] {
+        let dir = root.join(if grouped { "grouped" } else { "individual" });
+        fs::create_dir_all(&dir).expect("route output");
+        let mut config = DefaultSequenceConfig::default();
+        config.parallel_encoder.workers = Some(1);
+        config.parallel_encoder.max_tries = 1;
+        config.parallel_encoder.scenes_directory = dir.clone();
+        config.scene_concatenator.scenes_directory = dir.clone();
+        config.scene_concatenator.method = ConcatMethod::MKVMerge(Default::default());
+        config.target_quality = Some(tq.clone());
+        config.quality_check = Some(QualityCheckConfig {
+            metric: metric.clone(),
+            ..Default::default()
+        });
+        let scenes = [(0, 12), (12, 24), (24, 36)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (start_frame, end_frame))| {
+                let mut encoder = encoder.clone();
+                // Metadata-only difference forces the existing per-scene fallback;
+                // both routes still encode the same pixels with the same options.
+                if !grouped && index == 1 {
+                    encoder.set_append_color_data(true);
+                }
+                Scene {
+                    start_frame,
+                    end_frame,
+                    sub_scenes: None,
+                    encoder,
+                    sequence_data: DefaultSequenceData::default(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let tasks = scenes
+            .iter()
+            .enumerate()
+            .map(|(index, scene)| Task {
+                index,
+                original_index: index,
+                frame_indices: (scene.start_frame..scene.end_frame).collect(),
+                sub_scenes: None,
+                encoder: scene.encoder.clone(),
+                output: dir.join(format!("{index:05}.{}", encoder.output_extension())),
+            })
+            .collect::<Vec<_>>();
+        let plan = ZonePlan::try_build(&tasks);
+        if grouped {
+            if case == "svt" && matches!(plan, Err(ZoneIneligible::NoZoneSupport)) {
+                assert!(
+                    std::env::var_os("CONDOR_REQUIRE_SVT_ZONES").is_none(),
+                    "required SVT grouped capability unavailable: NoZoneSupport"
+                );
+                let marker = "SVT grouped parity PENDING: NoZoneSupport";
+                println!("{marker}");
+                fs::write(root.join("capability-pending"), marker).expect("pending capability");
+                return;
+            }
+            assert!(plan.is_ok(), "native grouped capability: {plan:?}");
+        } else {
+            assert!(matches!(
+                plan,
+                Err(ZoneIneligible::DifferingEncoder {
+                    field: DifferingField::AppendColorData,
+                    ..
+                })
+            ));
+        }
+        let mut condor = Condor::new(
+            Input::from_data(&input_model).expect("native FFMS2"),
+            Output {
+                path: dir.join("final.mkv"),
+                overwrite: true,
+                tags: HashMap::new(),
+                video_tags: HashMap::new(),
+            },
+            encoder.clone(),
+            scenes,
+            Some(config),
+            Box::new(|_| Ok(())),
+        );
+        let (tx, _rx) = mpsc::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut target = TargetQuality {
+            input: None,
+            metric_input: None,
+        };
+        target
+            .execute(&mut condor, tx.clone(), Arc::clone(&cancelled))
+            .expect("real TQ encode, concat, score and selection");
+        ParallelEncoder::default()
+            .execute(&mut condor, tx.clone(), Arc::clone(&cancelled))
+            .expect("actual final scene encodes");
+        SceneConcatenator::default()
+            .execute(&mut condor, tx.clone(), Arc::clone(&cancelled))
+            .expect("actual final concat");
+        QualityCheck { input: None }
+            .execute(&mut condor, tx, cancelled)
+            .expect("actual final CPU quality check");
+        assert_eq!(
+            v02a_decode(&condor.output.path).len(),
+            36 * 128 * 128 * 3 / 2,
+            "independent final frame count"
+        );
+        let mut summary = Vec::new();
+        for (index, scene) in condor.scenes.iter().enumerate() {
+            let data = &scene.sequence_data.target_quality;
+            assert!(data.selection.is_some(), "actual selection provenance");
+            let quantizer = scene.encoder.quantizer().expect("selected q");
+            let selected = data
+                .passes
+                .iter()
+                .find(|pass| pass.quantizer == quantizer)
+                .expect("measured selected q");
+            assert!(selected.provenance.is_some() && selected.backend.is_some());
+            if case == "x264" {
+                assert_eq!(
+                    selected.provenance.as_ref().expect("owning stamp").context["probe_encoding"],
+                    "independent-scenes-1"
+                );
+            }
+            assert_eq!(selected.scores.len(), 12);
+            let probe_score = metric
+                .calculate_score(ProbeStatistic::Mean, &selected.scores)
+                .expect("probe mean");
+            let final_quality = &scene.sequence_data.quality_check.quality;
+            assert!(final_quality.provenance.is_some() && final_quality.backend.is_some());
+            assert_eq!(final_quality.scores.len(), 12);
+            let final_score = metric
+                .calculate_score(ProbeStatistic::Mean, &final_quality.scores)
+                .expect("final mean");
+            assert!(
+                metric.score_within_target(probe_score),
+                "selected probe must hit 94..96"
+            );
+            println!(
+                "V02a {case} zone_eligible={grouped} scene={index} frames={}..{} q={quantizer} probe={probe_score:.9} final={final_score:.9} history={:?} backend={:?}",
+                scene.start_frame,
+                scene.end_frame,
+                data.passes
+                    .iter()
+                    .map(|p| (
+                        p.quantizer,
+                        p.scores.iter().sum::<f64>() / p.scores.len() as f64
+                    ))
+                    .collect::<Vec<_>>(),
+                selected.backend
+            );
+            // The existing target is ±1 VMAF. A certified hit must remain a
+            // hit in the final per-scene encode; do not loosen after a failure.
+            if metric.score_within_target(probe_score) && !metric.score_within_target(final_score) {
+                failures.push(format!("{case} grouped={grouped} scene {index}: certified q={quantizer} score={probe_score}, final score={final_score} outside 94..96"));
+            }
+            summary.push((quantizer, probe_score, final_score));
+        }
+        summaries.push(summary);
+        assert_eq!(fs::read(&source).expect("unchanged source"), source_bytes);
+        if case == "x264" && grouped {
+            use crate::models::sequence::provenance::{self, ResultProvenance};
+            // Migrate actual owning-producer output, not synthetic completed scores.
+            let current = condor.as_data();
+            let mut old = current.clone();
+            let config = old.sequence_config.target_quality.as_ref().expect("TQ");
+            for scene in &mut old.scenes {
+                for pass in &mut scene.sequence_data.target_quality.passes {
+                    pass.provenance
+                        .as_mut()
+                        .expect("actual pass stamp")
+                        .context
+                        .as_object_mut()
+                        .expect("context object")
+                        .remove("probe_encoding");
+                }
+                // Keep the old snapshot internally consistent: its selection and
+                // chunk dependency bind the old raw history, not the current one.
+                scene.sequence_data.target_quality.selection = Some(ResultProvenance::new(
+                    provenance::selection_context(scene, config).expect("old selection"),
+                ));
+                provenance::admit_selection(scene, Some(config), 0)
+                    .expect("old selection really binds old history");
+                scene
+                    .sequence_data
+                    .parallel_encoder
+                    .provenance
+                    .as_mut()
+                    .expect("chunk stamp")
+                    .context["tq_dependency"] =
+                    serde_json::to_value(&scene.sequence_data.target_quality.selection)
+                        .expect("old dependency");
+            }
+            assert_ne!(
+                old.scenes[0].sequence_data.target_quality.selection,
+                current.scenes[0].sequence_data.target_quality.selection,
+                "selection hash must bind the changed raw probe context"
+            );
+            let frozen = std::iter::once(source.clone())
+                .chain(std::iter::once(condor.output.path.clone()))
+                .chain(tasks.iter().map(|task| task.output.clone()))
+                .map(|path| {
+                    let bytes = fs::read(&path).expect("real artifact");
+                    let modified =
+                        fs::metadata(&path).expect("metadata").modified().expect("mtime");
+                    (path, bytes, modified)
+                })
+                .collect::<Vec<_>>();
+            for (label, model) in [("current", current), ("old", old)] {
+                let saved = dir.join(format!("{label}.json"));
+                let bytes = serde_json::to_vec(&model).expect("actual saved job");
+                fs::write(&saved, &bytes).expect("saved job bytes");
+                // Concat is a new mux operation, not a reusable completed stage.
+                let owners: &[&str] = if label == "current" {
+                    &["TQ", "PE"]
+                } else {
+                    &["TQ", "PE", "concat"]
+                };
+                for &owner in owners {
+                    let model: crate::models::Condor<DefaultSequenceData, DefaultSequenceConfig> =
+                        serde_json::from_slice(&fs::read(&saved).expect("saved job"))
+                            .expect("production JSON roundtrip");
+                    let mut resumed = Condor::new(
+                        Input::from_data(&model.input).expect("reopened input"),
+                        Output::new(&model.output).expect("reopened output"),
+                        model.encoder,
+                        model.scenes,
+                        Some(model.sequence_config),
+                        Box::new(|_| anyhow::bail!("resume must not publish new work")),
+                    );
+                    let before = serde_json::to_vec(&resumed.as_data()).expect("before admission");
+                    let (tx, rx) = mpsc::channel();
+                    let result = match owner {
+                        "TQ" => TargetQuality::default().execute_cancel(
+                            &mut resumed,
+                            tx,
+                            Default::default(),
+                        ),
+                        "PE" => ParallelEncoder::default().execute_cancel(
+                            &mut resumed,
+                            tx,
+                            Default::default(),
+                        ),
+                        _ => SceneConcatenator::default().execute_cancel(
+                            &mut resumed,
+                            tx,
+                            Default::default(),
+                        ),
+                    };
+                    if label == "current" {
+                        result.unwrap_or_else(|e| panic!("current {owner} resume: {e:#}"));
+                    } else {
+                        let error = format!(
+                            "{:#}",
+                            result.expect_err("old x264 policy must refuse before work")
+                        );
+                        assert!(
+                            error.contains("TQ probe")
+                                && error.contains("context changed")
+                                && error.contains("recompute in an empty work directory"),
+                            "{owner}: {error}"
+                        );
+                        assert!(
+                            rx.try_iter().next().is_none(),
+                            "refuse before progress/work"
+                        );
+                    }
+                    assert_eq!(
+                        serde_json::to_vec(&resumed.as_data()).expect("after admission"),
+                        before
+                    );
+                    assert_eq!(fs::read(&saved).expect("saved bytes preserved"), bytes);
+                    for (path, original, modified) in &frozen {
+                        assert_eq!(
+                            &fs::read(path).expect("artifact/source preserved"),
+                            original
+                        );
+                        assert_eq!(
+                            &fs::metadata(path).expect("metadata").modified().expect("mtime"),
+                            modified
+                        );
+                    }
+                    println!(
+                        "V02a {label} x264 {owner}: admission checked; config/artifact/source bytes and artifact mtimes preserved"
+                    );
+                }
+            }
+        }
+    }
+    println!("V02a {case} eligible/ineligible quantizers and scores: {summaries:?}");
+    if case == "x264" {
+        assert_eq!(
+            summaries[0], summaries[1],
+            "x264 eligibility must not change TQ measurements"
+        );
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    fs::write(root.join("verified"), "real CPU routes scored and checked")
+        .expect("capability handshake");
+}
+
 // A clean nonzero exit after complete input must reach scene finalization, not
 // bypass its stop flag and permits. Raw bytes also distinguish it from an I/O error.
 const FAKE: &str = r#"#!/bin/sh
