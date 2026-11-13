@@ -109,6 +109,7 @@ jobs:
           which x265
           which x264
           which ffmpeg
+          which ffprobe
           which mkvmerge
 
       - name: Setup Rust cache
@@ -235,6 +236,7 @@ jobs:
           which x265
           which x264
           which ffmpeg
+          which ffprobe
           which mkvmerge
 
       - name: Install cargo-llvm-cov

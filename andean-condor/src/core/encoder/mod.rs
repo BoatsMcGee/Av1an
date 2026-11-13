@@ -1802,6 +1802,9 @@ mod e03_tests;
 mod e04_tests;
 
 #[cfg(test)]
+mod v01_tests;
+
+#[cfg(test)]
 mod e25_tests;
 
 #[cfg(test)]
