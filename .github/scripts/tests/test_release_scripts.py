@@ -126,19 +126,16 @@ if not "%*"=="build --fetch" exit /b 93
 echo R10 dependency boundary; no native build
 exit /b 79
 ''')
-            (base / "git.cmd").write_text('''@echo off
-echo invoked>> "%GIT_MARKER%"
-call "%FIXTURE_GIT%" %*
-exit /b %errorlevel%
-''')
+            # Let Git trace itself: batch forwarding changes HEAD^{commit}.
+            trace = (base / "git-trace").resolve()
             env.update(PATH=str(base) + os.pathsep + env["PATH"], FIXTURE_PYTHON=sys.executable,
-                       FIXTURE_GIT=shutil.which("git"), GIT_MARKER=str(base / "git-calls"))
+                       GIT_TRACE=str(trace))
             for version, expected, status, accepted in self._r10_versions():
                 for explicit in (False, True):
                     with self.subTest(version=version, expected=expected, status=status, explicit=explicit):
                         marker = base / "compiler"
                         marker.unlink(missing_ok=True)
-                        (base / "git-calls").unlink(missing_ok=True)
+                        trace.unlink(missing_ok=True)
                         selected = {**env, "ZIG_FIXTURE_VERSION": version,
                                     "ZIG_VERSION_EXIT": str(status)}
                         if expected is not None:
@@ -151,6 +148,8 @@ exit /b %errorlevel%
                         logs = result.stdout + result.stderr
                         self.assertNotEqual(result.returncode, 0, logs)
                         if accepted:
+                            self.assertTrue(trace.is_file(), logs)
+                            self.assertGreater(trace.stat().st_size, 0, logs)
                             self.assertIn("fetching the Zig dependencies failed", logs)
                             self.assertEqual(marker.read_text().splitlines(), [commits["pin"], "pinned"])
                         else:
@@ -160,7 +159,7 @@ exit /b %errorlevel%
                                 self.assertIn(version or "<no version>", logs)
                             self.assertNotIn("Fetching fmetrics", logs)
                             self.assertFalse(marker.exists(), logs)
-                            self.assertFalse((base / "git-calls").exists(), "invalid version must not invoke Git")
+                            self.assertFalse(trace.exists(), "invalid version must not invoke Git")
                         self.assertEqual((base / "destination/sentinel").read_text(), "preserve destination\n")
                         self.assertEqual(list((base / "destination").iterdir()), [base / "destination/sentinel"])
                         self.assertEqual(list((base / "temp").iterdir()), [], logs)
