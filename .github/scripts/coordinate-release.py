@@ -128,7 +128,7 @@ def publish() -> None:
             if master["object"]["sha"] != sha:
                 print(f"Stale master build {sha}; publication skipped")
                 return
-        elif api(f"commits/{quote(ref, safe='')}")["sha"] != sha:
+        elif api(f"commits/tags/{quote(tag, safe='')}")["sha"] != sha:
             raise ValueError("Version tag no longer matches source SHA; refusing publication")
 
         existing = api(f"releases/tags/{quote(tag, safe='')}", optional=True)

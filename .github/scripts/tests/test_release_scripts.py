@@ -121,6 +121,8 @@ class ReleaseScriptTests(unittest.TestCase):
             self._r07_git(repo, "tag", "v0.5.1")
             self._r07_git(repo, "commit", "--allow-empty", "-m", "R03_NEW")
             self._r07_git(repo, "tag", "v1.2.3")
+            self._r07_git(repo, "tag", "-a", "v1.2.3+雪#%", "-m", "annotated fixture")
+            self._r07_git(repo, "branch", "v1.2.3", "v0.5.1")
             sha = self._r07_git(repo, "rev-parse", "HEAD")
         bin_dir = base / "bin"
         bin_dir.mkdir()
@@ -145,7 +147,10 @@ if a[0] == "api":
     method = value("--method") if "--method" in a else "GET"
     if endpoint == "git/ref/heads/master" and method == "GET":
         print(json.dumps({"object": {"sha": s["master"]}}))
-    elif endpoint == "commits/refs%2Ftags%2Fv1.2.3" and method == "GET":
+    # Independent literal oracle: Get a commit documents tags/TAG_NAME, not refs/tags/.
+    elif endpoint in ("commits/tags/v1.2.3", "commits/tags/v1.2.3%2B%E9%9B%AA%23%25") and method == "GET":
+        if s.get("tag_error"):
+            save(); print(f"gh: tag lookup failed (HTTP {s['tag_error']})", file=sys.stderr); sys.exit(1)
         print(json.dumps({"sha": s["tag_commit"]}))
     elif endpoint == "git/ref/tags/latest" and method == "GET":
         if s["latest"] is None:
@@ -163,7 +168,8 @@ if a[0] == "api":
         print(json.dumps({"assets": [{"id": 7, "name": "condor.exe"}]}))
     elif endpoint == "releases/assets/7" and method == "DELETE":
         pass
-    else: raise AssertionError(a)
+    else:
+        save(); raise AssertionError(a)
 elif a[:2] in (["release", "create"], ["release", "edit"]):
     assert value("--repo") == "rust-av/Av1an", a
     if a[1] == "create": assert "--verify-tag" in a, a
@@ -224,13 +230,21 @@ save()
             base = Path(directory)
             repo, env = self._r03_fixture(base)
             state_path = base / "state.json"
-            for ref in ("refs/heads/master", "refs/tags/v1.2.3"):
+            tag_endpoints = {
+                "refs/tags/v1.2.3": "repos/rust-av/Av1an/commits/tags/v1.2.3",
+                "refs/tags/v1.2.3+雪#%": "repos/rust-av/Av1an/commits/tags/v1.2.3%2B%E9%9B%AA%23%25",
+            }
+            with patch.dict(os.environ, env, clear=True):
+                self.assertEqual(self._r07_git(repo, "cat-file", "-t", "refs/tags/v1.2.3"), "commit")
+                self.assertEqual(self._r07_git(repo, "cat-file", "-t", "refs/tags/v1.2.3+雪#%"), "tag")
+                self.assertEqual(self._r07_git(repo, "rev-parse", "refs/tags/v1.2.3+雪#%^{commit}"), env["GITHUB_SHA"])
+            for ref in ("refs/heads/master", *tag_endpoints):
                 with self.subTest(ref=ref):
                     env["GITHUB_REF"] = ref
                     result = self._r03_publish(repo, env)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     state = json.loads(state_path.read_text())
-                    tag = "latest" if ref.endswith("master") else "v1.2.3"
+                    tag = "latest" if ref.endswith("master") else ref.removeprefix("refs/tags/")
                     release = state["releases"][tag]
                     self.assertIn(f"Latest build from {env['GITHUB_SHA']}\n", release["body"])
                     self.assertIn("- R03_NEW\n", release["body"])
@@ -242,6 +256,7 @@ save()
                         self.assertEqual(release["assets"][name], (repo / f"handoff/{platform}/{name}").read_bytes().hex())
                     self.assertEqual(state["latest"], env["GITHUB_SHA"])
                     if ref.startswith("refs/tags/"):
+                        self.assertEqual(state["calls"][0], ["api", tag_endpoints[ref]])
                         self.assertFalse(any("git/refs" in " ".join(a) for a in state["calls"]))
                     state["calls"] = []
                     state_path.write_text(json.dumps(state))
@@ -285,7 +300,7 @@ save()
     def test_r03_rejects_invalid_handoff_and_untrusted_runs_before_write(self) -> None:
         """Removing a provenance/schema/HEAD/policy check must expose a fake write."""
         cases = ("mixed-sha", "wrong-run", "wrong-attempt", "wrong-platform", "missing-platform",
-                 "schema-mismatch", "checkout-sha", "tag-moved", "api-failure", "manual-master", "manual-tag", "manual-feature", "fork", "fork-tag")
+                 "schema-mismatch", "checkout-sha", "tag-moved", "tag-missing", "tag-api-failure", "api-failure", "manual-master", "manual-tag", "manual-feature", "fork", "fork-tag")
         with tempfile.TemporaryDirectory(prefix="r03 reject ") as directory:
             for case in cases:
                 with self.subTest(case=case):
@@ -306,12 +321,15 @@ save()
                             archive.writestr("configuration.schema.json", '{"type":"string"}')
                     elif case == "checkout-sha":
                         env["GITHUB_SHA"] = "0" * 40
-                    elif case in ("tag-moved", "api-failure"):
+                    elif case in ("tag-moved", "tag-missing", "tag-api-failure", "api-failure"):
                         state_path = base / "state.json"
                         state = json.loads(state_path.read_text())
-                        if case == "tag-moved":
+                        if case.startswith("tag-"):
                             env["GITHUB_REF"] = "refs/tags/v1.2.3"
-                            state["tag_commit"] = "f" * 40
+                            if case == "tag-moved":
+                                state["tag_commit"] = "f" * 40
+                            else:
+                                state["tag_error"] = 404 if case == "tag-missing" else 503
                         else:
                             state["deny_api"] = True
                         state_path.write_text(json.dumps(state))
@@ -329,6 +347,8 @@ save()
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertRegex(result.stderr.lower(), "sha|run|attempt|platform|schema|archive|tag|provenance|403")
                     state = json.loads((base / "state.json").read_text())
+                    if case.startswith("tag-"):
+                        self.assertEqual(state["calls"], [["api", "repos/rust-av/Av1an/commits/tags/v1.2.3"]])
                     self.assertEqual(state["releases"], {"latest": {}})
                     self.assertFalse(any("--method" in a or a[0] == "release" for a in state["calls"]))
                     self.assertEqual(list((base / "temp").iterdir()), [])
