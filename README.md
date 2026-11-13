@@ -68,6 +68,10 @@ run from the repository root:
 cargo install --locked --path california-condor --bin condor
 ```
 
+**Windows:** this copies only `condor.exe`, not its required DLLs. Follow the
+[Windows runtime/build instructions](./california-condor/docs/installation.md#installation)
+instead of using this command alone.
+
 See [Installation](./california-condor/docs/installation.md) for package availability,
 future release bundles and runtime dependencies, and [Docker](./california-condor/docs/docker.md)
 for upstream image policy and local Condor builds.

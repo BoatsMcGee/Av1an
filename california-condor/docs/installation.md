@@ -14,6 +14,27 @@ This installs `condor` into Cargo's binary directory (normally `~/.cargo/bin` or
 `%USERPROFILE%\.cargo\bin`); keep it on `PATH`. For a build without installation,
 see [Compiling](./compiling.md).
 
+**Windows: `cargo install` alone is incomplete.** It copies only `condor.exe`,
+not the mandatory runtime DLLs. Prefer the [Windows source-build route](./compiling.md#compiling-on-windows)
+and run `target\release\condor.exe` with its runtime files kept beside it:
+
+- Copy `ffms2.dll` from the selected FFMS2 MSVC x64 installation (`FFMS_LIB_DIR`)
+  into `target\release`.
+- Keep the actual build-produced `DirectML.dll` and any additional ORT DLLs that
+  the build places in `target\release`; do not substitute another ORT version.
+- Stage `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` and companions
+  from the selected installed Visual Studio default-version x64 CRT
+  redistributable. Do not take runtime DLLs from System32 or an unrelated PATH.
+- Keep optional native metric DLLs with their runtime dependencies beside the
+  executable when using those metrics. Keep VMAF and TransNetV2 models in `model/`
+  beside it, or configure their explicit runtime model paths.
+
+If relocating the executable, copy those actual runtime files and the needed
+`model/` directory with it; copying only `condor.exe` is not an installation.
+Do not rely on temporary `cargo install` build artifacts being retained to obtain
+these DLLs. The [Windows bundle layout](#windows-releases) below describes the
+required files, not an already available download.
+
 The AUR lookup for `condor`, `california-condor`, `av1an` and `av1an-git` found only
 the legacy `av1an-git` package, which provides `av1an`, not this Condor CLI.
 The AUR is separate from Arch's official pacman repositories; it does not establish
