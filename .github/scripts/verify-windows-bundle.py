@@ -12,6 +12,7 @@ import zipfile
 
 REQUIRED = (
     "condor.exe", "ffms2.dll", "libvmaf.dll", "libvship.dll", "fmetrics.dll",
+    "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "DirectML.dll",
     "libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll",
     "model/vmaf_v0.6.1.json", "model/transnetv2.onnx",
 )
@@ -26,6 +27,9 @@ rpcrt4.dll secur32.dll setupapi.dll shell32.dll shlwapi.dll user32.dll userenv.d
 ucrtbase.dll usp10.dll uxtheme.dll version.dll winhttp.dll wininet.dll winmm.dll
 wintrust.dll ws2_32.dll wtsapi32.dll
 """.split())
+# sysinfo 0.39.6 Windows CPU refresh calls PdhOpenQueryW; windows 0.62.2
+# links that API to inbox pdh.dll (Win32/System/Performance), not a redistributable.
+SYSTEM_DLLS.add("pdh.dll")
 
 
 def verify_archive(path: Path, expected: list[str] | tuple[str, ...] = ()) -> None:

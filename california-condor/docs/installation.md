@@ -22,8 +22,11 @@ itself by relative path:
 condor/
 ├── condor.exe
 ├── ffms2.dll              mandatory native decoder/runtime dependency
-├── onnxruntime*.dll       when produced by the selected build
-├── DirectML.dll           when produced/required by that ONNX Runtime build
+├── vcruntime140.dll       mandatory app-local MSVC C/C++ runtimes
+├── vcruntime140_1.dll      |
+├── msvcp140.dll           /  plus companions from the same VS CRT distribution
+├── DirectML.dll           mandatory for the pinned Windows ONNX Runtime build
+├── onnxruntime*.dll       if a selected build produces additional shared ORT DLLs
 ├── libvmaf.dll            VMAF
 ├── libvship.dll           SSIMULACRA2, Butteraugli and CVVDP on the GPU
 ├── fmetrics.dll           CPU fallback metrics
@@ -46,9 +49,15 @@ Two mistakes produce confusing failures rather than an error:
 
 **Keep the runtime bundle together.** `ffms2.dll` is dynamically linked and
 mandatory, even for `condor --version`. The pinned FFMS2 5.0 MSVC x64 DLL imports
-only Windows system DLLs; it does not need separate FFmpeg codec DLLs. Keep any
-ONNX Runtime, DirectML and other runtime DLLs included in the archive too: a
-missing process-loader dependency can prevent Condor from starting at all.
+only Windows system DLLs; it does not need separate FFmpeg codec DLLs. Keep the
+mandatory MSVC C/C++ runtimes and their bundled companions together; these are
+app-local files, not a requirement to install the VC++ Redistributable on the
+host. Release staging copies them from the selected installed Visual Studio
+default-version x64 CRT redistributable and logs its exact source/version, never
+from System32 or PATH. The pinned Windows ONNX Runtime links its C++ library
+statically but still imports the bundled `DirectML.dll`. Keep any additional ORT
+runtime DLLs produced by other selected builds. A missing process-loader
+dependency can prevent Condor from starting at all.
 
 The metric libraries (`libvmaf.dll`, `libvship.dll`, `fmetrics.dll`) are loaded
 on demand; their absence or failure disables their native metric path. This

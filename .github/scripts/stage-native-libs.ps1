@@ -24,6 +24,8 @@
     FFMS2 is dynamically linked: ffms2.dll is mandatory even for --version.
     Copy it from FFMS_LIB_DIR, the same pinned package used by ffms2-sys.
     The x64 5.0 MSVC package DLL imports only Windows inbox DLLs.
+    The selected Rust/ORT MSVC build also needs app-local VC++ runtime DLLs,
+    copied from the installed Visual Studio default x64 CRT redistributable.
     Cargo also stages ORT/DirectML DLLs when the selected build produces them;
     package-release.ps1 includes those root DLLs as byte files.
 
@@ -183,6 +185,34 @@ if (-not (Test-Path $ffms2 -PathType Leaf) -or (Get-Item $ffms2).Length -eq 0) {
 }
 Copy-Item -LiteralPath $ffms2 -Destination (Join-Path $StageDir 'ffms2.dll') -Force
 
+Write-Step 'Staging the selected Visual Studio x64 CRT redistributable'
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (-not (Test-Path $vswhere -PathType Leaf)) { throw "Required installed VS locator missing: $vswhere" }
+$vsInstall = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if ($LASTEXITCODE -ne 0 -or -not $vsInstall) { throw 'vswhere could not locate the installed x64 MSVC build tools.' }
+$vsInstall = $vsInstall.Trim()
+$redistVersionFile = Join-Path $vsInstall 'VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt'
+$redistVersion = (Get-Content -LiteralPath $redistVersionFile -Raw).Trim()
+if ($redistVersion -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') { throw "Invalid VS redist version in $redistVersionFile" }
+$redistArch = Join-Path $vsInstall "VC\Redist\MSVC\$redistVersion\x64"
+$crtDirs = @(Get-ChildItem -LiteralPath $redistArch -Directory -Filter 'Microsoft.VC14*.CRT')
+if ($crtDirs.Count -ne 1) { throw "Expected one selected x64 CRT redistributable directory in $redistArch" }
+$crtDir = $crtDirs[0].FullName
+Write-Host "    VS: $vsInstall; redist version: $redistVersion; CRT source: $crtDir"
+$MsvcRuntimeNames = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
+foreach ($name in $MsvcRuntimeNames) {
+    $runtime = Join-Path $crtDir $name
+    if (-not (Test-Path $runtime -PathType Leaf) -or (Get-Item $runtime).Length -eq 0) {
+        throw "Missing or empty required MSVC runtime in selected VS redist: $runtime"
+    }
+}
+# C++ runtime companions (e.g. msvcp140_2.dll/atomic_wait) come from this same
+# CRT distribution, never System32 or PATH. Keep their mutually matching bytes.
+foreach ($runtime in Get-ChildItem -LiteralPath $crtDir -File -Filter '*.dll') {
+    if ($runtime.Length -eq 0) { throw "Empty MSVC CRT companion: $($runtime.FullName)" }
+    Copy-Item -LiteralPath $runtime.FullName -Destination (Join-Path $StageDir $runtime.Name) -Force
+}
+
 if (-not $SkipVmaf) {
     Write-Step 'Fetching libvmaf and its runtime dependencies'
 
@@ -288,7 +318,7 @@ Write-Step 'Verifying the staged release'
 
 # Only what this run was asked to produce: the Skip switches exist so one stage can
 # be exercised alone, and asserting on a skipped library made them always throw.
-$required = @('ffms2.dll', 'libvship.dll')
+$required = @('ffms2.dll', 'libvship.dll') + $MsvcRuntimeNames
 if (-not $SkipVmaf) {
     $required += @('libvmaf.dll', 'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll')
 }

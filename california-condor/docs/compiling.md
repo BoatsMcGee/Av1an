@@ -13,7 +13,7 @@ To compile Condor from source, you need the following dependencies:
 - [clang/LLVM](https://llvm.org)
 - [FFmpeg](https://ffmpeg.org)
 - [VapourSynth](https://www.vapoursynth.com)
-- [FFMS2](https://github.com/ffms/ffms2) development files — `condor` links FFMS2 statically, so the headers and import library are build inputs
+- [FFMS2](https://github.com/ffms/ffms2) development files — `condor` links FFMS2 dynamically; the shared `libffms2` library is also required at runtime
 
 On Arch Linux, you can install these dependencies by running
 
@@ -52,7 +52,7 @@ If you want to build the binary yourself, you will need the following dependenci
 - [NASM](https://nasm.us)
 - [FFmpeg](https://ffmpeg.org)
 - [LLVM](https://releases.llvm.org)
-- [FFMS2](https://github.com/ffms/ffms2/releases) — headers and import library only; FFMS2 is linked into `condor.exe` statically
+- [FFMS2](https://github.com/ffms/ffms2/releases) — headers and import library for the build, plus the dynamically linked `ffms2.dll` beside `condor.exe` at runtime
 
 ### FFMS2 setup
 
@@ -72,7 +72,7 @@ Or download and extract the [source code](https://github.com/master-of-zen/Av1an
 
 Open a command prompt or PowerShell window inside the cloned repository/extracted ZIP folder and run `cargo build --release --bin condor`. If this command executes successfully with no errors, `condor.exe` will be in the folder `target\release`.
 
-The release archive also needs the metric libraries and the VMAF and TransNetV2 models beside the executable; see [Installation](./installation.md) for the layout the released archives ship with.
+The release archive also needs app-local MSVC runtimes from the installed Visual Studio x64 CRT redistributable, `DirectML.dll` from the pinned ORT build, the metric libraries, and the VMAF and TransNetV2 models beside the executable. `package-release.ps1` requires Python. See [Installation](./installation.md) for the released layout.
 
 The Windows build embeds `condor.exe.manifest` through `embed-resource`, which declares the executable `longPathAware`. Without it, paths longer than `MAX_PATH` fail inside VapourSynth with "Source path does not exist"; this happens automatically, so no extra step is needed.
 

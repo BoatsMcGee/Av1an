@@ -48,6 +48,10 @@ $ProgressPreference = 'SilentlyContinue'
 $Contents = @(
     'condor.exe'
     'ffms2.dll'
+    'vcruntime140.dll'
+    'vcruntime140_1.dll'
+    'msvcp140.dll'
+    'DirectML.dll'
     'libvmaf.dll'
     'libvship.dll'
     'fmetrics.dll'
@@ -71,6 +75,9 @@ function Write-Step {
 Write-Step 'Checking the staged release'
 
 $missing = $Contents | Where-Object { -not (Test-Path (Join-Path $StageDir $_)) }
+if ($missing -contains 'DirectML.dll') {
+    throw 'Missing DirectML.dll: the pinned Windows ort-sys static ORT build imports it. Restore its copy-dylibs output beside condor.exe before packaging; do not use a host/System32 copy.'
+}
 if ($missing) {
     throw "Missing from $StageDir : $($missing -join ', ')"
 }

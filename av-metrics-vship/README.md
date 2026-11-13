@@ -328,10 +328,10 @@ libvship is **not** vendored, and it has no CPU fallback in the builds that are 
 - A GPU and the driver matching the libvship build you installed: a Vulkan driver for the `vulkan` build, the NVIDIA CUDA runtime for `nvidia`, or the AMD ROCm runtime for `amd`.
 
 > [!NOTE]
-> FFMS2 is unrelated to libvship, which neither needs nor loads it. Av1an links FFMS2
-> statically, so decoding never depends on a separate `ffms2.dll`; only the
-> VapourSynth plugin path and the FFVship CLI use one, and neither is part of this
-> crate.
+> FFMS2 is unrelated to libvship, which neither needs nor loads it. Condor links
+> FFMS2 dynamically: its Windows archive ships `ffms2.dll` beside `condor.exe`,
+> and Linux requires the host `libffms2` shared library. These decoder dependencies
+> are separate from this crate's optional metric library.
 
 ## Installing libvship
 

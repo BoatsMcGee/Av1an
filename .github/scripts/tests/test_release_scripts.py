@@ -12,6 +12,30 @@ import zipfile
 
 
 class ReleaseScriptTests(unittest.TestCase):
+    def test_r02_msvc_redist_and_dynamic_ffms_contract(self) -> None:
+        """Require selected VS app-local CRT staging, not a host CRT or static FFMS claim."""
+        root = Path(__file__).resolve().parents[3]
+        stage = (root / ".github/scripts/stage-native-libs.ps1").read_text()
+        package = (root / ".github/scripts/package-release.ps1").read_text()
+        with self.subTest(contract="VS redist source"):
+            self.assertIn("vswhere.exe", stage)
+            self.assertIn("Microsoft.VCRedistVersion.default.txt", stage)
+            self.assertIn("Microsoft.VC14*.CRT", stage)
+            self.assertIn("VC\\Redist\\MSVC", stage)
+            self.assertIn("Get-ChildItem -LiteralPath $crtDir -File -Filter '*.dll'", stage)
+            self.assertIn("Copy-Item -LiteralPath $runtime.FullName", stage)
+            self.assertIn("$runtime.Length -eq 0", stage)
+        for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+            with self.subTest(runtime=name):
+                self.assertIn(f"'{name}'", stage)
+                self.assertIn(f"'{name}'", package)
+        for path in ("california-condor/docs/compiling.md", "av-metrics-vship/README.md",
+                     ".github/scripts/stage-native-libs.sh"):
+            with self.subTest(path=path):
+                text = (root / path).read_text()
+                self.assertNotRegex(text, r"(?is)FFMS2.{0,100}static|links FFMS2\s+statically")
+                self.assertNotIn("FFMS2 and VapourSynth are linked into the executable", text)
+
     def test_r02_staging_packaging_and_native_gate_are_connected(self) -> None:
         """Dropping FFMS2, build DLLs, or the pre-upload native gate breaks this contract."""
         import yaml
@@ -51,10 +75,13 @@ class ReleaseScriptTests(unittest.TestCase):
             "libwinpthread-1.dll": b"dll", "model/vmaf_v0.6.1.json": b"{}",
             "model/transnetv2.onnx": b"model", "onnxruntime.dll": b"ort",
             "DirectML.dll": b"directml", "model/nested/example.json": b"{}",
+            "vcruntime140.dll": b"crt", "vcruntime140_1.dll": b"crt",
+            "msvcp140.dll": b"cpp", "msvcp140_2.dll": b"companion",
         }
         with tempfile.TemporaryDirectory() as directory:
             archive = Path(directory) / "bundle.zip"
-            for change in (None, "missing", "wrong-layout", "wrong-dll-layout", "empty", "missing-ort", "missing-directml"):
+            for change in (None, "missing", "wrong-layout", "wrong-dll-layout", "empty", "missing-ort", "missing-directml",
+                           "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
                 with self.subTest(change=change):
                     files = entries.copy()
                     if change == "missing":
@@ -69,6 +96,8 @@ class ReleaseScriptTests(unittest.TestCase):
                         del files["onnxruntime.dll"]
                     elif change == "missing-directml":
                         del files["DirectML.dll"]
+                    elif change in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+                        del files[change]
                     with zipfile.ZipFile(archive, "w") as bundle:
                         for name, content in files.items():
                             bundle.writestr(name, content)
@@ -76,7 +105,7 @@ class ReleaseScriptTests(unittest.TestCase):
                         verify(archive, ["onnxruntime.dll", "DirectML.dll", "model/nested/example.json"])
                     else:
                         with self.assertRaises(ValueError):
-                            verify(archive, ["onnxruntime.dll", "DirectML.dll"])
+                            verify(archive, ["onnxruntime.dll"])
 
     def test_r02_real_import_policy_fails_closed(self) -> None:
         """Missing ORT/DirectML/CRT imports fail; Vulkan is driver-only for libvship."""
@@ -97,20 +126,24 @@ DelayImport {
         self.assertEqual(module["import_names"](output), ["ffms2.dll", "onnxruntime.dll"])
         with self.assertRaises(ValueError):
             module["import_names"]("unrecognized tool output")
-        imports = {"condor.exe": ["ffms2.dll", "onnxruntime.dll", "KERNEL32.dll"],
+        imports = {"condor.exe": ["ffms2.dll", "onnxruntime.dll", "KERNEL32.dll", "MSVCP140.dll", "VCRUNTIME140_1.dll"],
                    "onnxruntime.dll": ["DirectML.dll"], "DirectML.dll": ["VCRUNTIME140.dll"],
                    "ffms2.dll": ["WS2_32.dll", "ole32.dll", "USER32.dll", "bcrypt.dll",
                                  "CRYPT32.dll", "KERNEL32.dll", "ADVAPI32.dll"],
                    "libvship.dll": ["vulkan-1.dll", "KERNEL32.dll"]}
         check = module["check_imports"]
-        bundled = {"condor.exe", "ffms2.dll", "onnxruntime.dll", "DirectML.dll", "vcruntime140.dll", "libvship.dll"}
+        bundled = {"condor.exe", "ffms2.dll", "onnxruntime.dll", "DirectML.dll", "vcruntime140.dll", "libvship.dll", "msvcp140.dll", "vcruntime140_1.dll"}
         check(imports, bundled)
-        for missing in ("ffms2.dll", "onnxruntime.dll", "DirectML.dll", "vcruntime140.dll"):
+        for missing in ("ffms2.dll", "onnxruntime.dll", "DirectML.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
             with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, "[Mm]issing"):
                 check(imports, bundled - {missing})
         for dependency in ("unknown.dll", "vulkan-1.dll", "avcodec.dll"):
             with self.subTest(dependency=dependency), self.assertRaises(ValueError):
                 check({"condor.exe": [dependency]}, {"condor.exe"})
+        try:
+            check({"condor.exe": ["pdh.dll"]}, {"condor.exe"})
+        except ValueError as error:
+            self.fail(f"Windows inbox PDH must be accepted: {error}")
 
     def test_r01_run_step_uses_selected_tmpdir_and_bash(self) -> None:
         """Catch host-specific paths without changing any host files or environment."""

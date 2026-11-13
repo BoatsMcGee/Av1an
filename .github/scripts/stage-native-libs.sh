@@ -17,7 +17,8 @@
 #     searches `model/transnetv2.onnx` relative to itself and never downloads
 #     anything at runtime.
 #
-#     FFMS2 and VapourSynth are linked into the executable at build time.
+#     FFMS2 is dynamically linked and requires the host libffms2 shared library.
+#     VapourSynth is loaded at runtime only for inputs/paths that use it.
 #
 # .PARAMETER StageDir
 #     Where to place the libraries. Defaults to `target/release`, beside the
