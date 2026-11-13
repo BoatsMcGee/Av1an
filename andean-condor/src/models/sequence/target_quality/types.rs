@@ -27,6 +27,8 @@ pub enum MeasurementError {
     NonFinite { position: usize, value: f64 },
     #[error("score position {position} is outside the {expected} selected frames")]
     Position { position: usize, expected: usize },
+    #[error("duplicate score at position {position}")]
+    Duplicate { position: usize },
     #[error("no metric value at position {position}")]
     Missing { position: usize },
     #[error("invalid statistic: {0}")]

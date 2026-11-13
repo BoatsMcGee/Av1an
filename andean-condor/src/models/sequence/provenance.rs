@@ -404,11 +404,14 @@ impl Admission {
         config: &QualityCheckConfig,
         backend: &MetricBackend,
     ) -> Result<Value> {
-        Ok(
-            json!({"input": input_identity(input)?, "output": file_identity(output)?, "range": [scene.start_frame, scene.end_frame],
+        let mut context = json!({"input": input_identity(input)?, "output": file_identity(output)?, "range": [scene.start_frame, scene.end_frame],
         "strategy": config.strategy, "statistic": config.statistic, "metric": self.metric(&config.metric)?,
-        "backend": self.backend(&config.metric, input, backend)?}),
-        )
+        "backend": self.backend(&config.metric, input, backend)?});
+        if backend.engine == Engine::VapourSynth {
+            // Old QC callbacks had no positional guarantee; do not certify their frame association.
+            context["score_order"] = json!("sample-position-1");
+        }
+        Ok(context)
     }
 
     #[inline]

@@ -217,17 +217,44 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
             let saved = load(&file);
-            let mut scores =
-                saved.condor.scenes[0].sequence_data.quality_check.quality.scores.clone();
+            let scores = saved.condor.scenes[0].sequence_data.quality_check.quality.scores.clone();
             assert_eq!(
                 scores.len(),
                 2,
                 "actual plugin scored both frames, overridden={overridden}"
             );
             assert!(scores.iter().all(|score| score.is_finite() && *score > 0.0));
-            // Plugin callbacks can arrive out of frame order; C06 checks the file's
-            // score values/count, not the separately deferred ordering contract.
-            scores.sort_by(f64::total_cmp);
+            saved.admit_results().expect("current positional plugin history resumes");
+            let history =
+                serde_json::to_vec(&saved.condor.scenes[0].sequence_data.quality_check.quality)
+                    .expect("current history");
+            condor_cmd(&temp)
+                .env("CONDOR_TEST_MODE", "1")
+                .args(["quality-check"])
+                .assert()
+                .success();
+            assert_eq!(
+                serde_json::to_vec(
+                    &load(&file).condor.scenes[0].sequence_data.quality_check.quality
+                )
+                .expect("resumed history"),
+                history,
+                "resume preserves exact positional history"
+            );
+            let mut old = load(&file);
+            old.condor.scenes[0]
+                .sequence_data
+                .quality_check
+                .quality
+                .provenance
+                .as_mut()
+                .expect("plugin provenance")
+                .context
+                .as_object_mut()
+                .expect("context")
+                .remove("score_order");
+            old.admit_results()
+                .expect_err("unindexed historical plugin callbacks are not certified");
             if let Some(baseline) = &baseline {
                 assert_eq!(
                     &scores, baseline,

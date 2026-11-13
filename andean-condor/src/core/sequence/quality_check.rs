@@ -463,22 +463,38 @@ impl QualityCheck {
                     config.metric.friendly_name()
                 )
             })?;
-        let (scores, completed, started_on, completed_on) = state;
-        if scores[scene].len() + 1 == indices.len() {
-            let mut proposed = scores[scene].clone();
-            proposed.push(score);
+        let (scores, received, started_on, completed_on) = state;
+        let position = local_index - offset;
+        ensure!(
+            scores[scene][position].is_none(),
+            MeasurementError::Duplicate {
+                position: local_index
+            }
+        );
+        if received[scene] + 1 == indices.len() {
+            let proposed = scores[scene]
+                .iter()
+                .enumerate()
+                .map(|(slot, value)| {
+                    if slot == position {
+                        score
+                    } else {
+                        value.expect("other slots filled")
+                    }
+                })
+                .collect::<Vec<_>>();
             Self::validate_scene_scores(config, *index, indices.len(), &proposed)?;
         }
         let now = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("Time is valid")
             .as_millis();
-        if scores[scene].is_empty() {
+        if received[scene] == 0 {
             started_on[scene] = now;
         }
-        scores[scene].push(score);
-        if scores[scene].len() == indices.len() {
-            completed[scene] = true;
+        scores[scene][position] = Some(score);
+        received[scene] += 1;
+        if received[scene] == indices.len() {
             completed_on[scene] = now;
         }
         // Scene summaries wait for admission of the entire batch, not just this callback.
@@ -927,8 +943,11 @@ impl QualityCheck {
         // Live per-frame score events
         let scene_count = scene_frame_indices.len();
         let scene_state = Arc::new(sync::Mutex::new((
-            vec![Vec::new(); scene_count],
-            vec![false; scene_count],
+            scene_frame_indices
+                .iter()
+                .map(|(_, indices)| vec![None; indices.len()])
+                .collect::<Vec<_>>(),
+            vec![0; scene_count],
             vec![0u128; scene_count],
             vec![0u128; scene_count],
         )));
@@ -1207,14 +1226,22 @@ impl QualityCheck {
         }
 
         let scene_state = scene_state.lock().expect("scene state mutex should acquire lock");
-        let (scene_scores, _scene_completed, scene_started_on, scene_completed_on) = &*scene_state;
+        let (scene_scores, _scene_received, scene_started_on, scene_completed_on) = &*scene_state;
         let measurements = (0..scene_frame_indices.len())
-            .map(|index| SceneMeasurement {
-                scores: scene_scores[index].clone(),
-                started_on: scene_started_on[index],
-                completed_on: scene_completed_on[index],
+            .map(|index| {
+                Ok(SceneMeasurement {
+                    scores: scene_scores[index]
+                        .iter()
+                        .enumerate()
+                        .map(|(position, score)| {
+                            score.ok_or(MeasurementError::Missing { position })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    started_on: scene_started_on[index],
+                    completed_on: scene_completed_on[index],
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
 
         Self::validate_measurements(config, scene_frame_indices, &measurements)?;
         for ((index, _), measurement) in scene_frame_indices.iter().zip(&measurements) {
@@ -1248,7 +1275,7 @@ struct SceneMeasurement {
     completed_on: u128,
 }
 
-type PluginSceneState = (Vec<Vec<f64>>, Vec<bool>, Vec<u128>, Vec<u128>);
+type PluginSceneState = (Vec<Vec<Option<f64>>>, Vec<usize>, Vec<u128>, Vec<u128>);
 
 #[derive(Debug, Clone, Error)]
 pub enum QualityCheckError {
@@ -1364,6 +1391,86 @@ mod tests {
     }
 
     #[test]
+    fn f1_plugin_callbacks_keep_sample_order() {
+        let selection = [(7, vec![4, 9])];
+        let mut state = (vec![vec![None; 2]], vec![0], vec![0], vec![0]);
+        let (tx, rx) = sync::mpsc::channel();
+        for (position, score) in [(1, 20.0), (0, 10.0)] {
+            QualityCheck::record_plugin_score(
+                &Default::default(),
+                &selection,
+                &mut state,
+                position,
+                score,
+                &tx,
+            )
+            .expect("valid callback");
+        }
+        assert_eq!(
+            state.0[0],
+            [Some(10.0), Some(20.0)],
+            "sample order, not callback arrival"
+        );
+        assert!(state.1[0] == 2 && state.2[0] > 0 && state.3[0] >= state.2[0]);
+        assert_eq!(rx.try_iter().count(), 2, "no early scene summary");
+    }
+
+    #[test]
+    fn f1_plugin_duplicate_does_not_mutate_or_report() {
+        let selection = [(7, vec![4, 9])];
+        let mut state = (vec![vec![None; 2]], vec![0], vec![0], vec![0]);
+        let (tx, rx) = sync::mpsc::channel();
+        QualityCheck::record_plugin_score(
+            &Default::default(),
+            &selection,
+            &mut state,
+            1,
+            20.0,
+            &tx,
+        )
+        .expect("first callback");
+        let before = state.clone();
+        assert_eq!(rx.try_iter().count(), 1);
+        let error = QualityCheck::record_plugin_score(
+            &Default::default(),
+            &selection,
+            &mut state,
+            1,
+            99.0,
+            &tx,
+        )
+        .expect_err("duplicate position");
+        assert!(matches!(
+            error.downcast_ref::<MeasurementError>(),
+            Some(MeasurementError::Duplicate { position: 1 })
+        ));
+        assert_eq!(state, before, "scores, timestamps and completion unchanged");
+        assert_eq!(rx.try_iter().count(), 0, "duplicate emits no progress");
+        QualityCheck::record_plugin_score(
+            &Default::default(),
+            &selection,
+            &mut state,
+            0,
+            10.0,
+            &tx,
+        )
+        .expect("missing slot still completes normally");
+        let completed = state.clone();
+        assert_eq!(rx.try_iter().count(), 1);
+        QualityCheck::record_plugin_score(
+            &Default::default(),
+            &selection,
+            &mut state,
+            0,
+            99.0,
+            &tx,
+        )
+        .expect_err("duplicate after completion");
+        assert_eq!(state, completed);
+        assert_eq!(rx.try_iter().count(), 0);
+    }
+
+    #[test]
     fn q05_plugin_callback_validates_before_index_progress_or_completion() {
         use crate::models::sequence::target_quality::types::ProbeStatistic;
         let selection = [(7, vec![4, 5])];
@@ -1374,7 +1481,7 @@ mod tests {
             (0, f64::INFINITY),
             (0, f64::NEG_INFINITY),
         ] {
-            let mut state = (vec![vec![]], vec![false], vec![0], vec![0]);
+            let mut state = (vec![vec![None; 2]], vec![0], vec![0], vec![0]);
             let (tx, rx) = sync::mpsc::channel();
             let error = QualityCheck::record_plugin_score(
                 &Default::default(),
@@ -1386,10 +1493,10 @@ mod tests {
             )
             .expect_err("bad callback");
             assert!(error.is::<MeasurementError>());
-            assert!(state.0[0].is_empty() && !state.1[0] && state.3[0] == 0);
+            assert!(state.0[0].iter().all(Option::is_none) && state.1[0] == 0 && state.3[0] == 0);
             assert!(rx.try_iter().next().is_none());
         }
-        let mut state = (vec![vec![]], vec![false], vec![0], vec![0]);
+        let mut state = (vec![vec![None; 2]], vec![0], vec![0], vec![0]);
         let (tx, rx) = sync::mpsc::channel();
         let config = QualityCheckConfig {
             statistic: ProbeStatistic::Harmonic,
@@ -1401,8 +1508,8 @@ mod tests {
             QualityCheck::record_plugin_score(&config, &selection, &mut state, 1, -1.0, &tx)
                 .is_err()
         );
-        assert_eq!(state.0[0], [1.0]);
-        assert!(!state.1[0] && state.3[0] == 0);
+        assert_eq!(state.0[0], [Some(1.0), None]);
+        assert!(state.1[0] == 1 && state.3[0] == 0);
         assert_eq!(
             rx.try_iter().count(),
             1,
