@@ -29,7 +29,7 @@ jobs:
           from-source: false
 
       # fmetrics is compiled from a pinned commit (no prebuilt Windows release).
-      # Zig 0.16.x specifically: 0.17 removed b.build_root used by build.zig.
+      # Exact .github/.env pin: 0.17 removed b.build_root used by build.zig.
       - name: Zig setup
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
@@ -101,7 +101,7 @@ jobs:
         timeout-minutes: 10
         run: |
           # The executable fixtures use only stdlib; R01's Bash harness stays on Linux.
-          python -B .github/scripts/tests/test_release_scripts.py -v ReleaseScriptTests.test_r02_archive_rejects_missing_empty_and_wrong_relative_entries ReleaseScriptTests.test_r02_real_import_policy_fails_closed ReleaseScriptTests.test_r05_windows_installer_boundaries_and_local_candidate ReleaseScriptTests.test_r06_windows_fetch_patch_and_ancestry_before_compilation
+          python -B .github/scripts/tests/test_release_scripts.py -v ReleaseScriptTests.test_r02_archive_rejects_missing_empty_and_wrong_relative_entries ReleaseScriptTests.test_r02_real_import_policy_fails_closed ReleaseScriptTests.test_r05_windows_installer_boundaries_and_local_candidate ReleaseScriptTests.test_r06_windows_fetch_patch_and_ancestry_before_compilation ReleaseScriptTests.test_r10_windows_requires_exact_zig_before_fetch
           if ($LASTEXITCODE -ne 0) { throw 'Offline release contracts failed.' }
           $readobj = Join-Path $env:ProgramFiles 'LLVM/bin/llvm-readobj.exe'
           if (-not (Test-Path $readobj -PathType Leaf)) { throw 'Runner prerequisite llvm-readobj is missing.' }

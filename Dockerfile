@@ -64,14 +64,13 @@ RUN cargo build --release -p california-condor && \
 # Kept apart from `build` so a Condor change does not invalidate them.
 FROM base AS metrics
 
-# git, zig, clang and vulkan-headers are build-time only. vulkan-icd-loader is
+# git, pinned Zig, clang and vulkan-headers are build-time only. vulkan-icd-loader is
 # also a runtime dependency, installed again below.
 #
 # Vship 5.1.2 uses lazy Vulkan initialization so the library can load without
 # a driver; fmetrics remains the CPU fallback for scoring without a GPU.
 RUN pacman -S --noconfirm --needed \
     git \
-    zig \
     clang \
     vulkan-headers \
     vulkan-icd-loader
@@ -84,8 +83,20 @@ COPY av-metrics-vship/scripts/install-libvship-linux.sh av-metrics-fmetrics/scri
 # Run via bash: the scripts are not executable and may carry CRLF. Sourcing the
 # env file exports every pin for the installers to pick up. The env file may
 # also carry CRLF (Windows checkout), so strip it before sourcing.
-RUN sed -i 's/\r$//' /tmp/cicd.env /usr/local/bin/install-libvship-linux.sh /usr/local/bin/install-fmetrics-linux.sh && \
+RUN set -eu && \
+    sed -i 's/\r$//' /tmp/cicd.env /usr/local/bin/install-libvship-linux.sh /usr/local/bin/install-fmetrics-linux.sh && \
     set -a && . /tmp/cicd.env && set +a && \
+    work="$(mktemp -d /tmp/zig-toolchain.XXXXXX)" && \
+    trap 'rm -rf "$work"' EXIT && \
+    bash /usr/local/bin/download-verified.sh "${FMETRICS_ZIG_LINUX_X86_64_SHA256:-}" "$work/zig.tar.xz" \
+        "https://ziglang.org/download/${FMETRICS_ZIG_VERSION}/zig-x86_64-linux-${FMETRICS_ZIG_VERSION}.tar.xz" && \
+    mkdir -p /opt/zig && \
+    tar -xJf "$work/zig.tar.xz" --strip-components=1 -C /opt/zig && \
+    ln -s /opt/zig/zig /usr/local/bin/zig && \
+    actual="$(zig version)" && \
+    if [ "$actual" != "$FMETRICS_ZIG_VERSION" ]; then \
+        echo "zig '$actual' found, but expected exactly $FMETRICS_ZIG_VERSION; refusing build." >&2; exit 1; \
+    fi && \
     bash /usr/local/bin/install-libvship-linux.sh -Destination /usr/lib -Quiet && \
     bash /usr/local/bin/install-fmetrics-linux.sh -Destination /usr/lib -Quiet && \
     rm -f /tmp/cicd.env

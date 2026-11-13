@@ -9,7 +9,7 @@
     fetches a pinned commit and compiles it with Zig.
 
     That makes this the one install script here that needs a toolchain: Zig
-    0.16.x and Git. Zig 0.17 is refused because it removed `b.build_root`, which
+    0.16.0 and Git. Zig 0.17 is refused because it removed `b.build_root`, which
     the pinned `build.zig` still uses.
 
     Built from BoatsMcGee/fmetrics, which adds what upstream lacks: a
@@ -57,7 +57,7 @@ $Repository   = if ($env:FMETRICS_REPO)          { $env:FMETRICS_REPO }         
 # Descriptive only; fetching the immutable pin does not require this branch.
 $PatchRef     = if ($env:FMETRICS_BRANCH)        { $env:FMETRICS_BRANCH }        else { 'add-windows-shared-build' }
 $UpstreamBase = if ($env:FMETRICS_UPSTREAM_BASE) { $env:FMETRICS_UPSTREAM_BASE } else { 'e8bf3cfe06fb78f51864804b2f7003667d4c5a71' }
-$RequiredZigMajor = '0.16'
+$RequiredZigVersion = if ($env:FMETRICS_ZIG_VERSION) { $env:FMETRICS_ZIG_VERSION } else { '0.16.0' }
 
 if (-not $PSBoundParameters.ContainsKey('Commit') -and $env:FMETRICS_COMMIT) {
     $Commit = $env:FMETRICS_COMMIT
@@ -77,28 +77,29 @@ function Write-Step([string] $Message) {
 function Resolve-Zig {
     <#
     .SYNOPSIS
-        Locates zig.exe and checks its major version.
+        Locates zig.exe and checks the exact expected version.
 
     .DESCRIPTION
         `-ZigPath` may be a bare name to look up on PATH, or a path to zig.exe.
-        The major version is checked because 0.17 removed `b.build_root`, which
-        the pinned `build.zig` uses.
+        FMETRICS_ZIG_VERSION deliberately overrides the expected pin, not the
+        executable's reported version. The source still requires 0.16.
     #>
+    if ($RequiredZigVersion -cnotmatch '\A0\.16\.(0|[1-9][0-9]*)\z') {
+        throw "Expected FMETRICS_ZIG_VERSION '$RequiredZigVersion' must be an exact 0.16 patch: 0.17 removed b.build_root."
+    }
     $command = Get-Command $ZigPath -ErrorAction SilentlyContinue
     if ($command) {
         $exe = $command.Source
     } elseif (Test-Path $ZigPath) {
         $exe = (Resolve-Path $ZigPath).Path
     } else {
-        throw "zig not found at '$ZigPath'. Install Zig $RequiredZigMajor.x from https://ziglang.org/download/, or pass -ZigPath with the path to zig.exe."
+        throw "zig not found at '$ZigPath'. Install exactly Zig $RequiredZigVersion from https://ziglang.org/download/, or pass -ZigPath with the path to zig.exe."
     }
 
-    $version = (& $exe version) 2>$null
-    if (-not $version) {
-        throw "could not run '$exe version'."
-    }
-    if (-not $version.StartsWith("$RequiredZigMajor.")) {
-        throw "zig $version found, but this needs $RequiredZigMajor.x: 0.17 removed b.build_root, which the pinned build.zig uses."
+    $version = [string]::Join("`n", @(& $exe version 2>$null))
+    if ($LASTEXITCODE -ne 0 -or $version -cne $RequiredZigVersion) {
+        $actual = if ($version) { $version } else { '<no version>' }
+        throw "zig '$actual' found, but expected exactly $RequiredZigVersion (successful zig version); refusing fetch/build."
     }
 
     Write-Host "    zig $version" -ForegroundColor DarkGray

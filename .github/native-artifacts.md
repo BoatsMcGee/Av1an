@@ -1,9 +1,10 @@
 # Downloaded native artifacts
 
 Release staging verifies SHA-256 **before** archive extraction, source builds,
-or publishing a DLL/model into its destination. Docker verifies ZooMVTools before
-installing it. Rejected bytes leave any existing destination unchanged at the
-download boundary. HTTP errors are failures, not archives. MSYS2 mirrors may only
+or publishing a DLL/model into its destination. Docker verifies ZooMVTools and
+its Zig toolchain before installing/unpacking them. Rejected bytes leave any
+existing destination unchanged at the download boundary. HTTP errors are
+failures, not archives. MSYS2 mirrors may only
 supply the same filename and expected digest; a checksum failure may try the next
 mirror but cannot select a newer package.
 
@@ -50,6 +51,7 @@ keep those defaults in sync with `.env`.
 | `mingw-w64-x86_64-libstdc%2B%2B-16.2.0-4-any.pkg.tar.zst` | 797348 | `3d4c3faf4c2c5c7a851ff12214ddcbf8c0d6df0964fc1d3ebd8c38f227183034` |
 | `mingw-w64-x86_64-libwinpthread-git-12.0.0.r747.g1a99f8514-1-any.pkg.tar.zst` | 30860 | `38e0a33fc8b3b6b761d4958fa69afef6e0804e4ef7ea64018004da02f9b2294f` |
 | `vapoursynth-zoomvtools-v2.0.2-linux-x86_64.so` | 6591648 | `c3446598c810eaa55334b6238de134d9f3e3041e5cf3e44775249f01d00d4d56` |
+| `zig-x86_64-linux-0.16.0.tar.xz` | 55478392 | `70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00` |
 
 Canonical binary URLs are the exact release filenames under
 `https://github.com/FFMS/ffms2/releases/download/5.0/`,
@@ -101,6 +103,35 @@ the requested version/variant URL; this is caller trust, not an official release
 attestation. It must not be derived from the same incoming installer request.
 The VMAF installer refuses versions without an exact package/model pin set;
 changing `VMAF_VERSION` cannot silently disable checks or pick latest packages.
+
+## Zig build toolchain
+
+Docker's `metrics` stage downloads exactly Zig 0.16.0 from
+`https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz`.
+Authority: the official [Zig download index](https://ziglang.org/download/index.json),
+0.16.0 / x86_64-linux entry, rechecked on 2026-11-13 (release date 2026-04-13).
+The table's digest and size are upstream-published HTTPS metadata, not a claim of
+signature verification. The existing verified-download helper checks SHA-256
+before tar or executable use; the installed executable must report exactly the
+expected version. Zig lives in `/opt/zig`, linked from `/usr/local/bin/zig`, only
+in that build stage; the runtime image copies only the two metric libraries.
+
+`.github/.env` holds `FMETRICS_ZIG_VERSION` and the Linux x86_64 archive digest.
+CI setup and both standalone fmetrics installer defaults use the same exact
+0.16.0 pin. Newer 0.17 releases removed `b.build_root` used by the source pin.
+Both installers reject mismatched, malformed, empty or unsuccessful version
+output before fetching source/dependencies, building, or changing the destination.
+`-ZigPath` (Windows) and `PATH` select an executable, not its expected version.
+An administrator can deliberately set `FMETRICS_ZIG_VERSION` to another exact
+0.16 patch; this is caller authorization, not automatic compatibility detection.
+The 0.16 compatibility ceiling remains enforced even with that override.
+
+When updating, independently verify the exact release/platform URL, size and
+SHA-256 in the official index, audit bytes without executing them, and update
+the central pins, both standalone defaults, CI setup versions and this table
+together. Require real Docker and native Windows acceptance separately. This
+pin does not lock Arch packages, base images or Zig's fetched dependency graph,
+and does not make native builds reproducible.
 
 ## Python wheels in Docker and CPU CI
 

@@ -18,6 +18,266 @@ import zipfile
 
 
 class ReleaseScriptTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Linux installer uses Bash and ELF tooling")
+    def test_r10_linux_requires_exact_zig_before_fetch(self) -> None:
+        """Accepting another patch, malformed output or failed version must not fetch."""
+        root = Path(__file__).resolve().parents[3]
+        installer = root / "av-metrics-fmetrics/scripts/install-fmetrics-linux.sh"
+        with tempfile.TemporaryDirectory(prefix="r10 version ") as directory:
+            base = Path(directory)
+            env, commits = self._r06_fixture(base)
+            tools = base / "bin"
+            tools.mkdir()
+            (tools / "zig").write_text('''#!/bin/bash
+set -eu
+if [ "$1" = version ]; then
+    printf '%s' "$ZIG_FIXTURE_VERSION"
+    exit "$ZIG_VERSION_EXIT"
+fi
+test "$*" = 'build --release=fast' || exit 93
+{ git rev-parse HEAD; cat payload; } > "$MARKER"
+echo 'R10 compiler boundary; no native build' >&2
+exit 79
+''')
+            (tools / "gcc").write_text('#!/bin/bash\ntouch "$FETCH_MARKER"; exit 81\n')
+            (tools / "git").write_text('''#!/bin/bash
+printf '%s\\n' "$*" >> "$GIT_MARKER"
+exec "$FIXTURE_GIT" "$@"
+''')
+            for tool in tools.iterdir():
+                tool.chmod(0o755)
+            env["PATH"] = f"{tools}:/usr/bin:/bin"
+            env.update(FIXTURE_GIT=shutil.which("git"), GIT_MARKER=str(base / "git-calls"))
+            for version, expected, status, accepted in self._r10_versions():
+                with self.subTest(version=version, expected=expected, status=status):
+                    marker = base / "compiler"
+                    marker.unlink(missing_ok=True)
+                    (base / "git-calls").unlink(missing_ok=True)
+                    selected = {**env, "ZIG_FIXTURE_VERSION": version,
+                                "ZIG_VERSION_EXIT": str(status)}
+                    if expected is not None:
+                        selected["FMETRICS_ZIG_VERSION"] = expected
+                    result = subprocess.run(
+                        ["bash", str(installer), "-Destination", str(base / "destination"), "-Quiet"],
+                        cwd=base, env=selected, capture_output=True, text=True)
+                    logs = result.stdout + result.stderr
+                    if accepted:
+                        self.assertEqual(result.returncode, 79, logs)
+                        self.assertEqual(marker.read_text().splitlines(), [commits["pin"], "pinned"])
+                        self.assertIn("fetch --quiet --no-tags", (base / "git-calls").read_text())
+                    else:
+                        self.assertNotEqual(result.returncode, 0, logs)
+                        self.assertIn("expected", logs.lower())
+                        self.assertIn(expected or "0.16.0", logs)
+                        if expected is None:
+                            self.assertIn(version or "<no version>", logs)
+                        self.assertNotIn("Fetching fmetrics", logs)
+                        self.assertFalse(marker.exists(), logs)
+                        self.assertFalse((base / "git-calls").exists(), "invalid version must not invoke Git")
+                    self.assertFalse((base / "dependencies").exists(), "linker must not run")
+                    self.assertEqual((base / "destination/sentinel").read_text(), "preserve destination\n")
+                    self.assertEqual(list((base / "destination").iterdir()), [base / "destination/sentinel"])
+                    self.assertEqual(list((base / "temp").iterdir()), [], logs)
+
+    def _r10_versions(self) -> list[tuple[str, str | None, int, bool]]:
+        return [
+            ("0.16.0", None, 0, True),
+            ("0.16.0", "0.16.0", 0, True),
+            ("0.16.1", None, 0, False),
+            ("0.17.0", None, 0, False),
+            ("0.17.1", None, 0, False),
+            ("0x16.0", None, 0, False),
+            ("0.16.0-dev.1", None, 0, False),
+            ("0.16.0\njunk", None, 0, False),
+            ("", None, 0, False),
+            ("0.16.0", None, 9, False),
+            ("0.16.0", "0.16.1", 0, False),
+            ("0.16.1", "0.16.1", 0, True),
+            ("0.17.0", "0.17.0", 0, False),
+            ("0.16.0", "0x16.0", 0, False),
+        ]
+
+    @unittest.skipUnless(os.name == "nt", "native PowerShell version fixture runs on Windows CI")
+    def test_r10_windows_requires_exact_zig_before_fetch(self) -> None:
+        """Run actual PS with external -ZigPath/PATH tools, never a native compiler."""
+        root = Path(__file__).resolve().parents[3]
+        installer = root / "av-metrics-fmetrics/scripts/install-fmetrics-windows.ps1"
+        with tempfile.TemporaryDirectory(prefix="r10 native ") as directory:
+            base = Path(directory)
+            env, commits = self._r06_fixture(base)
+            runner = base / "run.ps1"
+            runner.write_text('''param([string] $Installer, [string] $Destination, [string] $ZigPath)
+$parameters = @{ Destination = $Destination }
+if ($ZigPath) { $parameters.ZigPath = $ZigPath }
+try { & $Installer @parameters }
+catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
+''')
+            zig = base / "zig.cmd"
+            zig.write_text(r'''@echo off
+if "%~1"=="version" (
+  "%FIXTURE_PYTHON%" -c "import os; print(os.environ['ZIG_FIXTURE_VERSION'], end='')"
+  exit /b %ZIG_VERSION_EXIT%
+)
+if not "%*"=="build --fetch" exit /b 93
+(
+  git rev-parse HEAD
+  type payload
+)> "%MARKER%"
+echo R10 dependency boundary; no native build
+exit /b 79
+''')
+            (base / "git.cmd").write_text('''@echo off
+echo invoked>> "%GIT_MARKER%"
+call "%FIXTURE_GIT%" %*
+exit /b %errorlevel%
+''')
+            env.update(PATH=str(base) + os.pathsep + env["PATH"], FIXTURE_PYTHON=sys.executable,
+                       FIXTURE_GIT=shutil.which("git"), GIT_MARKER=str(base / "git-calls"))
+            for version, expected, status, accepted in self._r10_versions():
+                for explicit in (False, True):
+                    with self.subTest(version=version, expected=expected, status=status, explicit=explicit):
+                        marker = base / "compiler"
+                        marker.unlink(missing_ok=True)
+                        (base / "git-calls").unlink(missing_ok=True)
+                        selected = {**env, "ZIG_FIXTURE_VERSION": version,
+                                    "ZIG_VERSION_EXIT": str(status)}
+                        if expected is not None:
+                            selected["FMETRICS_ZIG_VERSION"] = expected
+                        arguments = ["-ZigPath", str(zig)] if explicit else []
+                        result = subprocess.run(
+                            ["pwsh", "-NoProfile", "-File", str(runner), "-Installer", str(installer),
+                             "-Destination", str(base / "destination"), *arguments],
+                            cwd=base, env=selected, capture_output=True, text=True)
+                        logs = result.stdout + result.stderr
+                        self.assertNotEqual(result.returncode, 0, logs)
+                        if accepted:
+                            self.assertIn("fetching the Zig dependencies failed", logs)
+                            self.assertEqual(marker.read_text().splitlines(), [commits["pin"], "pinned"])
+                        else:
+                            self.assertIn("expected", logs.lower())
+                            self.assertIn(expected or "0.16.0", logs)
+                            if expected is None:
+                                self.assertIn(version or "<no version>", logs)
+                            self.assertNotIn("Fetching fmetrics", logs)
+                            self.assertFalse(marker.exists(), logs)
+                            self.assertFalse((base / "git-calls").exists(), "invalid version must not invoke Git")
+                        self.assertEqual((base / "destination/sentinel").read_text(), "preserve destination\n")
+                        self.assertEqual(list((base / "destination").iterdir()), [base / "destination/sentinel"])
+                        self.assertEqual(list((base / "temp").iterdir()), [], logs)
+
+    def test_r10_docker_and_ci_share_build_only_zig_pin(self) -> None:
+        """Supplement runtime proof: a floating Arch tool must not enter any stage."""
+        root = Path(__file__).resolve().parents[3]
+        docker = (root / "Dockerfile").read_text()
+        metrics = docker.split("FROM base AS metrics\n", 1)[1].split("FROM base AS runtime", 1)[0]
+        packages = re.search(r"RUN pacman .*?(?=\n\n)", metrics, re.S)[0]
+        self.assertNotRegex(packages, r"\bzig\b", "Arch Zig floats independently of the fmetrics pin")
+        pins = dict(re.findall(r"^(\w+)=(\S+)$", (root / ".github/.env").read_text(), re.M))
+        self.assertEqual(pins["FMETRICS_ZIG_VERSION"], "0.16.0")
+        self.assertEqual(pins["FMETRICS_ZIG_LINUX_X86_64_SHA256"],
+                         "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00")
+        self.assertIn('https://ziglang.org/download/${FMETRICS_ZIG_VERSION}/zig-x86_64-linux-${FMETRICS_ZIG_VERSION}.tar.xz', metrics)
+        for workflow in ("linux-build", "windows-build", "mdbook", "tests"):
+            steps = [step for job in self._r03_workflow(workflow)["jobs"].values()
+                     for step in job.get("steps", []) if "mlugg/setup-zig@" in step.get("uses", "")]
+            self.assertTrue(steps, workflow)
+            for step in steps:
+                self.assertEqual(step["with"]["version"], pins["FMETRICS_ZIG_VERSION"], workflow)
+        for platform in ("linux.sh", "windows.ps1"):
+            source = (root / f"av-metrics-fmetrics/scripts/install-fmetrics-{platform}").read_text()
+            self.assertIn("FMETRICS_ZIG_VERSION", source)
+            self.assertIn("0.16.0", source)
+        staging = (root / ".github/scripts/stage-native-libs.ps1").read_text()
+        self.assertRegex(staging, r"\$env:FMETRICS_ZIG_VERSION\s*= Get-Pin 'FMETRICS_ZIG_VERSION'",
+                         "Windows staging must propagate the central expected pin")
+        other_stages = docker.replace(metrics, "")
+        self.assertNotIn("/opt/zig", other_stages)
+        self.assertNotRegex(other_stages, r"COPY --from=metrics .*zig")
+
+    @unittest.skipIf(os.name == "nt", "Docker RUN boundary uses Bash")
+    def test_r10_docker_download_verifies_before_tar_and_version(self) -> None:
+        """Run the production RUN with R05 hashing; bad bytes never reach tar/Zig."""
+        root = Path(__file__).resolve().parents[3]
+        metrics = (root / "Dockerfile").read_text().split("FROM base AS metrics\n", 1)[1].split("FROM base AS runtime", 1)[0]
+        run = next(line[4:] for line in metrics.replace("\\\n", "").splitlines()
+                   if line.startswith("RUN ") and "/tmp/cicd.env" in line)
+        self.assertIn("download-verified.sh", run, "must execute the production verified download")
+        for case in ("good", "corrupt", "truncated", "http", "missing-hash", "wrong-version"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory(prefix="r10 docker ") as directory:
+                base = Path(directory)
+                tools, local, scratch = base / "bin", base / "usr/local/bin", base / "tmp"
+                for path in (tools, local, scratch):
+                    path.mkdir(parents=True)
+                # SECURITY: Every Docker absolute write path is remapped before any execution.
+                script = re.sub(r"/(?:usr/local/bin|usr/lib|opt/zig|tmp/)",
+                                lambda match: '"' + str(base) + match[0] + '"', run)
+                self.assertNotRegex(script.replace(str(base), "OWNED"), r"(?<!\w)/(?:usr|opt|tmp)/", "unmapped Docker path")
+                payload = base / "payload"
+                payload.write_bytes(b"owned offline Zig archive fixture\n")
+                digest = hashlib.sha256(payload.read_bytes()).hexdigest()
+                pins = (root / ".github/.env").read_text()
+                pins = re.sub(r"(?m)^FMETRICS_ZIG_LINUX_X86_64_SHA256=.*$",
+                              "FMETRICS_ZIG_LINUX_X86_64_SHA256=" + ("" if case == "missing-hash" else digest), pins)
+                (scratch / "cicd.env").write_bytes(pins.replace("\n", "\r\n").encode())
+                shutil.copyfile(root / ".github/scripts/download-verified.sh", local / "download-verified.sh")
+                for installer in ("install-libvship-linux.sh", "install-fmetrics-linux.sh"):
+                    (local / installer).write_bytes(b'''#!/bin/bash\r
+set -eu\r
+test "$FMETRICS_ZIG_VERSION" = 0.16.0\r
+test "$FMETRICS_COMMIT" = ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac\r
+test "$VSHIP_COMMIT" = 5a627933274196219f782b3b74e13fad47cd6370\r
+printf '%s\\n' "$0" >> "$FIXTURE/installers"\r
+''')
+                bodies = {
+                    "curl": '''test "$*" = "-sSfL --proto =https --proto-redir =https --retry 3 --retry-delay 2 -o ${11} https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz" || exit 93
+touch "$FIXTURE/downloaded"
+case "$CASE" in
+http) exit 22 ;;
+corrupt) printf 'wrong bytes' > "${11}" ;;
+truncated) head -c 5 "$FIXTURE/payload" > "${11}" ;;
+*) cp "$FIXTURE/payload" "${11}" ;;
+esac
+''',
+                    "tar": '''test "$1" = -xJf && test "$3" = --strip-components=1 && test "$4" = -C || exit 94
+cmp "$2" "$FIXTURE/payload"
+touch "$FIXTURE/unpacked"
+cp "$FIXTURE/fake-zig" "$5/zig"
+''',
+                }
+                for name, body in bodies.items():
+                    (tools / name).write_text("#!/bin/bash\nset -eu\n" + body)
+                    (tools / name).chmod(0o755)
+                # No host package manager, compiler, real Zig, or network executable is available.
+                for name in ("sed", "mkdir", "mktemp", "rm", "ln", "bash", "sha256sum", "awk",
+                             "chmod", "mv", "head", "cp", "cmp", "touch"):
+                    (tools / name).symlink_to(shutil.which(name))
+                zig = base / "fake-zig"
+                zig.write_text('''#!/bin/bash
+set -eu
+test "$*" = version || exit 95
+touch "$FIXTURE/executed"
+if [ "$CASE" = wrong-version ]; then echo 0.16.1; else echo 0.16.0; fi
+''')
+                zig.chmod(0o755)
+                result = subprocess.run(
+                    [shutil.which("bash"), "--noprofile", "--norc", "-c", script], cwd=base,
+                    env={"PATH": f"{base / 'usr/local/bin'}:{tools}", "FIXTURE": str(base), "CASE": case},
+                    capture_output=True, text=True)
+                logs = result.stdout + result.stderr
+                verified = case in ("good", "wrong-version")
+                self.assertEqual(result.returncode == 0, case == "good", logs)
+                self.assertEqual((base / "downloaded").exists(), case != "missing-hash", logs)
+                self.assertEqual((base / "unpacked").exists(), verified, logs)
+                self.assertEqual((base / "executed").exists(), verified, logs)
+                self.assertEqual((base / "installers").exists(), case == "good", logs)
+                if case == "good":
+                    self.assertEqual(len((base / "installers").read_text().splitlines()), 2)
+                else:
+                    self.assertIn({"corrupt": "SHA-256 mismatch", "truncated": "SHA-256 mismatch",
+                                   "http": "no mirror supplied", "missing-hash": "independently verified SHA-256",
+                                   "wrong-version": "expected exactly 0.16.0"}[case], logs)
+                self.assertEqual(list(scratch.iterdir()), [] if case == "good" else [scratch / "cicd.env"], logs)
+
     def _r06_fixture(self, base: Path) -> tuple[dict, dict]:
         # SECURITY: Only owned Git repositories/configs; no inherited Git routing,
         # shell startup, credentials or global config may affect these fetches.

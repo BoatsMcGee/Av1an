@@ -9,7 +9,7 @@
 #     compiles it with Zig.
 #
 #     That makes this the one install script here that needs a toolchain: Zig
-#     0.16.x, Git and a C compiler. Zig 0.17 is refused because it removed
+#     0.16.0, Git and a C compiler. Zig 0.17 is refused because it removed
 #     `b.build_root`, which the pinned `build.zig` still uses.
 #
 #     Built from BoatsMcGee/fmetrics rather than halidecx/fmetrics, which
@@ -52,7 +52,7 @@ Commit="${FMETRICS_COMMIT:-ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac}"
 Repository="${FMETRICS_REPO:-https://github.com/BoatsMcGee/fmetrics.git}"
 # Descriptive only; fetching the immutable pin does not require this branch.
 PatchRef="${FMETRICS_BRANCH:-add-windows-shared-build}"
-RequiredZigMajor='0.16'
+RequiredZigVersion="${FMETRICS_ZIG_VERSION:-0.16.0}"
 Quiet=0
 
 while [ $# -gt 0 ]; do
@@ -73,8 +73,6 @@ Commit="${Commit,,}"
 
 library=libfmetrics.so
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/fmetrics-build-XXXXXX")"
-
 step() { echo "==> $1"; }
 
 require() {
@@ -84,18 +82,21 @@ require() {
     }
 }
 
-require git "git not found; it is needed to fetch a pinned commit."
-require zig "zig not found. Install Zig ${RequiredZigMajor}.x from https://ziglang.org/download/."
-require gcc "gcc not found; it links the shared library."
-
-zig_version="$(zig version)"
-if ! printf '%s' "$zig_version" | grep -q "^${RequiredZigMajor}\."; then
-    echo "zig $zig_version found, but this needs ${RequiredZigMajor}.x: 0.17 removed" >&2
-    echo "b.build_root, which the pinned build.zig uses." >&2
+if [[ ! "$RequiredZigVersion" =~ ^0\.16\.(0|[1-9][0-9]*)$ ]]; then
+    echo "Expected FMETRICS_ZIG_VERSION '$RequiredZigVersion' must be an exact 0.16 patch: 0.17 removed b.build_root." >&2
     exit 1
 fi
-echo "    zig $zig_version"
+require zig "zig not found. Install exactly Zig $RequiredZigVersion from https://ziglang.org/download/."
+if zig_version="$(zig version)" && [ "$zig_version" = "$RequiredZigVersion" ]; then
+    echo "    zig $zig_version"
+else
+    echo "zig '${zig_version:-<no version>}' found, but expected exactly $RequiredZigVersion (successful zig version); refusing fetch/build." >&2
+    exit 1
+fi
+require git "git not found; it is needed to fetch a pinned commit."
+require gcc "gcc not found; it links the shared library."
 
+work="$(mktemp -d "${TMPDIR:-/tmp}/fmetrics-build-XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 
 step "Fetching fmetrics commit $Commit (descriptive branch: $PatchRef)"

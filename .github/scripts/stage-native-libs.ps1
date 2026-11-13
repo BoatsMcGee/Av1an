@@ -335,6 +335,7 @@ if (-not $SkipFmetrics) {
     $env:FMETRICS_REPO          = Get-Pin 'FMETRICS_REPO'
     $env:FMETRICS_BRANCH        = Get-Pin 'FMETRICS_BRANCH'
     $env:FMETRICS_UPSTREAM_BASE = Get-Pin 'FMETRICS_UPSTREAM_BASE'
+    $env:FMETRICS_ZIG_VERSION   = Get-Pin 'FMETRICS_ZIG_VERSION'
 
     & ./av-metrics-fmetrics/scripts/install-fmetrics-windows.ps1 -Destination $StageDir
     if ($LASTEXITCODE -ne 0) {
