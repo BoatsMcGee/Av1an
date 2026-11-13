@@ -119,6 +119,7 @@ $global:Downloads = 0
 function curl.exe {
     $global:Downloads++
     $out = $args[[array]::IndexOf($args, '-o') + 1]
+    $out = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($out)
     [IO.File]::WriteAllText($out, $env:PAYLOAD)
     $global:LASTEXITCODE = if ($env:PAYLOAD -eq 'http') { 22 } else { 0 }
 }
@@ -138,6 +139,37 @@ if (-not $found.Path -or $found.Downloaded) { throw 'local candidate misreported
 if ($Downloads -ne 0) { throw 'local candidate attempted a download' }
 if (Test-Path $dest) { throw 'fallback mutated destination' }
 if ([IO.File]::ReadAllText($candidate) -ne 'local candidate, not ABI proof') { throw 'candidate changed' }
+$savedLocation = (Get-Location -PSProvider FileSystem).ProviderPath
+$processCwd = [Environment]::CurrentDirectory
+$savedEnvironment = @{}
+foreach ($variable in @('VSHIP_PLUGIN_PATH', 'VSHIP_LIB_DIR', 'VSSCRIPT_PATH', 'VAPOURSYNTH_EXTRA_PLUGIN_PATH', 'PATH', 'PAYLOAD')) {
+    $savedEnvironment[$variable] = [Environment]::GetEnvironmentVariable($variable)
+    [Environment]::SetEnvironmentVariable($variable, '')
+}
+try {
+    $working = Join-Path $env:FIXTURE 'powershell location'
+    $relative = "relative vship $([guid]::NewGuid().ToString('N'))"
+    $relativeDirectory = Join-Path $working $relative
+    New-Item -ItemType Directory -Path $relativeDirectory -Force | Out-Null
+    $relativeCandidate = Join-Path $relativeDirectory 'vship.dll'
+    [IO.File]::WriteAllText($relativeCandidate, 'preserve relative existing candidate')
+    Set-Location -LiteralPath $working
+    if ((Get-Location -PSProvider FileSystem).ProviderPath -eq $processCwd) { throw 'fixture needs distinct PS and process locations' }
+    $env:PAYLOAD = 'good'
+    foreach ($case in @('destination', 'lib-dir', 'path')) {
+        $env:VSHIP_LIB_DIR = if ($case -eq 'lib-dir') { $relative } else { '' }
+        $env:PATH = if ($case -eq 'path') { '"' + $relative + '"' } else { '' }
+        $target = if ($case -eq 'destination') { $relative } else { 'unused destination' }
+        $found = & $vship -Version 5.1.2 -Variant vulkan -Destination $target -ExpectedSha256 '770e607624d689265ca6c44884d0807d9b054d23c473c106c72be9de08b7376c'
+        if ($found.Downloaded -or $found.Path -ne $relativeCandidate -or -not [IO.Path]::IsPathRooted($found.Path)) { throw "relative candidate not preserved: $case" }
+        if ([IO.File]::ReadAllText($found.Path) -ne 'preserve relative existing candidate') { throw "relative candidate overwritten: $case" }
+        if ($Downloads -ne 0 -or (Test-Path -LiteralPath 'unused destination')) { throw 'relative discovery downloaded or changed destination' }
+        if ([Environment]::CurrentDirectory -ne $processCwd) { throw 'fixture changed process CWD' }
+    }
+} finally {
+    Set-Location -LiteralPath $savedLocation
+    foreach ($variable in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($variable, $savedEnvironment[$variable]) }
+}
 $letter = 90..68 | ForEach-Object { [string][char]$_ } | Where-Object { -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
 if (-not $letter) { throw 'fixture needs an unmapped drive letter' }
 $missing = "$($letter):\unmapped"
@@ -223,6 +255,8 @@ foreach ($relative in @('av-metrics-vship/scripts/install-libvship-windows.ps1',
         stage = (root / ".github/scripts/stage-native-libs.ps1").read_text()
 
         # Static policy/mutation checks only; the native fixture above executes PS.
+        anchored_candidate = "[IO.Path]::Combine((Get-Location -PSProvider FileSystem).ProviderPath, $directory, $name)"
+
         def release_pin_policy(source: str) -> None:
             release = source[source.index("$vshipStaging = "):source.index("if (-not $SkipModels)")]
             self.assertRegex(release, r"(?m)^if \(\(Get-FileHash -Algorithm SHA256 -LiteralPath \$vshipStaging\)\.Hash -ne \(Get-Pin 'VSHIP_VULKAN_SHA256'\)\) \{\n\s+throw [^\n]+\n\}",
@@ -233,6 +267,7 @@ foreach ($relative in @('av-metrics-vship/scripts/install-libvship-windows.ps1',
             self.assertNotRegex(scan, r"\b(?:Join-Path|Split-Path|Test-Path)\b", "candidate probes must not resolve PowerShell providers")
             for operation in ("[IO.Path]::GetDirectoryName(", "[IO.Path]::Combine(", "[IO.File]::Exists("):
                 self.assertIn(operation, scan)
+            self.assertIn(anchored_candidate, scan, "relative candidate probes must use the PowerShell filesystem location")
 
         with self.subTest(policy="release-pin"):
             release_pin_policy(stage)
@@ -241,7 +276,9 @@ foreach ($relative in @('av-metrics-vship/scripts/install-libvship-windows.ps1',
         with self.assertRaises(AssertionError):
             release_pin_policy(stage.replace(".Hash -ne (Get-Pin 'VSHIP_VULKAN_SHA256')", ".Hash -eq (Get-Pin 'VSHIP_VULKAN_SHA256')"))
         with self.assertRaises(AssertionError):
-            filesystem_policy(vship.replace("[IO.Path]::Combine($directory, $name)", "(Join-Path $directory $name)"))
+            filesystem_policy(vship.replace(anchored_candidate, "(Join-Path $directory $name)"))
+        with self.assertRaises(AssertionError):
+            filesystem_policy(vship.replace(anchored_candidate, "[IO.Path]::Combine($directory, $name)"))
         with self.assertRaises(AssertionError):
             filesystem_policy(vship.replace("[IO.Path]::GetDirectoryName($env:VSSCRIPT_PATH.Trim().Trim('\"'))", "(Split-Path -Parent $env:VSSCRIPT_PATH)"))
         self.assertIn("install-libvship-windows.ps1", stage, "staging must reuse installer candidate-preservation policy")

@@ -122,7 +122,7 @@ foreach ($directory in $directories) {
         $directory = $directory.Trim().Trim('"')
         if (-not $directory) { continue }
         foreach ($name in @('libvship.dll', 'vship.dll')) {
-            $candidate = [IO.Path]::Combine($directory, $name)
+            $candidate = [IO.Path]::Combine((Get-Location -PSProvider FileSystem).ProviderPath, $directory, $name)
             if ([IO.File]::Exists($candidate)) {
                 Write-Host "No package installed; preserving local candidate: $candidate"
                 Write-Host "Set VSHIP_LIB_DIR to '$directory' if needed. Av1an must validate runtime version (5,1,2), backend and required symbols; file presence does not prove compatibility."
