@@ -25,7 +25,10 @@ pub(super) fn wait_for_owned_process_exit(pid: &str) {
                     return;
                 }
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            // procfs can lose the task after open but before read (ESRCH rather than ENOENT).
+            Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+                return;
+            },
             Err(error) => panic!("reading owned process {pid}: {error}"),
         }
         // Pipe EOF precedes exit_notify; allow the killed grandchild to become a zombie.
