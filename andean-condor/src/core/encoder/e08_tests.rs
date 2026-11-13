@@ -150,7 +150,9 @@ fn e08_runtime_child() {
             .spawn()
             .expect("stalled descendant");
         fs::write(root.join("watchdog-started"), "descendant started").expect("watchdog handshake");
-        descendant.wait().expect("stalled descendant");
+        // Keep the handle alive without racing the watchdog's subreaper during group SIGKILL.
+        thread::sleep(std::time::Duration::from_secs(30));
+        descendant.wait().expect("fixture outlived watchdog deadline");
         panic!("watchdog did not stop the fixture tree");
     }
     let mut encoder = Encoder::default_from_base(
