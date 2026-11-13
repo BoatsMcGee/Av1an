@@ -1,5 +1,6 @@
 """Offline release-script regressions: python3 -m unittest discover -s .github/scripts/tests."""
 
+import os
 from pathlib import Path
 import re
 import runpy
@@ -12,6 +13,184 @@ import zipfile
 
 
 class ReleaseScriptTests(unittest.TestCase):
+    def _r07_git(self, repo: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=repo, check=True, capture_output=True, text=True,
+            env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_CONFIG_GLOBAL": os.devnull,
+                 "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000",
+                 "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000"},
+        ).stdout.strip()
+
+    def _r07_repo(self, repo: Path) -> None:
+        repo.mkdir()
+        self._r07_git(repo, "init", "--initial-branch=main")
+        self._r07_git(repo, "config", "user.name", "Release Fixture")
+        self._r07_git(repo, "config", "user.email", "fixture@example.invalid")
+        self._r07_git(repo, "config", "commit.gpgsign", "false")
+        self._r07_git(repo, "config", "tag.gpgsign", "false")
+
+    def _r07_changelog(
+        self, repo: Path, output: Path, *args: str,
+    ) -> subprocess.CompletedProcess[str]:
+        script = Path(__file__).resolve().parents[1] / "generate-changelog.sh"
+        return subprocess.run(
+            ["bash", str(script), *args], cwd=repo, capture_output=True, text=True,
+            env={**os.environ, "GITHUB_SHA": "OFFLINE_R07_SHA",
+                 "GITHUB_OUTPUT": str(output), "GIT_CONFIG_NOSYSTEM": "1",
+                 "GIT_CONFIG_GLOBAL": os.devnull},
+        )
+
+    def test_r07_previous_reachable_version_excludes_head_aliases_and_latest(self) -> None:
+        """Current, moving, non-version, or numerically largest tags are not baselines."""
+        root = ("commit", "--allow-empty", "-m", "R07_ROOT")
+        change = ("commit", "--allow-empty", "-m", "R07_CHANGE")
+        head = ("commit", "--allow-empty", "-m", "R07_HEAD")
+        previous = ("tag", "-a", "v0.5.1", "-m", "previous release")
+        cases = (
+            ("firsttag", [root, change, ("tag", "v0.5.1")],
+             ["R07_CHANGE", "R07_ROOT"], "the beginning of history"),
+            ("secondtag", [root, previous, change, ("tag", "v0.5.2")],
+             ["R07_CHANGE"], "v0.5.1"),
+            ("masteraftertag", [root, previous, change, head],
+             ["R07_HEAD", "R07_CHANGE"], "v0.5.1"),
+            ("stale-latest-ancestor", [root, previous, change, ("tag", "latest"), head],
+             ["R07_HEAD", "R07_CHANGE"], "v0.5.1"),
+            ("moving-latest-head", [root, previous, change, ("tag", "latest")],
+             ["R07_CHANGE"], "v0.5.1"),
+            ("multiple-head-aliases", [root, previous, change,
+             ("tag", "v0.5.2"), ("tag", "-a", "v0.5.3", "-m", "alias"),
+             ("tag", "latest")], ["R07_CHANGE"], "v0.5.1"),
+            ("untagged-first-history", [root, change],
+             ["R07_CHANGE", "R07_ROOT"], "the beginning of history"),
+            ("ignore-nonrelease-tags", [root, previous, change,
+             ("tag", "build-2026"), ("tag", "v9.9.9-preview"),
+             ("tag", "v8.8.8junk"), ("tag", "v7.7.7.7"), head],
+             ["R07_HEAD", "R07_CHANGE"], "v0.5.1"),
+            ("nearest-not-largest", [root, ("tag", "v9.0.0"), change, previous, head],
+             ["R07_HEAD"], "v0.5.1"),
+        )
+        with tempfile.TemporaryDirectory(prefix="r07 git ") as directory:
+            base = Path(directory)
+            for name, commands, expected, baseline in cases:
+                with self.subTest(history=name):
+                    repo = base / name
+                    self._r07_repo(repo)
+                    for command in commands:
+                        self._r07_git(repo, *command)
+                    output = base / f"{name} output"
+
+                    result = self._r07_changelog(repo, output)
+
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    body = output.read_text()
+                    self.assertEqual(
+                        [line[2:] for line in body.splitlines() if line.startswith("- ")],
+                        expected,
+                    )
+                    self.assertIn(f"Changes since {baseline}:\n", body)
+                    self.assertNotIn("No changes", body)
+
+    def test_r07_merge_uses_release_on_second_parent_not_unreachable_tag(self) -> None:
+        """Walking only HEAD's first parent loses the reachable side-branch release."""
+        with tempfile.TemporaryDirectory(prefix="r07 merge ") as directory:
+            base = Path(directory)
+            repo = base / "repo"
+            self._r07_repo(repo)
+            for command in (
+                ("commit", "--allow-empty", "-m", "R07_ROOT"),
+                ("branch", "unreachable"),
+                ("checkout", "-b", "side"),
+                ("commit", "--allow-empty", "-m", "R07_PREVIOUS"),
+                ("tag", "v0.5.1"),
+                ("commit", "--allow-empty", "-m", "R07_SIDE"),
+                ("checkout", "main"),
+                ("commit", "--allow-empty", "-m", "R07_MAIN"),
+                ("merge", "--no-ff", "side", "-m", "R07_MERGE"),
+                ("tag", "v0.5.2"),
+                ("checkout", "unreachable"),
+                ("commit", "--allow-empty", "-m", "R07_UNREACHABLE"),
+                ("tag", "v99.0.0"),
+                ("checkout", "main"),
+            ):
+                self._r07_git(repo, *command)
+            output = base / "output"
+
+            result = self._r07_changelog(repo, output)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            body = output.read_text()
+            self.assertCountEqual(
+                [line[2:] for line in body.splitlines() if line.startswith("- ")],
+                ["R07_MERGE", "R07_MAIN", "R07_SIDE"],
+            )
+            self.assertIn("Changes since v0.5.1:\n", body)
+
+    def test_r07_body_protocol_notes_and_first_ten_commit_boundary(self) -> None:
+        """Keep every subject exactly once, correct overflow counts, and spaced paths."""
+        with tempfile.TemporaryDirectory(prefix="r07 body ") as directory:
+            base = Path(directory)
+            for count in (1, 10, 11, 12):
+                with self.subTest(commits=count):
+                    repo = base / f"repo {count}"
+                    self._r07_repo(repo)
+                    self._r07_git(repo, "commit", "--allow-empty", "-m", "R07_BASE")
+                    self._r07_git(repo, "tag", "v0.5.1")
+                    subjects = [f"R07 change {i:02d} `quotes` & spaces" for i in range(count)]
+                    for subject in subjects:
+                        self._r07_git(repo, "commit", "--allow-empty", "-m", subject)
+                    notes = base / "release notes with spaces.md"
+                    notes.write_text("Offline release notes\nverbatim, no final newline")
+                    output = base / f"output {count}"
+                    output.write_text("existing=true\n")
+
+                    result = self._r07_changelog(repo, output, str(notes))
+
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    body = output.read_text()
+                    self.assertTrue(body.startswith(
+                        "existing=true\nbody<<CHANGELOG_EOF\nLatest build from OFFLINE_R07_SHA\n"
+                    ))
+                    self.assertIn(f": {subjects[-1]} (Release Fixture)\n", body)
+                    self.assertEqual(
+                        [line[2:] for line in body.splitlines() if line.startswith("- ")],
+                        subjects[::-1],
+                    )
+                    inline = body.split("<details>")[0]
+                    self.assertEqual(inline.count("\n- R07 change"), min(count, 10))
+                    if count > 10:
+                        self.assertIn(f"<summary>... and {count - 10} more commits</summary>", body)
+                        self.assertEqual(body.count("</details>"), 1)
+                    else:
+                        self.assertNotIn("<details>", body)
+                    self.assertTrue(body.endswith(f"\n---\n\n{notes.read_text()}\nCHANGELOG_EOF\n"))
+
+    def test_r07_shallow_and_git_errors_fail_before_output_mutation(self) -> None:
+        """Shallow roots must not masquerade as first releases, nor Git errors as success."""
+        with tempfile.TemporaryDirectory(prefix="r07 errors ") as directory:
+            base = Path(directory)
+            source = base / "source"
+            self._r07_repo(source)
+            self._r07_git(source, "commit", "--allow-empty", "-m", "R07_ROOT")
+            self._r07_git(source, "tag", "v0.5.1")
+            self._r07_git(source, "commit", "--allow-empty", "-m", "R07_CHANGE")
+            self._r07_git(source, "clone", "--depth=1", source.as_uri(), str(base / "shallow"))
+            self._r07_repo(base / "empty")
+            (base / "not-git").mkdir()
+            for name in ("shallow", "empty", "not-git"):
+                with self.subTest(history=name):
+                    output = base / f"{name} output"
+                    output.write_text("existing=true\n")
+
+                    result = self._r07_changelog(base / name, output)
+
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(output.read_text(), "existing=true\n")
+                    self.assertNotIn("No changes", result.stdout + result.stderr)
+                    if name == "shallow":
+                        self.assertIn("shallow", result.stderr.lower())
+                        self.assertIn("fetch-depth: 0", result.stderr)
+
     def test_r02_msvc_redist_and_dynamic_ffms_contract(self) -> None:
         """Require selected VS app-local CRT staging, not a host CRT or static FFMS claim."""
         root = Path(__file__).resolve().parents[3]

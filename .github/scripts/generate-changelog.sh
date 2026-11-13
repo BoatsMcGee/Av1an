@@ -4,11 +4,10 @@
 #     the Linux and the Windows workflow.
 #
 # .DESCRIPTION
-#     Shared by linux-build.yml and windows-build.yml, which otherwise keep
-#     their own copies of this logic in line. Emits the release body as
+#     Shared by linux-build.yml and windows-build.yml. Emits the release body as
 #     `body<<CHANGELOG_EOF ... CHANGELOG_EOF`.
 #
-#     The body lists the built commit and the commits since the last tag, the
+#     The body lists the built commit and the commits since the previous release, the
 #     first ten inline and the rest in a collapsible section. When an argument
 #     names an existing file, its contents follow the changes as release-
 #     specific notes, like the Linux host requirements.
@@ -29,23 +28,38 @@ step() { echo "==> $1"; }
 
 step 'Generating the changelog'
 
-last_tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-if [ -z "$last_tag" ]; then
-    last_tag="$(git rev-list --max-parents=0 HEAD 2>/dev/null || true)"
+shallow="$(git rev-parse --is-shallow-repository)"
+if [ "$shallow" = true ]; then
+    echo 'Cannot generate a changelog from shallow history; fetch full history and tags (fetch-depth: 0).' >&2
+    exit 1
 fi
-if [ -z "$last_tag" ]; then
-    last_tag='HEAD'
+head="$(git rev-parse --verify 'HEAD^{commit}')"
+tags="$(git tag --merged "$head")"
+matches=()
+while IFS= read -r tag; do
+    # CONTRACT: Release tags are vN.N.N; ignore latest and every alias of HEAD.
+    [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    tag_commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")"
+    if [ "$tag_commit" != "$head" ]; then
+        matches+=(--match "$tag")
+    fi
+done <<< "$tags"
+
+if [ "${#matches[@]}" -gt 0 ]; then
+    # Search all parents and candidates, not only the first parent or newest ten tags.
+    last_tag="$(git describe --tags --abbrev=0 --candidates="$((${#matches[@]} / 2))" "${matches[@]}" "$head")"
+    revision="refs/tags/$last_tag..$head"
+else
+    last_tag='the beginning of history'
+    revision="$head"
 fi
 
-all="$(git log "$last_tag..HEAD" --pretty=format:'- %s' 2>/dev/null || true)"
-if [ -z "$all" ]; then
-    all="No changes since $last_tag"
-fi
-
-first10="$(echo "$all" | head -10 || true)"
-rest_count="$(echo "$all" | tail -n +11 | wc -l || true)"
-rest="$(echo "$all" | tail -n +11 || true)"
-commit="$(git log -1 --pretty=format:'%h: %s (%an)')"
+all="$(git log "$revision" --pretty=format:'- %s' --)"
+commit_count="$(git rev-list --count "$revision" --)"
+first10="$(printf '%s\n' "$all" | sed -n '1,10p')"
+rest_count=$((commit_count > 10 ? commit_count - 10 : 0))
+rest="$(printf '%s\n' "$all" | tail -n +11)"
+commit="$(git log -1 --pretty=format:'%h: %s (%an)' "$head" --)"
 
 # Step outputs are written as a `name<<delimiter` block.
 {
@@ -70,6 +84,7 @@ commit="$(git log -1 --pretty=format:'%h: %s (%an)')"
         echo "---"
         echo
         cat "$NotesFile"
+        echo # Keep the output delimiter on its own line even without a final notes newline.
     fi
     echo 'CHANGELOG_EOF'
 } >> "$GITHUB_OUTPUT"
