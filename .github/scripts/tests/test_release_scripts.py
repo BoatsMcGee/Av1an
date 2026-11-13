@@ -134,6 +134,7 @@ try { & $Installer @parameters }
 catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }
 ''')
             zig = base / "zig.cmd"
+            # Batch positional parameters split on '='; preserve the raw invocation.
             zig.write_text(r'''@echo off
 if "%~1"=="version" (
   echo 0.16.0
@@ -147,12 +148,13 @@ if "%~2"=="--fetch" (
   if errorlevel 1 exit /b 95
   exit /b 0
 )
-if not "%~2 %~3"=="--release=fast -Dshared=true" exit /b 94
+if not "%*"=="build --release=fast -Dshared=true" exit /b 94
 (
   git rev-parse HEAD
   type payload
   git rev-parse --abbrev-ref HEAD
   type zig-pkg\fcvvdp-fixture\payload.txt
+  echo %*
 )> "%MARKER%"
 echo R06 compiler boundary; no native build
 exit /b 79
@@ -191,7 +193,8 @@ exit /b 79
                     self.assertEqual(fetched.exists(), bool(payload) or bad_dep, logs)
                     if payload:
                         expected = commits["advanced"] if payload == "advanced" else commits["pin"]
-                        self.assertEqual(marker.read_text().splitlines(), [expected, payload, "HEAD", "patched"], logs)
+                        self.assertEqual(marker.read_text().splitlines(),
+                                         [expected, payload, "HEAD", "patched", "build --release=fast -Dshared=true"], logs)
                         self.assertIn("R06 compiler boundary", logs)
                     else:
                         self.assertFalse(marker.exists(), logs)
