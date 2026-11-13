@@ -125,42 +125,14 @@ $Models = @(
     'vmaf_float_b_v0.6.3'
 )
 
-function Get-LatestPackage {
-    <#
-    .SYNOPSIS
-        Finds a package archive in a repo index, newest first.
-    #>
-    param([Parameter(Mandatory)][string] $Prefix)
-
-    $matches = [System.Collections.Generic.List[string]]::new()
-
-    foreach ($repo in $Repos) {
-        $index = curl.exe -sSfL -A $UserAgent $repo 2>$null
-        if ($LASTEXITCODE -ne 0) { continue }
-
-        foreach ($match in [regex]::Matches($index, "$Prefix-[A-Za-z0-9\.\-]+any\.pkg\.tar\.zst")) {
-            if (-not $matches.Contains($match.Value)) { $matches.Add($match.Value) }
-        }
-
-        # One working index is enough.
-        if ($matches.Count -gt 0) { break }
-    }
-
-    if ($matches.Count -eq 0) {
-        throw "No package matching '$Prefix' was found on any mirror. Tried:`n  $($Repos -join "`n  ")"
-    }
-
-    return ($matches | Sort-Object -Descending | Select-Object -First 1)
-}
-
 function Save-File {
     <#
     .SYNOPSIS
         Downloads the first URI that responds, returning which one worked.
 
     .DESCRIPTION
-        Mirrors that block directory listings still serve known filenames, so
-        only `Get-LatestPackage` reads an index.
+        Requests only exact pinned filenames, never directory listings or newer
+        packages. A response is accepted only after its expected digest matches.
     #>
     param(
         [Parameter(Mandatory)][string[]] $Uri,

@@ -18,6 +18,54 @@ import zipfile
 
 
 class ReleaseScriptTests(unittest.TestCase):
+    def test_r12_pinned_lookup_source_and_required_native_gate(self) -> None:
+        """Supplement only: remove the dead automatic-variable/index lookup."""
+        root = Path(__file__).resolve().parents[3]
+        source = (root / "av-metrics-vmaf/scripts/install-libvmaf-windows.ps1").read_text()
+        self.assertNotRegex(source, r"(?i)Get-LatestPackage|\$matches\b")
+        self.assertIn("$PackageHashes.ContainsKey($package)", source)
+        self.assertIn("Save-File -Uri $candidates -OutFile $archive -Sha256 $PackageHashes[$package]", source)
+        workflow = (root / ".github/workflows/windows-build.yml").read_text()
+        for method in ("test_r12_windows_missing_archive_never_uses_newer_index",
+                       "test_r12_windows_missing_or_invalid_pin_refuses_before_use",
+                       "test_r12_windows_package_hash_precedes_unpack"):
+            self.assertIn(f"ReleaseScriptTests.{method}", workflow)
+
+    def _r12_native(self, case: str) -> None:
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory(prefix="r12 native ") as directory:
+            base = Path(directory)
+            temp = base / "private temp"
+            temp.mkdir()
+            result = subprocess.run(
+                ["pwsh", "-NoProfile", "-File", str(Path(__file__).with_name("r11-installers.ps1")),
+                 "-R12Case", case], cwd=base, capture_output=True, text=True,
+                env={**os.environ, "REPO": str(root), "FIXTURE": str(base),
+                     "TEMP": str(temp), "TMP": str(temp)})
+            logs = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, logs)
+            self.assertIn(f"R12 {case} verified", result.stdout)
+            self.assertEqual(list(temp.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "nt", "native PowerShell pinned lookup fixture runs on Windows CI")
+    def test_r12_windows_missing_archive_never_uses_newer_index(self) -> None:
+        """All mirrors 404; an available newer directory listing is never read."""
+        self._r12_native("missing-archive")
+
+    @unittest.skipUnless(os.name == "nt", "native PowerShell pin validation fixture runs on Windows CI")
+    def test_r12_windows_missing_or_invalid_pin_refuses_before_use(self) -> None:
+        """A missing or malformed expected digest must not reach transport/tar."""
+        for case in ("missing-pin", "invalid-pin"):
+            with self.subTest(case=case):
+                self._r12_native(case)
+
+    @unittest.skipUnless(os.name == "nt", "native PowerShell package hashing fixture runs on Windows CI")
+    def test_r12_windows_package_hash_precedes_unpack(self) -> None:
+        """Keep real Save-File SHA256 checking with good/bad inert package bytes."""
+        for case in ("good", "hash"):
+            with self.subTest(case=case):
+                self._r12_native(case)
+
     @unittest.skipIf(os.name == "nt", "Linux Vship installer uses Bash")
     def test_r11_linux_vship_cleans_early_failure_and_retries(self) -> None:
         """A late EXIT trap leaks the missing-tool checkout; all retries stay owned."""
