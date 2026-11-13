@@ -158,6 +158,42 @@ fn wait_file(root: &Path, name: &str) {
     }
 }
 
+fn registration_fixture_root(command: &Command) -> Option<PathBuf> {
+    let root = PathBuf::from(std::env::var_os("E12_ROOT")?);
+    (command.get_program() == root.join("fake")).then_some(root)
+}
+
+pub(crate) fn before_process_registration(command: &Command, pid: u32) {
+    if let Some(root) = registration_fixture_root(command)
+        && matches!(
+            std::env::var("E12_CASE").as_deref(),
+            Ok("mid-production" | "stream-idle" | "serial" | "serial-native")
+        )
+    {
+        fs::write(
+            root.join(format!("registration-blocked-{pid}")),
+            "before register",
+        )
+        .expect("registration barrier");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !root.join(format!("registration-release-{pid}")).exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "release registration barrier"
+            );
+            thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+}
+
+pub(crate) fn after_process_registration(command: &Command, pid: u32) {
+    if let Some(root) = registration_fixture_root(command) {
+        // The child can publish readiness before spawn returns; only this parent knows registration.
+        fs::write(root.join(format!("registered-{pid}")), "registered")
+            .expect("post-registration handshake");
+    }
+}
+
 pub(crate) fn before_stream_return(cancellation: &Cancellation) {
     if std::env::var("E12_CASE").as_deref() == Ok("stream-idle-return") {
         cancellation.request().expect("graceful after all workers joined");
@@ -802,6 +838,43 @@ fn e12_scene_child() {
         }
         if kind == "filter-full" {
             wait_file(&root2, "full-output");
+        }
+        if [
+            "force-vs",
+            "mid-production",
+            "force-native",
+            "stdin-full",
+            "stream-idle",
+            "replay-full",
+            "serial",
+            "serial-native",
+            "zone",
+        ]
+        .contains(&kind.as_str())
+        {
+            let pid: u32 = fs::read_to_string(root2.join("leader"))
+                .expect("correct leader PID")
+                .parse()
+                .expect("PID");
+            let registered = format!("registered-{pid}");
+            if ["mid-production", "stream-idle", "serial", "serial-native"].contains(&kind.as_str())
+            {
+                wait_file(&root2, &format!("registration-blocked-{pid}"));
+                assert!(
+                    !root2.join(&registered).exists(),
+                    "child readiness precedes registration"
+                );
+                assert!(
+                    !signal.is_forced(),
+                    "readiness alone must not force diagnostic stage"
+                );
+                fs::write(
+                    root2.join(format!("registration-release-{pid}")),
+                    "register now",
+                )
+                .expect("release registration barrier");
+            }
+            wait_file(&root2, &registered);
         }
         if kind == "leader-exits" {
             let pid: u32 =

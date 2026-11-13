@@ -167,6 +167,8 @@ impl OwnedProcess {
             }
         }
         #[cfg(all(test, target_os = "linux"))]
+        crate::core::encoder::e12_tests::before_process_registration(command, process.id());
+        #[cfg(all(test, target_os = "linux"))]
         if matches!(
             std::env::var("E12_CASE").as_deref(),
             Ok("registration" | "filter-spawn-race")
@@ -185,6 +187,8 @@ impl OwnedProcess {
             process.wait().context("Reaping child cancelled during spawn")?;
             return Err(error);
         }
+        #[cfg(all(test, target_os = "linux"))]
+        crate::core::encoder::e12_tests::after_process_registration(command, process.id());
         #[cfg(windows)]
         {
             #[cfg(test)]
