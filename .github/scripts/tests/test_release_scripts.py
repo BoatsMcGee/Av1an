@@ -95,7 +95,18 @@ printf 'R11 inert library bytes\\n' > "$2/libvship.so"
             base = Path(directory)
             env, _ = self._r06_fixture(base)
             zig = base / "zig.cmd"
-            zig.write_text('@echo off\nif "%~1"=="version" (echo 0.16.0 & exit /b 0)\nexit /b 93\n')
+            zig.write_text('''@echo off
+if "%~1"=="version" (
+  echo 0.16.0
+  exit /b 0
+)
+exit /b 93
+''')
+            # Check the native stub independently before any installer/ownership path.
+            version = subprocess.run([str(zig), "version"], cwd=base, env=env,
+                                     capture_output=True, text=True)
+            self.assertEqual(version.returncode, 0, version.stdout + version.stderr)
+            self.assertEqual(version.stdout, "0.16.0\n")
             runner = base / "run.ps1"
             runner.write_text(r'''$ErrorActionPreference = 'Stop'
 $old = Join-Path ([IO.Path]::GetTempPath()) "fmetrics-build-$PID"
