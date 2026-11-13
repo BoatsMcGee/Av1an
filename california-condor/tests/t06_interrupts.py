@@ -206,7 +206,348 @@ def listener(binary: str, base: Path) -> None:
             child.wait(timeout=5)
 
 
-if __name__ == '__main__' and len(sys.argv) == 4:
+def v02_session_records(session: int) -> list[str]:
+    """Private child sessions include encoder groups even after leader exit."""
+    records = []
+    for path in Path('/proc').glob('[0-9]*/stat'):
+        try:
+            fields = path.read_text().rsplit(') ', 1)[1].split()
+            if int(fields[3]) == session:
+                records.append(f'{path.parent.name} {fields[19]} {fields[2]}')
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    return records
+
+
+def v02_command(args: list[str], root: Path, *, env: dict | None = None) -> subprocess.CompletedProcess:
+    """Bound every actual stage/native decoder; retain its diagnostics on failure."""
+    child = subprocess.Popen(args, cwd=root, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, start_new_session=True)
+    completed = False
+    try:
+        stdout, stderr = child.communicate(timeout=25)
+        completed = True
+        return subprocess.CompletedProcess(args, child.returncode, stdout, stderr)
+    finally:
+        if not completed:
+            records = v02_session_records(child.pid)
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+            errors = []
+            prior.cleanup_fixtures(records, errors)
+            assert not errors, errors
+
+
+def v02_decode(path: Path) -> bytes:
+    result = v02_command(['ffmpeg', '-v', 'error', '-i', str(path), '-f',
+                          'rawvideo', '-pix_fmt', 'yuv420p', '-'], path.parent)
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def v02_pattern(pixels: bytes) -> bool:
+    """Literal frame signatures: ±3 is disjoint from the next frame's luma (+8)."""
+    levels = [32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152]
+    if len(pixels) != 16 * 24576:
+        return False
+    for n, level in enumerate(levels):
+        frame = pixels[n * 24576:(n + 1) * 24576]
+        for plane, width, height, left, right in [
+            (frame[:16384], 128, 128, level, level + 16),
+            (frame[16384:20480], 64, 64, 64 + 4*n, 72 + 4*n),
+            (frame[20480:], 64, 64, 192 - 4*n, 184 - 4*n),
+        ]:
+            for row in range(height):
+                for col in range(width):
+                    if abs(plane[row*width + col] - (left if col < width//2 else right)) > 3:
+                        return False
+    return True
+
+
+V02_ENCODER = r'''#!/usr/bin/env python3
+import os,select,subprocess,sys
+from pathlib import Path
+if '--version' in sys.argv:
+ os.execvp('x264',['x264',*sys.argv[1:]])
+root=Path(os.environ['V02_ROOT'])
+args=sys.argv[1:]
+out=Path(args[args.index('-o')+1])
+with (root/'invocations').open('a') as log: log.write(str(out)+'\n')
+grandchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(15)'])
+def identity(pid):
+ fields=Path(f'/proc/{pid}/stat').read_text().rsplit(') ',1)[1].split()
+ return f'{pid} {fields[19]} {fields[2]}\n'
+(root/'pids.tmp').write_text(identity(os.getpid())+identity(grandchild.pid))
+(root/'pids.tmp').replace(root/'pids')
+try:
+ if 'V02_RELEASE_ALL' not in os.environ:
+  out.write_bytes(b'owned incomplete native attempt')
+  gate=os.open(root/'release',os.O_RDONLY|os.O_NONBLOCK)
+  try:
+   (root/'active').touch()
+   assert select.select([gate],[],[],15)[0], 'native gate watchdog'
+   assert os.read(gate,1)==b'1'
+  finally:
+   os.close(gate)
+ result=subprocess.run(['x264',*args],stdin=sys.stdin.buffer)
+finally:
+ grandchild.terminate(); grandchild.wait(timeout=5)
+sys.exit(result.returncode)
+'''
+
+
+def v02_pty(binary: str, base: Path, template: dict, forced: bool) -> None:
+    """T06's controlling-terminal protocol, now with real completed native chunks."""
+    with tempfile.TemporaryDirectory(prefix='v02-pty-', dir=base) as directory:
+        root = Path(directory)
+        config = json.loads(json.dumps(template))
+        config['temp'] = str(root/'work')
+        config['condor']['output']['path'] = str(root/'final.mkv')
+        sequence = config['condor']['sequence_config']
+        sequence['target_quality'] = None
+        sequence['quality_check'] = None
+        for name in ('parallel_encoder', 'scene_concatenator'):
+            sequence[name]['scenes_directory'] = str(root/'work/scenes')
+        wrapper = base/'native-encoder'
+        for encoder in [config['condor']['encoder'], *[s['encoder'] for s in config['condor']['scenes']]]:
+            encoder['X264']['executable'] = str(wrapper)
+        job = root/'job.json'
+        job.write_text(json.dumps(config))
+        sentinel = root/'final.mkv'
+        sentinel.write_bytes(b'preserve prior output')
+        source = (base/'source.vpy').read_bytes()
+        os.mkfifo(root/'release')
+        master, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 16, 110, 0, 0))
+        original = termios.tcgetattr(slave)
+        env = os.environ.copy()
+        env.pop('CONDOR_TEST_MODE', None)
+        env.update(V02_ROOT=directory, TERM='xterm-256color')
+        terminal = bytearray()
+        errors = []
+        records = []
+        def controlling_terminal():
+            os.setsid()
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+        with tempfile.TemporaryFile() as stdout:
+            child = subprocess.Popen([binary, '--config-file', str(job), '--logs', str(root/'events.log'), 'encode'],
+                cwd=root, stdin=slave, stdout=stdout, stderr=slave, env=env,
+                preexec_fn=controlling_terminal)
+            try:
+                deadline = time.monotonic() + 25
+                queries = 0
+                sent = False
+                acknowledged = False
+                while child.poll() is None:
+                    assert time.monotonic() < deadline, ('V02 PTY watchdog', terminal)
+                    if select.select([master], [], [], .01)[0]:
+                        terminal.extend(os.read(master, 65536))
+                    while queries < terminal.count(b'\x1b[6n'):
+                        os.write(master, b'\x1b[1;1R'); queries += 1
+                    if not sent and (root/'active').exists() and b'\x1b[?1049h' in terminal:
+                        raw = termios.tcgetattr(slave)
+                        assert not raw[3] & (termios.ICANON | termios.ECHO), 'native raw mode not entered'
+                        records = (root/'pids').read_text().splitlines()
+                        assert len(records) == 2
+                        for record in records:
+                            pid, start, group = map(int, record.split())
+                            fd = prior.fixture_pidfd(pid, (start, group))
+                            try:
+                                assert not select.select([fd], [], [], 0)[0], 'child tree must actually be live'
+                            finally:
+                                os.close(fd)
+                        os.write(master, b'\x03')
+                        sent = True
+                    if sent and not acknowledged and b'after Encoders complete...' in terminal:
+                        assert len((root/'invocations').read_text().splitlines()) == 1
+                        assert child.poll() is None
+                        if forced:
+                            os.write(master, b'\x03')
+                        else:
+                            try:
+                                gate = os.open(root/'release', os.O_WRONLY | os.O_NONBLOCK)
+                            except OSError as error:
+                                if error.errno != errno.ENXIO:
+                                    raise
+                                continue
+                            os.write(gate, b'1'); os.close(gate)
+                        acknowledged = True
+                status = child.wait(timeout=5)
+                assert status == 130 and sent and acknowledged, (status, terminal)
+                assert termios.tcgetattr(slave) == original, 'native terminal not restored'
+                os.close(slave); slave = -1
+                while select.select([master], [], [], 0)[0]:
+                    try:
+                        chunk = os.read(master, 65536)
+                        if not chunk:
+                            break
+                        terminal.extend(chunk)
+                    except OSError as error:
+                        if error.errno != errno.EIO:
+                            raise
+                        break
+                assert terminal.count(b'\x1b[?1049h') == terminal.count(b'\x1b[?1049l') == 1
+                assert terminal.count(b'\x1b[?25h') == 1
+                stdout.seek(0)
+                assert b'\x1b' not in stdout.read()
+                assert 'CLI job cleanup complete' in (root/'events.log').read_text()
+                assert len((root/'invocations').read_text().splitlines()) == 1, 'new work admitted after first interrupt'
+                saved = json.loads(job.read_text())['condor']['scenes']
+                chunks = sorted((root/'work/scenes').glob('*.264'))
+                if forced:
+                    assert not list((root/'work/scenes').rglob('*.264')), 'forced partial native output survived'
+                    assert all(s['sequence_data']['parallel_encoder']['provenance'] is None for s in saved)
+                else:
+                    assert len(chunks) == 1
+                    assert len(v02_decode(chunks[0])) == 4 * 24576, 'saved partial scene must be genuinely decodable'
+                    assert saved[0]['sequence_data']['parallel_encoder']['provenance']
+                    assert saved[0]['sequence_data']['parallel_encoder']['completed_on']
+                    assert saved[0]['sequence_data']['parallel_encoder']['bytes'] == chunks[0].stat().st_size
+                    assert all(s['sequence_data']['parallel_encoder']['bytes'] is None for s in saved[1:])
+                for record in records:
+                    pid, start, group = map(int, record.split())
+                    if Path(f'/proc/{pid}').exists():
+                        fd = prior.fixture_pidfd(pid, (start, group))
+                        try:
+                            assert select.select([fd], [], [], 0)[0], f'owned PID {pid} still alive at CLI outcome'
+                        finally:
+                            os.close(fd)
+                prior.cleanup_fixtures(records, errors)
+                assert not errors, errors
+                assert all(not Path(f'/proc/{record.split()[0]}').exists() for record in records), 'owned tree not reaped'
+                assert sentinel.read_bytes() == b'preserve prior output'
+                assert (base/'source.vpy').read_bytes() == source
+                print(f'V02 PTY forced={forced}: actual raw/alternate enter+restore, acknowledged first interrupt, status130, next admission stopped, owned wrapper/grandchild exited+reaped; pids={records}', flush=True)
+                if not forced:
+                    first = chunks[0]
+                    frozen = (first.read_bytes(), first.stat().st_mtime_ns)
+                    env['CONDOR_TEST_MODE'] = '1'
+                    env['V02_RELEASE_ALL'] = '1'
+                    partial = job.read_bytes()
+                    stale_partial = json.loads(partial)
+                    stale_partial['condor']['scenes'][0]['encoder']['X264']['options']['ref'] = {
+                        'Number': {'prefix': '--', 'delimiter': ' ', 'value': 3.0}}
+                    job.write_text(json.dumps(stale_partial))
+                    before = job.read_bytes()
+                    result = v02_command([binary, '--config-file', str(job), 'encode'], root, env=env)
+                    assert result.returncode != 0 and b'context changed' in result.stderr, result.stderr
+                    assert job.read_bytes() == before
+                    assert len((root/'invocations').read_text().splitlines()) == 1
+                    assert (first.read_bytes(), first.stat().st_mtime_ns) == frozen
+                    assert len(list((root/'work/scenes').glob('*.264'))) == 1
+                    # Restore the actual producer's partial JSON, never a new stamp.
+                    job.write_bytes(partial)
+                    result = v02_command([binary, '--config-file', str(job), 'encode'], root, env=env)
+                    assert result.returncode == 0, (result.stdout, result.stderr)
+                    assert (first.read_bytes(), first.stat().st_mtime_ns) == frozen
+                    assert len((root/'invocations').read_text().splitlines()) == 3, 'restart encoded completed scene or missed unfinished work'
+                    completed = sorted((root/'work/scenes').glob('*.264'))
+                    decoded = [v02_decode(p) for p in completed]
+                    assert [len(p) for p in decoded] == [98304, 196608, 98304]
+                    assert v02_pattern(b''.join(decoded))
+                    all_frozen = [(p, p.read_bytes(), p.stat().st_mtime_ns) for p in completed]
+                    result = v02_command([binary, '--config-file', str(job), 'encode'], root, env=env)
+                    assert result.returncode == 0 and len((root/'invocations').read_text().splitlines()) == 3
+                    stale = json.loads(job.read_text())
+                    stale['condor']['scenes'][0]['encoder']['X264']['options']['ref'] = {
+                        'Number': {'prefix': '--', 'delimiter': ' ', 'value': 3.0}}
+                    job.write_text(json.dumps(stale))
+                    before = job.read_bytes()
+                    result = v02_command([binary, '--config-file', str(job), 'encode'], root, env=env)
+                    assert result.returncode != 0 and b'context changed' in result.stderr, result.stderr
+                    assert job.read_bytes() == before
+                    assert len((root/'invocations').read_text().splitlines()) == 3
+                    assert all((p.read_bytes(), p.stat().st_mtime_ns) == (b, m) for p, b, m in all_frozen)
+                    assert sentinel.read_bytes() == b'preserve prior output'
+                    assert (base/'source.vpy').read_bytes() == source
+                    print('V02 restart: stale partial identity refused before native work; real partial scene reused bytes+mtime; exactly two unfinished native encodes; 16 ordered frames; matching no-work restart and stale completed identity refusal preserve all chunks/source/sentinel PASS', flush=True)
+            finally:
+                emergency = v02_session_records(child.pid) if child.poll() is None else []
+                if child.poll() is None:
+                    child.kill()
+                child.wait(timeout=5)
+                if (root/'pids').exists():
+                    prior.cleanup_fixtures((root/'pids').read_text().splitlines(), errors)
+                prior.cleanup_fixtures(emergency, errors)
+                if slave >= 0:
+                    os.close(slave)
+                os.close(master)
+                assert not errors, errors
+
+
+def v02_pipeline(binary: str, root: Path) -> None:
+    """Actual CLI partition/scoring/encoding and an independent order oracle."""
+    assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+    source = (root/'source.vpy').read_bytes()
+    job = root/'condor.json'
+    env = os.environ.copy()
+    env['CONDOR_TEST_MODE'] = '1'
+    def stage(*args: str, success: bool = True) -> subprocess.CompletedProcess:
+        result = v02_command([binary, '--config-file', str(job), *args], root, env=env)
+        print(f'V02 stage {args}: exit={result.returncode}', flush=True)
+        assert (result.returncode == 0) == success, (args, result.stdout, result.stderr)
+        assert (root/'source.vpy').read_bytes() == source
+        return result
+    stage('detect-scenes')
+    detected = json.loads(job.read_text())
+    assert [(s['start_frame'], s['end_frame']) for s in detected['condor']['scenes']] == [(0, 16)]
+    stage('zone', '4 12 x264 "--ref 2"')
+    def association(data: dict) -> None:
+        scenes = data['condor']['scenes']
+        assert [(s['start_frame'], s['end_frame']) for s in scenes] == [(0, 4), (4, 12), (12, 16)]
+        assert [s['encoder']['X264']['options'].get('ref') for s in scenes] == [
+            None, {'Number': {'prefix': '--', 'delimiter': ' ', 'value': 2.0}}, None]
+    zoned = json.loads(job.read_text())
+    association(zoned)
+    assert zoned['condor']['scenes'][0]['sequence_data']['zoner']['lifecycle']
+    for args in [('target-quality',), ('encode',), ('concatenate',), ('quality-check',)]:
+        stage(*args)
+        association(json.loads(job.read_text()))
+    measured = json.loads(job.read_text())
+    for scene, frames in zip(measured['condor']['scenes'], (4, 8, 4)):
+        data = scene['sequence_data']
+        assert data['target_quality']['selection']
+        selected_q = scene['encoder']['X264']['options']['crf']['Number']['value']
+        assert any(p['quantizer'] == selected_q for p in data['target_quality']['passes'])
+        for record in [*data['target_quality']['passes'], data['quality_check']['quality']]:
+            assert record['provenance'] and record['backend']['engine'] == 'Vmaf'
+            assert len(record['scores']) == frames
+            assert 98 <= sum(record['scores']) / frames <= 100
+            print(f"V02 range={scene['start_frame']}..{scene['end_frame']} q={record['quantizer']} scores={record['scores']}")
+        assert data['parallel_encoder']['provenance'] and data['parallel_encoder']['bytes'] > 0
+    decoded = v02_decode(root/'final.mkv')
+    assert v02_pattern(decoded), 'final frames violate literal pattern/order/±3 codec bound'
+    assert not v02_pattern(decoded[24576:49152] + decoded[:24576] + decoded[49152:]), 'order oracle negative control'
+    chunks = sorted((root/'work/scenes').glob('*.264'))
+    assert len(chunks) == 3
+    assert [len(v02_decode(p)) for p in chunks] == [98304, 196608, 98304]
+    frozen = [(path, path.read_bytes(), path.stat().st_mtime_ns) for path in chunks]
+    stage('target-quality')
+    stage('encode')
+    assert json.loads(job.read_text())['condor']['scenes'] == measured['condor']['scenes']
+    assert all((p.read_bytes(), p.stat().st_mtime_ns) == (b, m) for p, b, m in frozen)
+    changed = json.loads(job.read_text())
+    changed['condor']['scenes'][0]['encoder']['X264']['options']['ref'] = {
+        'Number': {'prefix': '--', 'delimiter': ' ', 'value': 3.0}}
+    job.write_text(json.dumps(changed))
+    before = job.read_bytes()
+    refused = stage('encode', success=False)
+    assert b'context changed' in refused.stderr and b'cannot resume' in refused.stderr, refused.stderr
+    assert job.read_bytes() == before
+    assert all((p.read_bytes(), p.stat().st_mtime_ns) == (b, m) for p, b, m in frozen)
+    job.write_text(json.dumps(measured))
+    print('V02 pipeline: actual detect/zone/TQ/encode/concat/QC, 16 ordered patterned frames, parameters/provenance/source unchanged; current reuse/stale refusal PASS', flush=True)
+    wrapper = root/'native-encoder'
+    wrapper.write_text(V02_ENCODER)
+    wrapper.chmod(0o755)
+    for forced in (False, True):
+        v02_pty(binary, root, zoned, forced)
+
+
+if __name__ == '__main__' and sys.argv[1] == '--v02':
+    v02_pipeline(sys.argv[2], Path(sys.argv[3]))
+elif __name__ == '__main__' and len(sys.argv) == 4:
     listener(sys.argv[1], Path(sys.argv[2]))
 elif __name__ == '__main__':
     assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
