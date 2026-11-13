@@ -101,6 +101,8 @@ $Variants = @{
 
 $BaseUrl = "https://codeberg.org/Line-fr/Vship/releases/download/v$Version/"
 
+$Destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Destination)
+
 # Do not replace a user/administrator installation or call file presence ABI proof.
 # The Rust loader remains responsible for version (5,1,2), backend and symbols.
 $directories = @($env:VSHIP_PLUGIN_PATH, $env:VSHIP_LIB_DIR)

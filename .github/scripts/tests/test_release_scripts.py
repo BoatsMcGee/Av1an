@@ -146,6 +146,7 @@ foreach ($variable in @('VSHIP_PLUGIN_PATH', 'VSHIP_LIB_DIR', 'VSSCRIPT_PATH', '
     $savedEnvironment[$variable] = [Environment]::GetEnvironmentVariable($variable)
     [Environment]::SetEnvironmentVariable($variable, '')
 }
+$ownedDrive = $null
 try {
     $working = Join-Path $env:FIXTURE 'powershell location'
     $relative = "relative vship $([guid]::NewGuid().ToString('N'))"
@@ -166,8 +167,36 @@ try {
         if ($Downloads -ne 0 -or (Test-Path -LiteralPath 'unused destination')) { throw 'relative discovery downloaded or changed destination' }
         if ([Environment]::CurrentDirectory -ne $processCwd) { throw 'fixture changed process CWD' }
     }
+    $env:VSHIP_LIB_DIR = ''
+    $env:PATH = ''
+    $driveLetter = 90..68 | ForEach-Object { [string][char]$_ } | Where-Object { -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
+    if (-not $driveLetter) { throw 'fixture needs an unused PSDrive letter' }
+    $driveRoot = Join-Path $env:FIXTURE 'owned psdrive'
+    $driveWorking = Join-Path $driveRoot 'working'
+    $rootRelative = "root vship $([guid]::NewGuid().ToString('N'))"
+    $driveRelative = "drive vship $([guid]::NewGuid().ToString('N'))"
+    $rootDirectory = Join-Path $driveRoot $rootRelative
+    $driveDirectory = Join-Path $driveWorking $driveRelative
+    New-Item -ItemType Directory -Path $driveWorking, $rootDirectory, $driveDirectory -Force | Out-Null
+    # A session-only drive keeps root-relative fixtures inside owned temporary storage.
+    $ownedDrive = New-PSDrive -Name $driveLetter -PSProvider FileSystem -Root $driveRoot
+    Set-Location -LiteralPath "$($ownedDrive.Name):\working"
+    foreach ($case in @(
+        @{ Destination = '\' + $rootRelative; Path = (Join-Path $rootDirectory 'vship.dll') },
+        @{ Destination = "$($ownedDrive.Name):$driveRelative"; Path = (Join-Path $driveDirectory 'vship.dll') }
+    )) {
+        [IO.File]::WriteAllText($case.Path, 'preserve PSDrive existing candidate')
+        # An unavailable pin makes a discovery regression fail before download or writes.
+        $found = & $vship -Version 0.0.0 -Variant amd -Destination $case.Destination
+        if ($found.Downloaded -or $found.Path -ne $case.Path -or -not [IO.Path]::IsPathRooted($found.Path)) { throw "PSDrive candidate not preserved: $($case.Destination)" }
+        if ([IO.File]::ReadAllText($found.Path) -ne 'preserve PSDrive existing candidate') { throw 'PSDrive candidate overwritten' }
+        if ($Downloads -ne 0 -or (Test-Path -LiteralPath $dest) -or (Test-Path -LiteralPath (Join-Path $driveWorking 'unused destination'))) { throw 'PSDrive discovery downloaded or changed unused destination' }
+        if (@(Get-ChildItem -LiteralPath ([IO.Path]::GetDirectoryName($case.Path)) -Force).Count -ne 1) { throw 'PSDrive discovery left extra files' }
+        if ([Environment]::CurrentDirectory -ne $processCwd) { throw 'PSDrive fixture changed process CWD' }
+    }
 } finally {
     Set-Location -LiteralPath $savedLocation
+    if ($ownedDrive) { Remove-PSDrive -Name $ownedDrive.Name }
     foreach ($variable in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($variable, $savedEnvironment[$variable]) }
 }
 $letter = 90..68 | ForEach-Object { [string][char]$_ } | Where-Object { -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
@@ -256,6 +285,7 @@ foreach ($relative in @('av-metrics-vship/scripts/install-libvship-windows.ps1',
 
         # Static policy/mutation checks only; the native fixture above executes PS.
         anchored_candidate = "[IO.Path]::Combine((Get-Location -PSProvider FileSystem).ProviderPath, $directory, $name)"
+        normalize_destination = "$Destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Destination)"
 
         def release_pin_policy(source: str) -> None:
             release = source[source.index("$vshipStaging = "):source.index("if (-not $SkipModels)")]
@@ -265,14 +295,29 @@ foreach ($relative in @('av-metrics-vship/scripts/install-libvship-windows.ps1',
         def filesystem_policy(source: str) -> None:
             scan = source[source.index("$directories = "):source.index("$Sha256 = ")]
             self.assertNotRegex(scan, r"\b(?:Join-Path|Split-Path|Test-Path)\b", "candidate probes must not resolve PowerShell providers")
+            self.assertNotIn("GetUnresolvedProviderPathFromPSPath(", scan, "ambient candidates must stay filesystem-only")
             for operation in ("[IO.Path]::GetDirectoryName(", "[IO.Path]::Combine(", "[IO.File]::Exists("):
                 self.assertIn(operation, scan)
             self.assertIn(anchored_candidate, scan, "relative candidate probes must use the PowerShell filesystem location")
+
+        def destination_policy(source: str) -> None:
+            self.assertEqual(source.count("GetUnresolvedProviderPathFromPSPath("), 1, "resolve Destination exactly once")
+            self.assertIn(normalize_destination, source)
+            for operation in ("$directories = ", "Move-Item ", "New-Item ", "Copy-Item "):
+                self.assertLess(source.index(normalize_destination), source.index(operation), "resolve Destination before discovery and writes")
 
         with self.subTest(policy="release-pin"):
             release_pin_policy(stage)
         with self.subTest(policy="filesystem-only"):
             filesystem_policy(vship)
+        with self.subTest(policy="destination-boundary"):
+            destination_policy(vship)
+        with self.assertRaises(AssertionError):
+            destination_policy(vship.replace(normalize_destination, ""))
+        with self.assertRaises(AssertionError):
+            destination_policy(vship.replace(normalize_destination, "").replace("$Sha256 = ", normalize_destination + "\n$Sha256 = ", 1))
+        with self.assertRaises(AssertionError):
+            destination_policy(vship.replace(normalize_destination, normalize_destination + "\n" + normalize_destination))
         with self.assertRaises(AssertionError):
             release_pin_policy(stage.replace(".Hash -ne (Get-Pin 'VSHIP_VULKAN_SHA256')", ".Hash -eq (Get-Pin 'VSHIP_VULKAN_SHA256')"))
         with self.assertRaises(AssertionError):
