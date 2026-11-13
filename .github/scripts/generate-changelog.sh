@@ -4,7 +4,7 @@
 #     the Linux and the Windows workflow.
 #
 # .DESCRIPTION
-#     Shared by linux-build.yml and windows-build.yml. Emits the release body as
+#     Used by release.yml's coordinator. Emits the release body as
 #     `body<<CHANGELOG_EOF ... CHANGELOG_EOF`.
 #
 #     The body lists the built commit and the commits since the previous release, the
