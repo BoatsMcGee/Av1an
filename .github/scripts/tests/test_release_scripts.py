@@ -2,6 +2,7 @@
 
 import os
 import json
+from copy import deepcopy
 from pathlib import Path
 import re
 import runpy
@@ -16,6 +17,162 @@ import zipfile
 
 
 class ReleaseScriptTests(unittest.TestCase):
+    def _r04_workflows(self) -> dict:
+        names = {"tests", "linux-build", "windows-build", "release", "mdbook", "miri-grain"}
+        directory = Path(__file__).resolve().parents[2] / "workflows"
+        self.assertEqual({p.stem for p in directory.glob("*.yml")}, names)
+        return {name: self._r03_workflow(name) for name in sorted(names)}
+
+    def _r04_assert_policy(self, workflows: dict) -> None:
+        # These are the only explicit credential consumers, never native/build commands.
+        allowed = {
+            ("release", "release", "Publish coordinated release", "env", "GH_TOKEN"): "${{ github.token }}",
+            ("tests", "docker-publish", "Check publishing credentials", "env", "DOCKERHUB_USERNAME"): "${{ secrets.DOCKERHUB_USERNAME }}",
+            ("tests", "docker-publish", "Check publishing credentials", "env", "DOCKERHUB_TOKEN"): "${{ secrets.DOCKERHUB_TOKEN }}",
+            ("tests", "docker-publish", "Docker meta", "with", "images"): "${{ secrets.DOCKERHUB_USERNAME }}/av1an",
+            ("tests", "docker-publish", "Login to DockerHub", "with", "username"): "${{ secrets.DOCKERHUB_USERNAME }}",
+            ("tests", "docker-publish", "Login to DockerHub", "with", "password"): "${{ secrets.DOCKERHUB_TOKEN }}",
+            ("tests", "code-coverage", "Upload coverage to Codecov", "with", "token"): "${{ secrets.CODECOV_TOKEN }}",
+        }
+        sensitive = re.compile(r"secrets\.|github\.token|github_token|GH_TOKEN|GITHUB_TOKEN", re.I)
+
+        def credentials(value: object, path: tuple) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    self.assertNotEqual((key, child), ("secrets", "inherit"), path)
+                    credentials(child, (*path, key))
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    credentials(child, (*path, index))
+            elif sensitive.search(str(value)) or sensitive.search(str(path[-1])):
+                self.assertIn(path, allowed, f"credential propagation: {path}")
+                self.assertEqual(value, allowed[path])
+
+        for name, workflow in workflows.items():
+            default = workflow.get("permissions")
+            self.assertIsInstance(default, dict, name)
+            self.assertTrue(set(default) <= {"contents"}, f"workflow permission leak: {name}")
+            self.assertTrue(all(v in {"read", "none"} for v in default.values()))
+            self.assertNotIn("pull_request_target", workflow["on"])
+            for key, value in workflow.items():
+                if key != "jobs":
+                    credentials(value, (name, key))
+            for job_name, job in workflow["jobs"].items():
+                self.assertNotIn("secrets", job, "builds must not inherit publishing secrets")
+                permissions = job.get("permissions", default)
+                wanted = ({"contents": "write"} if (name, job_name) == ("release", "release") else
+                          {"pages": "write", "id-token": "write"} if (name, job_name) == ("mdbook", "deploy") else
+                          {"contents": "read", "pages": "read"} if (name, job_name) == ("mdbook", "build") else
+                          {"contents": "read"})
+                self.assertEqual(permissions, wanted, f"job permission leak: {name}/{job_name}")
+                for key, value in job.items():
+                    if key != "steps":
+                        credentials(value, (name, job_name, key))
+                uses = job.get("uses", "")
+                if uses:
+                    self.assertIn(uses, {"./.github/workflows/linux-build.yml", "./.github/workflows/windows-build.yml"})
+                for step in job.get("steps", []):
+                    credentials(step, (name, job_name, step.get("name", step.get("uses", ""))))
+                    uses = step.get("uses", "")
+                    if not uses:
+                        continue
+                    self.assertRegex(uses, r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$", "mutable action ref")
+                    inputs = step.get("with", {})
+                    if uses.startswith("actions/checkout@"):
+                        self.assertEqual(inputs.get("persist-credentials"), "false", "checkout persistence")
+                    if uses.startswith("dtolnay/rust-toolchain@"):
+                        self.assertEqual(inputs.get("toolchain"), "stable", "SHA is not a toolchain name")
+                    if uses.startswith("actions/configure-pages@"):
+                        self.assertEqual(inputs.get("enablement"), "false", "metadata must not create a site")
+                    if uses.startswith("docker/build-push-action@"):
+                        self.assertFalse(set(inputs) & {"secrets", "secret-envs", "secret-files", "github-token"})
+                        self.assertNotIn("TOKEN", inputs.get("build-args", "").upper())
+        docs = workflows["mdbook"]["jobs"]
+        self.assertEqual(docs["build"]["needs"], "screenshots")
+        self.assertEqual(docs["deploy"]["needs"], "build")
+        self.assertEqual(docs["deploy"]["environment"]["name"], "github-pages")
+
+    def _r04_assert_deploy_gate(self, workflow: dict) -> None:
+        expression = runpy.run_path(str(Path(__file__).resolve().parents[1] / "check-docker-policy.py"))["expression"]
+        gate = " ".join(workflow["jobs"]["deploy"].get("if", "True").split())
+        cases = [
+            ("rust-av/Av1an", "push", "refs/heads/master", True),
+            ("rust-av/Av1an", "push", "refs/heads/feature", False),
+            ("rust-av/Av1an", "push", "refs/tags/v1.2.3", False),
+            ("rust-av/Av1an", "workflow_dispatch", "refs/heads/master", False),
+            ("fork/Av1an", "push", "refs/heads/master", False),
+            ("fork/Av1an", "workflow_dispatch", "refs/heads/master", False),
+            ("rust-av/Av1an", "pull_request", "refs/pull/1/merge", False),
+            ("fork/Av1an", "pull_request", "refs/pull/1/merge", False),
+        ]
+        for repo, event, ref, wanted in cases:
+            context = {"github": SimpleNamespace(repository=repo, event_name=event, ref=ref)}
+            self.assertEqual(bool(expression(gate, context)), wanted, (repo, event, ref))
+
+    def test_r04_actual_least_privilege_pins_and_credential_boundaries(self) -> None:
+        """Global Pages write, mutable uses, persisted checkout or token exports fail."""
+        self._r04_assert_policy(self._r04_workflows())
+        directory = Path(__file__).resolve().parents[2] / "workflows"
+        for path in directory.glob("*.yml"):
+            for line in path.read_text().splitlines():
+                if "uses:" in line and "./.github/workflows/" not in line:
+                    self.assertRegex(line, r"@[0-9a-f]{40} # (v\d[^\s]*|stable)$")
+
+    def test_r04_actual_pages_gate_denies_manual_forks_and_prs(self) -> None:
+        """A fork PR sees neither writable jobs nor explicit publication credentials."""
+        workflows = self._r04_workflows()
+        self._r04_assert_deploy_gate(workflows["mdbook"])
+        expression = runpy.run_path(str(Path(__file__).resolve().parents[1] / "check-docker-policy.py"))["expression"]
+        context = {"github": SimpleNamespace(repository="fork/Av1an", event_name="pull_request", ref="refs/pull/1/merge"),
+                   "needs": SimpleNamespace(linux=SimpleNamespace(result="success"), windows=SimpleNamespace(result="success"))}
+        for name, workflow in workflows.items():
+            for job in workflow["jobs"].values():
+                if not expression(" ".join(job.get("if", "True").split()), context):
+                    continue
+                self.assertNotIn("write", job.get("permissions", workflow["permissions"]).values(), name)
+                for step in job.get("steps", []):
+                    if expression(" ".join(step.get("if", "True").split()), context):
+                        self.assertNotIn("secrets.", str(step), name)
+                        self.assertNotIn("github.token", str(step), name)
+
+    def test_r04_policy_mutations_are_rejected(self) -> None:
+        """Exercise the same production-policy assertions on in-memory unsafe edits."""
+        workflows = self._r04_workflows()
+        for mutation in ("global-write", "native-write", "checkout", "mutable", "toolchain", "token-env", "token-argument", "token-output", "inherit", "metadata-write"):
+            with self.subTest(mutation=mutation):
+                changed = deepcopy(workflows)
+                job = changed["linux-build"]["jobs"]["build"]
+                checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout@"))
+                if mutation == "global-write": changed["mdbook"]["permissions"]["pages"] = "write"
+                elif mutation == "native-write": job["permissions"] = {"contents": "write"}
+                elif mutation == "checkout": checkout["with"].pop("persist-credentials", None)
+                elif mutation == "mutable": checkout["uses"] = "actions/checkout@v6"
+                elif mutation == "toolchain":
+                    next(s for s in job["steps"] if s.get("uses", "").startswith("dtolnay/"))["with"].pop("toolchain", None)
+                elif mutation == "token-env": job["env"]["GH_TOKEN"] = "${{ github.token }}"
+                elif mutation == "token-argument": job["steps"].append({"run": "cargo build --token '${{ github.token }}'"})
+                elif mutation == "token-output": job["outputs"] = {"publish": "${{ secrets.PUBLISH_TOKEN }}"}
+                elif mutation == "inherit": changed["release"]["jobs"]["linux"]["secrets"] = "inherit"
+                else:
+                    next(s for s in changed["mdbook"]["jobs"]["build"]["steps"] if s.get("id") == "pages")["with"]["enablement"] = "true"
+                with self.assertRaises(AssertionError): self._r04_assert_policy(changed)
+        for gate in ("True", "github.event_name == 'push' && github.ref == 'refs/heads/master'",
+                     "github.repository == 'rust-av/Av1an' && github.ref == 'refs/heads/master'"):
+            with self.subTest(gate=gate):
+                changed = deepcopy(workflows["mdbook"])
+                changed["jobs"]["deploy"]["if"] = gate
+                with self.assertRaises(AssertionError): self._r04_assert_deploy_gate(changed)
+
+    def test_r04_changelog_subprocess_does_not_inherit_publish_tokens(self) -> None:
+        """Run the real publisher with the R07 child rejecting both token variables."""
+        with tempfile.TemporaryDirectory(prefix="r04 child ") as directory:
+            repo, env = self._r03_fixture(Path(directory))
+            script = repo / ".github/scripts/generate-changelog.sh"
+            script.write_text('test "${GH_TOKEN+x}${GITHUB_TOKEN+x}" = "" || exit 91\n' + script.read_text())
+            env["GITHUB_TOKEN"] = "OFFLINE_R04_INERT"
+            result = self._r03_publish(repo, env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def _r03_workflow(self, name: str) -> dict:
         import yaml
 

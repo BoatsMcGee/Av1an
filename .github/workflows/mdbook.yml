@@ -14,11 +14,9 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+# Build native screenshots and docs without deployment credentials.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
 # However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
@@ -47,30 +45,35 @@ jobs:
             nasm patchelf libclang-dev libffms2-dev libvulkan-dev meson ninja-build \
             fonts-dejavu-core ffmpeg
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
 
       # fmetrics needs Zig 0.16.x specifically: 0.17 removed b.build_root.
       - name: Zig setup
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: "0.16.0"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Stage native libraries
         run: bash ./.github/scripts/stage-native-libs.sh target/release
 
       - name: Record the native library search paths
         run: |
-          echo "VSHIP_PLUGIN_PATH=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
-          echo "VSHIP_LIB_DIR=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
-          echo "VMAF_MODEL_PATH=$GITHUB_WORKSPACE/target/release/model" >> "$GITHUB_ENV"
-          echo "FMETRICS_LIB_DIR=$GITHUB_WORKSPACE/target/release" >> "$GITHUB_ENV"
+          {
+            echo "VSHIP_PLUGIN_PATH=$GITHUB_WORKSPACE/target/release"
+            echo "VSHIP_LIB_DIR=$GITHUB_WORKSPACE/target/release"
+            echo "VMAF_MODEL_PATH=$GITHUB_WORKSPACE/target/release/model"
+            echo "FMETRICS_LIB_DIR=$GITHUB_WORKSPACE/target/release"
+          } >> "$GITHUB_ENV"
 
       - name: Generate TUI screenshots
         run: >
@@ -78,7 +81,7 @@ jobs:
           california-condor/docs/media/tui
 
       - name: Upload screenshots
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: docs-media
           path: california-condor/docs/media/tui
@@ -87,23 +90,32 @@ jobs:
   # Build job
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # configure-pages reads the configured URL (including custom domains).
+      pages: read
     env:
       MDBOOK_VERSION: 0.4.36
     needs: screenshots
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: Download screenshots
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: docs-media
           path: california-condor/docs/media/tui
       - name: Install mdBook
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         with:
           tool: mdbook@${{ env.MDBOOK_VERSION }}
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+        with:
+          # Read metadata only; Pages must already be configured by an owner.
+          enablement: false
       - name: Point the docs at this deploy
         run: >-
           bash ./.github/scripts/prepare-docs-for-deploy.sh
@@ -117,12 +129,18 @@ jobs:
           MDBOOK_OUTPUT__HTML__GIT_REPOSITORY_URL: "${{ github.server_url }}/${{ github.repository }}"
           MDBOOK_OUTPUT__HTML__EDIT_URL_TEMPLATE: "${{ github.server_url }}/${{ github.repository }}/edit/HEAD/california-condor/{path}"
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v5
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
           path: ./site/book
 
   # Deployment job
   deploy:
+    if: >-
+      github.repository == 'rust-av/Av1an' && github.event_name == 'push' &&
+      github.ref == 'refs/heads/master'
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -131,4 +149,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

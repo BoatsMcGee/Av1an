@@ -112,7 +112,10 @@ def publish() -> None:
         subprocess.run(
             ["bash", str(scripts / "generate-changelog.sh"),
              str(scripts / "linux-release-notes.md")], check=True,
-            env={**os.environ, "GITHUB_OUTPUT": str(output)},
+            # SECURITY: R07 only reads local Git history; it needs no publish token.
+            env={**{key: value for key, value in os.environ.items()
+                    if key not in {"GH_TOKEN", "GITHUB_TOKEN"}},
+                 "GITHUB_OUTPUT": str(output)},
         )
         body = output.read_text()
         prefix, suffix = "body<<CHANGELOG_EOF\n", "CHANGELOG_EOF\n"
