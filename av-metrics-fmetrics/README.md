@@ -224,16 +224,36 @@ the source has. Other depths are rejected rather than silently rescaled.
 - Rust 1.97 or newer
 - fmetrics, built with Zig 0.16.0
 
-fmetrics is distributed as a source library rather than a prebuilt install, and
-has no shared-library target upstream, so the library is built from a branch
-carrying that work.
+fmetrics is distributed as a source library rather than a prebuilt install.
+The installers build immutable commit
+`ae87c8e5607063f0dcc8241b52cb143f6c9ad4ac` from `BoatsMcGee/fmetrics`, carrying the
+shared-library target and Windows portability patch absent upstream.
+`FMETRICS_BRANCH=add-windows-shared-build` is descriptive only: moving or deleting
+that branch does not select the source or invalidate an otherwise fetchable pin.
+`-Commit` (or `FMETRICS_COMMIT`) must be a full 40-hex commit and HEAD must match it.
+Windows additionally requires ancestry from upstream base
+`e8bf3cfe06fb78f51864804b2f7003667d4c5a71` and
+`patches/0001-windows-portability.patch` before compilation. A different pin/repository
+is an explicit source-trust decision, not automatic ABI compatibility.
 
 ## Installing fmetrics
 
 Unlike libvship and libvmaf there is no prebuilt Windows binary and no Linux
-package to install, so this is a source build. It needs Zig 0.16.x and Git;
-0.17 is refused because it removed `b.build_root`, which the pinned `build.zig`
-uses.
+package to install, so this is a source build. It needs exactly **Zig 0.16.0** by
+default and Git; 0.17 is refused because it removed `b.build_root`, which the pinned
+`build.zig` uses.
+
+Both installers require successful `zig version` output equal to the expected
+pin before fetching source/dependencies, building or changing the destination.
+`-ZigPath` on Windows (or `PATH` on Linux) selects the executable, not an exemption.
+An administrator can deliberately set `FMETRICS_ZIG_VERSION` to another exact
+0.16 patch; the 0.16 compatibility ceiling and exact-match check still apply.
+That override is caller authorization, not proof the alternate toolchain works.
+See the [native pin-update guide](../.github/native-artifacts.md#zig-build-toolchain).
+
+Run the following scripts from this crate's directory. They use private owned
+temporary checkouts and clean them on success/failure, without adopting an old
+same-PID checkout or deleting a destination `dl` directory.
 
 ### Windows
 
@@ -264,10 +284,10 @@ does not attest binaries. Linux loading is unchanged. See the
 
 ### Linux
 
-Needs Zig 0.16.x, Git and a C compiler:
+Needs exact Zig 0.16.0 by default, Git and a C compiler:
 
 ```sh
-./scripts/install-fmetrics-linux.sh
+bash ./scripts/install-fmetrics-linux.sh
 ```
 
 The script fetches a pinned commit, builds the static library, and links

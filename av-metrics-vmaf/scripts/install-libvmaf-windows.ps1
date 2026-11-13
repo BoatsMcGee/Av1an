@@ -24,8 +24,9 @@
     Where to place `bin` and `model`. Defaults to `$PWD\libvmaf`.
 
 .PARAMETER LibvmafVersion
-    libvmaf version to fetch. Defaults to 3.2.1, or to `$env:VMAF_VERSION` when
-    that is set.
+    Audited release pin to fetch. Currently only 3.2.1 is accepted (runtime 3.2.0).
+    Defaults to 3.2.1, or to `$env:VMAF_VERSION` when that is set. Other versions
+    fail before files change; exact package/model hashes must be audited first.
 
 .PARAMETER ModelsOnly
     Skip the DLL download and only fetch the models. Useful for refreshing

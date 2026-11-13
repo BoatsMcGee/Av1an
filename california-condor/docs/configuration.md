@@ -115,7 +115,11 @@ device ordering.
 
 Created by [init](./commands/init.md). Contains `input`, `output`, `temp`, and `condor` sequence state. Filters live on each input inside `condor`, not at the top level. Each step loads, updates, and saves it, enabling cancel and resume.
 
-The file includes a `$schema` URL (baked via `CONDOR_SCHEMA_URL` in `build.rs`, fallback to release `configuration.schema.json`).
+The file includes a `$schema` URL baked via `CONDOR_SCHEMA_URL` in `build.rs`:
+clean exact `v`-prefixed SemVer builds use their own tag, while nonexact/dirty
+builds use `latest`. GitHub Actions fork builds use the valid `GITHUB_REPOSITORY`;
+local builds default to upstream. This selects a URL, not a guarantee that a
+schema asset has been published. See [schema generation](compiling.md#configuration-schema).
 
 ### Result revisions and resume
 
@@ -179,4 +183,7 @@ remains.
 
 ### External Validation
 
-You can validate `condor.json` externally, such as in an IDE or editor with JSON Schema support, using the `$schema` URL in the file. Example: open `condor.json` in VS Code with JSON language mode; the `$schema` property enables completion and validation automatically. Schema can be regenerated with `cargo run -p california-condor --bin generate-schema`.
+An editor with JSON Schema support can use `$schema` for completion and validation
+when that asset is available. For unpublished source/fork builds, generate the
+schema from the same checkout using the [local command](compiling.md#configuration-schema)
+and point your editor at that file; a missing release asset is not a config error.

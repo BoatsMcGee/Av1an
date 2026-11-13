@@ -131,32 +131,33 @@ NASM >= 2.13.02 (x86 only) and `xxd`.
 
 ### Arch Linux
 
-The easiest path — a binary package is available:
+A distro package is an option only if it satisfies the [exact ABI policy](#supported-runtime-abi):
 
 ```bash
 pacman -S vmaf
 ```
 
 This installs `libvmaf.so` to `/usr/lib`, which the platform loader finds
-at runtime. Note that Arch's package is built **without** CUDA.
+at runtime. Arch's package is built **without** CUDA. Package upgrades are not
+automatically compatible; use the pinned source below if the installed build is rejected.
 
 ### Debian / Ubuntu
 
-`libvmaf-dev` exists only in Debian unstable. On stable, build from source:
+`libvmaf-dev` is available in Debian unstable, but its version is not a compatibility
+guarantee. On stable, install the build prerequisites, then use the pinned source
+instructions below:
 
 ```bash
 sudo apt-get install -y build-essential meson ninja-build nasm python3-pip xxd
-meson setup build --buildtype release
-meson install -C build
 ```
 
 ### macOS
 
 ```bash
 brew install meson ninja nasm
-meson setup build --buildtype release
-meson install -C build
 ```
+
+Then use the pinned source instructions below, not an arbitrary latest release.
 
 ### From source, any platform
 
@@ -191,12 +192,13 @@ headers `#include <pthread.h>`, which the MSVC CRT does not provide.
 Fortunately **a prebuilt `libvmaf.dll` is published**, so nothing needs compiling.
 Pick whichever route suits you:
 
-- **[Manual install](#windows-manual-install-no-msys2)** — download three `.tar.zst`
-  packages and extract them with the `tar` that ships in Windows. No MSYS2, no
-  pacman, no compiler, ~518 KB.
-- **MSYS2** — `pacman -S mingw-w64-x86_64-vmaf`, which installs
+- **[Manual install](#windows-manual-install-no-msys2)** — the installer downloads
+  four pinned `.tar.zst` packages and extracts them with Windows' `tar`. No MSYS2
+  toolchain, pacman or compiler is needed.
+- **MSYS2** — `pacman -S mingw-w64-x86_64-vmaf` installs
   `mingw64/bin/libvmaf.dll` along with headers, an import library and `pkgconfig`.
-  Also available for the `ucrt64`, `clang64` and `clangarm64` environments.
+  The current package must still satisfy the exact ABI policy; other package
+  versions/environments are not automatically compatible with this binding.
 
 Then point `VMAF_LIB_DIR` at the directory containing `libvmaf.dll`.
 
@@ -247,14 +249,18 @@ the whole thing:
 .\scripts\install-libvmaf-windows.ps1
 ```
 
-By default it installs into `.\libvmaf`, downloading three packages (~518 KB) and
-all nine upstream models (~550 KB), then prints the environment variables to set.
-It cleans up after itself. Useful switches:
+Run from this crate's directory. By default it installs into `.\libvmaf`, downloading
+four pinned packages and all nine upstream models (~550 KB), then prints the
+environment variables to set.
+Each download is SHA-256 checked before extraction/use. Mirrors must serve the
+same exact filename and digest; unavailable old packages fail rather than using
+newer directory-index entries. Scratch extraction uses a private owned temporary
+directory, cleaned on success or failure. Useful switches:
 
 | Switch | Effect |
 | --- | --- |
 | `-InstallDir <path>` | Install somewhere other than `.\libvmaf` |
-| `-LibvmafVersion <ver>` | Fetch a different libvmaf release, default `3.2.1` |
+| `-LibvmafVersion <ver>` | Select the audited release pin; currently only `3.2.1` is accepted (also the default, or `VMAF_VERSION` if set) |
 | `-ModelsOnly` | Refresh the models without re-downloading the DLLs |
 
 Setting the variables is left to you, as a script that mutates the machine's
@@ -341,6 +347,11 @@ with no built-in models. `features: ["weighted"]` maps to `vmaf_b_v0.6.3` and
 > `vmaf.exe`, the import library in `mingw64/lib/` and the headers are optional for
 > ordinary crate builds and scoring. Development header verification below does
 > require real headers; the installer currently copies only DLLs and models.
+
+Downloaded hashes are audited known-byte pins, not upstream signatures or ABI
+attestation. Locally installed libraries/models remain administrator/package-manager
+trust. See the [native artifact trust and pin-update guide](../.github/native-artifacts.md)
+before changing package/model pins; do not disable checks to install a later release.
 
 Windows native runtime and header-oracle execution remain platform acceptance
 gates; Linux verification does not establish Windows ABI execution.

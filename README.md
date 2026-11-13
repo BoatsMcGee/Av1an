@@ -4,7 +4,6 @@
 
 [![Discord server](https://discordapp.com/api/guilds/696849974230515794/embed.png)](https://discord.gg/Ar8MvJh)
 [![CI tests](https://github.com/rust-av/Av1an/actions/workflows/tests.yml/badge.svg)](https://github.com/rust-av/Av1an/actions/workflows/tests.yml)
-[![](https://img.shields.io/crates/v/av1an.svg)](https://crates.io/crates/av1an)
 [![](https://tokei.rs/b1/github/rust-av/Av1an?category=code)](https://github.com/rust-av/Av1an)
 
 <a href="https://www.buymeacoffee.com/master_of_zen" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
@@ -14,7 +13,7 @@ Av1an is a video encoding Rust library and command-line tool designed to be as f
 ## Features
 
 * Support for Windows, Linux, and MacOS
-* Docker build support and [upstream Av1an images](https://hub.docker.com/r/masterofzen/av1an)
+* [Docker builds](./california-condor/docs/docker.md) (published legacy Av1an images may not contain Condor)
 * Hyper-scalable video encoding
 * Cancel and resume at any time without losing progress
 * Real-time progress feedback
@@ -58,15 +57,20 @@ Av1an can analyze video properties and qualities to improve encoded video qualit
 
 ### Installation
 
-Install the Av1an CLI, California Condor, from [crates.io][crates], [Arch AUR][aur], or download it from [Releases](https://github.com/rust-av/Av1an/releases).
-For platform details and required dependencies see [Installation](https://rust-av.github.io/Av1an/installation.html); to build from source see [Compiling](https://rust-av.github.io/Av1an/compiling.html).
+The CLI's Cargo package is **`california-condor`**; its executable is **`condor`**.
+As of 2026-11-13, this package is unpublished on crates.io (`condor` there is an
+unrelated project), and the checked upstream releases do not provide Condor ZIPs.
+Use a checkout containing this workspace, not a legacy Av1an default-branch clone.
+After installing the [build prerequisites](./california-condor/docs/compiling.md),
+run from the repository root:
 
 ```bash
-$ pacman -S condor       # Arch Linux & Manjaro
-$ cargo install condor   # crates.io
+cargo install --locked --path california-condor --bin condor
 ```
 
-For upstream `masterofzen/av1an` containers and local Condor builds, see [Docker](https://rust-av.github.io/Av1an/docker.html). Do not assume the published upstream image contains this branch's Condor CLI.
+See [Installation](./california-condor/docs/installation.md) for package availability,
+future release bundles and runtime dependencies, and [Docker](./california-condor/docs/docker.md)
+for upstream image policy and local Condor builds.
 
 ### Usage
 
@@ -77,27 +81,27 @@ The Av1an CLI, California Condor, uses a single JSON configuration file to manag
 *Encode a 1080p 10-bit AV1 video with Film Grain Synthesis using rav1e. Use FFMS2 to decode the input. Downscale the scene detection input to 540p to detect scenes faster. Target a SSIMULACRA 2 quality score of 85 quickly. Use mkvmerge to concatenate the output video.*
 
 ```bash
-$ condor \
-    --temp "./deletemelater" \ # Directory containing temporary files, primarily encoded scenes
-    --logs "./deletetemelater/condor.log" \ # Log file path
-    --config-file "./deletemelater/config.json" \ # JSON configuration file path
-    --input "bird takeoff.mp4" \ # Input video file path
-    --output "bird takeoff.mkv" \ # Output video file path
-    --decoder "vs-ffms2" \ # Uses FFMS2 instead of the default BestSource to decode in the input video
-    --filters "resize:scaler=bilinear;width=1920;height=1080;format=yuv420p10le" \ # Uses VapourSynth Bilinear to resize the input video to 1920x1080 and convert to YUV 4:2:0 10-bit
-    --scd-filters "resize:scaler=bilinear;width=540;height=960;" \ # Uses VapourSynth Bilinear to resize the input video to 540p for faster scene change detection
-    --encoder "rav1e" \ # Uses rav1e instead of the default SVT-AV1 encoder
-    --params "--speed 4" \ # rav1e encoder parameters used to encode each scene
-    --photon-noise 800 \ # Applies a Photon Noise film grain table with ISO strength 800 
-    --target-metric "ssimulacra2" \ # Uses SSIMULACRA 2 as the target quality metric
-    --target 85 \ # Targets a SSIMULACRA 2 quality score of 85 for each scene
-    --target-profile "fast" \ # Uses the fast Target Quality profile instead of the default standard profile
-    --concat "mkvmerge" \ # Uses mkvmerge to concatenate the encoded scenes
+condor \
+    --temp "./deletemelater" \
+    --logs "./deletemelater/condor.log" \
+    --config-file "./deletemelater/config.json" \
+    --input "bird takeoff.mp4" \
+    --output "bird takeoff.mkv" \
+    --decoder "vs-ffms2" \
+    --filters "resize:scaler=bilinear;width=1920;height=1080;format=yuv420p10le" \
+    --scd-filters "resize:scaler=bilinear;width=540;height=960;" \
+    --encoder "rav1e" \
+    --params "--speed 4" \
+    --photon-noise 800 \
+    --target-metric "ssimulacra2" \
+    --target 85 \
+    --target-profile "fast" \
+    --concat "mkvmerge"
 ```
 
 #### Andean Condor Library
 
-The Av1an library, Andean Condor, consists of the following components: `Input`, `Output`, `Encoder`, `Scene`, and `Sequence`. These components are managed with a single `Condor` instance. For a simple example using the library, see [here](./andean-condor/examples/simple.rs). For more information on using the library, see the [Andean Condor](./andean-condor/README.md#API) API documentation.
+The Av1an library, Andean Condor, consists of the following components: `Input`, `Output`, `Encoder`, `Scene`, and `Sequence`. These components are managed with a single `Condor` instance. See the [library example](./andean-condor/examples/simple.rs) and [local dependency setup](./california-condor/docs/index.md#library); `andean-condor` is not yet published on crates.io.
 
 ##### Library cancellation
 
@@ -143,10 +147,6 @@ stdin for managed children: inherited terminal input may stop a background group
 See [Developing and Contributing](https://rust-av.github.io/Av1an/contributing.html) for a guide on developing Av1an and preparing for a Pull Request.
 
 <!-- Links -->
-
-[crates]: https://crates.io "The Rust community’s crate registry"
-[aur]: https://aur.archlinux.org "archlinux user repository"
-[andean-condor]: ./andean-condor/README.md "Andean Condor - The Av1an Rust library"
 
 [ffms2]: https://github.com/ffms/ffms2 "FFmpegSource"
 

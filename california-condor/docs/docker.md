@@ -1,6 +1,6 @@
 # Docker
 
-The upstream Av1an image is [masterofzen/av1an](https://hub.docker.com/r/masterofzen/av1an).
+The published legacy Av1an image is [masterofzen/av1an](https://hub.docker.com/r/masterofzen/av1an).
 Do not assume that image contains this branch's Condor CLI or native metric libraries.
 The workflow configuration below does not establish that new Condor images or release
 tags are already available; check the registry before using a published tag.
@@ -36,13 +36,13 @@ file you want to encode is in your current working directory.
 Linux
 
 ```bash
-docker run --privileged -v "$(pwd):/videos" --user $(id -u):$(id -g) -it --rm av1an:local -i S01E01.mkv -o S01E01.condor.mkv {options}
+docker run -v "$(pwd):/videos" --user "$(id -u):$(id -g)" -it --rm av1an:local -i S01E01.mkv -o S01E01.condor.mkv
 ```
 
 Windows
 
 ```powershell
-docker run --privileged -v "${PWD}:/videos" -it --rm av1an:local -i S01E01.mkv -o S01E01.condor.mkv {options}
+docker run -v "${PWD}:/videos" -it --rm av1an:local -i S01E01.mkv -o S01E01.condor.mkv
 ```
 
 Both `-i` and `-o` are given because a full run needs the input and the output
@@ -52,7 +52,13 @@ path; everything else comes from the configuration file or from the flags in
 To specify a different directory to use you would replace $(pwd) with the directory
 
 ```bash
-docker run --privileged -v "/c/Users/me/Videos:/videos" --user $(id -u):$(id -g) -it --rm av1an:local -i S01E01.mkv -o S01E01.condor.mkv {options}
+docker run -v "/path/to/Videos:/videos" --user "$(id -u):$(id -g)" -it --rm av1an:local -i S01E01.mkv -o S01E01.condor.mkv
 ```
 
-The --user flag is required on linux to avoid permission issues with the docker container not being able to write to the location, if you get permission issues ensure your user has access to the folder that you are using to encode.
+Replace `/path/to/Videos` with your directory. On Linux, `--user` maps the process
+to your user/group; ensure that user can write to the mounted directory.
+
+These are CPU-only examples and do not require `--privileged`. They do not expose
+a GPU to the container. GPU metrics need separate driver/device-specific setup;
+bundling a metric library or granting blanket privileges does not establish GPU
+support. Actual Docker build/run and publication acceptance remain separate CI gates.

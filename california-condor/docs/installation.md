@@ -1,21 +1,40 @@
 # Installation
 
-Install the Av1an CLI, California Condor, from [crates.io][crates], [Arch AUR][aur],
-or a [release binary](https://github.com/rust-av/Av1an/releases). To build from source see
-[Compiling](./compiling.md). This page covers the release archives and the
-external tools a working encoding environment needs.
+The Av1an CLI's Cargo package is **`california-condor`** and its binary is
+**`condor`**. As checked on 2026-11-13, `california-condor` and the library
+`andean-condor` are not published on crates.io; the crate named `condor` is unrelated.
+Use a source checkout containing this workspace. After installing the
+[build prerequisites](./compiling.md), run from that checkout's root:
 
 ```bash
-$ pacman -S condor       # Arch Linux & Manjaro
-$ cargo install condor   # crates.io
+cargo install --locked --path california-condor --bin condor
 ```
 
-For upstream `masterofzen/av1an` containers and local Condor builds, see [Docker](docker.md). Do not assume the published upstream image contains this branch's Condor CLI.
+This installs `condor` into Cargo's binary directory (normally `~/.cargo/bin` or
+`%USERPROFILE%\.cargo\bin`); keep it on `PATH`. For a build without installation,
+see [Compiling](./compiling.md).
+
+The AUR lookup for `condor`, `california-condor`, `av1an` and `av1an-git` found only
+the legacy `av1an-git` package, which provides `av1an`, not this Condor CLI.
+The AUR is separate from Arch's official pacman repositories; it does not establish
+that `pacman -S condor` exists. No Condor Arch package is recommended here.
+
+The checked [upstream releases](https://github.com/rust-av/Av1an/releases)
+(latest plus the four recent versioned releases, 2026-11-13) do not provide
+`condor-windows-x64.zip` or `condor-linux-x64.zip`; `latest` contains only legacy
+`av1an.exe`, not this CLI. **Use source until a release supplies the Condor archives.**
+The layouts below describe the configured packaging contract, not assets already
+available for download. The release coordinator is configured to publish both ZIPs
+and one `configuration.schema.json`, from the same source SHA with one release body,
+only after both platform gates pass. Actual cloud publication and native Windows
+acceptance remain pending.
+
+For upstream image policy and local Condor builds, see [Docker](docker.md).
 
 #### Windows releases
 
-Download **`condor-windows-x64.zip`** from [Releases](https://github.com/rust-av/Av1an/releases)
-and extract it into one directory. The layout matters, because Condor finds parts of
+When a release provides **`condor-windows-x64.zip`**, download and extract the whole
+archive into one directory. The layout matters, because Condor finds parts of
 itself by relative path:
 
 ```text
@@ -37,15 +56,13 @@ condor/
 └── configuration.schema.json
 ```
 
-Two mistakes produce confusing failures rather than an error:
+Avoid these incomplete installations:
 
 - **Leaving `model/` out or flattening it.** The VMAF models and the TransNetV2
   scene detection model must be in a `model` subdirectory beside `condor.exe`.
-  Without them VMAF and the `transnetv2` scene detection method report
-  themselves unavailable with no other symptom.
-- **Downloading the individual files instead of the archive.** They only work when
-  kept together in one directory as laid out above. The loose files are attached
-  for reference and for partial updates, not as an install method.
+  Without the required model, that scoring/detection path is unavailable.
+- **Copying only the executable.** The configured release publishes ZIPs and a
+  schema, not loose `condor.exe` or runtime DLL assets. Keep the bundle together.
 
 **Keep the runtime bundle together.** `ffms2.dll` is dynamically linked and
 mandatory, even for `condor --version`. The pinned FFMS2 5.0 MSVC x64 DLL imports
@@ -66,17 +83,18 @@ still require a compatible GPU/driver (including the Vulkan loader for libvship)
 bundling DLLs does not guarantee GPU availability. VMAF and TransNetV2 also need
 their respective files in `model/`.
 
-Windows release CI checks the actual bundled PE imports, then extracts the ZIP
-into clean scratch and runs `--version` plus native FFMS2 frame decoding without
-the build directory on PATH. Use the ZIP, not the loose executable.
+The configured Windows release CI gate checks the actual bundled PE imports, then
+extracts the ZIP into clean scratch and runs `--version` plus native FFMS2 frame decoding without
+the build directory on PATH. This describes the required gate, not a completed
+native Windows run. Use the ZIP, not a loose executable.
 
 #### Linux releases
 
-Download **`condor-linux-x64.zip`** from [Releases](https://github.com/rust-av/Av1an/releases)
-and extract it into one directory — same layout as Windows, with `.so` libraries
+When a release provides **`condor-linux-x64.zip`**, download and extract the whole
+archive into one directory — same layout as Windows, with `.so` libraries
 beside the executable and the VMAF and TransNetV2 models in `model/`. The archive keeps the
-executable bit on `condor`, so `unzip` followed by `./condor --version` is the whole
-install.
+executable bit on `condor` and sets an `$ORIGIN` runpath for adjacent metric
+libraries. After satisfying the host dependencies below, check `./condor --version`.
 
 **x86_64 only.** There is no aarch64 build: on arm64 hosts the executable fails
 with `cannot execute: required file not found`, because the archive ships one
@@ -90,8 +108,9 @@ The Linux executable is **not** self-sufficient: the host provides
   * Debian / Ubuntu: `apt install libffms2-5`
   * Fedora: `dnf install ffms2`
   * Arch: `pacman -S ffms2`
-* **glibc 2.39 or newer** — the floor of the executable itself. Older hosts
-  (Ubuntu 20.04/22.04, Debian 11/12, Rocky 9, Alpine's musl) cannot run it.
+* **A compatible glibc runtime** — the current Ubuntu 24.04 build target implies
+  glibc 2.39 as the baseline. Recheck the actual artifact if the runner changes;
+  this is not a portable/musl build or support for older glibc hosts.
 * **an encoder and a concatenator** from the list below, plus `mkvmerge` or
   `ffmpeg`.
 * **VapourSynth and its plugins** only for VapourSynth inputs, for `xpsnr`
@@ -100,21 +119,26 @@ The Linux executable is **not** self-sufficient: the host provides
   plugin (`vs-ffms2`); FFMS2 inputs scored by `libvmaf`, `libvship` or
   `libfmetrics` need none.
 
-The executable and the bundled metric libraries share one glibc baseline (the
-Ubuntu 24.04 runner's), so the metrics load wherever `condor` runs.
+The metric libraries are staged on the same Ubuntu 24.04 runner, but that alone
+does not guarantee every metric, GPU driver or transitive runtime works wherever
+`condor` starts. The Linux archive smoke gate checks CPU metric discovery; GPU and
+other platform acceptance must run in their own environments.
 
 Run without a terminal — a CI job, or output redirected to a file — and `condor`
 skips the TUI on its own, printing JSON progress events on stdout.
 
-For the Rust library, [Andean Condor][andean-condor], add it as a dependency to your project `Cargo.toml` with `cargo add andean-condor`.
+For the unpublished Rust library, use the [Andean Condor local path dependency](index.md#library).
+
+## External tools and optional metrics
 
 Av1an uses several external tools for decoding, filtering, and encoding video. For a quick start, install the following:
 
 * [Python][python-download] - Recommended for [VapourSynth][vapoursynth-download]
 * [vs-jetpack][vsjetpack] - Installs [VapourSynth][vapoursynth] and a convenient collection of VapourSynth plugins and Python modules for scaling, denoising, debanding, deinterlacing, metrics, etc.
-* [Vship][vship] - GPU-accelerated metrics for [SSIMULACRA 2][ssimulacra2], [butteraugli][butteraugli], and [ColorVideoVDP][cvvdp]. These run through the native `libvship` library whenever it is installed and has a usable GPU, and fall back to the VapourSynth plugin otherwise. The Windows release already ships `libvship.dll`; elsewhere see [`av-metrics-vship`](../../av-metrics-vship/README.md) for how to install it
-* [libvmaf][libvmaf] - Required only for the `vmaf` metric. The Windows release ships `libvmaf.dll` and its models; see the [`av-metrics-vmaf` README](../../av-metrics-vmaf/README.md) for other platforms
-* [TransNetV2][transnetv2] - The neural network behind `detect-scenes --method transnetv2`. The release ships its ONNX model in `model/` beside the executable; for source builds, run [`andean-condor/scripts/install-transnetv2-model-windows.ps1`](../../andean-condor/scripts/install-transnetv2-model-windows.ps1) on Windows or [`andean-condor/scripts/install-transnetv2-model-linux.sh`](../../andean-condor/scripts/install-transnetv2-model-linux.sh) on Linux/macOS — either downloads the model into the current directory and prints the `TRANSNETV2_MODEL_PATH` to set
+* [Vship][vship] - Native GPU metrics require the verified **5.1.2** ABI, known backend, required symbols and a usable device. A local DLL is not proof of compatibility. The configured Windows bundle includes `libvship.dll`; for source installs and the unavailable official AMD 5.1.2 archive, see [`av-metrics-vship`](../../av-metrics-vship/README.md#installing-libvship)
+* [libvmaf][libvmaf] - Required only for `vmaf`. Use release **v3.2.1** (runtime version **3.2.0**); arbitrary newer or distro builds are not guaranteed compatible. The configured bundle includes the library and models; see the [ABI and install policy](../../av-metrics-vmaf/README.md#prerequisites)
+* [fmetrics](../../av-metrics-fmetrics/README.md#installing-fmetrics) - Optional CPU metrics, with runtime ABI **0.1.0**, an immutable source pin and exact Zig **0.16.0** by default
+* [TransNetV2][transnetv2] - The neural network behind `detect-scenes --method transnetv2`. The configured bundle includes its ONNX model in `model/`; for source builds, run [`andean-condor/scripts/install-transnetv2-model-windows.ps1`](../../andean-condor/scripts/install-transnetv2-model-windows.ps1) on Windows or [`andean-condor/scripts/install-transnetv2-model-linux.sh`](../../andean-condor/scripts/install-transnetv2-model-linux.sh) on Linux/macOS — either downloads the model into the current directory and prints the `TRANSNETV2_MODEL_PATH` to set
 * At least one of the following encoder binaries: [aomenc][aom], [SvtAv1EncApp][svt-av1], [rav1e][rav1e], [avmenc][avm], [x264][x264], [x265][x265], [vvenc][vvenc], [FFmpeg][ffmpeg]
 * Either [FFmpeg][ffmpeg] or [MKVToolNix][mkvtoolnix] for concatenating the encoded scenes
 
@@ -123,10 +147,6 @@ Av1an uses several external tools for decoding, filtering, and encoding video. F
 
 
 <!-- Links -->
-
-[crates]: https://crates.io "The Rust community’s crate registry"
-[aur]: https://aur.archlinux.org "archlinux user repository"
-[andean-condor]: https://crates.io/crates/andean-condor "Andean Condor - The Av1an Rust library"
 
 [ffms2]: https://github.com/ffms/ffms2 "FFmpegSource"
 

@@ -4,7 +4,6 @@
 
 [![Discord server](https://discordapp.com/api/guilds/696849974230515794/embed.png)](https://discord.gg/Ar8MvJh)
 [![CI tests](https://github.com/rust-av/Av1an/actions/workflows/tests.yml/badge.svg)](https://github.com/rust-av/Av1an/actions/workflows/tests.yml)
-[![](https://img.shields.io/crates/v/av1an.svg)](https://crates.io/crates/av1an)
 
 <a href="https://www.buymeacoffee.com/master_of_zen" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
@@ -34,28 +33,31 @@ For a complete walkthrough, see the [guide](https://rust-av.github.io/Av1an/guid
 
 ### Installation
 
-Install `condor` from the [Arch AUR][aur] or [crates.io][crates]. A Windows binary is available from [Releases](https://github.com/rust-av/Av1an/releases).
+The Cargo package is **`california-condor`**, and the binary is **`condor`**.
+As of 2026-11-13, the package is unpublished on crates.io; the registry's `condor`
+is unrelated. The checked upstream releases do not yet offer this CLI's ZIPs.
+From the root of a checkout containing this workspace, with the
+[build prerequisites](docs/compiling.md) installed:
 
 ```bash
-$ pacman -S condor # Arch Linux & Manjaro
-$ cargo install condor # crates.io
+cargo install --locked --path california-condor --bin condor
 ```
 
-For upstream `masterofzen/av1an` containers and local Condor builds, see [Docker](docs/docker.md). Do not assume the published upstream image contains this branch's Condor CLI.
+See [Installation](docs/installation.md) for package availability and runtime
+dependencies, or [Docker](docs/docker.md) for upstream image policy and local builds.
 
-On Windows, download **`condor-windows-x64.zip`** from
-[Releases](https://github.com/rust-av/Av1an/releases) and extract it into one
-directory. The layout matters: the VMAF models have to stay in a `model`
-subdirectory beside `condor.exe`, or VMAF silently reports itself unavailable, and
-`libvmaf.dll` needs its MinGW runtime DLLs beside it to load. See the
-[project README](../README.md#windows-releases) for the full layout.
+When a release provides **`condor-windows-x64.zip`**, extract the whole archive;
+`condor.exe` alone is not an install. Keep its mandatory FFMS2, MSVC CRT and
+DirectML DLLs together, plus metric DLLs and the `model/` subdirectory. See the
+[Windows bundle layout](docs/installation.md#windows-releases). The legacy
+`av1an.exe` release asset is not this CLI.
 
 External tools required for decoding, filtering, encoding, metrics, and concatenation:
 
 * [Python][python-download] - Recommended for [VapourSynth][vapoursynth-download]
 * [vs-jetpack][vsjetpack] - Installs [VapourSynth][vapoursynth] and plugins for scaling, denoising, debanding, deinterlacing, etc.
-* [Vship][vship] - GPU-accelerated metrics for [SSIMULACRA 2][ssimulacra2], [butteraugli][butteraugli], and [ColorVideoVDP][cvvdp]. The metrics run through the native `libvship` library whenever it is installed and has a usable GPU, and fall back to the VapourSynth plugin otherwise
-* [libvmaf][libvmaf] - Required only for the `vmaf` metric. pacman -S vmaf on Arch, `apt install libvmaf-dev` on Debian/Ubuntu unstable, or build from source; on Windows use the MSYS2 `mingw-w64-x86_64-vmaf` package
+* [Vship][vship] - GPU-accelerated metrics for [SSIMULACRA 2][ssimulacra2], [butteraugli][butteraugli], and [ColorVideoVDP][cvvdp]. The native loader admits only the verified 5.1.2 ABI, backend and symbols; a file alone does not prove GPU availability. See [installation and compatibility](../av-metrics-vship/README.md#installing-libvship)
+* [libvmaf][libvmaf] - Required only for the `vmaf` metric. Use verified release **v3.2.1**, which reports runtime **3.2.0**; arbitrary newer/distro builds are not guaranteed compatible. See [installation and ABI policy](../av-metrics-vmaf/README.md#prerequisites)
 * At least one encoder: [aomenc][aom], [SvtAv1EncApp][svt-av1], [rav1e][rav1e], [avmenc][avm], [vpxenc][vpx], [x264][x264], [x265][x265], [vvenc][vvenc], [FFmpeg][ffmpeg]
 * Either [FFmpeg][ffmpeg] or [MKVToolNix][mkvtoolnix] for concatenating encoded scenes
 
@@ -162,9 +164,6 @@ config.save(&save_file)?;
 `concatenate` | `quality-check` |
 
 <!-- Links -->
-
-[crates]: https://crates.io "The Rust community's crate registry"
-[aur]: https://aur.archlinux.org "archlinux user repository"
 
 [aom]: https://aomedia.googlesource.com/aom "Alliance for Open Media AV1"
 [avm]: https://github.com/AOMediaCodec/avm "Alliance for Open Media AOM Video Model"

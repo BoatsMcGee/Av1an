@@ -7,8 +7,7 @@ permissions:
   contents: read
 
 jobs:
-  # Built on the runner: its Ubuntu 24.04 glibc (2.39) is the floor every
-  # artifact and staged metric library is built against.
+  # Ubuntu 24.04 implies a glibc 2.39 baseline, not every metric/GPU runtime.
   build:
     runs-on: ubuntu-24.04
 
@@ -35,7 +34,7 @@ jobs:
         with:
           toolchain: stable
 
-      # fmetrics needs Zig 0.16.x specifically: 0.17 removed b.build_root.
+      # Exact 0.16.0 pin: installers reject mismatches; 0.17 removed b.build_root.
       - name: Zig setup
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:

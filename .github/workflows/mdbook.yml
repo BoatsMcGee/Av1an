@@ -55,7 +55,7 @@ jobs:
         with:
           toolchain: stable
 
-      # fmetrics needs Zig 0.16.x specifically: 0.17 removed b.build_root.
+      # Exact 0.16.0 pin: installers reject mismatches; 0.17 removed b.build_root.
       - name: Zig setup
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:

@@ -324,7 +324,9 @@ VMAF and XPSNR are unaffected: VMAF is served by the separate libvmaf binding an
 
 libvship is **not** vendored, and it has no CPU fallback in the builds that are published — it is a GPU metric. Install it separately:
 
-- [libvship](https://codeberg.org/Line-fr/Vship) 5.1.2 or later.
+- [libvship](https://codeberg.org/Line-fr/Vship) **5.1.2** from the verified source pin;
+  later releases are not admitted automatically. The loader also checks the
+  backend and required symbols before GPU admission.
 - A GPU and the driver matching the libvship build you installed: a Vulkan driver for the `vulkan` build, the NVIDIA CUDA runtime for `nvidia`, or the AMD ROCm runtime for `amd`.
 
 > [!NOTE]
@@ -337,23 +339,41 @@ libvship is **not** vendored, and it has no CPU fallback in the builds that are 
 
 ### Windows — no building required
 
-libvship cannot be built with MSVC. Fortunately a prebuilt DLL is published for each backend, so nothing needs compiling. This crate loads it **at runtime** with `libloading`, so only the `.dll` is needed — no import library, no headers, no compiler.
+libvship cannot be built with MSVC. The verified v5.1.2 release offers Vulkan and
+NVIDIA binaries, but **no official AMD archive**. This crate loads the DLL at
+runtime with `libloading`; no import library, headers or compiler are needed for
+those binaries. Matching driver/runtime dependencies are still required.
 
-[`scripts/install-libvship-windows.ps1`](scripts/install-libvship-windows.ps1) downloads and stages one:
+From this crate's directory, [`scripts/install-libvship-windows.ps1`](scripts/install-libvship-windows.ps1)
+first looks for an installed candidate and otherwise downloads a pinned binary:
 
 ```powershell
 .\scripts\install-libvship-windows.ps1
 ```
 
-Each release publishes three builds. The crate passes the file to `dlopen`, so whichever variant is chosen is installed as `vship.dll`:
+The standalone installer stages downloads as `vship.dll`:
 
 | Variant | Upstream asset | Runtime needed |
 | --- | --- | --- |
 | `vulkan` (default) | `libvship_VULKAN.dll` | any working Vulkan driver |
 | `nvidia` | `libvship_NVIDIA.zip` → `libvship_NVIDIA.dll` | the NVIDIA CUDA runtime |
-| `amd` | `libvship_AMD.zip` → `libvship_AMD.dll` | the AMD ROCm runtime (`amdhip64_6.dll`) |
+| `amd` | no official v5.1.2 archive/pin; use a compatible local build | the AMD ROCm runtime (`amdhip64_6.dll`) |
 
-The release bundle instead stages the Vulkan DLL as `libvship.dll`; the loader accepts both names.
+The configured Condor release bundle instead stages the Vulkan DLL as
+`libvship.dll`; the loader accepts both names.
+
+If an installed candidate is found, the script preserves it and the destination,
+downloads nothing, and reports **no package installed**. Set `VSHIP_LIB_DIR` to
+that directory if needed. File presence is not ABI or GPU proof: the loader still
+checks version 5.1.2, backend, symbols and device capability.
+
+With no candidate, the exact Vulkan/NVIDIA downloads are SHA-256 checked before
+use. An unavailable pin (including AMD 5.1.2) fails before download/destination
+creation, with local-install guidance. `-ExpectedSha256` authorizes independently
+audited bytes for a deliberate version/variant URL; it does not bypass ABI
+admission or make an absent official archive exist. Downloads use owned partial
+files and private ZIP scratch, cleaned on failure/success without deleting a
+pre-existing destination `dl` directory. See the [trust and pin-update guide](../.github/native-artifacts.md).
 
 `vulkan` is the default because its only imports are `vulkan-1.dll` and `KERNEL32.dll`: it runs against any working NVIDIA, AMD or Intel Vulkan driver and needs no vendor redistributable. `nvidia` and `amd` do require the CUDA or ROCm runtime respectively.
 
@@ -393,14 +413,18 @@ cargo test -p av-metrics-vship
 
 ### Already using the VapourSynth plugin
 
-If libvship is installed as a VapourSynth plugin, nothing else is needed. The plugin sits at `<vs package>/vapoursynth/plugins/libvship.dll`, a sibling of `vsscript.dll` and on no loader search path, which is why the environment-derived directories below are probed. A working VapourSynth install therefore implies a loadable C API, and the C API path is preferred over the plugin wherever both are usable.
+An installed VapourSynth plugin can supply the native library, but does not prove
+its C ABI or GPU compatibility. The plugin may sit in
+`<vs package>/vapoursynth/plugins/libvship.dll`, outside the loader's normal search
+path, so the environment-derived directories below are probed. The C API path is
+preferred only when its own admission checks succeed.
 
 ### Linux and macOS
 
 There is no distribution-agnostic libvship build to install. Upstream publishes release assets for Windows only, so on Linux the C API must come from a source build:
 
 ```sh
-./scripts/install-libvship-linux.sh
+bash ./scripts/install-libvship-linux.sh
 ```
 
 `-Backend` selects `vulkan` (default), `cuda` or `amd`. Vulkan is the default
@@ -409,7 +433,11 @@ so one build runs against any NVIDIA, AMD or Intel driver; the other two need th
 CUDA and ROCm runtimes. `-Destination` chooses the install directory and `-Quiet`
 suppresses the printed `export` line.
 
-Vulkan initialization is lazy in libvship 5.1.2 and later, so the library can
+Run from this crate's directory. The installer verifies the immutable 5.1.2 source
+commit before building and uses private owned scratch, including cleanup on early
+failure. An existing destination `dl` directory is not used or removed.
+
+Vulkan initialization is lazy in the pinned libvship 5.1.2, so the library can
 be loaded on a machine without a Vulkan driver and report itself unavailable.
 
 Set `VSHIP_LIB_DIR` or `VSHIP_PLUGIN_PATH` in the environment of the running

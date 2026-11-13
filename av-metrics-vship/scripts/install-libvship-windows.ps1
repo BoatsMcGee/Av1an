@@ -8,12 +8,16 @@
     no compiler. `curl.exe` ships with Windows, so this script is
     self-contained.
 
-    Each release publishes three builds. The crate passes the file to `dlopen`,
-    so whichever variant is chosen is installed under the name `vship.dll`:
+    The verified 5.1.2 release publishes Vulkan and NVIDIA builds, not an AMD
+    archive. Downloads are installed under the name `vship.dll`:
 
         vulkan  libvship_VULKAN.dll  -> vship.dll
         nvidia  libvship_NVIDIA.zip  -> vship.dll   (CUDA)
-        amd     libvship_AMD.zip     -> vship.dll   (ROCm)
+
+    An existing local candidate is preserved without downloading; file presence
+    does not prove ABI/backend/symbol or GPU compatibility. With no candidate,
+    AMD 5.1.2 has no verified pin and fails before downloading or creating a
+    destination. Independently audited overrides do not bypass Rust ABI admission.
 
     Release bundles stage the Vulkan DLL as `libvship.dll` instead.
 
@@ -31,7 +35,8 @@
     when that is set.
 
 .PARAMETER Variant
-    Which upstream build to install: `vulkan`, `nvidia` or `amd`.
+    Which upstream build URL to select: `vulkan`, `nvidia` or `amd`. Only Vulkan
+    and NVIDIA have official 5.1.2 assets and default verified download pins.
 
 .PARAMETER ExpectedSha256
     Independently audited expected hash for a deliberate version/variant override.
@@ -43,7 +48,7 @@
     .\install-libvship-windows.ps1
 
 .EXAMPLE
-    .\install-libvship-windows.ps1 -Variant amd -Destination C:\tools\vship -Verbose
+    .\install-libvship-windows.ps1 -Variant nvidia -Destination C:\tools\vship -Verbose
 #>
 
 [CmdletBinding()]

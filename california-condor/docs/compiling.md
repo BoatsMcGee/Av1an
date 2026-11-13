@@ -4,6 +4,12 @@ You can natively build Condor on Linux and Windows. Cross-compilation is not sup
 
 The repository is a Cargo workspace: `california-condor` is the `condor` CLI, `andean-condor` is the Rust library it is built on, and `av-metrics-vmaf`, `av-metrics-vship` and `av-metrics-fmetrics` are the native quality-metric libraries.
 
+Start at the root of a checkout that contains `california-condor/Cargo.toml` and
+the workspace `Cargo.toml`. As of 2026-11-13 these Condor crates are unpublished;
+a legacy Av1an clone/default branch or its `av1an.exe` release is not a substitute
+for this source tree. The commands below do not clone or select a source revision.
+Use stable Rust **1.97.0 or newer** on both platforms.
+
 ## Compiling on Linux
 
 To compile Condor from source, you need the following dependencies:
@@ -28,8 +34,7 @@ meson ninja-build`.
 After installing the dependencies, build the CLI:
 
 ```sh
-git clone https://github.com/master-of-zen/Av1an && cd Av1an
-cargo build --release --bin condor
+cargo build --locked --release -p california-condor --bin condor
 ```
 
 The resulting binary is `./target/release/condor`.
@@ -37,17 +42,19 @@ The resulting binary is `./target/release/condor`.
 If FFMS2 is not where the build expects it, point the build at it:
 
 ```sh
-FFMS_LIB_DIR=/usr/lib/x86_64-linux-gnu FFMS_INCLUDE_DIR=/usr/include cargo build --release --bin condor
+FFMS_LIB_DIR=/usr/lib/x86_64-linux-gnu FFMS_INCLUDE_DIR=/usr/include cargo build --locked --release -p california-condor --bin condor
 ```
 
 ## Compiling on Windows
 
-If you just want a current build of Condor that is newer than the last official release, you can find a pre-built binary of the current `master` branch at https://github.com/master-of-zen/Av1an/releases/tag/latest.
+The checked upstream `latest` release contains legacy `av1an.exe`, not this CLI.
+Until a release offers `condor-windows-x64.zip`, build this source tree; see
+[Installation](./installation.md#windows-releases) for the conditional bundle layout.
 
 If you want to build the binary yourself, you will need the following dependencies:
 
 - [Microsoft Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools) - this is a dependency for Rust
-- [The Rust toolchain](https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe)
+- [The stable Rust MSVC toolchain](https://www.rust-lang.org/tools/install) (1.97.0 or newer)
 - [VapourSynth](https://github.com/vapoursynth/vapoursynth/releases/latest) — the CI installs it from Python instead: `uv pip install vapoursynth==79`, which provides the headers and `VSSCRIPT_PATH`
 - [NASM](https://nasm.us)
 - [FFmpeg](https://ffmpeg.org)
@@ -62,26 +69,46 @@ If you want to build the binary yourself, you will need the following dependenci
 - Create a new environment variable named `FFMS_INCLUDE_DIR` and set it to that directory's `include` folder.
   - (For example, set `FFMS_INCLUDE_DIR` to `C:\ffms2\include`)
 
-Then, either clone the repository by running
+Open a command prompt or PowerShell window at the workspace root described above:
 
-```sh
-git clone https://github.com/master-of-zen/Av1an
+```powershell
+cargo build --locked --release -p california-condor --bin condor
 ```
 
-Or download and extract the [source code](https://github.com/master-of-zen/Av1an/archive/refs/heads/master.zip) manually.
+The resulting binary is `target\release\condor.exe`.
 
-Open a command prompt or PowerShell window inside the cloned repository/extracted ZIP folder and run `cargo build --release --bin condor`. If this command executes successfully with no errors, `condor.exe` will be in the folder `target\release`.
-
-The release archive also needs app-local MSVC runtimes from the installed Visual Studio x64 CRT redistributable, `DirectML.dll` from the pinned ORT build, the metric libraries, and the VMAF and TransNetV2 models beside the executable. `package-release.ps1` requires Python. See [Installation](./installation.md) for the released layout.
+The source-built executable also needs `ffms2.dll`, app-local MSVC runtimes from
+the selected installed Visual Studio x64 CRT redistributable, `DirectML.dll` from
+the pinned ORT build, and any other build-produced ORT runtime DLLs. Metric DLLs
+are loaded on demand; VMAF and TransNetV2 need their models in `model/` or explicit
+runtime overrides. Copying only `condor.exe` is not an installation.
+`package-release.ps1` requires Python. See [Installation](./installation.md) for
+the configured bundle layout and the still-required native Windows gate.
 
 The Windows build embeds `condor.exe.manifest` through `embed-resource`, which declares the executable `longPathAware`. Without it, paths longer than `MAX_PATH` fail inside VapourSynth with "Source path does not exist"; this happens automatically, so no extra step is needed.
 
+## Optional native metrics
+
+These libraries are loaded at runtime, not required to compile the CLI. Use the
+verified ABI pins: [VMAF v3.2.1 / runtime 3.2.0](../../av-metrics-vmaf/README.md#supported-runtime-abi),
+[Vship 5.1.2](../../av-metrics-vship/README.md#supported-runtime-abi), and
+[fmetrics 0.1.0](../../av-metrics-fmetrics/README.md#supported-runtime-abi).
+Building fmetrics requires exact Zig **0.16.0** by default; the installers verify
+its reported version before fetching/building. Follow each installer's pin policy,
+not an arbitrary newer native release. See the [native artifact trust/update guide](../../.github/native-artifacts.md).
+
 ## Configuration schema
 
-The `$schema` URL in `condor.json` points at a release asset. Regenerate the schema from the configuration structs with
+`build.rs` bakes the `$schema` URL into the CLI and generated schema. A clean exact
+`v`-prefixed SemVer tag uses that tag's `configuration.schema.json`; nonexact,
+dirty or untagged builds use `latest`. In GitHub Actions, a valid
+`GITHUB_REPOSITORY` selects that repository's releases (including forks); other
+builds default to `rust-av/Av1an`. This URL contract does **not** mean the asset has
+been published, especially for this source branch or a build-only fork run.
+Regenerate the schema locally from the same source revision with
 
 ```sh
-cargo run --release --bin generate-schema > california-condor/configuration.schema.json
+cargo run --locked --release -p california-condor --bin generate-schema > california-condor/configuration.schema.json
 ```
 
 ## Documentation screenshots

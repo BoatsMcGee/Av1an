@@ -4,7 +4,8 @@ Av1an is a video encoding library and command-line tool built for speed, ease of
 It splits a video into scenes, encodes them in parallel, and stitches the result back together.
 Optionally target a level of quality, analyze video quality, and get feedback through a terminal UI.
 
-The command-line tool is **California Condor** (`condor`) which is built on top of the Rust library, **Andean Condor**.
+The command-line tool is **California Condor** (Cargo package `california-condor`,
+binary `condor`) which is built on top of the Rust library, **Andean Condor**.
 
 ## Where to start
 
@@ -19,21 +20,28 @@ The command-line tool is **California Condor** (`condor`) which is built on top 
 
 ## Install
 
-Install from a package manager or crates.io, or grab a release binary:
+As of 2026-11-13, `california-condor` is unpublished on crates.io and the checked
+upstream releases do not yet provide Condor ZIPs. The crate named `condor` is
+unrelated. With the [build prerequisites](compiling.md) installed, run from the root
+of a checkout containing this workspace:
 
 ```bash
-pacman -S condor        # Arch Linux & Manjaro
-cargo install condor    # crates.io
+cargo install --locked --path california-condor --bin condor
 ```
 
-See [Compiling](compiling.md) to build from source and [Docker](docker.md) for upstream
-`masterofzen/av1an` containers and local Condor builds. Do not assume the published
-upstream image contains this branch's Condor CLI.
+See [Installation](installation.md) for availability and runtime dependencies,
+[Compiling](compiling.md) to build without installing, and [Docker](docker.md) for
+upstream image policy and local Condor builds.
 
 ## Library
 
-Use Av1an as a Rust library by adding Andean Condor to your project:
+`andean-condor` is also unpublished on crates.io as of 2026-11-13. Add a local path
+dependency to your project's `Cargo.toml`, replacing the example path with the
+checked-out library's path relative to your project:
 
-```bash
-cargo add andean-condor
+```toml
+[dependencies]
+andean-condor = { path = "../Av1an/andean-condor" }
 ```
+
+See the [library example](../../andean-condor/examples/simple.rs).
