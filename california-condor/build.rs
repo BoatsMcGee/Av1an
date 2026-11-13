@@ -86,7 +86,8 @@ fn describe_is_exact_tag(describe: &str) -> bool {
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-env-changed=GITHUB_REPOSITORY");
     let mut git2_builder = Git2Builder::default();
-    git2_builder.sha(true).commit_date(true).describe(true, true, None);
+    // Exclude moving tags before libgit2 chooses between co-located lightweight tags.
+    git2_builder.sha(true).commit_date(true).describe(true, true, Some("v[0-9]*"));
     let git2 = git2_builder.build()?;
     let cargo = CargoBuilder::default().debug(true).target_triple(true).build()?;
     let rustc = RustcBuilder::default().semver(true).llvm_version(true).build()?;

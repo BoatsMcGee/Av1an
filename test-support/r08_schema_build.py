@@ -102,15 +102,17 @@ fn main() -> anyhow::Result<()> {
         values = dict(emitted["env"])
         print(f"emission: {values['VERGEN_GIT_DESCRIBE']} -> "
               f"{values['CONDOR_SCHEMA_URL']}", flush=True)
-        assert values["CONDOR_SCHEMA_URL"] == expected, values
+        consumer_urls = []
         for binary, field in (("generate-schema", "$id"),
                               ("r08-config-check", "$schema")):
             artifact = next(row["executable"] for row in rows
                             if row["reason"] == "compiler-artifact"
                             and row["target"]["name"] == binary)
             output = json.loads(run([artifact], fixture, build_env))
-            assert output[field] == expected, (binary, output[field], expected)
+            consumer_urls.append(output[field])
             print(f"consumer {binary} {field}: {output[field]}", flush=True)
+        assert values["CONDOR_SCHEMA_URL"] == expected, values
+        assert consumer_urls == [expected, expected], (consumer_urls, expected)
         script = next(row["filenames"][0] for row in rows
                       if row["reason"] == "compiler-artifact"
                       and row["target"]["kind"] == ["custom-build"]
@@ -167,18 +169,32 @@ fn main() -> anyhow::Result<()> {
     git("tag", "-d", "v1.2.3")
     assert emission()["CONDOR_SCHEMA_URL"] == UPSTREAM + "/latest" + ASSET
     build("invalid", UPSTREAM + "/latest" + ASSET)
+    git("tag", "latest")
+    build("invalid", UPSTREAM + "/latest" + ASSET)
     git("tag", "v1.2.3")
+    for tag in ("latest", "v1.2.3"):
+        assert git("cat-file", "-t", f"refs/tags/{tag}") == "commit"
+    print("H1: lightweight latest + v1.2.3 at HEAD; only version tag added", flush=True)
+    build("invalid",
+          "https://github.com/rust-av/Av1an/releases/download/v1.2.3/configuration.schema.json")
+    git("tag", "-d", "latest")
     build("invalid", UPSTREAM + "/v1.2.3" + ASSET)
     git("pack-refs", "--all")
     build("invalid", UPSTREAM + "/v1.2.3" + ASSET)
     git("tag", "-d", "v1.2.3")
     build("invalid", UPSTREAM + "/latest" + ASSET)
     git("tag", "v1.2.3")
+    git("tag", "latest")
     (package / "build.rs").write_text((package / "build.rs").read_text() + "\n")
     assert emission()["CONDOR_SCHEMA_URL"] == UPSTREAM + "/latest" + ASSET
     git("add", ".")
     git("commit", "-m", "past tag")
     assert emission()["CONDOR_SCHEMA_URL"] == UPSTREAM + "/latest" + ASSET
+    git("tag", "-f", "latest")
+    print("H1: latest moved to an unversioned commit; keep latest schema URL", flush=True)
+    assert emission()["VERGEN_GIT_DESCRIBE"].startswith("v1.2.3-1-g")
+    build("invalid",
+          "https://github.com/rust-av/Av1an/releases/download/latest/configuration.schema.json")
     print("owned Git: untagged, dirty, commit-after-tag passed", flush=True)
     print("R08 schema build checks passed", flush=True)
 
