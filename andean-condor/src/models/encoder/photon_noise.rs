@@ -25,9 +25,17 @@ impl Hash for PhotonNoise {
 }
 
 impl PhotonNoise {
-    /// Check effective shapes using av1-grain 0.5's generated lag-0 defaults,
+    /// Check supported ISO settings and effective shapes using av1-grain 0.5's lag-0 defaults,
     /// without generating scaling points or touching an executable/output.
-    pub(crate) fn validate_coefficients(&self) -> Result<(), EncoderSettingsError> {
+    pub(crate) fn validate_settings(&self) -> Result<(), EncoderSettingsError> {
+        if let Some(chroma_iso) = self.chroma_iso
+            && chroma_iso != self.iso
+        {
+            return Err(EncoderSettingsError::UnequalChromaIso {
+                iso: self.iso,
+                chroma_iso,
+            });
+        }
         self.coefficient_lag(0, 1, 1).map(|_| ())
     }
 

@@ -365,7 +365,7 @@ fn one_set_encoder_line_applies_every_flag() {
             passes: Some(1),
             params: Some("crf=18".to_owned()),
             iso: Some(800),
-            chroma_iso: Some(200),
+            chroma_iso: Some(800),
             ffmpeg_filter: Some("hflip".to_owned()),
             append_color_data: None,
         },
@@ -383,7 +383,7 @@ fn one_set_encoder_line_applies_every_flag() {
     );
     let photon_noise = encoder.photon_noise().expect("Photon Noise was set");
     assert_eq!(photon_noise.iso, 800);
-    assert_eq!(photon_noise.chroma_iso, Some(200));
+    assert_eq!(photon_noise.chroma_iso, Some(800));
     assert_eq!(encoder.ffmpeg_filter(), Some("hflip"));
 }
 
@@ -484,7 +484,7 @@ fn the_standalone_overrides_keep_working() {
         1,
         &ScenesSet::PhotonNoise {
             iso: 800,
-            chroma_noise: Some(200),
+            chroma_noise: Some(800),
         },
     )
     .expect("the Photon Noise table is set");
@@ -503,7 +503,7 @@ fn the_standalone_overrides_keep_working() {
             .photon_noise()
             .expect("Photon Noise")
             .chroma_iso,
-        Some(200)
+        Some(800)
     );
 }
 

@@ -1313,25 +1313,6 @@ impl Encoder {
             },
         );
 
-        if let Some(chroma_iso) = photon_noise.chroma_iso
-            && chroma_iso != photon_noise.iso
-        {
-            let chroma_params = generate_photon_noise_params(
-                0,
-                u64::MAX,
-                NoiseGenArgs {
-                    iso_setting: chroma_iso,
-                    width,
-                    height,
-                    transfer_function,
-                    chroma_grain: true,
-                    random_seed: None,
-                    full_range,
-                },
-            );
-            params.scaling_points_cr = chroma_params.scaling_points_cr;
-            params.scaling_points_cb = chroma_params.scaling_points_cb;
-        }
         photon_noise.apply_coefficients(&mut params)?;
 
         Ok(Some((hash_name, params)))

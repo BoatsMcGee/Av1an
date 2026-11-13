@@ -647,7 +647,7 @@ mod tests {
             .assert()
             .success();
         condor_cmd(&temp)
-            .args(["scenes", "4", "set", "photon-noise", "800", "--chroma-noise", "200"])
+            .args(["scenes", "4", "set", "photon-noise", "800", "--chroma-noise", "800"])
             .assert()
             .success();
         condor_cmd(&temp).args(["scenes", "3", "set", "passes", "2"]).assert().failure();
@@ -683,7 +683,7 @@ mod tests {
             .photon_noise()
             .expect("scene 4 carries Photon Noise");
         assert_eq!(photon_noise.iso, 800);
-        assert_eq!(photon_noise.chroma_iso, Some(200));
+        assert_eq!(photon_noise.chroma_iso, Some(800));
         assert_eq!(
             configuration.condor.scenes[3].encoder.passes(),
             andean_condor::models::encoder::EncoderPasses::All(2)
@@ -717,7 +717,7 @@ mod tests {
                 "--iso",
                 "1200",
                 "--chroma-iso",
-                "300",
+                "1200",
                 "--ffmpeg-filter",
                 "crop=iw-16:ih-16",
             ])
@@ -731,7 +731,7 @@ mod tests {
         );
         let photon_noise = encoder.photon_noise().expect("Photon Noise was set");
         assert_eq!(photon_noise.iso, 1200);
-        assert_eq!(photon_noise.chroma_iso, Some(300));
+        assert_eq!(photon_noise.chroma_iso, Some(1200));
         assert_eq!(encoder.ffmpeg_filter(), Some("crop=iw-16:ih-16"));
 
         // Unsupported totals fail for the whole selection without saving.

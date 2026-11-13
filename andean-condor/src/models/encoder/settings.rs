@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::{Encoder, EncoderBase, EncoderPasses, cli_parameter::CLIParameter};
 
-#[derive(Debug, Error, PartialEq)]
+#[derive(Debug, Clone, Error, PartialEq)]
 pub enum EncoderSettingsError {
     #[error("the {0} encoder is single-pass only and does not take a pass count")]
     PassesNotSupported(EncoderBase),
@@ -14,6 +14,10 @@ pub enum EncoderSettingsError {
     PhotonNoiseNotSupported(EncoderBase),
     #[error("chroma Photon Noise requires luma Photon Noise")]
     ChromaWithoutLuma,
+    #[error(
+        "chroma Photon Noise ISO {chroma_iso} must equal luma ISO {iso}: av1-grain 0.5 cannot generate independent chroma scaling; use the same ISO or disable chroma noise"
+    )]
+    UnequalChromaIso { iso: u32, chroma_iso: u32 },
     #[error(
         "the {0} encoder does not take --ffmpeg-filter; pass `-vf` through its parameters instead"
     )]
@@ -79,7 +83,7 @@ impl Encoder {
         };
         self.validate_pass_settings(pass)?;
         if let Some(noise) = self.photon_noise() {
-            noise.validate_coefficients()?;
+            noise.validate_settings()?;
         }
         Ok(())
     }

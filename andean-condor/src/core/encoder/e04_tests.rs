@@ -305,7 +305,7 @@ fn e22_installed_vp8_and_vp9_pipe_outputs_decode_all_frames() {
 fn e19_noise() -> PhotonNoise {
     PhotonNoise {
         iso: 800,
-        chroma_iso: Some(400),
+        chroma_iso: Some(800),
         width: None,
         height: None,
         c_y: None,

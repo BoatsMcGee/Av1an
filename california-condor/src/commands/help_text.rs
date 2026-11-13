@@ -271,6 +271,8 @@ pub const HELP_PHOTON_NOISE_SHORT: &str = short_help(HELP_PHOTON_NOISE);
 
 pub const HELP_CHROMA_NOISE: &str = r#"Apply chroma noise of the specified ISO strength to the photon noise table using Film Grain Synthesis.
 
+The ISO must equal `--photon-noise`; independent chroma ISO scaling is not currently supported. Omit this option for luma-only noise.
+
 Do not specify this option when using the internal encoder Film Grain Synthesis (e.g. `--film-grain` in **svt-av1**). Only compatible with **aom**, **svt-av1**, and **rav1e** encoders (*--encoder*).
 
 The supported **avm** CLI requires incompatible `filmgrn2` tables; generated tables use AV1 `filmgrn1`.

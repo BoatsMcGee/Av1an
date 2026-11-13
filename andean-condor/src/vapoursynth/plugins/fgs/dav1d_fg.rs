@@ -3,10 +3,7 @@ use av1_grain::{GrainTableSegment, TransferFunction, generate_photon_noise_param
 
 use self::raw::Dav1dFilmGrainDataRaw;
 use super::FGS;
-use crate::{
-    core::input::color_range::ColorRange,
-    vapoursynth::{VapourSynthError, plugins::PluginFunction},
-};
+use crate::{core::input::color_range::ColorRange, vapoursynth::VapourSynthError};
 
 mod raw;
 
@@ -83,9 +80,7 @@ impl FGS {
         transfer_function: TransferFunction,
         color_range: Option<ColorRange>,
     ) -> Result<Vec<u8>, VapourSynthError> {
-        self.photon_noise
-            .validate_coefficients()
-            .map_err(|error| Self::new_error(error.to_string()))?;
+        self.photon_noise.validate_settings()?;
         let width = self.photon_noise.width.or(width).unwrap_or(1920);
         let height = self.photon_noise.height.or(height).unwrap_or(1080);
 
@@ -106,30 +101,7 @@ impl FGS {
             },
         );
 
-        // Separate chroma ISO override (when chroma_iso != iso)
-        if let Some(chroma_iso) = self.photon_noise.chroma_iso
-            && chroma_iso != self.photon_noise.iso
-        {
-            let chroma_params = generate_photon_noise_params(
-                0,
-                u64::MAX,
-                av1_grain::NoiseGenArgs {
-                    iso_setting: chroma_iso,
-                    width,
-                    height,
-                    transfer_function,
-                    chroma_grain: true,
-                    random_seed: None,
-                    full_range: matches!(color_range, Some(ColorRange::Full)),
-                },
-            );
-            params.scaling_points_cr = chroma_params.scaling_points_cr;
-            params.scaling_points_cb = chroma_params.scaling_points_cb;
-        }
-
-        self.photon_noise
-            .apply_coefficients(&mut params)
-            .map_err(|error| Self::new_error(error.to_string()))?;
+        self.photon_noise.apply_coefficients(&mut params)?;
 
         // Convert to binary
         let raw: Dav1dFilmGrainDataRaw = (&params).into();
@@ -155,7 +127,7 @@ mod tests {
         FGS {
             photon_noise: PhotonNoise {
                 iso: 800,
-                chroma_iso: Some(400),
+                chroma_iso: Some(800),
                 width: Some(1280),
                 height: Some(720),
                 c_y: Some(vec![-128, 0, 127, 1]),

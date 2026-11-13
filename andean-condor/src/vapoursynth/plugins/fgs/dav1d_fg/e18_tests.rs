@@ -42,11 +42,105 @@ fn table(noise: &PhotonNoise) -> GrainTableSegment {
 }
 
 #[test]
+fn f3_unequal_chroma_iso_refuses_table_before_writing() {
+    use crate::models::encoder::EncoderSettingsError;
+    let temp = tempfile::tempdir().expect("table publication fixture");
+    let mut noise = noise(0, 1, 1);
+    noise.chroma_iso = Some(400);
+    let encoder = encoder(&noise);
+    for existing in [false, true] {
+        let path = temp.path().join(if existing { "sentinel.tbl" } else { "new.tbl" });
+        if existing {
+            std::fs::write(&path, b"caller-owned table").expect("sentinel");
+        }
+        let error = encoder
+            .generate_photon_noise_table(64, 64, TransferFunction::BT1886, None)
+            .and_then(|generated| {
+                av1_grain::write_grain_table(&path, &[generated.expect("grain").1])
+            })
+            .expect_err("unequal chroma ISO must fail before table output");
+        assert_eq!(
+            error.downcast_ref::<EncoderSettingsError>(),
+            Some(&EncoderSettingsError::UnequalChromaIso {
+                iso: 800,
+                chroma_iso: 400
+            }),
+            "typed settings error: {error:#}"
+        );
+        if existing {
+            assert_eq!(
+                std::fs::read(&path).expect("preserved table"),
+                b"caller-owned table"
+            );
+        } else {
+            assert!(!path.exists());
+        }
+    }
+    assert_eq!(
+        encoder.validate_settings(),
+        Err(EncoderSettingsError::UnequalChromaIso {
+            iso: 800,
+            chroma_iso: 400
+        })
+    );
+}
+
+#[test]
+fn f3_unequal_chroma_iso_refuses_fgs_blob_and_script_with_typed_error() {
+    use crate::models::encoder::EncoderSettingsError;
+    let mut noise = noise(0, 1, 1);
+    noise.chroma_iso = Some(400);
+    let fgs = fgs(&noise);
+    let error = anyhow::Error::new(
+        fgs.build_grain_binary(None, None, TransferFunction::BT1886, None)
+            .expect_err("unequal chroma ISO must not serialize a blob"),
+    );
+    assert_eq!(
+        error.chain().find_map(|cause| cause.downcast_ref::<EncoderSettingsError>()),
+        Some(&EncoderSettingsError::UnequalChromaIso {
+            iso: 800,
+            chroma_iso: 400
+        }),
+        "typed FGS settings error: {error:#}"
+    );
+    let error = fgs.generate_script("clip".into()).err().expect("no invalid grain script");
+    assert!(error.chain().any(|cause| cause.is::<EncoderSettingsError>()));
+}
+
+#[test]
+fn f3_equal_chroma_and_no_chroma_preserve_table_and_fgs_flags() {
+    for chroma_iso in [None, Some(800)] {
+        let mut noise = noise(0, 1, 1);
+        noise.chroma_iso = chroma_iso;
+        let segment = table(&noise);
+        assert_eq!(segment.chroma_scaling_from_luma, chroma_iso.is_some());
+        let bytes = fgs(&noise)
+            .build_grain_binary(None, None, TransferFunction::BT1886, None)
+            .expect("supported FGS blob");
+        assert_eq!(bytes, Dav1dFilmGrainDataRaw::from(&segment).to_bytes());
+        let offset = offset_of!(Dav1dFilmGrainDataRaw, chroma_scaling_from_luma);
+        assert_eq!(
+            i32::from_ne_bytes(bytes[offset..offset + 4].try_into().expect("flag")),
+            i32::from(chroma_iso.is_some())
+        );
+    }
+}
+
+#[test]
 fn e18_table_derives_all_legal_lags_without_changing_coefficients() {
     for (lag, y, uv) in [(0, 0, 1), (1, 4, 5), (2, 12, 13), (3, 24, 25)] {
         for chroma_iso in [None, Some(400), Some(800)] {
             let mut noise = noise(y, uv, uv);
             noise.chroma_iso = chroma_iso;
+            if chroma_iso == Some(400) {
+                assert!(
+                    encoder(&noise)
+                        .generate_photon_noise_table(64, 64, TransferFunction::BT1886, None)
+                        .is_err(),
+                    "unequal ISO rejected for lag {lag}"
+                );
+                continue;
+            }
             let segment = table(&noise);
             assert_eq!(segment.ar_coeff_lag, lag);
             assert_eq!(
@@ -85,6 +179,15 @@ fn e18_fgs_matches_table_lag_coefficients_and_zero_tails() {
         for chroma_iso in [None, Some(400), Some(800)] {
             let mut noise = noise(y, uv, uv);
             noise.chroma_iso = chroma_iso;
+            if chroma_iso == Some(400) {
+                assert!(
+                    fgs(&noise)
+                        .build_grain_binary(Some(64), Some(64), TransferFunction::BT1886, None)
+                        .is_err(),
+                    "unequal ISO rejected before lag {lag} blob"
+                );
+                continue;
+            }
             let bytes = fgs(&noise)
                 .build_grain_binary(Some(64), Some(64), TransferFunction::BT1886, None)
                 .expect("valid FGS blob");
@@ -171,7 +274,16 @@ fn e18_defaults_and_compatible_partial_overrides_preserve_original_generation() 
             noise.c_y = None;
             noise.ccb = None;
             noise.ccr = None;
-            let mut original = generate_photon_noise_params(
+            if chroma_iso == Some(400) {
+                assert!(
+                    encoder(&noise).generate_photon_noise_table(64, 64, transfer, range).is_err()
+                );
+                assert!(
+                    fgs(&noise).build_grain_binary(Some(64), Some(64), transfer, range).is_err()
+                );
+                continue;
+            }
+            let original = generate_photon_noise_params(
                 0,
                 u64::MAX,
                 av1_grain::NoiseGenArgs {
@@ -184,23 +296,6 @@ fn e18_defaults_and_compatible_partial_overrides_preserve_original_generation() 
                     full_range: matches!(range, Some(ColorRange::Full)),
                 },
             );
-            if chroma_iso == Some(400) {
-                let chroma = generate_photon_noise_params(
-                    0,
-                    u64::MAX,
-                    av1_grain::NoiseGenArgs {
-                        iso_setting: 400,
-                        width: 1920,
-                        height: 1080,
-                        transfer_function: transfer,
-                        chroma_grain: true,
-                        random_seed: None,
-                        full_range: matches!(range, Some(ColorRange::Full)),
-                    },
-                );
-                original.scaling_points_cb = chroma.scaling_points_cb;
-                original.scaling_points_cr = chroma.scaling_points_cr;
-            }
             let generated = encoder(&noise)
                 .generate_photon_noise_table(64, 64, transfer, range)
                 .expect("defaults")

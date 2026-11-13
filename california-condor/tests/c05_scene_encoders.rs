@@ -173,7 +173,7 @@ mod tests {
                 vec!["--params", "--cpu-used=7"],
                 vec!["--passes", "1"],
                 vec!["--photon-noise", "800"],
-                vec!["--chroma-noise", "400"],
+                vec!["--chroma-noise", "100"],
                 vec!["--ffmpeg-filter", "hflip"],
             ] {
                 config.save(&temp.path().join("condor.json")).expect("restore");
@@ -295,7 +295,7 @@ mod tests {
             vec!["encode", "set", "params", "--cpu-used=7"],
             vec!["encode", "set", "passes", "1"],
             vec!["encode", "set", "executable", "/missing/c05-aomenc"],
-            vec!["encode", "set", "photon-noise", "800", "--chroma-noise", "200"],
+            vec!["encode", "set", "photon-noise", "800", "--chroma-noise", "800"],
             vec!["encode", "set", "ffmpeg-filter", "hflip"],
             vec!["encode", "set", "append-color-data", "off"],
             vec!["encode", "reset", "encoder"],

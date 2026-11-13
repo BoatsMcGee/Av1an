@@ -17,7 +17,7 @@ use std::{collections::HashSet, fs};
 fn noise() -> PhotonNoise {
     PhotonNoise {
         iso: 800,
-        chroma_iso: Some(400),
+        chroma_iso: Some(800),
         width: None,
         height: None,
         c_y: Some(vec![1, 2, 3, 4]),
@@ -68,21 +68,6 @@ fn expected_params(
         full_range,
     };
     let mut expected = generate_photon_noise_params(0, u64::MAX, args);
-    if let Some(iso) = noise.chroma_iso
-        && iso != noise.iso
-    {
-        let chroma = generate_photon_noise_params(
-            0,
-            u64::MAX,
-            NoiseGenArgs {
-                iso_setting: iso,
-                chroma_grain: true,
-                ..args
-            },
-        );
-        expected.scaling_points_cb = chroma.scaling_points_cb;
-        expected.scaling_points_cr = chroma.scaling_points_cr;
-    }
     expected.ar_coeff_lag = 1;
     expected.ar_coeffs_y = noise.c_y.as_ref().expect("fixture Y").iter().copied().collect();
     expected.ar_coeffs_cb = noise.ccb.as_ref().expect("fixture Cb").iter().copied().collect();
@@ -158,7 +143,7 @@ fn e25_overrides_normalize_dimensions_and_keep_all_grain_settings_in_key() {
             assert_ne!(generate(&overridden, 1280, source.1).0, baseline.0);
         }
     }
-    let mut keys = HashSet::from([baseline.0]);
+    let mut keys = HashSet::from([baseline.0.clone()]);
     for field in [
         "iso",
         "chroma_iso",
@@ -172,7 +157,10 @@ fn e25_overrides_normalize_dimensions_and_keep_all_grain_settings_in_key() {
     ] {
         let mut changed = original.clone();
         match field {
-            "iso" => changed.iso = 1600,
+            "iso" => {
+                changed.iso = 1600;
+                changed.chroma_iso = Some(1600);
+            },
             "chroma_iso" => changed.chroma_iso = Some(200),
             "no_chroma" => changed.chroma_iso = None,
             "same_chroma" => changed.chroma_iso = Some(800),
@@ -183,7 +171,21 @@ fn e25_overrides_normalize_dimensions_and_keep_all_grain_settings_in_key() {
             "Cr" => changed.ccr.as_mut().expect("Cr")[0] = 10,
             _ => unreachable!(),
         }
+        if field == "chroma_iso" {
+            let error = encoder(&changed, EncoderBase::AOM)
+                .generate_photon_noise_table(1920, 1080, TransferFunction::BT1886, None)
+                .expect_err("independent chroma ISO must not get a cache key/table");
+            assert!(error.is::<crate::models::encoder::EncoderSettingsError>());
+            continue;
+        }
         let generated = generate(&changed, 1920, 1080);
+        if field == "same_chroma" {
+            assert_eq!(
+                generated, baseline,
+                "same ISO is the same generated request"
+            );
+            continue;
+        }
         assert!(
             keys.insert(generated.0),
             "material grain setting {field} missing from key"

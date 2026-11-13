@@ -1474,8 +1474,17 @@ mod tests {
             .assert()
             .success();
         condor_cmd(&temp).args(["encode", "set", "passes", "2"]).assert().success();
+        let before = std::fs::read(&config_path).expect("before invalid ISO edit");
         condor_cmd(&temp)
             .args(["encode", "set", "photon-noise", "800", "--chroma-noise", "200"])
+            .assert()
+            .failure();
+        assert_eq!(
+            std::fs::read(&config_path).expect("invalid edit unchanged"),
+            before
+        );
+        condor_cmd(&temp)
+            .args(["encode", "set", "photon-noise", "800", "--chroma-noise", "800"])
             .assert()
             .success();
         condor_cmd(&temp)
@@ -1492,7 +1501,7 @@ mod tests {
         assert_eq!(config.condor.encoder.total_passes(), 2, "passes is set");
         assert_eq!(
             config.condor.encoder.photon_noise().map(|pn| (pn.iso, pn.chroma_iso)),
-            Some((800, Some(200))),
+            Some((800, Some(800))),
             "photon noise is set"
         );
         assert_eq!(

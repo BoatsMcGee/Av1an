@@ -908,7 +908,7 @@ mod tests {
             Some(2),
             Some("--speed 10"),
             Some(0),
-            Some(50),
+            Some(0),
             Some("hflip"),
             Some(false),
         )
@@ -922,11 +922,16 @@ mod tests {
         noise.c_y = Some(vec![1, 2, 3, 4]);
         noise.ccb = Some(vec![5; 5]);
         noise.ccr = Some(vec![-5; 5]);
+        noise.chroma_iso = None;
         encoder.set_photon_noise(Some(noise.clone()));
-        configure_encoder(&mut encoder, None, None, None, None, Some(70), None, None)
+        configure_encoder(&mut encoder, None, None, None, None, Some(0), None, None)
             .expect("chroma update");
-        noise.chroma_iso = Some(70);
+        noise.chroma_iso = Some(0);
         assert_eq!(encoder.photon_noise(), Some(&noise));
+        let before = encoder.clone();
+        configure_encoder(&mut encoder, None, None, None, None, Some(70), None, None)
+            .expect_err("independent chroma ISO is unsupported");
+        assert_eq!(encoder, before, "invalid chroma edit remains transactional");
     }
 
     #[test]
@@ -1177,7 +1182,7 @@ mod tests {
         }
         expected_config.condor.encoder.set_photon_noise(Some(PhotonNoise {
             iso: 1600,
-            chroma_iso: Some(400),
+            chroma_iso: Some(1600),
             width: None,
             height: None,
             c_y: None,
@@ -1237,7 +1242,7 @@ mod tests {
             Some(2),
             Some("--speed 10"),
             Some(1600),
-            Some(400),
+            Some(1600),
             None,
             None,
         )

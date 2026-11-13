@@ -58,7 +58,7 @@ mod tests {
         );
         config.condor.encoder.set_photon_noise(Some(PhotonNoise {
             iso: 1003,
-            chroma_iso: Some(503),
+            chroma_iso: Some(1003),
             width: None,
             height: None,
             c_y: None,
@@ -75,7 +75,7 @@ mod tests {
         }
         config.save(&path).expect("original");
         condor_cmd(&temp)
-            .args(["zone", "0 121 svt-av1 \"--preset 3\" --iso 801 --chroma-iso 403"])
+            .args(["zone", "0 121 svt-av1 \"--preset 3\" --iso 801 --chroma-iso 801"])
             .assert()
             .success();
         // Zone edits retain valid range measurements; seed only if exercising the old bug.
@@ -110,7 +110,7 @@ mod tests {
         );
         assert_eq!(
             scaled.condor.scenes[0].encoder.photon_noise().expect("scaled").chroma_iso,
-            Some(202)
+            Some(401)
         );
         let peer = serde_json::to_value(&scaled.condor.scenes[1]).expect("peer");
         for (edit, range_change) in [
@@ -156,7 +156,7 @@ mod tests {
             );
             assert_eq!(
                 resumed.condor.scenes[0].encoder.photon_noise().expect("chroma").chroma_iso,
-                Some(202)
+                Some(401)
             );
             assert_eq!(
                 resumed.condor.scenes[0].encoder.parameters()["preset"].to_string_value(),
@@ -235,7 +235,7 @@ mod tests {
                 .photon_noise()
                 .expect("original chroma")
                 .chroma_iso,
-            Some(403)
+            Some(801)
         );
         assert!(reset.condor.scenes[0].sequence_data.noise_scaling.is_none());
         assert_eq!(
@@ -243,7 +243,7 @@ mod tests {
             "3"
         );
         condor_cmd(&temp)
-            .args(["scenes", "0", "set", "photon-noise", "803"])
+            .args(["scenes", "0", "set", "photon-noise", "803", "--chroma-noise", "803"])
             .assert()
             .success();
         condor_cmd(&temp)
@@ -451,7 +451,7 @@ mod tests {
                     .photon_noise()
                     .expect("original chroma")
                     .chroma_iso,
-                Some(403)
+                Some(801)
             );
             assert_eq!(
                 withdrawn.condor.scenes[0].encoder.parameters()["preset"].to_string_value(),
@@ -515,7 +515,7 @@ mod tests {
                     .photon_noise()
                     .expect("new chroma")
                     .chroma_iso,
-                Some(605)
+                Some(1202)
             );
             assert_eq!(
                 recomputed.condor.scenes[0].encoder.parameters()["preset"].to_string_value(),

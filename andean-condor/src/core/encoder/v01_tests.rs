@@ -108,7 +108,7 @@ fn native_help_gaps(base: EncoderBase, root: &Path) -> Vec<String> {
     let table_before = if base == EncoderBase::RAV1E {
         encoder.set_photon_noise(Some(PhotonNoise {
             iso: 800,
-            chroma_iso: Some(400),
+            chroma_iso: Some(800),
             width: None,
             height: None,
             c_y: None,

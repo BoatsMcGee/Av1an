@@ -16,6 +16,11 @@ pub mod vapoursynth_filters;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum VapourSynthError {
+    #[error("invalid film grain settings: {source}")]
+    FilmGrainSettings {
+        #[from]
+        source: crate::models::encoder::EncoderSettingsError,
+    },
     #[error("VapourSynth measurement failed: {source}")]
     Measurement {
         #[source]
