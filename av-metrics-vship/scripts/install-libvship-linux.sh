@@ -76,6 +76,7 @@ esac
 library=libvship.so
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/vship-build-XXXXXX")"
+trap 'rm -rf "$work"' EXIT
 
 step() { echo "==> $1"; }
 
@@ -99,8 +100,6 @@ else
     # hipcc or nvcc replaces clang++ as the compiler for these backends.
     require "$tool" "$tool not found; the $Backend backend needs the $runtime."
 fi
-
-trap 'rm -rf "$work"' EXIT
 
 # The tag is verified against a pinned commit because a release tag can be moved.
 step "Fetching Vship $Version"

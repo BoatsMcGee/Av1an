@@ -11,9 +11,11 @@
     Each release publishes three builds. The crate passes the file to `dlopen`,
     so whichever variant is chosen is installed under the name `vship.dll`:
 
-        vulkan  libvship_VULKAN.dll  -> libvship_VULKAN.dll
-        nvidia  libvship_NVIDIA.zip  -> libvship_NVIDIA.dll   (CUDA)
-        amd     libvship_AMD.zip     -> libvship_AMD.dll      (ROCm)
+        vulkan  libvship_VULKAN.dll  -> vship.dll
+        nvidia  libvship_NVIDIA.zip  -> vship.dll   (CUDA)
+        amd     libvship_AMD.zip     -> vship.dll   (ROCm)
+
+    Release bundles stage the Vulkan DLL as `libvship.dll` instead.
 
     `vulkan` is the default: it needs only vulkan-1.dll and KERNEL32.dll, while
     `nvidia` and `amd` need the CUDA or ROCm runtime.
@@ -179,29 +181,32 @@ function Get-Asset {
 }
 
 $selected = $Variants[$Variant]
-$stageDir = Join-Path $Destination 'dl'
-$archive = Join-Path $stageDir $selected.Asset
 $dllName = 'vship.dll'
 $target = Join-Path $Destination $dllName
 
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 
 if ($selected.Archive) {
-    New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
+    $stageDir = Join-Path ([IO.Path]::GetTempPath()) "vship-build-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $stageDir | Out-Null
+    try {
+        $archive = Join-Path $stageDir $selected.Asset
+        Write-Host "Downloading libvship $Version ($Variant)..." -ForegroundColor Cyan
+        $bytes = Get-Asset -Uri "$BaseUrl$($selected.Asset)" -OutFile $archive -Sha256 $Sha256
+        Write-Host ("  {0}  {1,12:N0} bytes" -f $selected.Asset, $bytes)
 
-    Write-Host "Downloading libvship $Version ($Variant)..." -ForegroundColor Cyan
-    $bytes = Get-Asset -Uri "$BaseUrl$($selected.Asset)" -OutFile $archive -Sha256 $Sha256
-    Write-Host ("  {0}  {1,12:N0} bytes" -f $selected.Asset, $bytes)
+        Expand-Archive -Path $archive -DestinationPath $stageDir -Force
 
-    Expand-Archive -Path $archive -DestinationPath $stageDir -Force
+        $member = Join-Path $stageDir $selected.Member
+        if (-not (Test-Path $member)) {
+            throw "The archive does not contain $($selected.Member)."
+        }
 
-    $member = Join-Path $stageDir $selected.Member
-    if (-not (Test-Path $member)) {
-        throw "The archive does not contain $($selected.Member)."
+        # dlopen is handed the name, so the vendor suffix has to go.
+        Copy-Item $member $target -Force
+    } finally {
+        if (Test-Path -LiteralPath $stageDir) { Remove-Item -LiteralPath $stageDir -Recurse -Force }
     }
-
-    # dlopen is handed the name, so the vendor suffix has to go.
-    Copy-Item $member $target -Force
 } else {
     Write-Host "Downloading libvship $Version ($Variant)..." -ForegroundColor Cyan
     $bytes = Get-Asset -Uri "$BaseUrl$($selected.Asset)" -OutFile $target -Sha256 $Sha256
@@ -211,9 +216,6 @@ if ($selected.Archive) {
 if (-not (Test-Path $target)) {
     throw "vship.dll was not installed to $Destination."
 }
-
-# Stage space is only needed for the archives.
-if (Test-Path $stageDir) { Remove-Item -Recurse -Force $stageDir }
 
 Write-Host ''
 Write-Host 'Done.' -ForegroundColor Green

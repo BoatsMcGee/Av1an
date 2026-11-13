@@ -353,6 +353,8 @@ Each release publishes three builds. The crate passes the file to `dlopen`, so w
 | `nvidia` | `libvship_NVIDIA.zip` → `libvship_NVIDIA.dll` | the NVIDIA CUDA runtime |
 | `amd` | `libvship_AMD.zip` → `libvship_AMD.dll` | the AMD ROCm runtime (`amdhip64_6.dll`) |
 
+The release bundle instead stages the Vulkan DLL as `libvship.dll`; the loader accepts both names.
+
 `vulkan` is the default because its only imports are `vulkan-1.dll` and `KERNEL32.dll`: it runs against any working NVIDIA, AMD or Intel Vulkan driver and needs no vendor redistributable. `nvidia` and `amd` do require the CUDA or ROCm runtime respectively.
 
 Select a variant with `-Variant`, and install elsewhere with `-Destination`.

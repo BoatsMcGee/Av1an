@@ -116,8 +116,8 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 
 # Staged under the system temp directory rather than beside the destination, so a
 # checkout never lands in a directory that is about to be packaged.
-$work = Join-Path ([IO.Path]::GetTempPath()) "fmetrics-build-$PID"
-
+$work = Join-Path ([IO.Path]::GetTempPath()) "fmetrics-build-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $work | Out-Null
 try {
     Write-Step "Fetching fmetrics commit $Commit (descriptive branch: $PatchRef)"
     & git init --quiet $work
@@ -194,7 +194,7 @@ try {
     Copy-Item $built $target -Force
 } finally {
     # The checkout is several hundred megabytes with its dependency tree.
-    if (Test-Path $work) { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue }
+    if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 $size = [math]::Round((Get-Item $target).Length / 1KB)

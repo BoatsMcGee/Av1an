@@ -18,6 +18,121 @@ import zipfile
 
 
 class ReleaseScriptTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Linux Vship installer uses Bash")
+    def test_r11_linux_vship_cleans_early_failure_and_retries(self) -> None:
+        """A late EXIT trap leaks the missing-tool checkout; all retries stay owned."""
+        installer = Path(__file__).resolve().parents[3] / "av-metrics-vship/scripts/install-libvship-linux.sh"
+        with tempfile.TemporaryDirectory(prefix="r11 linux ") as directory:
+            base = Path(directory)
+            env, commits = self._r06_fixture(base)
+            with patch.dict(os.environ, env, clear=True):
+                self._r07_git(base / "remote", "tag", "fixture", commits["pin"])
+            tools = base / "bin"
+            tools.mkdir()
+            for name in ("mktemp", "rm", "git", "mkdir", "install", "grep", "stat"):
+                executable = shutil.which(name)
+                self.assertIsNotNone(executable, f"host prerequisite missing: {name}")
+                (tools / name).symlink_to(executable)
+            (tools / "clang").write_text("#!/bin/bash\nexit 91\n")
+            (tools / "nm").write_text("#!/bin/bash\nprintf '000 T Vship_GetVersion\\n'; for n in {1..9}; do printf '000 T Vship_%s\\n' \"$n\"; done\n")
+            make = tools / "make"
+            body = '''#!/bin/bash
+set -eu
+test "$1" = -C && test "$3" = build && test "$4" = BACKEND=Vulkan
+if [ "$MODE" = build ]; then echo 'R11 inert build failure' >&2; exit 79; fi
+printf 'R11 inert library bytes\\n' > "$2/libvship.so"
+'''
+            for tool in (tools / "clang", tools / "nm"):
+                tool.chmod(0o755)
+            dl = base / "destination/dl"
+            dl.mkdir()
+            (dl / "sentinel").write_bytes(b"preexisting dl\x00")
+            env.update(PATH=str(tools), VULKAN_SDK="fixture unused SDK", VSHIP_VERSION="fixture",
+                       VSHIP_COMMIT=commits["pin"], VSHIP_REPO=str(base / "remote"))
+            for mode, expected, error in (("missing", 1, "make not found"), ("fetch", 128, "does not exist"),
+                                           ("build", 79, "R11 inert build failure"), ("success", 0, "Done.")):
+                with self.subTest(mode=mode):
+                    if mode != "missing":
+                        make.write_text(body)
+                        make.chmod(0o755)
+                    selected = {**env, "MODE": mode}
+                    if mode == "fetch":
+                        selected["VSHIP_REPO"] = str(base / "absent remote")
+                    result = subprocess.run(["/bin/bash", str(installer), "-Destination", str(base / "destination"), "-Quiet"],
+                                            cwd=base, env=selected, capture_output=True, text=True)
+                    logs = result.stdout + result.stderr
+                    self.assertEqual(result.returncode, expected, logs)
+                    self.assertIn(error, logs)
+                    self.assertEqual(list((base / "temp").iterdir()), [], logs)
+                    self.assertEqual((dl / "sentinel").read_bytes(), b"preexisting dl\x00")
+                    self.assertEqual((base / "destination/sentinel").read_text(), "preserve destination\n")
+                    target = base / "destination/libvship.so"
+                    if mode == "success":
+                        self.assertEqual(target.read_bytes(), b"R11 inert library bytes\n")
+                    else:
+                        self.assertFalse(target.exists(), logs)
+
+    @unittest.skipUnless(os.name == "nt", "native PowerShell ownership fixture runs on Windows CI")
+    def test_r11_windows_installers_private_scratch_and_retry(self) -> None:
+        """Real Get-Asset/Save-File and filesystem; only HTTP/unpack are inert doubles."""
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory(prefix="r11 native ") as directory:
+            base = Path(directory)
+            temp = base / "private temp"
+            temp.mkdir()
+            result = subprocess.run(["pwsh", "-NoProfile", "-File", str(Path(__file__).with_name("r11-installers.ps1"))],
+                                    cwd=base, capture_output=True, text=True,
+                                    env={**os.environ, "REPO": str(root), "FIXTURE": str(base),
+                                         "TEMP": str(temp), "TMP": str(temp)})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(list(temp.iterdir()), [])
+
+    @unittest.skipUnless(os.name == "nt", "native PowerShell PID ownership fixture runs on Windows CI")
+    def test_r11_windows_fmetrics_preserves_old_pid_checkout(self) -> None:
+        """An unknown immutable pin must not adopt/delete an old same-PID directory."""
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory(prefix="r11 pid ") as directory:
+            base = Path(directory)
+            env, _ = self._r06_fixture(base)
+            zig = base / "zig.cmd"
+            zig.write_text('@echo off\nif "%~1"=="version" (echo 0.16.0 & exit /b 0)\nexit /b 93\n')
+            runner = base / "run.ps1"
+            runner.write_text(r'''$ErrorActionPreference = 'Stop'
+$old = Join-Path ([IO.Path]::GetTempPath()) "fmetrics-build-$PID"
+New-Item -ItemType Directory -Path $old | Out-Null
+$sentinel = Join-Path $old 'sentinel'
+[IO.File]::WriteAllText($sentinel, 'old PID checkout')
+try {
+    try {
+        & (Join-Path $env:REPO 'av-metrics-fmetrics/scripts/install-fmetrics-windows.ps1') -Destination (Join-Path $env:FIXTURE 'destination') -ZigPath (Join-Path $env:FIXTURE 'zig.cmd') -Commit ('1' * 40)
+        throw 'accepted unknown commit'
+    } catch { if ($_.Exception.Message -notmatch 'Failed to fetch fmetrics commit') { throw } }
+    if ([IO.File]::ReadAllText($sentinel) -ne 'old PID checkout') { throw 'old PID sentinel changed' }
+    if (@(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Force).Count -ne 1) { throw 'new scratch leaked' }
+} finally { Remove-Item -LiteralPath $old -Recurse -Force }
+''')
+            result = subprocess.run(["pwsh", "-NoProfile", "-File", str(runner)], cwd=base,
+                                    env={**env, "REPO": str(root), "FIXTURE": str(base)}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((base / "destination/sentinel").read_text(), "preserve destination\n")
+            self.assertEqual(list((base / "temp").iterdir()), [])
+
+    def test_r11_powershell_ownership_source_and_required_gate(self) -> None:
+        """Supplement only: native Windows execution is mandatory CI, not Linux proof."""
+        root = Path(__file__).resolve().parents[3]
+        for relative, variable in (("av-metrics-vship/scripts/install-libvship-windows.ps1", "stageDir"),
+                                   ("av-metrics-vmaf/scripts/install-libvmaf-windows.ps1", "StageDir"),
+                                   ("av-metrics-fmetrics/scripts/install-fmetrics-windows.ps1", "work")):
+            with self.subTest(installer=relative):
+                source = (root / relative).read_text()
+                self.assertNotRegex(source, r"Join-Path \$(?:Destination|InstallDir) 'dl'|fmetrics-build-\$PID")
+                self.assertRegex(source, rf"\${variable} = Join-Path \(\[IO.Path\]::GetTempPath\(\)\).*NewGuid")
+                self.assertRegex(source, rf"New-Item -ItemType Directory -Path \${variable} \| Out-Null\s+try \{{")
+                self.assertRegex(source, rf"finally \{{\s*(?:#[^\n]*\n\s*)?if \(Test-Path -LiteralPath \${variable}\) \{{ Remove-Item -LiteralPath \${variable} -Recurse -Force")
+        workflow = (root / ".github/workflows/windows-build.yml").read_text()
+        for method in ("test_r11_windows_installers_private_scratch_and_retry", "test_r11_windows_fmetrics_preserves_old_pid_checkout"):
+            self.assertIn(f"ReleaseScriptTests.{method}", workflow)
+
     @unittest.skipIf(os.name == "nt", "Linux installer uses Bash and ELF tooling")
     def test_r10_linux_requires_exact_zig_before_fetch(self) -> None:
         """Accepting another patch, malformed output or failed version must not fetch."""

@@ -197,13 +197,13 @@ function Save-File {
 
 $BinDir = Join-Path $InstallDir 'bin'
 $ModelDir = Join-Path $InstallDir 'model'
-$StageDir = Join-Path $InstallDir 'dl'
+$StageDir = Join-Path ([IO.Path]::GetTempPath()) "vmaf-build-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $StageDir | Out-Null
+try {
 
 New-Item -ItemType Directory -Force -Path $BinDir, $ModelDir | Out-Null
 
 if (-not $ModelsOnly) {
-    New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
-
     $packages = @($LibvmafPackage) + $RuntimePackages
     Write-Host "Downloading $($packages.Count) packages..." -ForegroundColor Cyan
 
@@ -250,8 +250,9 @@ foreach ($model in $Models) {
     Write-Host ("  {0,-26} {1,8:N0} bytes" -f $model, (Get-Item $destination).Length)
 }
 
-# Stage space is only needed for the archives.
-if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
+} finally {
+    if (Test-Path -LiteralPath $StageDir) { Remove-Item -LiteralPath $StageDir -Recurse -Force }
+}
 
 $totalModels = Get-ChildItem $ModelDir -Filter *.json | Measure-Object Length -Sum
 
