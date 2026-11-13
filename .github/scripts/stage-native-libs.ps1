@@ -288,6 +288,9 @@ if (Test-Path -LiteralPath $vshipStaging -PathType Leaf) {
         if (Test-Path -LiteralPath $vshipWork) { Remove-Item -LiteralPath $vshipWork -Recurse -Force }
     }
 }
+if ((Get-FileHash -Algorithm SHA256 -LiteralPath $vshipStaging).Hash -ne (Get-Pin 'VSHIP_VULKAN_SHA256')) {
+    throw "Release Vship DLL $vshipStaging does not match the pinned $VshipVersion Vulkan SHA-256; refusing archive/publication. Local runtime reuse is separate from release integrity."
+}
 
 if (-not $SkipModels) {
     Write-Step 'Fetching VMAF models'

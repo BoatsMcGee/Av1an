@@ -138,6 +138,18 @@ if (-not $found.Path -or $found.Downloaded) { throw 'local candidate misreported
 if ($Downloads -ne 0) { throw 'local candidate attempted a download' }
 if (Test-Path $dest) { throw 'fallback mutated destination' }
 if ([IO.File]::ReadAllText($candidate) -ne 'local candidate, not ABI proof') { throw 'candidate changed' }
+$letter = 90..68 | ForEach-Object { [string][char]$_ } | Where-Object { -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
+if (-not $letter) { throw 'fixture needs an unmapped drive letter' }
+$missing = "$($letter):\unmapped"
+$env:VSHIP_PLUGIN_PATH = $missing
+$env:VSHIP_LIB_DIR = ''
+$env:VSSCRIPT_PATH = '"' + $missing + '\vsscript.dll"'
+$env:VAPOURSYNTH_EXTRA_PLUGIN_PATH = $missing
+$env:PATH = $missing + ';"' + (Join-Path $env:FIXTURE 'absent path') + '";"' + $local + '"'
+$found = & $vship -Version 0.0.0 -Variant amd -Destination $dest
+if ($found.Path -ne $candidate -or $found.Downloaded) { throw 'bad PATH entry prevented the quoted valid candidate' }
+if ($Downloads -ne 0 -or (Test-Path $dest)) { throw 'candidate probing mutated the destination or downloaded' }
+if ([IO.File]::ReadAllText($candidate) -ne 'local candidate, not ABI proof') { throw 'PATH candidate changed' }
 Remove-Item $candidate
 $env:VSHIP_LIB_DIR = ''
 try { & $vship -Version 0.0.0 -Variant amd -Destination $dest; throw 'accepted unavailable pin' }
@@ -176,6 +188,24 @@ foreach ($relative in @('av-metrics-vship/scripts/install-libvship-windows.ps1',
         if ($accepted -ne ($payload -eq 'good')) { throw "wrong acceptance: $relative / $payload" }
         if ([IO.File]::ReadAllText($file) -ne $(if ($accepted) {'good'} else {'preserve'})) { throw 'destination changed on rejection' }
     }
+    if ($relative -eq '.github/scripts/stage-native-libs.ps1') {
+        $guard = $ast.Find({param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -match 'Get-FileHash.*\$vshipStaging'}, $true)
+        if (-not $guard) { throw 'missing final release Vship digest guard' }
+        function Get-Pin([string] $Name) {
+            if ($Name -ne 'VSHIP_VULKAN_SHA256') { throw 'unexpected release pin' }
+            return $sha
+        }
+        $vshipStaging = Join-Path $env:FIXTURE 'release-vship.dll'
+        $VshipVersion = 'fixture-version'
+        foreach ($payload in @('good', 'wrong-variant', 'g')) {
+            [IO.File]::WriteAllText($vshipStaging, $payload)
+            $published = $false
+            try { . ([scriptblock]::Create($guard.Extent.Text)); $published = $true }
+            catch { if ($_.Exception.Message -notmatch 'release.*Vship|Vship.*release') { throw } }
+            if ($published -ne ($payload -eq 'good')) { throw "unsafe release boundary: $payload" }
+            if ([IO.File]::ReadAllText($vshipStaging) -ne $payload) { throw 'release guard changed candidate bytes' }
+        }
+    }
 }
 ''')
             result = subprocess.run(["pwsh", "-NoProfile", "-File", str(script)], capture_output=True, text=True,
@@ -191,6 +221,29 @@ foreach ($relative in @('av-metrics-vship/scripts/install-libvship-windows.ps1',
         vmaf = (root / "av-metrics-vmaf/scripts/install-libvmaf-windows.ps1").read_text()
         vship = (root / "av-metrics-vship/scripts/install-libvship-windows.ps1").read_text()
         stage = (root / ".github/scripts/stage-native-libs.ps1").read_text()
+
+        # Static policy/mutation checks only; the native fixture above executes PS.
+        def release_pin_policy(source: str) -> None:
+            release = source[source.index("$vshipStaging = "):source.index("if (-not $SkipModels)")]
+            self.assertRegex(release, r"(?m)^if \(\(Get-FileHash -Algorithm SHA256 -LiteralPath \$vshipStaging\)\.Hash -ne \(Get-Pin 'VSHIP_VULKAN_SHA256'\)\) \{\n\s+throw [^\n]+\n\}",
+                             "release bytes need an unconditional final Vulkan digest guard")
+
+        def filesystem_policy(source: str) -> None:
+            scan = source[source.index("$directories = "):source.index("$Sha256 = ")]
+            self.assertNotRegex(scan, r"\b(?:Join-Path|Split-Path|Test-Path)\b", "candidate probes must not resolve PowerShell providers")
+            for operation in ("[IO.Path]::GetDirectoryName(", "[IO.Path]::Combine(", "[IO.File]::Exists("):
+                self.assertIn(operation, scan)
+
+        with self.subTest(policy="release-pin"):
+            release_pin_policy(stage)
+        with self.subTest(policy="filesystem-only"):
+            filesystem_policy(vship)
+        with self.assertRaises(AssertionError):
+            release_pin_policy(stage.replace(".Hash -ne (Get-Pin 'VSHIP_VULKAN_SHA256')", ".Hash -eq (Get-Pin 'VSHIP_VULKAN_SHA256')"))
+        with self.assertRaises(AssertionError):
+            filesystem_policy(vship.replace("[IO.Path]::Combine($directory, $name)", "(Join-Path $directory $name)"))
+        with self.assertRaises(AssertionError):
+            filesystem_policy(vship.replace("[IO.Path]::GetDirectoryName($env:VSSCRIPT_PATH.Trim().Trim('\"'))", "(Split-Path -Parent $env:VSSCRIPT_PATH)"))
         self.assertIn("install-libvship-windows.ps1", stage, "staging must reuse installer candidate-preservation policy")
         self.assertIn("$vshipCandidate.Downloaded", stage, "local staging must not claim a newly verified download")
         for key, value in pins.items():

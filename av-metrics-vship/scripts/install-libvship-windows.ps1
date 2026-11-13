@@ -105,8 +105,12 @@ $BaseUrl = "https://codeberg.org/Line-fr/Vship/releases/download/v$Version/"
 # The Rust loader remains responsible for version (5,1,2), backend and symbols.
 $directories = @($env:VSHIP_PLUGIN_PATH, $env:VSHIP_LIB_DIR)
 if ($env:VSSCRIPT_PATH) {
-    $runtime = Split-Path -Parent $env:VSSCRIPT_PATH
-    if ($runtime) { $directories += @((Join-Path $runtime 'plugins'), $runtime) }
+    try {
+        $runtime = [IO.Path]::GetDirectoryName($env:VSSCRIPT_PATH.Trim().Trim('"'))
+        if ($runtime) { $directories += @([IO.Path]::Combine($runtime, 'plugins'), $runtime) }
+    } catch [ArgumentException], [NotSupportedException], [IO.PathTooLongException] {
+        # Malformed paths are not installation errors during read-only discovery.
+    }
 }
 if ($env:VAPOURSYNTH_EXTRA_PLUGIN_PATH) { $directories += $env:VAPOURSYNTH_EXTRA_PLUGIN_PATH.Split(';') }
 $directories += @([Environment]::SystemDirectory, [Environment]::GetFolderPath('SystemX86'))
@@ -114,13 +118,19 @@ if ($env:PATH) { $directories += $env:PATH.Split(';') }
 $directories += $Destination
 foreach ($directory in $directories) {
     if (-not $directory) { continue }
-    foreach ($name in @('libvship.dll', 'vship.dll')) {
-        $candidate = Join-Path $directory $name
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-            Write-Host "No package installed; preserving local candidate: $candidate"
-            Write-Host "Set VSHIP_LIB_DIR to '$directory' if needed. Av1an must validate runtime version (5,1,2), backend and required symbols; file presence does not prove compatibility."
-            return [pscustomobject]@{ Path = $candidate; Downloaded = $false }
+    try {
+        $directory = $directory.Trim().Trim('"')
+        if (-not $directory) { continue }
+        foreach ($name in @('libvship.dll', 'vship.dll')) {
+            $candidate = [IO.Path]::Combine($directory, $name)
+            if ([IO.File]::Exists($candidate)) {
+                Write-Host "No package installed; preserving local candidate: $candidate"
+                Write-Host "Set VSHIP_LIB_DIR to '$directory' if needed. Av1an must validate runtime version (5,1,2), backend and required symbols; file presence does not prove compatibility."
+                return [pscustomobject]@{ Path = $candidate; Downloaded = $false }
+            }
         }
+    } catch [ArgumentException], [NotSupportedException], [IO.PathTooLongException] {
+        continue
     }
 }
 
