@@ -42,7 +42,7 @@ mod tests {
         };
         let mut encoder = Encoder::default_from_base(&EncoderBase::X264, false);
         encoder.set_append_color_data(false);
-        encoder.set_quantizer(6.0);
+        encoder.set_quantizer(20.0);
         encoder.parameters_mut().extend(CLIParameter::new_strings(
             "--",
             " ",

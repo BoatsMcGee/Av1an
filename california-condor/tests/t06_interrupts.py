@@ -274,7 +274,7 @@ root=Path(os.environ['V02_ROOT'])
 args=sys.argv[1:]
 out=Path(args[args.index('-o')+1])
 with (root/'invocations').open('a') as log: log.write(str(out)+'\n')
-grandchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(15)'])
+grandchild=subprocess.Popen([sys.executable,'-c','import time; time.sleep(300)'])
 def identity(pid):
  fields=Path(f'/proc/{pid}/stat').read_text().rsplit(') ',1)[1].split()
  return f'{pid} {fields[19]} {fields[2]}\n'
@@ -286,8 +286,13 @@ try:
   gate=os.open(root/'release',os.O_RDONLY|os.O_NONBLOCK)
   try:
    (root/'active').touch()
-   assert select.select([gate],[],[],15)[0], 'native gate watchdog'
-   assert os.read(gate,1)==b'1'
+   ready=select.select([gate],[],[],15)[0]
+   command=os.read(gate,1) if ready else b''
+   # T injects the watchdog boundary in the test-local counterexample only.
+   if not ready or command==b'T':
+    (root/'gate-timeout').write_text('native gate watchdog')
+    raise AssertionError('native gate watchdog')
+   assert command==b'1'
   finally:
    os.close(gate)
  result=subprocess.run(['x264',*args],stdin=sys.stdin.buffer)
@@ -297,7 +302,8 @@ sys.exit(result.returncode)
 '''
 
 
-def v02_pty(binary: str, base: Path, template: dict, forced: bool) -> None:
+def v02_pty(binary: str, base: Path, template: dict, forced: bool,
+            *, gate_timeout: bool = False) -> None:
     """T06's controlling-terminal protocol, now with real completed native chunks."""
     with tempfile.TemporaryDirectory(prefix='v02-pty-', dir=base) as directory:
         root = Path(directory)
@@ -362,7 +368,7 @@ def v02_pty(binary: str, base: Path, template: dict, forced: bool) -> None:
                     if sent and not acknowledged and b'after Encoders complete...' in terminal:
                         assert len((root/'invocations').read_text().splitlines()) == 1
                         assert child.poll() is None
-                        if forced:
+                        if forced and not gate_timeout:
                             os.write(master, b'\x03')
                         else:
                             try:
@@ -371,7 +377,7 @@ def v02_pty(binary: str, base: Path, template: dict, forced: bool) -> None:
                                 if error.errno != errno.ENXIO:
                                     raise
                                 continue
-                            os.write(gate, b'1'); os.close(gate)
+                            os.write(gate, b'T' if gate_timeout else b'1'); os.close(gate)
                         acknowledged = True
                 status = child.wait(timeout=5)
                 assert status == 130 and sent and acknowledged, (status, terminal)
@@ -413,12 +419,13 @@ def v02_pty(binary: str, base: Path, template: dict, forced: bool) -> None:
                             assert select.select([fd], [], [], 0)[0], f'owned PID {pid} still alive at CLI outcome'
                         finally:
                             os.close(fd)
+                assert not (root/'gate-timeout').exists(), 'V02 native gate watchdog fired before CLI outcome'
                 prior.cleanup_fixtures(records, errors)
                 assert not errors, errors
                 assert all(not Path(f'/proc/{record.split()[0]}').exists() for record in records), 'owned tree not reaped'
                 assert sentinel.read_bytes() == b'preserve prior output'
                 assert (base/'source.vpy').read_bytes() == source
-                print(f'V02 PTY forced={forced}: actual raw/alternate enter+restore, acknowledged first interrupt, status130, next admission stopped, owned wrapper/grandchild exited+reaped; pids={records}', flush=True)
+                print(f'V02 PTY forced={forced}: actual raw/alternate enter+restore, acknowledged first interrupt, status130, next admission stopped, no gate timeout before cleanup, owned wrapper/grandchild exited+reaped; pids={records}', flush=True)
                 if not forced:
                     first = chunks[0]
                     frozen = (first.read_bytes(), first.stat().st_mtime_ns)
@@ -500,6 +507,8 @@ def v02_pipeline(binary: str, root: Path) -> None:
             None, {'Number': {'prefix': '--', 'delimiter': ' ', 'value': 2.0}}, None]
     zoned = json.loads(job.read_text())
     association(zoned)
+    assert all(s['encoder']['X264']['options']['crf']['Number']['value'] == 20
+               for s in zoned['condor']['scenes']), 'TQ fixture must start outside 0..12'
     assert zoned['condor']['scenes'][0]['sequence_data']['zoner']['lifecycle']
     for args in [('target-quality',), ('encode',), ('concatenate',), ('quality-check',)]:
         stage(*args)
@@ -509,7 +518,9 @@ def v02_pipeline(binary: str, root: Path) -> None:
         data = scene['sequence_data']
         assert data['target_quality']['selection']
         selected_q = scene['encoder']['X264']['options']['crf']['Number']['value']
+        assert 0 <= selected_q <= 12 and selected_q != 20, 'TQ must replace the initial CRF20'
         assert any(p['quantizer'] == selected_q for p in data['target_quality']['passes'])
+        print(f'V02 TQ propagation: initial=20 saved={selected_q} measured={[p["quantizer"] for p in data["target_quality"]["passes"]]}', flush=True)
         for record in [*data['target_quality']['passes'], data['quality_check']['quality']]:
             assert record['provenance'] and record['backend']['engine'] == 'Vmaf'
             assert len(record['scores']) == frames
@@ -541,8 +552,21 @@ def v02_pipeline(binary: str, root: Path) -> None:
     wrapper = root/'native-encoder'
     wrapper.write_text(V02_ENCODER)
     wrapper.chmod(0o755)
+    # Start fresh PTY jobs with actual TQ-produced encoders, not CRF20 or
+    # copied completion/provenance records from the finished pipeline.
+    for scene, produced in zip(zoned['condor']['scenes'], measured['condor']['scenes']):
+        scene['encoder'] = produced['encoder']
     for forced in (False, True):
         v02_pty(binary, root, zoned, forced)
+    try:
+        # Do not send the second interrupt: reproduce the old false-positive
+        # outcome by injecting the wrapper's own watchdog failure instead.
+        v02_pty(binary, root, zoned, True, gate_timeout=True)
+    except AssertionError as error:
+        assert str(error) == 'V02 native gate watchdog fired before CLI outcome', error
+        print('V02 M1 counterexample: ignored second interrupt + test-local gate timeout rejected before test cleanup; owned tree reaped', flush=True)
+    else:
+        raise AssertionError('V02 must reject the ignored-second/gate-timeout counterexample')
 
 
 if __name__ == '__main__' and sys.argv[1] == '--v02':
