@@ -1593,15 +1593,7 @@ impl Encoder {
                     Command::new(&executable).arg("--help").stdin(Stdio::null()).output().ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("    av1"))?;
-                Some(
-                    version_line
-                        .split_once('-')
-                        .expect("unexpected aom version string format")
-                        .1
-                        .replace("(default)", "")
-                        .trim()
-                        .to_string(),
-                )
+                Some(aom_style_version(version_line))
             },
             Encoder::RAV1E { .. } => {
                 let result = Command::new(&executable)
@@ -1618,15 +1610,7 @@ impl Encoder {
                     Command::new(&executable).arg("--help").stdin(Stdio::null()).output().ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("    vp9"))?;
-                Some(
-                    version_line
-                        .split_once('-')
-                        .expect("unexpected vpx version string format")
-                        .1
-                        .replace("(default)", "")
-                        .trim()
-                        .to_string(),
-                )
+                Some(aom_style_version(version_line))
             },
             Encoder::SVTAV1 { .. } => {
                 let result = Command::new(&executable)
@@ -1643,15 +1627,7 @@ impl Encoder {
                     Command::new(&executable).arg("--help").stdin(Stdio::null()).output().ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("    av2"))?;
-                Some(
-                    version_line
-                        .split_once('-')
-                        .expect("unexpected avm version string format")
-                        .1
-                        .replace("(default)", "")
-                        .trim()
-                        .to_string(),
-                )
+                Some(aom_style_version(version_line))
             },
             Encoder::X264 { .. } => {
                 let result = Command::new(&executable)
@@ -1661,14 +1637,7 @@ impl Encoder {
                     .ok()?;
                 let stdout = String::from_utf8_lossy(&result.stdout);
                 let version_line = stdout.lines().find(|line| line.starts_with("x264"))?;
-                Some(
-                    version_line
-                        .split_once(" ")
-                        .expect("unexpected x264 version string format")
-                        .1
-                        .trim()
-                        .to_string(),
-                )
+                Some(after_first_space(version_line))
             },
             Encoder::X265 { .. } => {
                 let result = Command::new(&executable)
@@ -1678,14 +1647,7 @@ impl Encoder {
                     .ok()?;
                 let stderr = String::from_utf8_lossy(&result.stderr);
                 let version_line = stderr.lines().find(|line| line.starts_with("x265"))?;
-                Some(
-                    version_line
-                        .split_once(':')
-                        .expect("unexpected x265 version string format")
-                        .1
-                        .trim()
-                        .to_string(),
-                )
+                Some(after_first_colon(version_line))
             },
             Encoder::VVenC { .. } => {
                 let result = Command::new(&executable)
@@ -1705,6 +1667,41 @@ impl Encoder {
             },
         }
     }
+}
+
+/// The text after the first `-` in an aomenc/vpxenc/avmenc version line,
+/// with the trailing `(default)` marker removed.
+///
+/// Those encoders print `    av1    - <description> <version> (default)`,
+/// so the version is the tail of the description rather than a field of
+/// its own. A line without a `-` yields the whole line rather than
+/// panicking: the version is diagnostics, and an unexpected format is not
+/// worth aborting a job over.
+fn aom_style_version(version_line: &str) -> String {
+    version_line
+        .split_once('-')
+        .map_or(version_line, |(_, tail)| tail)
+        .replace("(default)", "")
+        .trim()
+        .to_string()
+}
+
+/// The text after the first space in an x264 version line.
+fn after_first_space(version_line: &str) -> String {
+    version_line
+        .split_once(' ')
+        .map_or(version_line, |(_, tail)| tail)
+        .trim()
+        .to_string()
+}
+
+/// The text after the first colon in an x265 version line.
+fn after_first_colon(version_line: &str) -> String {
+    version_line
+        .split_once(':')
+        .map_or(version_line, |(_, tail)| tail)
+        .trim()
+        .to_string()
 }
 
 impl Default for Encoder {
@@ -1815,6 +1812,16 @@ mod tests {
     use av_decoders::{ColorPrimaries, ColorSpace, TransferCharacteristic};
 
     use super::*;
+
+    #[test]
+    fn version_lines_without_the_expected_separator_do_not_panic() {
+        assert_eq!(aom_style_version("    av1"), "av1");
+        assert_eq!(aom_style_version("    av1    - 3.12.0 (default)"), "3.12.0");
+        assert_eq!(after_first_space("x264"), "x264");
+        assert_eq!(after_first_space("x264 - core 164"), "- core 164");
+        assert_eq!(after_first_colon("x265"), "x265");
+        assert_eq!(after_first_colon("x265 4.1+1: build"), "build");
+    }
 
     #[cfg(unix)]
     #[test]
