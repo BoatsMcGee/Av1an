@@ -41,10 +41,7 @@ pub(super) fn kill_tree(pid: u32) -> io::Result<()> {
             }
         }
     }
-    match failure {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+    failure.map_or(Ok(()), Err)
 }
 
 /// Observe without reaping. A known-lost child disarms the caller's kill guard.
